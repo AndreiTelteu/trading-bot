@@ -97,11 +97,13 @@ function Dashboard({ wallet: propWallet, positions: propPositions }) {
     }
   }
 
-  const totalPositionsValue = positions.reduce((sum, p) => {
+  const openPositions = positions.filter(p => p.status === 'open')
+
+  const totalPositionsValue = openPositions.reduce((sum, p) => {
     return sum + (p.current_price || 0) * p.amount
   }, 0)
 
-  const totalPnL = positions.reduce((sum, p) => sum + (p.pnl || 0), 0)
+  const totalPnL = openPositions.reduce((sum, p) => sum + (p.pnl || 0), 0)
 
   const selectedCoin = recentCoins.find(c => c.symbol === selectedSymbol) || null
   const analysis = selectedCoin
@@ -143,7 +145,7 @@ function Dashboard({ wallet: propWallet, positions: propPositions }) {
 
       <div className="positions-preview">
         <h3>Open Positions</h3>
-        {positions.length === 0 ? (
+        {openPositions.length === 0 ? (
           <p className="no-data">No open positions</p>
         ) : (
           <table>
@@ -157,7 +159,7 @@ function Dashboard({ wallet: propWallet, positions: propPositions }) {
               </tr>
             </thead>
             <tbody>
-              {positions.slice(0, 5).map(p => (
+              {openPositions.slice(0, 5).map(p => (
                 <tr key={p.id}>
                   <td>{p.symbol}</td>
                   <td>{p.amount.toFixed(4)}</td>

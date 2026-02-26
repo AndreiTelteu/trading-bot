@@ -89,21 +89,20 @@ def create_position():
 
 @api.route("/positions/<int:position_id>/close", methods=["POST"])
 def close_position(position_id):
-    data = request.json or {}
     position = Position.query.get(position_id)
     if not position:
         return jsonify({"error": "Position not found"}), 404
 
-    position.status = "closed"
-    position.closed_at = datetime.utcnow()
-    position.close_reason = data.get("reason", "manual")
+    if position.status == "closed":
+        return jsonify({"error": "Position already closed"}), 400
 
-    wallet = Wallet.query.first()
-    if wallet and position.current_price:
-        wallet.balance += position.amount * position.current_price
+    from backend.services.trading import execute_sell
 
-    db.session.commit()
-    return jsonify({"success": True})
+    result = execute_sell(position.symbol, close_position=True)
+    if result.get("error"):
+        return jsonify(result), 400
+
+    return jsonify({"success": True, "order": result.get("order")})
 
 
 @api.route("/positions/<symbol>", methods=["DELETE"])
