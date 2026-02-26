@@ -34,6 +34,12 @@ scheduler.add_job(
     seconds=30,
     id="update_positions_prices",
 )
+scheduler.add_job(
+    func=lambda: analyze_trending(),
+    trigger="interval",
+    seconds=900,
+    id="analyze_trending",
+)
 scheduler.start()
 
 
@@ -43,6 +49,14 @@ def update_positions_prices():
     with app.app_context():
         update_prices()
     socketio.emit("positions_updated")
+
+
+def analyze_trending():
+    from backend.services.trending_service import analyze_trending_coins
+
+    with app.app_context():
+        analyze_trending_coins()
+    socketio.emit("trending_updated")
 
 
 @app.route("/")
