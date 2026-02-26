@@ -80,13 +80,16 @@ def analyze_trending_coins():
     settings = get_settings()
 
     auto_trade_enabled = settings.get("auto_trade_enabled", False)
-    max_positions = settings.get("max_open_positions", 5)
+    # Use 'max_positions' (canonical key from PLAN / SettingsPanel)
+    max_positions = settings.get("max_positions", 5)
     top_n_to_analyze = settings.get("trending_coins_to_analyze", 5)
+    buy_only_strong = settings.get("buy_only_strong", True)
+    min_confidence_to_buy = float(settings.get("min_confidence_to_buy", 4.0))
 
     log_activity(
         "system",
         "Starting trending coins analysis",
-        f"Auto-trade: {auto_trade_enabled}",
+        f"Auto-trade: {auto_trade_enabled}, buy_only_strong: {buy_only_strong}, min_confidence: {min_confidence_to_buy}",
     )
 
     trending_data = get_binance_trending(
@@ -98,12 +101,16 @@ def analyze_trending_coins():
     results = []
     trades_opened = 0
 
+    # Count already open positions so we don't breach max_positions
+    current_open_count = Position.query.filter_by(status="open").count()
+
     for coin in coins_to_analyze:
         symbol = coin["symbol"]
         try:
             analysis = analyze(symbol, "15m")
 
             signal = analysis.get("final", {}).get("final_signal", "NEUTRAL")
+            rating = analysis.get("final", {}).get("final_rating", 0)
             current_price = analysis.get("current_price")
 
             result_entry = {
@@ -111,22 +118,35 @@ def analyze_trending_coins():
                 "price": current_price,
                 "change_24h": coin.get("change_24h"),
                 "signal": signal,
-                "rating": analysis.get("final", {}).get("final_rating"),
+                "rating": rating,
             }
 
             log_activity(
                 "analysis",
                 f"Analyzed {symbol}",
-                f"Signal: {signal}, Rating: {result_entry.get('rating')}",
+                f"Signal: {signal}, Rating: {rating}",
             )
+
+            # Determine whether the signal qualifies for a buy:
+            # - buy_only_strong=True  → only STRONG_BUY signals allowed
+            # - buy_only_strong=False → BUY or STRONG_BUY are both acceptable
+            # Additionally the final rating must meet min_confidence_to_buy.
+            signal_qualifies = (
+                signal == "STRONG_BUY"
+                if buy_only_strong
+                else signal in ("BUY", "STRONG_BUY")
+            )
+            confidence_qualifies = rating >= min_confidence_to_buy
 
             if (
                 auto_trade_enabled
-                and signal == "STRONG_BUY"
-                and trades_opened < max_positions
+                and signal_qualifies
+                and confidence_qualifies
+                and (current_open_count + trades_opened) < max_positions
             ):
+                clean_symbol = symbol.replace("/USDT", "")
                 existing_position = Position.query.filter_by(
-                    symbol=symbol.replace("/USDT", "")
+                    symbol=clean_symbol
                 ).first()
 
                 if not existing_position:

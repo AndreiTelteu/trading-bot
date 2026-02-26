@@ -18,7 +18,14 @@ function SettingsPanel() {
     try {
       const res = await fetch(`${API_BASE}/settings`)
       const data = await res.json()
-      setSettings(data)
+      // Normalize boolean strings to actual booleans so UI state is consistent
+      const normalized = {}
+      for (const [k, v] of Object.entries(data)) {
+        if (v === 'true') normalized[k] = true
+        else if (v === 'false') normalized[k] = false
+        else normalized[k] = v
+      }
+      setSettings(normalized)
     } catch (err) {
       console.error('Failed to fetch settings:', err)
     }
@@ -166,7 +173,7 @@ function SettingsPanel() {
               <label>{s.label}</label>
               {s.type === 'boolean' ? (
                 <select
-                  value={settings[s.key] === true || settings[s.key] === 'true' ? 'true' : 'false'}
+                  value={settings[s.key] === true ? 'true' : 'false'}
                   onChange={e => handleSettingChange(s.key, e.target.value === 'true')}
                 >
                   <option value="true">True</option>

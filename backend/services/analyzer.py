@@ -48,7 +48,7 @@ def fetch_ohlcv(symbol, timeframe, limit=200):
     return df
 
 
-def calculate_rsi(df, period=14):
+def calculate_rsi(df, period=14, oversold=30.0, overbought=70.0):
     if ta is None:
         return {
             "name": "RSI",
@@ -60,28 +60,32 @@ def calculate_rsi(df, period=14):
     rsi = df.ta.rsi(length=period)
     current_rsi = rsi.iloc[-1]
 
-    if current_rsi >= 70:
+    # Midpoints between oversold/overbought and neutral (50) for graduated signals
+    mid_buy = (oversold + 50) / 2   # e.g. 40 when oversold=30
+    mid_sell = (overbought + 50) / 2  # e.g. 60 when overbought=70
+
+    if current_rsi >= overbought:
         signal = "sell"
         rating = 5
-    elif current_rsi > 60:
+    elif current_rsi > mid_sell:
         signal = "sell"
         rating = 4
-    elif current_rsi >= 40 and current_rsi <= 60:
+    elif current_rsi >= mid_buy and current_rsi <= mid_sell:
         signal = "neutral"
         rating = 3
-    elif current_rsi < 40:
-        signal = "buy"
-        rating = 4
-    else:
+    elif current_rsi < oversold:
         signal = "buy"
         rating = 5
+    else:
+        signal = "buy"
+        rating = 4
 
     return {
         "name": "RSI",
         "value": round(current_rsi, 2),
         "signal": signal,
         "rating": rating,
-        "description": f"Period: {period}",
+        "description": f"Period: {period}, Oversold: {oversold}, Overbought: {overbought}",
     }
 
 
@@ -248,13 +252,23 @@ def calculate_final_score(indicators, weights):
         weighted_sum += score * weight
         total_weight += weight
 
-    final_rating = (weighted_sum / 5) * 5 + 3
-    final_rating = max(1, min(5, final_rating))
+    if total_weight == 0:
+        return {"final_rating": 3.0, "final_signal": "NEUTRAL", "weighted_score": 0.0}
 
-    if final_rating >= 4:
-        final_signal = "STRONG_BUY" if final_rating >= 4.5 else "BUY"
-    elif final_rating <= 2:
-        final_signal = "STRONG_SELL" if final_rating <= 1.5 else "SELL"
+    # Normalize: weighted average score ranges from -5 to +5.
+    # Map that linearly to a 1–5 rating scale (0 → 3, +5 → 5, -5 → 1).
+    avg_score = weighted_sum / total_weight
+    final_rating = avg_score + 3  # centre at 3
+    final_rating = max(1.0, min(5.0, final_rating))
+
+    if final_rating >= 4.5:
+        final_signal = "STRONG_BUY"
+    elif final_rating >= 4.0:
+        final_signal = "BUY"
+    elif final_rating <= 1.5:
+        final_signal = "STRONG_SELL"
+    elif final_rating <= 2.0:
+        final_signal = "SELL"
     else:
         final_signal = "NEUTRAL"
 
@@ -272,6 +286,8 @@ def analyze(symbol="BTC/USDT", timeframe="15m"):
     df = fetch_ohlcv(symbol, timeframe)
 
     rsi_period = settings.get("rsi_period", 14)
+    rsi_oversold = float(settings.get("rsi_oversold", 30))
+    rsi_overbought = float(settings.get("rsi_overbought", 70))
     macd_fast = settings.get("macd_fast_period", 12)
     macd_slow = settings.get("macd_slow_period", 26)
     macd_signal = settings.get("macd_signal_period", 9)
@@ -281,7 +297,7 @@ def analyze(symbol="BTC/USDT", timeframe="15m"):
     volume_period = settings.get("volume_ma_period", 20)
 
     indicators = [
-        calculate_rsi(df, rsi_period),
+        calculate_rsi(df, rsi_period, rsi_oversold, rsi_overbought),
         calculate_macd(df, macd_fast, macd_slow, macd_signal),
         calculate_bollinger(df, bb_period, bb_std),
         calculate_momentum(df, momentum_period),
