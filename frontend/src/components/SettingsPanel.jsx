@@ -21,9 +21,14 @@ function SettingsPanel() {
       // Normalize boolean strings to actual booleans so UI state is consistent
       const normalized = {}
       for (const [k, v] of Object.entries(data)) {
-        if (v === 'true') normalized[k] = true
-        else if (v === 'false') normalized[k] = false
-        else normalized[k] = v
+        if (typeof v === 'string') {
+          const lowerValue = v.toLowerCase()
+          if (lowerValue === 'true') normalized[k] = true
+          else if (lowerValue === 'false') normalized[k] = false
+          else normalized[k] = v
+        } else {
+          normalized[k] = v
+        }
       }
       setSettings(normalized)
     } catch (err) {

@@ -3,7 +3,7 @@ from flask_cors import CORS
 from flask_socketio import SocketIO
 from apscheduler.schedulers.background import BackgroundScheduler
 from backend.config import Config
-from backend.models import db
+from backend.models import db, ActivityLog
 from backend.database import init_db
 from backend.routes.api import api
 from backend.routes.settings import settings_bp
@@ -33,21 +33,42 @@ scheduler.add_job(
     trigger="interval",
     seconds=30,
     id="update_positions_prices",
+    max_instances=1,
+    coalesce=True,
+    misfire_grace_time=20,
 )
 scheduler.add_job(
     func=lambda: analyze_trending(),
     trigger="interval",
     seconds=900,
     id="analyze_trending",
+    max_instances=1,
+    coalesce=True,
+    misfire_grace_time=120,
 )
 scheduler.start()
+
+
+def log_scheduler_activity(job_name, message, log_type="cron"):
+    log = ActivityLog(log_type=log_type, message=message, details=f"job={job_name}")
+    db.session.add(log)
+    db.session.commit()
 
 
 def update_positions_prices():
     from backend.services.trading import update_positions_prices as update_prices
 
     with app.app_context():
-        update_prices()
+        try:
+            log_scheduler_activity("update_positions_prices", "Scheduler tick start")
+            update_prices()
+            log_scheduler_activity("update_positions_prices", "Scheduler tick complete")
+        except Exception as e:
+            log_scheduler_activity(
+                "update_positions_prices",
+                f"Scheduler tick failed: {str(e)}",
+                log_type="error",
+            )
     socketio.emit("positions_updated")
 
 
@@ -55,7 +76,16 @@ def analyze_trending():
     from backend.services.trending_service import analyze_trending_coins
 
     with app.app_context():
-        analyze_trending_coins()
+        try:
+            log_scheduler_activity("analyze_trending", "Scheduler tick start")
+            analyze_trending_coins()
+            log_scheduler_activity("analyze_trending", "Scheduler tick complete")
+        except Exception as e:
+            log_scheduler_activity(
+                "analyze_trending",
+                f"Scheduler tick failed: {str(e)}",
+                log_type="error",
+            )
     socketio.emit("trending_updated")
 
 
@@ -73,4 +103,4 @@ def serve_static(path):
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5001))
-    socketio.run(app, host="0.0.0.0", port=port, debug=True)
+    socketio.run(app, host="0.0.0.0", port=port, debug=True, use_reloader=False)

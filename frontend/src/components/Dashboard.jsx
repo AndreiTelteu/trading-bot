@@ -12,47 +12,28 @@ const SIGNAL_COLORS = {
 }
 
 function Dashboard({ wallet: propWallet, positions: propPositions }) {
-  const [analysis, setAnalysis] = useState(null)
   const [orders, setOrders] = useState([])
   const [recentCoins, setRecentCoins] = useState([])
   const [selectedSymbol, setSelectedSymbol] = useState(null)
-  const [loading, setLoading] = useState(false)
   const [wallet, setWallet] = useState(propWallet || { balance: 0, currency: 'USDT' })
   const [positions, setPositions] = useState(propPositions || [])
 
   useEffect(() => {
-    fetchAnalysis(selectedSymbol)
     fetchOrders()
     fetchRecentCoins()
     fetchWallet()
     fetchPositions()
     const interval = setInterval(fetchRecentCoins, 30000)
-    const analysisInterval = setInterval(() => fetchAnalysis(selectedSymbol), 30000)
     const walletInterval = setInterval(fetchWallet, 10000)
     const positionsInterval = setInterval(fetchPositions, 10000)
     const ordersInterval = setInterval(fetchOrders, 10000)
     return () => {
       clearInterval(interval)
-      clearInterval(analysisInterval)
       clearInterval(walletInterval)
       clearInterval(positionsInterval)
       clearInterval(ordersInterval)
     }
   }, [selectedSymbol])
-
-  const fetchAnalysis = async (symbol) => {
-    if (!symbol) return
-    try {
-      const res = await fetch(`${API_BASE}/analysis?symbol=${encodeURIComponent(symbol)}`)
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status}`)
-      }
-      const data = await res.json()
-      setAnalysis(data)
-    } catch (err) {
-      console.error('Failed to fetch analysis:', err)
-    }
-  }
 
   const fetchRecentCoins = async () => {
     try {
@@ -65,6 +46,8 @@ function Dashboard({ wallet: propWallet, positions: propPositions }) {
       setRecentCoins(coins)
       if (coins.length > 0 && selectedSymbol === null) {
         setSelectedSymbol(coins[0].symbol)
+      } else if (selectedSymbol && !coins.some(c => c.symbol === selectedSymbol)) {
+        setSelectedSymbol(coins[0]?.symbol || null)
       }
     } catch (err) {
       console.error('Failed to fetch recent coins:', err)
@@ -73,24 +56,6 @@ function Dashboard({ wallet: propWallet, positions: propPositions }) {
 
   const handleCoinClick = (symbol) => {
     setSelectedSymbol(symbol)
-    const cachedCoin = recentCoins.find(c => c.symbol === symbol)
-    if (cachedCoin) {
-      setAnalysis({
-        current_price: cachedCoin.price,
-        final_signal: cachedCoin.signal,
-        rating: cachedCoin.rating,
-        change_24h: cachedCoin.change_24h,
-        timestamp: new Date().toISOString(),
-        indicators: [],
-        fromCache: true
-      })
-    }
-  }
-
-  const handleRefreshAnalysis = async (symbol) => {
-    setLoading(true)
-    await fetchAnalysis(symbol)
-    setLoading(false)
   }
 
   const fetchOrders = async () => {
@@ -137,6 +102,18 @@ function Dashboard({ wallet: propWallet, positions: propPositions }) {
   }, 0)
 
   const totalPnL = positions.reduce((sum, p) => sum + (p.pnl || 0), 0)
+
+  const selectedCoin = recentCoins.find(c => c.symbol === selectedSymbol) || null
+  const analysis = selectedCoin
+    ? {
+      current_price: selectedCoin.price,
+      final_signal: selectedCoin.signal,
+      rating: selectedCoin.rating,
+      change_24h: selectedCoin.change_24h,
+      timestamp: selectedCoin.timestamp,
+      indicators: selectedCoin.indicators || []
+    }
+    : null
 
   return (
     <div className="dashboard">
@@ -226,25 +203,11 @@ function Dashboard({ wallet: propWallet, positions: propPositions }) {
         )}
       </div>
 
-      {loading ? (
-        <div className="analysis-card loading">
-          <p>Loading analysis...</p>
-        </div>
-      ) : analysis ? (
+      {analysis ? (
         <div className="analysis-card">
           <div className="analysis-header">
             <h2>Market Analysis: {selectedSymbol}</h2>
-            <button 
-              className="refresh-btn" 
-              onClick={() => handleRefreshAnalysis(selectedSymbol)}
-              disabled={loading}
-            >
-              {loading ? 'Refreshing...' : 'Refresh'}
-            </button>
           </div>
-          {analysis.fromCache && (
-            <p className="cached-notice">Showing cached data from recent coins</p>
-          )}
           <div className="analysis-content">
             <div className="analysis-main">
               <div className="analysis-price">

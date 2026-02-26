@@ -100,3 +100,17 @@ class ActivityLog(db.Model):
     message = db.Column(db.String(500), nullable=False)
     details = db.Column(db.Text)
     timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+
+
+class TrendAnalysisHistory(db.Model):
+    __tablename__ = "trend_analysis_history"
+
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    symbol = db.Column(db.String(20), nullable=False, index=True)
+    timeframe = db.Column(db.String(10), nullable=False, default="15m")
+    current_price = db.Column(db.Float)
+    change_24h = db.Column(db.Float)
+    final_signal = db.Column(db.String(20))
+    final_rating = db.Column(db.Float)
+    indicators_json = db.Column(db.Text, nullable=False)
+    analyzed_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)

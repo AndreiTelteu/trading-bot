@@ -1,5 +1,7 @@
 import ccxt
+import json
 from backend.models import db, ActivityLog, Position, Setting
+from backend.models import TrendAnalysisHistory
 from backend.services.analyzer import analyze
 from backend.services.trading import execute_buy
 from datetime import datetime, timezone
@@ -112,6 +114,8 @@ def analyze_trending_coins():
             signal = analysis.get("final", {}).get("final_signal", "NEUTRAL")
             rating = analysis.get("final", {}).get("final_rating", 0)
             current_price = analysis.get("current_price")
+            indicators = analysis.get("indicators", [])
+            timeframe = analysis.get("timeframe", "15m")
 
             result_entry = {
                 "symbol": symbol,
@@ -119,7 +123,20 @@ def analyze_trending_coins():
                 "change_24h": coin.get("change_24h"),
                 "signal": signal,
                 "rating": rating,
+                "timeframe": timeframe,
+                "indicators": indicators,
             }
+
+            history_entry = TrendAnalysisHistory(
+                symbol=symbol,
+                timeframe=timeframe,
+                current_price=current_price,
+                change_24h=coin.get("change_24h"),
+                final_signal=signal,
+                final_rating=rating,
+                indicators_json=json.dumps(indicators),
+            )
+            db.session.add(history_entry)
 
             log_activity(
                 "analysis",
@@ -201,4 +218,42 @@ def analyze_trending_coins():
 
 
 def get_recent_analyzed_coins():
-    return recent_coins_cache
+    history_rows = (
+        TrendAnalysisHistory.query.order_by(TrendAnalysisHistory.analyzed_at.desc())
+        .limit(200)
+        .all()
+    )
+
+    if not history_rows:
+        return recent_coins_cache
+
+    latest_by_symbol = {}
+    for row in history_rows:
+        if row.symbol in latest_by_symbol:
+            continue
+
+        parsed_indicators = []
+        try:
+            parsed_indicators = json.loads(row.indicators_json) if row.indicators_json else []
+        except Exception:
+            parsed_indicators = []
+
+        latest_by_symbol[row.symbol] = {
+            "symbol": row.symbol,
+            "price": row.current_price,
+            "change_24h": row.change_24h,
+            "signal": row.final_signal,
+            "rating": row.final_rating,
+            "timeframe": row.timeframe,
+            "indicators": parsed_indicators,
+            "timestamp": row.analyzed_at.isoformat() if row.analyzed_at else None,
+        }
+
+        if len(latest_by_symbol) >= 20:
+            break
+
+    coins = list(latest_by_symbol.values())
+    return {
+        "coins": coins,
+        "timestamp": coins[0].get("timestamp") if coins else None,
+    }
