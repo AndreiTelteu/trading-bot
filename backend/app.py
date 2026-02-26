@@ -27,6 +27,23 @@ init_websocket(socketio)
 with app.app_context():
     init_db(app)
 
+scheduler = BackgroundScheduler()
+scheduler.add_job(
+    func=lambda: update_positions_prices(),
+    trigger="interval",
+    seconds=30,
+    id="update_positions_prices",
+)
+scheduler.start()
+
+
+def update_positions_prices():
+    from backend.services.trading import update_positions_prices as update_prices
+
+    with app.app_context():
+        update_prices()
+    socketio.emit("positions_updated")
+
 
 @app.route("/")
 def index():
