@@ -1,0 +1,24 @@
+version: "3.8"
+
+services:
+  trading-backend:
+    build: .
+    container_name: trading-backend
+    restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.trading-backend.rule=Host(`trading.ryzen.cloud`)"
+      - "traefik.http.routers.trading-backend.entrypoints=websecure"
+      - "traefik.http.routers.trading-backend.tls=true"
+      - "traefik.http.routers.trading-backend.tls.certresolver=cloudflare"
+      - "traefik.http.services.trading-backend.loadbalancer.server.port=5001"
+    environment:
+      - FLASK_ENV=production
+    volumes:
+      - ./instance:/app/instance
+    networks:
+      - proxy
+
+networks:
+  proxy:
+    external: true
