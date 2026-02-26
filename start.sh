@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-cd frontend && npm run build && cd ..
+cd frontend && npm i && npm run build && cd ..
 
 uv pip install --system --no-cache-dir -e .
 

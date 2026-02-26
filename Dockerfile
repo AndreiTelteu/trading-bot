@@ -10,14 +10,4 @@ RUN pip install uv
 
 WORKDIR /app
 
-COPY frontend/package*.json ./frontend/
-RUN cd frontend && npm install
-
-COPY pyproject.toml ./
-RUN uv pip install --system --no-cache-dir -e .
-
-COPY . .
-
-RUN chmod +x start.sh
-
 CMD ["./start.sh"]
