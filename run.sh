@@ -1,5 +1,5 @@
 #!/bin/bash
-# Start script for Trading Bot
+set -e
 
 cd "$(dirname "$0")"
 
@@ -12,8 +12,9 @@ npm run build
 
 cd ..
 
-echo "Starting Flask server..."
-cd backend
-export FLASK_APP=app.py
-cd ..
-python -m backend.app
+echo "Building Go backend with CGO..."
+export CGO_ENABLED=1
+go build -ldflags="-s -w" -o trading-go cmd/server/main.go
+
+echo "Starting trading server..."
+./trading-go

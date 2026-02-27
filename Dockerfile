@@ -1,13 +1,13 @@
-FROM python:3.12-slim
-
-RUN apt-get update && apt-get install -y \
-    curl \
-    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
-    && apt-get install -y nodejs \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN pip install uv
+FROM node:22-alpine AS builder
 
 WORKDIR /app
 
-CMD ["./start.sh"]
+RUN apk add --no-cache gcc musl-dev go ca-certificates tzdata
+
+WORKDIR /app
+
+EXPOSE 5001
+
+ENV PORT=5001
+
+CMD ["./run.sh"]

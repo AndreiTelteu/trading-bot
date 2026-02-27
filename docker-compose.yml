@@ -1,6 +1,6 @@
 
 services:
-  trading-backend:
+  app:
     build: .
     container_name: trading-backend
     restart: unless-stopped
@@ -11,8 +11,6 @@ services:
       - "traefik.http.routers.trading-backend.tls=true"
       - "traefik.http.routers.trading-backend.tls.certresolver=cloudflare"
       - "traefik.http.services.trading-backend.loadbalancer.server.port=5001"
-    environment:
-      - FLASK_ENV=production
     volumes:
       - ./:/app
     networks:
