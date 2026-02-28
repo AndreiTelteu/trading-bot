@@ -18,16 +18,17 @@ function SettingsPanel() {
     try {
       const res = await fetch(`${API_BASE}/settings`)
       const data = await res.json()
-      // Normalize boolean strings to actual booleans so UI state is consistent
+      // API returns an array of {key, value, ...} objects — convert to a key->value map
       const normalized = {}
-      for (const [k, v] of Object.entries(data)) {
+      for (const item of data) {
+        const v = item.value
         if (typeof v === 'string') {
           const lowerValue = v.toLowerCase()
-          if (lowerValue === 'true') normalized[k] = true
-          else if (lowerValue === 'false') normalized[k] = false
-          else normalized[k] = v
+          if (lowerValue === 'true') normalized[item.key] = true
+          else if (lowerValue === 'false') normalized[item.key] = false
+          else normalized[item.key] = v
         } else {
-          normalized[k] = v
+          normalized[item.key] = v
         }
       }
       setSettings(normalized)
@@ -41,7 +42,12 @@ function SettingsPanel() {
     try {
       const res = await fetch(`${API_BASE}/indicator-weights`)
       const data = await res.json()
-      setWeights(data)
+      // API returns an array of {indicator, weight} objects — convert to indicator->weight map
+      const weightsMap = {}
+      for (const item of data) {
+        weightsMap[item.indicator] = item.weight
+      }
+      setWeights(weightsMap)
     } catch (err) {
       console.error('Failed to fetch weights:', err)
     }
@@ -58,10 +64,15 @@ function SettingsPanel() {
   const handleSaveSettings = async () => {
     setSaving(true)
     try {
+      // Backend expects an array of {key, value} objects
+      const payload = Object.entries(settings).map(([key, value]) => ({
+        key,
+        value: String(value)
+      }))
       await fetch(`${API_BASE}/settings`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(settings)
+        body: JSON.stringify(payload)
       })
       alert('Settings saved!')
     } catch (err) {
@@ -74,10 +85,15 @@ function SettingsPanel() {
   const handleSaveWeights = async () => {
     setSaving(true)
     try {
+      // Backend expects an array of {indicator, weight} objects
+      const payload = Object.entries(weights).map(([indicator, weight]) => ({
+        indicator,
+        weight: parseFloat(weight)
+      }))
       await fetch(`${API_BASE}/indicator-weights`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(weights)
+        body: JSON.stringify(payload)
       })
       alert('Weights saved!')
     } catch (err) {
