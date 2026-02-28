@@ -1,5 +1,6 @@
-import React, { useState, useEffect } from 'react'
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, AreaChart, Area } from 'recharts'
+import React, { useState, useEffect, useCallback } from 'react'
+import { XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, AreaChart, Area } from 'recharts'
+import { useWebSocketEvent } from '../hooks/useWebSocket'
 
 const API_BASE = '/api'
 
@@ -19,23 +20,17 @@ function Dashboard({ wallet: propWallet, positions: propPositions }) {
   const [wallet, setWallet] = useState(propWallet || { balance: 0, currency: 'USDT' })
   const [positions, setPositions] = useState(propPositions || [])
 
+  // Sync with props
   useEffect(() => {
-    fetchOrders()
-    fetchRecentCoins()
-    fetchWallet()
-    fetchPositions()
-    fetchSnapshots()
-    const interval = setInterval(fetchRecentCoins, 30000)
-    const walletInterval = setInterval(() => { fetchWallet(); fetchPositions(); fetchSnapshots() }, 10000)
-    const ordersInterval = setInterval(fetchOrders, 10000)
-    return () => {
-      clearInterval(interval)
-      clearInterval(walletInterval)
-      clearInterval(ordersInterval)
-    }
-  }, [selectedSymbol])
+    if (propWallet) setWallet(propWallet)
+  }, [propWallet])
 
-  const fetchRecentCoins = async () => {
+  useEffect(() => {
+    if (propPositions) setPositions(propPositions)
+  }, [propPositions])
+
+  // Define fetch functions
+  const fetchRecentCoins = useCallback(async () => {
     try {
       const res = await fetch(`${API_BASE}/trending/recent`)
       if (res.ok) {
@@ -45,9 +40,9 @@ function Dashboard({ wallet: propWallet, positions: propPositions }) {
         if (coins.length > 0 && selectedSymbol === null) setSelectedSymbol(coins[0].symbol)
       }
     } catch (err) {}
-  }
+  }, [selectedSymbol])
 
-  const fetchSnapshots = async () => {
+  const fetchSnapshots = useCallback(async () => {
     try {
       const res = await fetch(`${API_BASE}/wallet/snapshots`)
       if (res.ok) {
@@ -55,28 +50,66 @@ function Dashboard({ wallet: propWallet, positions: propPositions }) {
         setSnapshots(data)
       }
     } catch (err) {}
-  }
+  }, [])
 
-  const fetchOrders = async () => {
+  const fetchOrders = useCallback(async () => {
     try {
       const res = await fetch(`${API_BASE}/orders?limit=10`)
       if (res.ok) setOrders(await res.json())
     } catch (err) {}
-  }
+  }, [])
 
-  const fetchWallet = async () => {
-    try {
-      const res = await fetch(`${API_BASE}/wallet`)
-      if (res.ok) setWallet(await res.json())
-    } catch (err) {}
-  }
+  // Fetch initial data on mount - only once
+  useEffect(() => {
+    fetchOrders()
+    fetchRecentCoins()
+    fetchSnapshots()
+  }, [fetchOrders, fetchRecentCoins, fetchSnapshots])
 
-  const fetchPositions = async () => {
-    try {
-      const res = await fetch(`${API_BASE}/positions`)
-      if (res.ok) setPositions(await res.json())
-    } catch (err) {}
-  }
+  // Listen for WebSocket updates
+  useWebSocketEvent('wallet_update', useCallback((data) => {
+    setWallet(prev => ({
+      ...prev,
+      balance: data.balance ?? prev.balance,
+      currency: data.currency ?? prev.currency
+    }))
+  }, []))
+
+  useWebSocketEvent('positions_update', useCallback((data) => {
+    if (Array.isArray(data)) {
+      setPositions(data)
+    }
+  }, []))
+
+  useWebSocketEvent('position_update', useCallback((data) => {
+    setPositions(prev => prev.map(p => 
+      p.symbol === data.symbol 
+        ? { ...p, ...data }
+        : p
+    ))
+  }, []))
+
+  useWebSocketEvent('snapshot_update', useCallback((data) => {
+    setSnapshots(prev => {
+      // Add new snapshot and keep sorted by timestamp
+      const newSnapshots = [...prev, data]
+      return newSnapshots.slice(-50) // Keep last 50 snapshots
+    })
+  }, []))
+
+  useWebSocketEvent('trending_update', useCallback((data) => {
+    if (Array.isArray(data)) {
+      setRecentCoins(data)
+    } else if (data.coins) {
+      setRecentCoins(data.coins)
+    }
+  }, []))
+
+  useWebSocketEvent('orders_update', useCallback((data) => {
+    if (Array.isArray(data)) {
+      setOrders(data)
+    }
+  }, []))
 
   const openPositions = positions.filter(p => p.status === 'open')
   const totalPositionsValue = openPositions.reduce((sum, p) => sum + (p.current_price || 0) * p.amount, 0)
@@ -210,15 +243,15 @@ function Dashboard({ wallet: propWallet, positions: propPositions }) {
               <div className="scanner-main flex-col">
                 <div className="selected-asset">
                   <span className="asset-name">{selectedSymbol}</span>
-                  <span className="asset-price">${Date.now() % 2 === 0 ? analysis.current_price : analysis.current_price}</span>
+                  <span className="asset-price">${analysis.current_price}</span>
                 </div>
                 <div className={`signal-badge pulse signal-${analysis.final_signal?.toLowerCase()}`}>
                   {analysis.final_signal?.replace('_', ' ')}
                 </div>
                 
                 <div className="indicators-mini-grid mt-4">
-                  {analysis.indicators?.slice(0,4).map((ind, i) => (
-                    <div key={i} className="mini-indicator">
+                  {analysis.indicators?.slice(0,4).map((ind, idx) => (
+                    <div key={`${ind.name}-${idx}`} className="mini-indicator">
                       <span className="ind-name">{ind.name}</span>
                       <span className={`ind-value color-${ind.signal?.toLowerCase()}`}>{ind.value?.toString().substring(0,5)}</span>
                     </div>
@@ -228,9 +261,10 @@ function Dashboard({ wallet: propWallet, positions: propPositions }) {
               <div className="scanner-sidebar flex-col">
                 <p className="sidebar-title">Hot Assets</p>
                 <div className="coin-list">
-                  {recentCoins.slice(0, 5).map((coin, i) => (
+                  {recentCoins.slice(0, 5).map((coin, idx) => (
                     <button 
-                      key={i} 
+                      key={`${coin.symbol}-${idx}`}
+                      type="button"
                       className={`hot-coin-btn ${coin.symbol === selectedSymbol ? 'active' : ''}`}
                       onClick={() => setSelectedSymbol(coin.symbol)}
                     >

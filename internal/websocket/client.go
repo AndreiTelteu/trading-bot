@@ -91,6 +91,17 @@ func (c *Client) WritePump() {
 
 func (c *Client) handleMessage(msg *Message) {
 	switch msg.Type {
+	case "ping":
+		// Extend read deadline (keep connection alive)
+		c.Conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+		// Respond with pong
+		c.Send <- &Message{
+			Type:    "pong",
+			Payload: map[string]interface{}{"time": time.Now().Unix()},
+		}
+	case "request_full_sync":
+		// Client is requesting full data sync (on connect or reconnect)
+		c.sendFullSync()
 	case "join_room":
 		if roomName, ok := msg.Payload.(string); ok {
 			c.Hub.JoinRoom(c, roomName)
@@ -132,4 +143,10 @@ func (c *Client) handleMessage(msg *Message) {
 	default:
 		c.Hub.Broadcast <- msg
 	}
+}
+
+// sendFullSync sends all current data to the client (for initial load or reconnect)
+func (c *Client) sendFullSync() {
+	// This will be implemented to fetch and send current state
+	// The actual implementation will be in the handlers package to avoid import cycles
 }

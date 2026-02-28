@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 	"trading-go/internal/database"
+	"trading-go/internal/websocket"
 )
 
 // TrendingCoin represents a coin from the trending list
@@ -116,6 +117,9 @@ func logActivity(logType, message string, details string) {
 		log.Details = &details
 	}
 	database.DB.Create(&log)
+
+	// Broadcast via WebSocket
+	websocket.BroadcastActivityLogNew(log)
 }
 
 // FetchAllTickers fetches all 24hr tickers from Binance
@@ -627,6 +631,14 @@ func AnalyzeTrendingCoins() (*TrendingAnalysisResult, error) {
 
 	logActivity("system", "Trending analysis complete",
 		fmt.Sprintf("Analyzed %d coins, opened %d trades", len(results), tradesOpened))
+
+	// Broadcast trending updates and analysis completion
+	websocket.BroadcastTrendingUpdate(results)
+	websocket.BroadcastAnalysisComplete(
+		time.Now().UTC().Format(time.RFC3339),
+		len(results),
+		tradesOpened,
+	)
 
 	return &TrendingAnalysisResult{
 		Timestamp:    time.Now().UTC().Format(time.RFC3339),

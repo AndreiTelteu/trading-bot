@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useCallback } from 'react'
+import { useWebSocketEvent } from '../hooks/useWebSocket'
 
 const API_BASE = '/api'
 
@@ -6,18 +7,29 @@ function ActivityLog({ onRunAnalysis, isRunning }) {
   const [logs, setLogs] = useState([])
   const [filter, setFilter] = useState('all')
 
-  useEffect(() => {
-    fetchLogs()
-    const interval = setInterval(fetchLogs, 5000)
-    return () => clearInterval(interval)
-  }, [])
-
-  const fetchLogs = async () => {
+  const fetchLogs = useCallback(async () => {
     try {
       const res = await fetch(`${API_BASE}/activity-logs?limit=50`)
       if (res.ok) setLogs(await res.json())
     } catch (err) {}
-  }
+  }, [])
+
+  // Fetch initial logs on mount
+  useEffect(() => {
+    fetchLogs()
+  }, [fetchLogs])
+
+  // Listen for new activity logs via WebSocket
+  useWebSocketEvent('activity_log_new', useCallback((newLog) => {
+    setLogs(prev => [newLog, ...prev].slice(0, 50)) // Keep last 50 logs
+  }, []))
+
+  // Listen for bulk logs (initial sync or reconnect)
+  useWebSocketEvent('activity_log_bulk', useCallback((bulkLogs) => {
+    if (Array.isArray(bulkLogs)) {
+      setLogs(bulkLogs)
+    }
+  }, []))
 
   const filteredLogs = filter === 'all' 
     ? logs 
@@ -28,6 +40,7 @@ function ActivityLog({ onRunAnalysis, isRunning }) {
       <div className="activity-header flex justify-between items-center">
         <h3>Activity Log</h3>
         <button 
+          type="button"
           className={`btn-run-analysis ${isRunning ? 'running' : ''}`}
           onClick={onRunAnalysis}
           disabled={isRunning}
@@ -40,6 +53,7 @@ function ActivityLog({ onRunAnalysis, isRunning }) {
         {['all', 'trade', 'analysis', 'system'].map(f => (
           <button 
             key={f}
+            type="button"
             className={`filter-badge ${filter === f ? 'active' : ''}`} 
             onClick={() => setFilter(f)}
           >

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 	"trading-go/internal/database"
+	"trading-go/internal/websocket"
 
 	"github.com/gofiber/fiber/v2"
 )
@@ -95,6 +96,11 @@ func ExecuteBuy(req BuyRequest) (interface{}, error) {
 	}
 	database.DB.Create(&order)
 
+	// Broadcast updates via WebSocket
+	websocket.BroadcastTradeExecuted("buy", symbol, amount, price, wallet.Balance)
+	websocket.BroadcastWalletUpdate(wallet.Balance, wallet.Currency, wallet.Balance)
+	websocket.BroadcastPositionUpdate(position)
+
 	return fiber.Map{
 		"success":     true,
 		"order_id":    orderResp.OrderID,
@@ -160,6 +166,11 @@ func ExecuteSell(req SellRequest) (interface{}, error) {
 		ExecutedAt:   time.Now(),
 	}
 	database.DB.Create(&order)
+
+	// Broadcast updates via WebSocket
+	websocket.BroadcastTradeExecuted("sell", symbol, amount, price, wallet.Balance)
+	websocket.BroadcastWalletUpdate(wallet.Balance, wallet.Currency, wallet.Balance)
+	websocket.BroadcastPositionUpdate(position)
 
 	return fiber.Map{
 		"success":     true,
@@ -294,6 +305,19 @@ func UpdatePositionsPrices() (interface{}, error) {
 		Timestamp:  time.Now(),
 	}
 	database.DB.Create(&snapshot)
+
+	// Broadcast updates via WebSocket
+	websocket.BroadcastSnapshotUpdate(snapshot.Timestamp, totalSnapshotValue)
+	websocket.BroadcastPositionsUpdate(positions)
+
+	// Calculate total value including wallet for wallet_update
+	totalValue := wallet.Balance
+	for _, pos := range positions {
+		if pos.CurrentPrice != nil {
+			totalValue += pos.Amount * (*pos.CurrentPrice)
+		}
+	}
+	websocket.BroadcastWalletUpdate(wallet.Balance, wallet.Currency, totalValue)
 
 	return fiber.Map{"success": true, "updated": updatedCount}, nil
 }
