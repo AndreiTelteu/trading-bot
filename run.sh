@@ -14,7 +14,7 @@ cd ..
 
 echo "Building Go backend..."
 export CGO_ENABLED=0
-go build -ldflags="-s -w" -o trading-go cmd/server/main.go
+go build -ldflags="-s -w" -o build/trading-go cmd/server/main.go
 
 echo "Starting trading server..."
-./trading-go
+./build/trading-go
