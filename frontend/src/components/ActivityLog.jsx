@@ -15,92 +15,72 @@ function ActivityLog({ onRunAnalysis, isRunning }) {
   const fetchLogs = async () => {
     try {
       const res = await fetch(`${API_BASE}/activity-logs?limit=50`)
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status}`)
-      }
-      const data = await res.json()
-      setLogs(data)
-    } catch (err) {
-      console.error('Failed to fetch activity logs:', err)
-    }
+      if (res.ok) setLogs(await res.json())
+    } catch (err) {}
   }
 
   const filteredLogs = filter === 'all' 
     ? logs 
     : logs.filter(log => log.log_type === filter)
 
-  const getTypeColor = (type) => {
-    switch (type) {
-      case 'trade': return '#52b788'
-      case 'analysis': return '#e9c46a'
-      case 'system': return '#4cc9f0'
-      case 'cron': return '#9d4edd'
-      case 'error': return '#ff6b6b'
-      default: return '#888'
-    }
-  }
-
   return (
-    <div className="activity-log">
-      <div className="activity-header">
+    <div className="activity-log glass-panel p-0">
+      <div className="activity-header flex justify-between items-center">
         <h3>Activity Log</h3>
         <button 
-          className={`btn-run ${isRunning ? 'running' : ''}`}
+          className={`btn-run-analysis ${isRunning ? 'running' : ''}`}
           onClick={onRunAnalysis}
           disabled={isRunning}
         >
-          {isRunning ? 'Running...' : 'Run Analysis'}
+          {isRunning ? <><span className="spinner"></span> Running</> : '▶ Run Analysis'}
         </button>
       </div>
 
-      <div className="activity-filters">
-        <button 
-          className={filter === 'all' ? 'active' : ''} 
-          onClick={() => setFilter('all')}
-        >
-          All
-        </button>
-        <button 
-          className={filter === 'trade' ? 'active' : ''} 
-          onClick={() => setFilter('trade')}
-        >
-          Trades
-        </button>
-        <button 
-          className={filter === 'analysis' ? 'active' : ''} 
-          onClick={() => setFilter('analysis')}
-        >
-          Analysis
-        </button>
-        <button 
-          className={filter === 'system' ? 'active' : ''} 
-          onClick={() => setFilter('system')}
-        >
-          System
-        </button>
+      <div className="activity-filters scroll-x">
+        {['all', 'trade', 'analysis', 'system'].map(f => (
+          <button 
+            key={f}
+            className={`filter-badge ${filter === f ? 'active' : ''}`} 
+            onClick={() => setFilter(f)}
+          >
+            {f.charAt(0).toUpperCase() + f.slice(1)}
+          </button>
+        ))}
       </div>
 
-      <div className="activity-list">
+      <div className="activity-list fancy-scroll">
         {filteredLogs.length === 0 ? (
-          <p className="no-data">No activity yet</p>
+          <div className="empty-state">
+            <span className="empty-icon">📝</span>
+            <p>No activity yet</p>
+          </div>
         ) : (
           filteredLogs.map((log) => (
-            <div key={log.id} className={`activity-item ${log.log_type}`}>
-              <div className="activity-meta">
-                <span 
-                  className="activity-type" 
-                  style={{ color: getTypeColor(log.log_type) }}
-                >
-                  {log.log_type.toUpperCase()}
-                </span>
-                <span className="activity-time">
-                  {new Date(log.timestamp).toLocaleTimeString()}
-                </span>
+            <div key={log.id} className={`activity-item type-${log.log_type}`}>
+              <div className="activity-timeline">
+                <div className={`timeline-dot dot-${log.log_type}`}></div>
+                <div className="timeline-line"></div>
               </div>
-              <p className="activity-message">{log.message}</p>
-              {log.details && (
-                <p className="activity-details">{log.details}</p>
-              )}
+              <div className="activity-content">
+                <div className="activity-meta">
+                  <div className="activity-main-line">
+                    <span className={`badge-type badge-${log.log_type}`}>
+                      {log.log_type.toUpperCase()}
+                    </span>
+                    <div className="message-scroll-container">
+                      <span className="activity-message">{log.message}</span>
+                    </div>
+                  </div>
+                  <span className="activity-time">
+                    {new Date(log.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                  </span>
+                </div>
+                {log.details && (
+                  <div className="activity-details-box">
+                    <p>{log.details}</p>
+                  </div>
+                )}
+              </div>
             </div>
           ))
         )}

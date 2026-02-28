@@ -280,6 +280,21 @@ func UpdatePositionsPrices() (interface{}, error) {
 		}
 	}
 
+	// Calculate total snapshot value
+	totalSnapshotValue := wallet.Balance
+	for _, pos := range positions {
+		if pos.CurrentPrice != nil {
+			totalSnapshotValue += pos.Amount * (*pos.CurrentPrice)
+		} else {
+			totalSnapshotValue += pos.Amount * pos.AvgPrice
+		}
+	}
+	snapshot := database.PortfolioSnapshot{
+		TotalValue: totalSnapshotValue,
+		Timestamp:  time.Now(),
+	}
+	database.DB.Create(&snapshot)
+
 	return fiber.Map{"success": true, "updated": updatedCount}, nil
 }
 

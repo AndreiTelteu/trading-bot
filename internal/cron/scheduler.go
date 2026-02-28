@@ -75,7 +75,7 @@ func runGenerateProposals() error {
 
 func getProposalInterval() string {
 	var setting database.Setting
-	if err := database.DB.First(&setting, "key = ?", "ai_proposal_interval").Error; err != nil {
+	if err := database.DB.First(&setting, "key = ?", "ai_analysis_interval").Error; err != nil {
 		return "disabled"
 	}
 

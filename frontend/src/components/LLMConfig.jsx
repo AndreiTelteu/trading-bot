@@ -2,6 +2,36 @@ import React, { useState, useEffect } from 'react'
 
 const API_BASE = '/api'
 
+const CustomSelect = ({ value, onChange, options }) => {
+  const [isOpen, setIsOpen] = useState(false)
+  const selectedOption = options.find(o => o.value === value) || options[0]
+
+  return (
+    <div className="custom-select-container" onMouseLeave={() => setIsOpen(false)}>
+      <div className="custom-select-trigger" onClick={() => setIsOpen(!isOpen)}>
+        <span>{selectedOption?.label}</span>
+        <span className={`custom-select-arrow ${isOpen ? 'open' : ''}`}>▼</span>
+      </div>
+      {isOpen && (
+        <div className="custom-select-dropdown">
+          {options.map(opt => (
+            <div 
+              key={opt.value} 
+              className={`custom-select-option ${opt.value === value ? 'selected' : ''}`}
+              onClick={() => {
+                onChange(opt.value)
+                setIsOpen(false)
+              }}
+            >
+              {opt.label}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function LLMConfig() {
   const [config, setConfig] = useState({
     provider: 'openrouter',
@@ -87,14 +117,11 @@ function LLMConfig() {
       <div className="config-form">
         <div className="form-group">
           <label>Provider</label>
-          <select
+          <CustomSelect
             value={config.provider}
-            onChange={e => handleChange('provider', e.target.value)}
-          >
-            {providers.map(p => (
-              <option key={p.value} value={p.value}>{p.label}</option>
-            ))}
-          </select>
+            onChange={val => handleChange('provider', val)}
+            options={providers}
+          />
         </div>
 
         <div className="form-group">
@@ -119,14 +146,11 @@ function LLMConfig() {
 
         <div className="form-group">
           <label>Model</label>
-          <select
+          <CustomSelect
             value={config.model}
-            onChange={e => handleChange('model', e.target.value)}
-          >
-            {models.map(m => (
-              <option key={m.value} value={m.value}>{m.label}</option>
-            ))}
-          </select>
+            onChange={val => handleChange('model', val)}
+            options={models}
+          />
         </div>
 
         {message && (

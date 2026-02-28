@@ -49,131 +49,140 @@ function PositionsTable({ positions, onRefresh }) {
     }
   }
 
-  const handleDeletePosition = async (symbol) => {
-    if (!confirm(`Delete position ${symbol}?`)) return
-    
-    try {
-      await fetch(`${API_BASE}/positions/${symbol}`, {
-        method: 'DELETE'
-      })
-      onRefresh()
-    } catch (err) {
-      console.error('Failed to delete position:', err)
-    }
-  }
-
   const openPositions = positions.filter(p => p.status === 'open')
   const closedPositions = positions.filter(p => p.status === 'closed')
 
   return (
-    <div className="positions-table">
-      <h2>Positions</h2>
+    <div className="positions-container fade-in">
+      <div className="dashboard-header">
+        <h2 className="title-gradient">Positions Engine</h2>
+        <div className="total-balance-badge">
+          <span>Active Trades</span>
+          <h3>{openPositions.length}</h3>
+        </div>
+      </div>
       
-      <form className="add-position-form" onSubmit={handleAddPosition}>
-        <h3>Add Position</h3>
-        <div className="form-row">
+      <div className="glass-panel mb-4">
+        <h3 className="mb-2 uppercase text-muted tracking-wide text-sm font-bold">Add Manual Position</h3>
+        <form className="add-position-form flex gap-3" onSubmit={handleAddPosition}>
           <input
             type="text"
-            placeholder="Symbol (e.g. BTC)"
+            className="form-input flex-1"
+            placeholder="Asset Symbol (e.g. BTCUSDT)"
             value={symbol}
             onChange={e => setSymbol(e.target.value)}
           />
           <input
             type="number"
-            placeholder="Amount"
+            className="form-input flex-1"
+            placeholder="Size / Amount"
             value={amount}
             onChange={e => setAmount(e.target.value)}
             step="any"
           />
           <input
             type="number"
-            placeholder="Avg Price"
+            className="form-input flex-1"
+            placeholder="Entry Price"
             value={avgPrice}
             onChange={e => setAvgPrice(e.target.value)}
             step="any"
           />
-          <button type="submit" disabled={loading}>
-            {loading ? 'Adding...' : 'Add'}
+          <button type="submit" className="btn-primary" disabled={loading}>
+            {loading ? 'Executing...' : 'Open Position'}
           </button>
-        </div>
-      </form>
+        </form>
+      </div>
 
-      <div className="positions-section">
-        <h3>Open Positions ({openPositions.length})</h3>
+      <div className="positions-section glass-panel mb-4">
+        <h3 className="mb-3 uppercase text-muted tracking-wide text-sm font-bold">Open Positions</h3>
         {openPositions.length === 0 ? (
-          <p className="no-data">No open positions</p>
+          <div className="empty-state">
+            <span className="empty-icon text-4xl mb-2 block">📊</span>
+            <p className="no-data">No open positions. Waiting for signals...</p>
+          </div>
         ) : (
-          <table>
-            <thead>
-              <tr>
-                <th>Symbol</th>
-                <th>Amount</th>
-                <th>Avg Price</th>
-                <th>Current Price</th>
-                <th>P&L</th>
-                <th>P&L %</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {openPositions.map(p => (
-                <tr key={p.id}>
-                  <td>{p.symbol}</td>
-                  <td>{p.amount}</td>
-                  <td>${p.avg_price}</td>
-                  <td>${p.current_price}</td>
-                  <td className={p.pnl >= 0 ? 'positive' : 'negative'}>
-                    {p.pnl >= 0 ? '+' : ''}{p.pnl}
-                  </td>
-                  <td className={p.pnl_percent >= 0 ? 'positive' : 'negative'}>
-                    {p.pnl_percent >= 0 ? '+' : ''}{p.pnl_percent}%
-                  </td>
-                  <td>
-                    <button 
-                      className="btn-close"
-                      onClick={() => handleClosePosition(p.id)}
-                    >
-                      Close
-                    </button>
-                  </td>
+          <div className="table-responsive">
+            <table className="modern-table">
+              <thead>
+                <tr>
+                  <th>Asset</th>
+                  <th>Position Size</th>
+                  <th>Entry Price</th>
+                  <th>Current Price</th>
+                  <th>Unrealized P&L</th>
+                  <th>Net ROI</th>
+                  <th>Actions</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {openPositions.map(p => (
+                  <tr key={p.id} className="table-row-hover">
+                    <td className="font-bold text-lg">{p.symbol}</td>
+                    <td>{p.amount}</td>
+                    <td className="text-muted">${p.avg_price?.toFixed(4)}</td>
+                    <td>${p.current_price?.toFixed(4)}</td>
+                    <td className={p.pnl >= 0 ? 'positive-glow font-bold' : 'negative-glow font-bold'}>
+                      {p.pnl >= 0 ? '+' : ''}{p.pnl?.toFixed(2)} USDT
+                    </td>
+                    <td>
+                      <span className={`signal-badge ${p.pnl_percent >= 0 ? 'signal-strong_buy' : 'signal-strong_sell'}`} style={ {padding: '0.4rem 0.8rem', fontSize: '0.8rem'} }>
+                        {p.pnl_percent >= 0 ? '+' : ''}{(p.pnl_percent || 0).toFixed(2)}%
+                      </span>
+                    </td>
+                    <td>
+                      <button 
+                        className="btn-danger"
+                        onClick={() => handleClosePosition(p.id)}
+                      >
+                        Close Trade
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </div>
 
       {closedPositions.length > 0 && (
-        <div className="positions-section">
-          <h3>Closed Positions ({closedPositions.length})</h3>
-          <table>
-            <thead>
-              <tr>
-                <th>Symbol</th>
-                <th>Amount</th>
-                <th>Avg Price</th>
-                <th>Close Price</th>
-                <th>P&L</th>
-                <th>Reason</th>
-                <th>Closed</th>
-              </tr>
-            </thead>
-            <tbody>
-              {closedPositions.map(p => (
-                <tr key={p.id}>
-                  <td>{p.symbol}</td>
-                  <td>{p.amount}</td>
-                  <td>${p.avg_price}</td>
-                  <td>${p.current_price}</td>
-                  <td className={p.pnl >= 0 ? 'positive' : 'negative'}>
-                    {p.pnl >= 0 ? '+' : ''}{p.pnl}
-                  </td>
-                  <td>{p.close_reason}</td>
-                  <td>{p.closed_at ? new Date(p.closed_at).toLocaleDateString() : '-'}</td>
+        <div className="positions-section glass-panel">
+          <h3 className="mb-3 uppercase text-muted tracking-wide text-sm font-bold">Trade History (Closed)</h3>
+          <div className="table-responsive">
+            <table className="modern-table opacity-80">
+              <thead>
+                <tr>
+                  <th>Asset</th>
+                  <th>Size</th>
+                  <th>Entry</th>
+                  <th>Exit Price</th>
+                  <th>Realized P&L</th>
+                  <th>Trigger</th>
+                  <th>Time Closed</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {closedPositions.map(p => (
+                  <tr key={p.id}>
+                    <td className="font-bold">{p.symbol}</td>
+                    <td>{p.amount}</td>
+                    <td className="text-muted">${p.avg_price?.toFixed(4)}</td>
+                    <td>${p.current_price?.toFixed(4)}</td>
+                    <td className={p.pnl >= 0 ? 'positive font-bold' : 'negative font-bold'}>
+                      {p.pnl >= 0 ? '+' : ''}{p.pnl?.toFixed(2)} USDT
+                    </td>
+                    <td>
+                       <span className={`badge-type badge-${p.close_reason === 'take_profit' ? 'trade' : p.close_reason === 'stop_loss' ? 'error' : 'system'}`}>
+                         {p.close_reason?.toUpperCase() || 'MANUAL'}
+                       </span>
+                    </td>
+                    <td className="text-xs text-muted">{p.closed_at ? new Date(p.closed_at).toLocaleString() : '-'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
     </div>

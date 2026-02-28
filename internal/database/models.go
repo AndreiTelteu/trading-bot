@@ -91,3 +91,9 @@ type TrendAnalysisHistory struct {
 	IndicatorsJSON string    `json:"indicators_json" gorm:"type:text;not null"`
 	AnalyzedAt     time.Time `json:"analyzed_at" gorm:"index"`
 }
+
+type PortfolioSnapshot struct {
+	ID         uint      `json:"id" gorm:"primaryKey;autoIncrement"`
+	TotalValue float64   `json:"total_value"`
+	Timestamp  time.Time `json:"timestamp" gorm:"index"`
+}

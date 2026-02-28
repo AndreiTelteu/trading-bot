@@ -46,6 +46,7 @@ func AutoMigrate() error {
 		&LLMConfig{},
 		&ActivityLog{},
 		&TrendAnalysisHistory{},
+		&PortfolioSnapshot{},
 	)
 }
 

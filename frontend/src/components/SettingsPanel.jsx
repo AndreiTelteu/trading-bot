@@ -2,6 +2,36 @@ import React, { useState, useEffect } from 'react'
 
 const API_BASE = '/api'
 
+const CustomSelect = ({ value, onChange, options }) => {
+  const [isOpen, setIsOpen] = useState(false)
+  const selectedOption = options.find(o => o.value === value) || options[0]
+
+  return (
+    <div className="custom-select-container" onMouseLeave={() => setIsOpen(false)}>
+      <div className="custom-select-trigger" onClick={() => setIsOpen(!isOpen)}>
+        <span>{selectedOption?.label}</span>
+        <span className={`custom-select-arrow ${isOpen ? 'open' : ''}`}>▼</span>
+      </div>
+      {isOpen && (
+        <div className="custom-select-dropdown">
+          {options.map(opt => (
+            <div 
+              key={opt.value} 
+              className={`custom-select-option ${opt.value === value ? 'selected' : ''}`}
+              onClick={() => {
+                onChange(opt.value)
+                setIsOpen(false)
+              }}
+            >
+              {opt.label}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function SettingsPanel() {
   const [settings, setSettings] = useState({})
   const [weights, setWeights] = useState({})
@@ -112,6 +142,7 @@ function SettingsPanel() {
     { key: 'take_profit_percent', label: 'Take Profit %', type: 'number', step: 0.1 },
     { key: 'rebuy_percent', label: 'Rebuy %', type: 'number', step: 0.1 },
     { key: 'max_positions', label: 'Max Positions', type: 'number' },
+    { key: 'trending_coins_to_analyze', label: 'Trending Coins Analysis', type: 'number' },
     { key: 'buy_only_strong', label: 'Buy Only Strong', type: 'boolean' },
     { key: 'sell_on_signal', label: 'Sell On Signal', type: 'boolean' },
     { key: 'min_confidence_to_buy', label: 'Min Confidence Buy', type: 'number', step: 0.1 },
@@ -193,13 +224,14 @@ function SettingsPanel() {
             <div key={s.key} className="form-group">
               <label>{s.label}</label>
               {s.type === 'boolean' ? (
-                <select
+                <CustomSelect
                   value={settings[s.key] === true ? 'true' : 'false'}
-                  onChange={e => handleSettingChange(s.key, e.target.value === 'true')}
-                >
-                  <option value="true">True</option>
-                  <option value="false">False</option>
-                </select>
+                  onChange={val => handleSettingChange(s.key, val === 'true')}
+                  options={[
+                    { value: 'true', label: 'True' },
+                    { value: 'false', label: 'False' }
+                  ]}
+                />
               ) : (
                 <input
                   type={s.type}
@@ -215,25 +247,49 @@ function SettingsPanel() {
           </button>
         </div>
       ) : (
-        <div className="weights-form">
-          <p className="weights-info">Adjust indicator weights (0-2)</p>
-          {indicatorWeights.map(w => (
-            <div key={w.key} className="weight-group">
-              <label>{w.label}</label>
-              <input
-                type="range"
-                min="0"
-                max="2"
-                step="0.1"
-                value={weights[w.key] || 1.0}
-                onChange={e => handleWeightChange(w.key, e.target.value)}
-              />
-              <span className="weight-value">{weights[w.key] || '1'}</span>
-            </div>
-          ))}
-          <button className="btn-save" onClick={handleSaveWeights} disabled={saving}>
-            {saving ? 'Saving...' : 'Save Weights'}
-          </button>
+        <div className="weights-form fade-in">
+          <div className="weights-header">
+            <h3 className="title-gradient text-lg">AI Analyzer Weights</h3>
+            <p className="text-muted text-sm pb-4">Fine-tune the importance of each indicator (0-2 scale). Values update dynamically.</p>
+          </div>
+          <div className="weights-grid">
+            {indicatorWeights.map(w => {
+              const val = weights[w.key] ?? 1.0;
+              const percentage = (val / 2) * 100;
+              return (
+                <div key={w.key} className="weight-item glass-panel">
+                  <div className="weight-label">
+                     <label>{w.label}</label>
+                     <p className="weight-multiplier text-muted font-mono">Multiplier: {val}x</p>
+                  </div>
+                  
+                  <div className="weight-slider-wrapper">
+                    <div className="slider-track-bg">
+                       <div className="slider-fill-active" style={{ width: `${percentage}%` }}></div>
+                    </div>
+                    <input
+                      type="range"
+                      min="0"
+                      max="2"
+                      step="0.1"
+                      value={val}
+                      onChange={e => handleWeightChange(w.key, e.target.value)}
+                      className="custom-range-slider"
+                   />
+                  </div>
+                  
+                  <div className="weight-value-display bg-black font-mono">
+                    <span className="text-accent">{val.toFixed(1)}</span>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+          <div className="weights-actions">
+            <button className="btn-primary" onClick={handleSaveWeights} disabled={saving}>
+              {saving ? 'Saving...' : 'Apply Weights'}
+            </button>
+          </div>
         </div>
       )}
     </div>

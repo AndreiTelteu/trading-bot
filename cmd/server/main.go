@@ -6,7 +6,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
 	"trading-go/internal/config"
+	"trading-go/internal/cron"
 	"trading-go/internal/database"
 	"trading-go/internal/handlers"
 	"trading-go/internal/middleware"
@@ -23,6 +25,10 @@ func main() {
 	if err := database.Initialize(cfg); err != nil {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
+
+	// Start Cron Jobs
+	cron.Start()
+	defer cron.Stop()
 
 	app := fiber.New(fiber.Config{
 		AppName:      "Trading Go",
@@ -96,6 +102,7 @@ func setupRoutes(app *fiber.App, cfg *config.Config) {
 	wallet := api.Group("/wallet")
 	wallet.Get("", handlers.GetWallet)
 	wallet.Put("", handlers.UpdateWallet)
+	wallet.Get("/snapshots", handlers.GetPortfolioSnapshots)
 
 	positions := api.Group("/positions")
 	positions.Get("", handlers.GetPositions)

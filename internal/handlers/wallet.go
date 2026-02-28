@@ -51,3 +51,18 @@ func UpdateWallet(c *fiber.Ctx) error {
 
 	return c.JSON(wallet)
 }
+
+func GetPortfolioSnapshots(c *fiber.Ctx) error {
+	var snapshots []database.PortfolioSnapshot
+	// Return the most recent 100 snapshots, could be configured later
+	if err := database.DB.Order("timestamp desc").Limit(100).Find(&snapshots).Error; err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "Failed to fetch snapshots"})
+	}
+
+	// Reverse the order so chronological is ascending
+	for i, j := 0, len(snapshots)-1; i < j; i, j = i+1, j-1 {
+		snapshots[i], snapshots[j] = snapshots[j], snapshots[i]
+	}
+
+	return c.JSON(snapshots)
+}
