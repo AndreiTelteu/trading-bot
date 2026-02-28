@@ -1,8 +1,13 @@
-FROM node:22-alpine AS builder
+FROM oven/bun:alpine AS bun-source
+
+FROM golang:1-alpine
 
 WORKDIR /app
 
-RUN apk add --no-cache gcc musl-dev go ca-certificates tzdata
+RUN apk add --no-cache gcc musl-dev linux-headers ca-certificates tzdata libc6-compat libstdc++
+
+COPY --from=bun-source /usr/local/bin/bun /usr/local/bin/bun
+RUN ln -s /usr/local/bin/bun /usr/local/bin/bunx
 
 WORKDIR /app
 
