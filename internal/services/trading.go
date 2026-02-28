@@ -54,7 +54,7 @@ func ExecuteBuy(req BuyRequest) (interface{}, error) {
 		if err != nil {
 			return nil, fiber.NewError(500, "Failed to fetch price")
 		}
-		p, _ := strconv.ParseFloat(ticker.Price, 64)
+		p, _ := strconv.ParseFloat(ticker.LastPrice, 64)
 		price = p
 	}
 
@@ -120,7 +120,7 @@ func ExecuteSell(req SellRequest) (interface{}, error) {
 		if err != nil {
 			return nil, fiber.NewError(500, "Failed to fetch price")
 		}
-		p, _ := strconv.ParseFloat(ticker.Price, 64)
+		p, _ := strconv.ParseFloat(ticker.LastPrice, 64)
 		price = p
 	}
 
@@ -190,7 +190,7 @@ func UpdatePositionsPrices() (interface{}, error) {
 	updatedCount := 0
 	for i := range positions {
 		if ticker, ok := tickers[positions[i].Symbol]; ok {
-			currentPrice, _ := strconv.ParseFloat(ticker.Price, 64)
+			currentPrice, _ := strconv.ParseFloat(ticker.LastPrice, 64)
 			positions[i].CurrentPrice = &currentPrice
 
 			pnl := (currentPrice - positions[i].AvgPrice) * positions[i].Amount

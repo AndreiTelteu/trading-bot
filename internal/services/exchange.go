@@ -7,9 +7,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -22,7 +24,7 @@ type ExchangeService struct {
 
 type TickerPrice struct {
 	Symbol             string `json:"symbol"`
-	Price              string `json:"price"`
+	LastPrice          string `json:"lastPrice"`
 	PriceChange        string `json:"priceChange"`
 	PriceChangePercent string `json:"priceChangePercent"`
 	HighPrice          string `json:"highPrice"`
@@ -91,6 +93,10 @@ func (s *ExchangeService) sign(queryString string) string {
 func (s *ExchangeService) makeRequest(method, endpoint string, params map[string]string) ([]byte, error) {
 	baseURL := s.BaseURL + endpoint
 
+	isPublicEndpoint := strings.Contains(endpoint, "/api/v3/ticker/") || 
+                        strings.Contains(endpoint, "/api/v3/klines") || 
+                        strings.Contains(endpoint, "/api/v3/exchangeInfo")
+
 	if method == "GET" && len(params) > 0 {
 		queryString := ""
 		for key, value := range params {
@@ -99,11 +105,13 @@ func (s *ExchangeService) makeRequest(method, endpoint string, params map[string
 			}
 			queryString += key + "=" + url.QueryEscape(value)
 		}
-		baseURL += "?" + queryString
 
-		if s.APIKey != "" && s.APISecret != "" {
+		// Only add signature if we have both API key and secret and it's NOT a public endpoint
+		if !isPublicEndpoint && s.APIKey != "" && s.APISecret != "" {
 			signature := s.sign(queryString)
-			baseURL += "&signature=" + signature
+			baseURL += "?" + queryString + "&signature=" + signature
+		} else {
+			baseURL += "?" + queryString
 		}
 	}
 
@@ -113,7 +121,9 @@ func (s *ExchangeService) makeRequest(method, endpoint string, params map[string
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	if s.APIKey != "" {
+	
+	// Only add API key header if it's NOT a public endpoint
+	if !isPublicEndpoint && s.APIKey != "" {
 		req.Header.Set("X-MBX-APIKEY", s.APIKey)
 	}
 
@@ -124,12 +134,12 @@ func (s *ExchangeService) makeRequest(method, endpoint string, params map[string
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("API request failed with status: %d", resp.StatusCode)
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("API request failed with status: %d, response: %s", resp.StatusCode, string(body))
 	}
 
-	body := make([]byte, resp.ContentLength+100)
-	n, _ := resp.Body.Read(body)
-	return body[:n], nil
+	body, _ := io.ReadAll(resp.Body)
+	return body, nil
 }
 
 func (s *ExchangeService) FetchTickerPrice(symbol string) (*TickerPrice, error) {
@@ -303,14 +313,64 @@ func (s *ExchangeService) FetchOHLCV(symbol, interval string, limit int) ([]OHLC
 
 	result := make([]OHLCV, len(klines))
 	for i, kline := range klines {
+		// Parse fields safely from Binance response (can be string or float64)
+		var open, high, low, close, volume float64
+		var openTime, closeTime int64
+
+		if v, ok := kline[0].(float64); ok {
+			openTime = int64(v)
+		} else if v, ok := kline[0].(string); ok {
+			if f, err := strconv.ParseFloat(v, 64); err == nil {
+				openTime = int64(f)
+			}
+		}
+
+		if v, ok := kline[1].(float64); ok {
+			open = v
+		} else if v, ok := kline[1].(string); ok {
+			open, _ = strconv.ParseFloat(v, 64)
+		}
+
+		if v, ok := kline[2].(float64); ok {
+			high = v
+		} else if v, ok := kline[2].(string); ok {
+			high, _ = strconv.ParseFloat(v, 64)
+		}
+
+		if v, ok := kline[3].(float64); ok {
+			low = v
+		} else if v, ok := kline[3].(string); ok {
+			low, _ = strconv.ParseFloat(v, 64)
+		}
+
+		if v, ok := kline[4].(float64); ok {
+			close = v
+		} else if v, ok := kline[4].(string); ok {
+			close, _ = strconv.ParseFloat(v, 64)
+		}
+
+		if v, ok := kline[5].(float64); ok {
+			volume = v
+		} else if v, ok := kline[5].(string); ok {
+			volume, _ = strconv.ParseFloat(v, 64)
+		}
+
+		if v, ok := kline[6].(float64); ok {
+			closeTime = int64(v)
+		} else if v, ok := kline[6].(string); ok {
+			if f, err := strconv.ParseFloat(v, 64); err == nil {
+				closeTime = int64(f)
+			}
+		}
+
 		result[i] = OHLCV{
-			OpenTime:  int64(kline[0].(float64)),
-			Open:      kline[1].(float64),
-			High:      kline[2].(float64),
-			Low:       kline[3].(float64),
-			Close:     kline[4].(float64),
-			Volume:    kline[5].(float64),
-			CloseTime: int64(kline[6].(float64)),
+			OpenTime:  openTime,
+			Open:      open,
+			High:      high,
+			Low:       low,
+			Close:     close,
+			Volume:    volume,
+			CloseTime: closeTime,
 		}
 	}
 
