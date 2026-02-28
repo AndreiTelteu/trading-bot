@@ -4,7 +4,7 @@ import (
 	"log"
 	"trading-go/internal/config"
 
-	"gorm.io/driver/sqlite"
+	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )

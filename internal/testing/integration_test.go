@@ -13,8 +13,8 @@ import (
 	"trading-go/internal/handlers"
 	"trading-go/internal/services"
 
+	"github.com/glebarez/sqlite"
 	"github.com/gofiber/fiber/v2"
-	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
 

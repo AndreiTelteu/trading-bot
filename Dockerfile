@@ -4,7 +4,7 @@ FROM golang:1-alpine
 
 WORKDIR /app
 
-RUN apk add --no-cache gcc musl-dev linux-headers ca-certificates tzdata libc6-compat libstdc++
+RUN apk add --no-cache ca-certificates tzdata
 
 COPY --from=bun-source /usr/local/bin/bun /usr/local/bin/bun
 RUN ln -s /usr/local/bin/bun /usr/local/bin/bunx
