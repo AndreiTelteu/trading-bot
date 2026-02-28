@@ -10,8 +10,9 @@ import (
 	"trading-go/internal/handlers"
 	"trading-go/internal/middleware"
 	"trading-go/internal/services"
-	"trading-go/internal/websocket"
+	ws "trading-go/internal/websocket"
 
+	"github.com/gofiber/contrib/websocket"
 	"github.com/gofiber/fiber/v2"
 )
 
@@ -46,15 +47,23 @@ func main() {
 }
 
 func setupRoutes(app *fiber.App, cfg *config.Config) {
-	hub := websocket.NewHub()
+	hub := ws.NewHub()
 	handlers.InitWebSocket(hub)
+
+	app.Use("/ws", func(c *fiber.Ctx) error {
+		if websocket.IsWebSocketUpgrade(c) {
+			c.Locals("allowed", true)
+			return c.Next()
+		}
+		return fiber.ErrUpgradeRequired
+	})
 
 	// Initialize trading service
 	services.InitTradingService(cfg.BinanceAPIKey, cfg.BinanceSecret)
 
-	app.Get("/ws", func(c *fiber.Ctx) error {
-		return handlers.HandleWebSocket(c)
-	})
+	app.Get("/ws", websocket.New(func(c *websocket.Conn) {
+		handlers.HandleWebSocketConn(c, hub)
+	}))
 
 	api := app.Group("/api")
 

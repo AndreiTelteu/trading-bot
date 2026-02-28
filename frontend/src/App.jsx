@@ -5,7 +5,6 @@ import SettingsPanel from './components/SettingsPanel'
 import AIProposal from './components/AIProposal'
 import LLMConfig from './components/LLMConfig'
 import ActivityLog from './components/ActivityLog'
-import { io } from 'socket.io-client'
 
 const API_BASE = '/api'
 
@@ -22,20 +21,30 @@ function App() {
     fetchWallet()
     fetchPositions()
     
-    const newSocket = io()
-    newSocket.on('connect', () => {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+    const wsUrl = `${protocol}//${window.location.host}/ws`
+    const newSocket = new WebSocket(wsUrl)
+    
+    newSocket.onopen = () => {
       setConnected(true)
-      newSocket.emit('join', { room: 'main' })
-    })
-    newSocket.on('disconnect', () => setConnected(false))
-    newSocket.on('balance_update', (data) => {
-      setWallet(prev => ({ ...prev, balance: data.balance || data.new_balance }))
-    })
-    newSocket.on('position_update', (data) => {
-      setPositions(prev => prev.map(p => 
-        p.symbol === data.symbol ? { ...p, current_price: data.price, pnl: data.pnl } : p
-      ))
-    })
+      newSocket.send(JSON.stringify({ type: 'join', room: 'main' }))
+    }
+    newSocket.onclose = () => setConnected(false)
+    newSocket.onerror = () => setConnected(false)
+    newSocket.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data)
+        if (data.type === 'balance_update') {
+          setWallet(prev => ({ ...prev, balance: data.payload?.balance || data.new_balance }))
+        } else if (data.type === 'position_update') {
+          setPositions(prev => prev.map(p => 
+            p.symbol === data.payload?.symbol ? { ...p, current_price: data.payload?.price, pnl: data.payload?.pnl } : p
+          ))
+        }
+      } catch (e) {
+        console.error('WS message parse error:', e)
+      }
+    }
     setSocket(newSocket)
     
     return () => newSocket.close()
