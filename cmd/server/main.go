@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"trading-go/internal/config"
 	"trading-go/internal/database"
 	"trading-go/internal/handlers"
@@ -31,15 +32,25 @@ func main() {
 	middleware.SetupCORS(app)
 	middleware.SetupLogger(app)
 
+	// Setup API routes FIRST - before static files
+	setupRoutes(app, cfg)
+
+	// Then setup static files (fallback for non-API routes)
 	frontendPath := filepath.Join(".", "frontend", "dist")
 	if _, err := os.Stat(frontendPath); err == nil {
 		app.Static("/", frontendPath)
-		app.Get("*", func(c *fiber.Ctx) error {
-			return c.SendFile(filepath.Join(frontendPath, "index.html"))
+		// SPA fallback - serve index.html for non-API routes
+		app.Use(func(c *fiber.Ctx) error {
+			// Only serve index.html for GET requests that didn't match any route
+			if c.Method() == "GET" {
+				path := c.Route().Path
+				if path == "" || (!strings.HasPrefix(path, "/api") && !strings.HasPrefix(path, "/ws") && !strings.HasPrefix(path, "/assets")) {
+					return c.SendFile(filepath.Join(frontendPath, "index.html"))
+				}
+			}
+			return c.Next()
 		})
 	}
-
-	setupRoutes(app, cfg)
 
 	addr := fmt.Sprintf(":%s", cfg.ServerPort)
 	log.Printf("Server starting on %s", addr)
