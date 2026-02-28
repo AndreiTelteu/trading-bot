@@ -30,18 +30,15 @@ func main() {
 	middleware.SetupCORS(app)
 	middleware.SetupLogger(app)
 
-	frontendPath := filepath.Join("..", "frontend", "dist")
+	frontendPath := filepath.Join(".", "frontend", "dist")
 	if _, err := os.Stat(frontendPath); err == nil {
 		app.Static("/", frontendPath)
-	}
-
-	setupRoutes(app, cfg)
-
-	if _, err := os.Stat(frontendPath); err == nil {
-		app.Use(func(c *fiber.Ctx) error {
+		app.Get("*", func(c *fiber.Ctx) error {
 			return c.SendFile(filepath.Join(frontendPath, "index.html"))
 		})
 	}
+
+	setupRoutes(app, cfg)
 
 	addr := fmt.Sprintf(":%s", cfg.ServerPort)
 	log.Printf("Server starting on %s", addr)
