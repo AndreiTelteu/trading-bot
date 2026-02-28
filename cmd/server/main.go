@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"trading-go/internal/config"
-	"trading-go/internal/cron"
 	"trading-go/internal/database"
 	"trading-go/internal/handlers"
 	"trading-go/internal/middleware"
@@ -31,14 +30,14 @@ func main() {
 	middleware.SetupCORS(app)
 	middleware.SetupLogger(app)
 
-	// Start cron scheduler
-	cron.Start()
-
-	setupRoutes(app, cfg)
-
 	frontendPath := filepath.Join("..", "frontend", "dist")
 	if _, err := os.Stat(frontendPath); err == nil {
 		app.Static("/", frontendPath)
+	}
+
+	setupRoutes(app, cfg)
+
+	if _, err := os.Stat(frontendPath); err == nil {
 		app.Use(func(c *fiber.Ctx) error {
 			return c.SendFile(filepath.Join(frontendPath, "index.html"))
 		})
