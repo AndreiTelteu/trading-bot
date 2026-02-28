@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"trading-go/internal/database"
+	ws "trading-go/internal/websocket"
 
 	"github.com/gofiber/fiber/v2"
 )
@@ -39,6 +40,13 @@ func UpdateWallet(c *fiber.Ctx) error {
 
 	if err := database.DB.Save(&wallet).Error; err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "Failed to update wallet"})
+	}
+
+	if wsHub != nil {
+		wsHub.BroadcastMsg(&ws.Message{
+			Type:    "balance_update",
+			Payload: wallet,
+		})
 	}
 
 	return c.JSON(wallet)

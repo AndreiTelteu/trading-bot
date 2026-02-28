@@ -3,6 +3,7 @@ package handlers
 import (
 	"time"
 	"trading-go/internal/database"
+	ws "trading-go/internal/websocket"
 
 	"github.com/gofiber/fiber/v2"
 )
@@ -53,6 +54,13 @@ func CreatePosition(c *fiber.Ctx) error {
 		return c.Status(500).JSON(fiber.Map{"error": "Failed to create position"})
 	}
 
+	if wsHub != nil {
+		wsHub.BroadcastMsg(&ws.Message{
+			Type:    "position_update",
+			Payload: position,
+		})
+	}
+
 	return c.Status(201).JSON(position)
 }
 
@@ -84,6 +92,13 @@ func ClosePosition(c *fiber.Ctx) error {
 		return c.Status(500).JSON(fiber.Map{"error": "Failed to close position"})
 	}
 
+	if wsHub != nil {
+		wsHub.BroadcastMsg(&ws.Message{
+			Type:    "position_update",
+			Payload: position,
+		})
+	}
+
 	return c.JSON(position)
 }
 
@@ -97,6 +112,13 @@ func DeletePosition(c *fiber.Ctx) error {
 
 	if err := database.DB.Delete(&position).Error; err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "Failed to delete position"})
+	}
+
+	if wsHub != nil {
+		wsHub.BroadcastMsg(&ws.Message{
+			Type:    "position_deleted",
+			Payload: symbol,
+		})
 	}
 
 	return c.JSON(fiber.Map{"message": "Position deleted successfully"})

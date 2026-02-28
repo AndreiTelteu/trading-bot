@@ -13,6 +13,10 @@ func InitWebSocket(hub *ws.Hub) {
 	go wsHub.Run()
 }
 
+func GetWSHub() *ws.Hub {
+	return wsHub
+}
+
 func HandleWebSocketConn(c *websocket.Conn, hub *ws.Hub) {
 	client := ws.NewClient(hub, c)
 	hub.Register <- client
