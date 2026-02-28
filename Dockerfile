@@ -10,4 +10,5 @@ EXPOSE 5001
 
 ENV PORT=5001
 
+ENTRYPOINT ["sh"]
 CMD ["./run.sh"]

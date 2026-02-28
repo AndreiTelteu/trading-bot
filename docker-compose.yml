@@ -7,9 +7,9 @@ services:
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.trading-backend.rule=Host(`trading.ryzen.cloud`)"
-      - "traefik.http.routers.trading-backend.entrypoints=websecure"
+      - "traefik.http.routers.trading-backend.entrypoints=websecure,web"
       - "traefik.http.routers.trading-backend.tls=true"
-      - "traefik.http.routers.trading-backend.tls.certresolver=cloudflare"
+      - "traefik.http.routers.trading-backend.tls.certresolver=letsencrypt"
       - "traefik.http.services.trading-backend.loadbalancer.server.port=5001"
     volumes:
       - ./:/app
