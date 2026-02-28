@@ -119,14 +119,14 @@ function PositionsTable({ positions, onRefresh }) {
               {openPositions.map(p => (
                 <tr key={p.id}>
                   <td>{p.symbol}</td>
-                  <td>{p.amount.toFixed(6)}</td>
-                  <td>${p.avg_price?.toFixed(2)}</td>
-                  <td>${p.current_price?.toFixed(2)}</td>
+                  <td>{p.amount}</td>
+                  <td>${p.avg_price}</td>
+                  <td>${p.current_price}</td>
                   <td className={p.pnl >= 0 ? 'positive' : 'negative'}>
-                    {p.pnl >= 0 ? '+' : ''}{p.pnl?.toFixed(2)}
+                    {p.pnl >= 0 ? '+' : ''}{p.pnl}
                   </td>
                   <td className={p.pnl_percent >= 0 ? 'positive' : 'negative'}>
-                    {p.pnl_percent >= 0 ? '+' : ''}{p.pnl_percent?.toFixed(2)}%
+                    {p.pnl_percent >= 0 ? '+' : ''}{p.pnl_percent}%
                   </td>
                   <td>
                     <button 
@@ -162,11 +162,11 @@ function PositionsTable({ positions, onRefresh }) {
               {closedPositions.map(p => (
                 <tr key={p.id}>
                   <td>{p.symbol}</td>
-                  <td>{p.amount.toFixed(6)}</td>
-                  <td>${p.avg_price?.toFixed(2)}</td>
-                  <td>${p.current_price?.toFixed(2)}</td>
+                  <td>{p.amount}</td>
+                  <td>${p.avg_price}</td>
+                  <td>${p.current_price}</td>
                   <td className={p.pnl >= 0 ? 'positive' : 'negative'}>
-                    {p.pnl >= 0 ? '+' : ''}{p.pnl?.toFixed(2)}
+                    {p.pnl >= 0 ? '+' : ''}{p.pnl}
                   </td>
                   <td>{p.close_reason}</td>
                   <td>{p.closed_at ? new Date(p.closed_at).toLocaleDateString() : '-'}</td>

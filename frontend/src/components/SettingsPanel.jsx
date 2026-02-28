@@ -228,7 +228,7 @@ function SettingsPanel() {
                 value={weights[w.key] || 1.0}
                 onChange={e => handleWeightChange(w.key, e.target.value)}
               />
-              <span className="weight-value">{weights[w.key]?.toFixed(1) || '1.0'}</span>
+              <span className="weight-value">{weights[w.key] || '1'}</span>
             </div>
           ))}
           <button className="btn-save" onClick={handleSaveWeights} disabled={saving}>

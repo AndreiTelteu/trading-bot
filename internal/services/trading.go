@@ -1,7 +1,9 @@
 package services
 
 import (
+	"fmt"
 	"strconv"
+	"strings"
 	"time"
 	"trading-go/internal/database"
 
@@ -168,6 +170,15 @@ func ExecuteSell(req SellRequest) (interface{}, error) {
 }
 
 func UpdatePositionsPrices() (interface{}, error) {
+	settings := GetAllSettings()
+	stopLossPercent := getSettingFloat(settings, "stop_loss_percent", 5.0)
+	takeProfitPercent := getSettingFloat(settings, "take_profit_percent", 30.0)
+	trailingStopEnabled := getSettingBool(settings, "trailing_stop_enabled", false)
+	trailingStopPercent := getSettingFloat(settings, "trailing_stop_percent", 10.0)
+	allowSellAtLoss := getSettingBool(settings, "allow_sell_at_loss", false)
+	sellOnSignal := getSettingBool(settings, "sell_on_signal", true)
+	minConfidenceToSell := getSettingFloat(settings, "min_confidence_to_sell", 3.5)
+
 	var positions []database.Position
 	if err := database.DB.Where("status = ?", "open").Find(&positions).Error; err != nil {
 		return nil, fiber.NewError(500, "Failed to fetch positions")
@@ -177,27 +188,92 @@ func UpdatePositionsPrices() (interface{}, error) {
 		return fiber.Map{"success": true, "updated": 0}, nil
 	}
 
+	var wallet database.Wallet
+	database.DB.First(&wallet)
+
 	symbols := make([]string, len(positions))
 	for i, pos := range positions {
-		symbols[i] = pos.Symbol
+		symbol := pos.Symbol
+		if !strings.HasSuffix(symbol, "USDT") {
+			symbol += "USDT"
+		}
+		symbols[i] = symbol
 	}
 
-	tickers, err := exchange.FetchMultipleTickerPrices(symbols)
+	tickers, err := GetExchange().FetchMultipleTickerPrices(symbols)
 	if err != nil {
 		return nil, fiber.NewError(500, "Failed to fetch prices")
 	}
 
 	updatedCount := 0
 	for i := range positions {
-		if ticker, ok := tickers[positions[i].Symbol]; ok {
+		tickerKey := positions[i].Symbol
+		if !strings.HasSuffix(tickerKey, "USDT") {
+			tickerKey += "USDT"
+		}
+
+		if ticker, ok := tickers[tickerKey]; ok {
 			currentPrice, _ := strconv.ParseFloat(ticker.LastPrice, 64)
 			positions[i].CurrentPrice = &currentPrice
 
 			pnl := (currentPrice - positions[i].AvgPrice) * positions[i].Amount
-			pnlPercent := ((currentPrice - positions[i].AvgPrice) / positions[i].AvgPrice) * 100
+			pnlPercent := 0.0
+			if positions[i].AvgPrice > 0 {
+				pnlPercent = ((currentPrice - positions[i].AvgPrice) / positions[i].AvgPrice) * 100
+			}
 
 			positions[i].Pnl = pnl
 			positions[i].PnlPercent = pnlPercent
+
+			// Update trailing peak
+			if trailingStopEnabled {
+				if positions[i].EntryPrice == nil {
+					positions[i].EntryPrice = &positions[i].AvgPrice
+				}
+				if currentPrice > *positions[i].EntryPrice {
+					*positions[i].EntryPrice = currentPrice
+				}
+			}
+
+			closeReason := ""
+
+			if pnlPercent <= -stopLossPercent {
+				closeReason = "stop_loss"
+			} else if pnlPercent >= takeProfitPercent {
+				closeReason = "take_profit"
+			} else if trailingStopEnabled && positions[i].EntryPrice != nil {
+				dropFromHigh := ((currentPrice - *positions[i].EntryPrice) / *positions[i].EntryPrice) * 100
+				if dropFromHigh <= -trailingStopPercent {
+					closeReason = "trailing_stop"
+				}
+			}
+
+			if closeReason == "" && sellOnSignal {
+				analysis, aimErr := analyzeSymbolForTrending(tickerKey, "15m")
+				if aimErr == nil {
+					if analysis.Signal == "SELL" || analysis.Signal == "STRONG_SELL" {
+						if analysis.Rating <= minConfidenceToSell {
+							closeReason = "sell_signal"
+						}
+					}
+				}
+			}
+
+			if closeReason != "" {
+				if closeReason == "stop_loss" && !allowSellAtLoss {
+					// Skip loss
+				} else {
+					positions[i].Status = "closed"
+					now := time.Now()
+					positions[i].ClosedAt = &now
+					positions[i].CloseReason = &closeReason
+
+					wallet.Balance += positions[i].Amount * currentPrice
+					database.DB.Save(&wallet)
+
+					logActivity("trade", fmt.Sprintf("Auto-closed %s", positions[i].Symbol), fmt.Sprintf("Reason: %s, PnL: %.2f%%", closeReason, pnlPercent))
+				}
+			}
 
 			database.DB.Save(&positions[i])
 			updatedCount++

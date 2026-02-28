@@ -130,7 +130,7 @@ func setupRoutes(app *fiber.App, cfg *config.Config) {
 	trending := api.Group("/trending")
 	trending.Get("", handlers.GetAnalysisDefault)
 	trending.Get("/recent", handlers.GetTrendingRecent)
-	trending.Post("/analyze", handlers.AnalyzeSymbol)
+	trending.Post("/analyze", handlers.AnalyzeTrending)
 
 	// Activity logs endpoints
 	activity := api.Group("/activity-logs")

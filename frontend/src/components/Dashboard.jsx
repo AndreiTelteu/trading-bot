@@ -122,23 +122,23 @@ function Dashboard({ wallet: propWallet, positions: propPositions }) {
       <div className="stats-grid">
         <div className="stat-card">
           <h3>Balance</h3>
-          <p className="stat-value">${wallet.balance?.toFixed(2)}</p>
+          <p className="stat-value">${wallet.balance}</p>
           <p className="stat-label">{wallet.currency}</p>
         </div>
         <div className="stat-card">
           <h3>Positions Value</h3>
-          <p className="stat-value">${totalPositionsValue.toFixed(2)}</p>
+          <p className="stat-value">${totalPositionsValue}</p>
           <p className="stat-label">USDT</p>
         </div>
         <div className="stat-card">
           <h3>Total Value</h3>
-          <p className="stat-value">${(wallet.balance + totalPositionsValue).toFixed(2)}</p>
+          <p className="stat-value">${(wallet.balance + totalPositionsValue)}</p>
           <p className="stat-label">USDT</p>
         </div>
         <div className="stat-card">
           <h3>Total P&L</h3>
           <p className={`stat-value ${totalPnL >= 0 ? 'positive' : 'negative'}`}>
-            {totalPnL >= 0 ? '+' : ''}{totalPnL.toFixed(2)} USDT
+            {totalPnL >= 0 ? '+' : ''}{totalPnL} USDT
           </p>
         </div>
       </div>
@@ -162,11 +162,11 @@ function Dashboard({ wallet: propWallet, positions: propPositions }) {
               {openPositions.slice(0, 5).map(p => (
                 <tr key={p.id}>
                   <td>{p.symbol}</td>
-                  <td>{p.amount.toFixed(4)}</td>
-                  <td>${p.avg_price?.toFixed(2)}</td>
-                  <td>${p.current_price?.toFixed(2)}</td>
+                  <td>{p.amount}</td>
+                  <td>${p.avg_price}</td>
+                  <td>${p.current_price}</td>
                   <td className={p.pnl >= 0 ? 'positive' : 'negative'}>
-                    {p.pnl >= 0 ? '+' : ''}{p.pnl?.toFixed(2)} ({p.pnl_percent?.toFixed(1)}%)
+                    {p.pnl >= 0 ? '+' : ''}{p.pnl} ({p.pnl_percent}%)
                   </td>
                 </tr>
               ))}
@@ -195,8 +195,8 @@ function Dashboard({ wallet: propWallet, positions: propPositions }) {
                 <tr key={o.id}>
                   <td className={o.order_type}>{o.order_type.toUpperCase()}</td>
                   <td>{o.symbol}</td>
-                  <td>{o.amount_crypto.toFixed(4)}</td>
-                  <td>${o.price?.toFixed(2)}</td>
+                  <td>{o.amount_crypto}</td>
+                  <td>${o.price}</td>
                   <td>{new Date(o.executed_at).toLocaleString()}</td>
                 </tr>
               ))}
@@ -213,7 +213,7 @@ function Dashboard({ wallet: propWallet, positions: propPositions }) {
           <div className="analysis-content">
             <div className="analysis-main">
               <div className="analysis-price">
-                <span className="price">${analysis.current_price?.toFixed(2)}</span>
+                <span className="price">${analysis.current_price}</span>
                 <span className={`signal ${analysis.final_signal?.toLowerCase()}`}>
                   {analysis.final_signal}
                 </span>

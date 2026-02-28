@@ -1,7 +1,6 @@
 package cron
 
 import (
-	"encoding/json"
 	"log"
 	"strconv"
 	"strings"
@@ -13,7 +12,7 @@ import (
 )
 
 var (
-	scheduler    *cron.Cron
+	scheduler     *cron.Cron
 	priceJobID    cron.EntryID
 	trendingJobID cron.EntryID
 	proposalJobID cron.EntryID
@@ -22,8 +21,8 @@ var (
 func Start() {
 	scheduler = cron.New()
 
-	// Price update every 30 seconds
-	scheduler.AddFunc("@every 30s", func() {
+	// Price update every 1 minute
+	scheduler.AddFunc("@every 1m", func() {
 		if err := runPriceUpdate(); err != nil {
 			log.Printf("Price update job failed: %v", err)
 		}
@@ -35,16 +34,6 @@ func Start() {
 			log.Printf("Trending analysis job failed: %v", err)
 		}
 	})
-
-	// AI proposals - configurable, default disabled
-	proposalInterval := getProposalInterval()
-	if proposalInterval != "" && proposalInterval != "disabled" {
-		scheduler.AddFunc(proposalInterval, func() {
-			if err := runGenerateProposals(); err != nil {
-				log.Printf("AI proposal generation job failed: %v", err)
-			}
-		})
-	}
 
 	scheduler.Start()
 	log.Println("Cron scheduler started")
@@ -67,56 +56,11 @@ func runPriceUpdate() error {
 }
 
 func runTrendingAnalysis() error {
-	symbols := getTrendingSymbols()
-	if len(symbols) == 0 {
-		symbols = []string{"BTCUSDT", "ETHUSDT", "BNBUSDT"}
+	result, err := services.AnalyzeTrendingCoins()
+	if err != nil {
+		return err
 	}
-
-	exchange := services.GetExchange()
-	for _, symbol := range symbols {
-		ohlcv, err := exchange.FetchOHLCV(symbol, "15m", 100)
-		if err != nil {
-			log.Printf("Failed to fetch candles for %s: %v", symbol, err)
-			continue
-		}
-
-		if len(ohlcv) == 0 {
-			continue
-		}
-
-		// Convert OHLCV to Candle
-		candles := make([]services.Candle, len(ohlcv))
-		for i, o := range ohlcv {
-			candles[i] = services.Candle{
-				Close:  o.Close,
-				High:   o.High,
-				Low:    o.Low,
-				Volume: o.Volume,
-			}
-		}
-
-		currentPrice := candles[len(candles)-1].Close
-
-		analysis := services.AnalyzeSymbol(candles, symbol, currentPrice)
-
-		change24h := calculateChange24h(ohlcv)
-
-		indicatorsJSON, _ := json.Marshal(analysis.Indicators)
-
-		rating := analysis.Rating
-
-		history := database.TrendAnalysisHistory{
-			Symbol:         symbol,
-			Timeframe:      "15m",
-			CurrentPrice:   &currentPrice,
-			Change24h:      &change24h,
-			FinalSignal:    &analysis.Signal,
-			FinalRating:    &rating,
-			IndicatorsJSON: string(indicatorsJSON),
-		}
-		database.DB.Create(&history)
-	}
-	log.Printf("Trending analysis completed for %d symbols", len(symbols))
+	log.Printf("Trending analysis completed: analyzed %d coins, opened %d trades", len(result.Analyzed), result.TradesOpened)
 	return nil
 }
 
@@ -127,17 +71,6 @@ func runGenerateProposals() error {
 	}
 	log.Printf("AI proposal generation completed: %v", result)
 	return nil
-}
-
-func getTrendingSymbols() []string {
-	var history []database.TrendAnalysisHistory
-	database.DB.Select("DISTINCT symbol").Order("analyzed_at DESC").Limit(10).Find(&history)
-
-	symbols := make([]string, len(history))
-	for i, h := range history {
-		symbols[i] = h.Symbol
-	}
-	return symbols
 }
 
 func getProposalInterval() string {
@@ -166,16 +99,4 @@ func getProposalInterval() string {
 	}
 
 	return "disabled"
-}
-
-func calculateChange24h(candles []services.OHLCV) float64 {
-	if len(candles) < 2 {
-		return 0
-	}
-	oldPrice := candles[0].Close
-	newPrice := candles[len(candles)-1].Close
-	if oldPrice == 0 {
-		return 0
-	}
-	return ((newPrice - oldPrice) / oldPrice) * 100
 }

@@ -5,10 +5,10 @@ cd "$(dirname "$0")"
 
 echo "Installing frontend dependencies..."
 cd frontend
-/usr/local/bin/bun install
+bun install
 
 echo "Building frontend..."
-/usr/local/bin/bun run build
+bun run build
 
 cd ..
 

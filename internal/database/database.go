@@ -80,6 +80,8 @@ func SeedData() error {
 			{Key: "pyramiding_enabled", Value: "false", Category: strPtr("trading")},
 			{Key: "max_pyramid_layers", Value: "3", Category: strPtr("trading")},
 			{Key: "position_scale_percent", Value: "50.0", Category: strPtr("trading")},
+			{Key: "auto_trade_enabled", Value: "false", Category: strPtr("trading")},
+			{Key: "trending_coins_to_analyze", Value: "5", Category: strPtr("trading")},
 			{Key: "rsi_period", Value: "14", Category: strPtr("indicators")},
 			{Key: "rsi_oversold", Value: "30.0", Category: strPtr("indicators")},
 			{Key: "rsi_overbought", Value: "70.0", Category: strPtr("indicators")},

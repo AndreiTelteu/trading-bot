@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"time"
@@ -42,55 +43,27 @@ func GetAnalysisDefault(c *fiber.Ctx) error {
 }
 
 func GetTrendingRecent(c *fiber.Ctx) error {
-	// Get distinct symbols from recent trend analysis history
-	var history []database.TrendAnalysisHistory
-	if err := database.DB.
-		Select("symbol, MAX(analyzed_at) as analyzed_at, current_price, change_24h, final_signal, final_rating").
-		Group("symbol").
-		Order("analyzed_at DESC").
-		Limit(20).
-		Find(&history).Error; err != nil {
+	coins, err := services.GetRecentAnalyzedCoins()
+	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "Failed to fetch recent coins"})
 	}
 
-	type RecentCoin struct {
-		Symbol      string  `json:"symbol"`
-		Price       float64 `json:"price"`
-		Change24h   float64 `json:"change_24h"`
-		Signal      string  `json:"signal"`
-		Rating      float64 `json:"rating"`
-		AnalyzedAt  string  `json:"analyzed_at"`
+	if len(coins) == 0 {
+		// If no cached results, run analysis
+		result, err := services.AnalyzeTrendingCoins()
+		if err != nil {
+			return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+		}
+		return c.JSON(fiber.Map{
+			"coins":     result.Analyzed,
+			"timestamp": result.Timestamp,
+		})
 	}
 
-	coins := make([]RecentCoin, len(history))
-	for i, h := range history {
-		price := 0.0
-		if h.CurrentPrice != nil {
-			price = *h.CurrentPrice
-		}
-		change := 0.0
-		if h.Change24h != nil {
-			change = *h.Change24h
-		}
-		signal := ""
-		if h.FinalSignal != nil {
-			signal = *h.FinalSignal
-		}
-		rating := 0.0
-		if h.FinalRating != nil {
-			rating = *h.FinalRating
-		}
-		coins[i] = RecentCoin{
-			Symbol:     h.Symbol,
-			Price:      price,
-			Change24h:  change,
-			Signal:     signal,
-			Rating:     rating,
-			AnalyzedAt: h.AnalyzedAt.Format("2006-01-02T15:04:05Z"),
-		}
-	}
-
-	return c.JSON(coins)
+	return c.JSON(fiber.Map{
+		"coins":     coins,
+		"timestamp": time.Now().UTC().Format(time.RFC3339),
+	})
 }
 
 func AnalyzeSymbol(c *fiber.Ctx) error {
@@ -125,6 +98,17 @@ func AnalyzeSymbol(c *fiber.Ctx) error {
 	result.Timestamp = time.Now().Format(time.RFC3339)
 
 	saveAnalysisHistory(req.Symbol, result)
+
+	return c.JSON(result)
+}
+
+// AnalyzeTrending handles POST /api/trending/analyze
+// This is the main endpoint that fetches trending coins, analyzes them, and optionally buys
+func AnalyzeTrending(c *fiber.Ctx) error {
+	result, err := services.AnalyzeTrendingCoins()
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
 
 	return c.JSON(result)
 }
@@ -168,13 +152,17 @@ func performAnalysis(symbol string) (services.AnalysisResult, error) {
 }
 
 func saveAnalysisHistory(symbol string, result services.AnalysisResult) {
+	// Marshal indicators to JSON for storage
+	indicatorsJSON, _ := json.Marshal(result.Indicators)
+
 	history := database.TrendAnalysisHistory{
-		Symbol:       symbol,
-		Timeframe:    "15m",
-		CurrentPrice: &result.CurrentPrice,
-		FinalSignal:  &result.Signal,
-		FinalRating:  &result.Rating,
-		AnalyzedAt:   time.Now(),
+		Symbol:         symbol,
+		Timeframe:      "15m",
+		CurrentPrice:   &result.CurrentPrice,
+		FinalSignal:    &result.Signal,
+		FinalRating:    &result.Rating,
+		IndicatorsJSON: string(indicatorsJSON),
+		AnalyzedAt:     time.Now(),
 	}
 	database.DB.Create(&history)
 }
