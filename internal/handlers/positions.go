@@ -331,6 +331,18 @@ func ExecuteCloseTrade(c *fiber.Ctx) error {
 	}
 	database.DB.Create(&order)
 
+	// Calculate total portfolio value for wallet_update (wallet + remaining open positions)
+	totalPortfolioValue := wallet.Balance
+	var openPositions []database.Position
+	database.DB.Where("status = ?", "open").Find(&openPositions)
+	for _, p := range openPositions {
+		if p.CurrentPrice != nil {
+			totalPortfolioValue += p.Amount * (*p.CurrentPrice)
+		} else {
+			totalPortfolioValue += p.Amount * p.AvgPrice
+		}
+	}
+
 	// Broadcast updates
 	if wsHub != nil {
 		wsHub.BroadcastMsg(&ws.Message{
@@ -350,9 +362,18 @@ func ExecuteCloseTrade(c *fiber.Ctx) error {
 			Type:    "position_update",
 			Payload: position,
 		})
+
+		// Broadcast updated positions list
+		var allPositions []database.Position
+		database.DB.Order("opened_at DESC").Find(&allPositions)
+		wsHub.BroadcastMsg(&ws.Message{
+			Type:    "positions_update",
+			Payload: allPositions,
+		})
+
 		wsHub.BroadcastMsg(&ws.Message{
 			Type:    "wallet_update",
-			Payload: fiber.Map{"balance": wallet.Balance, "currency": wallet.Currency},
+			Payload: fiber.Map{"balance": wallet.Balance, "currency": wallet.Currency, "total_value": totalPortfolioValue},
 		})
 	}
 

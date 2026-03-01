@@ -318,6 +318,9 @@ func UpdatePositionsPrices() (interface{}, error) {
 	// Calculate total snapshot value
 	totalSnapshotValue := wallet.Balance
 	for _, pos := range positions {
+		if pos.Status != "open" {
+			continue
+		}
 		if pos.CurrentPrice != nil {
 			totalSnapshotValue += pos.Amount * (*pos.CurrentPrice)
 		} else {
@@ -337,8 +340,13 @@ func UpdatePositionsPrices() (interface{}, error) {
 	// Calculate total value including wallet for wallet_update
 	totalValue := wallet.Balance
 	for _, pos := range positions {
+		if pos.Status != "open" {
+			continue
+		}
 		if pos.CurrentPrice != nil {
 			totalValue += pos.Amount * (*pos.CurrentPrice)
+		} else {
+			totalValue += pos.Amount * pos.AvgPrice
 		}
 	}
 	websocket.BroadcastWalletUpdate(wallet.Balance, wallet.Currency, totalValue)
