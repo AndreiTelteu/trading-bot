@@ -1,6 +1,7 @@
-import React, { useState, useEffect, useCallback } from 'react'
+import React, { useState, useEffect, useCallback, useMemo } from 'react'
 import { XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, AreaChart, Area } from 'recharts'
 import { useWebSocketEvent } from '../hooks/useWebSocket'
+import CustomSelect from './CustomSelect'
 
 const API_BASE = '/api'
 
@@ -12,11 +13,69 @@ const SIGNAL_COLORS = {
   STRONG_SELL: '#e63946',
 }
 
+const PERIOD_OPTIONS = [
+  { value: '1h', label: '1h' },
+  { value: '4h', label: '4h' },
+  { value: '6h', label: '6h' },
+  { value: '12h', label: '12h' },
+  { value: '24h', label: '24h' },
+  { value: '3d', label: '3 days' },
+]
+
+const periodToMs = (period) => {
+  switch (period) {
+    case '1h':
+      return 60 * 60 * 1000
+    case '4h':
+      return 4 * 60 * 60 * 1000
+    case '6h':
+      return 6 * 60 * 60 * 1000
+    case '12h':
+      return 12 * 60 * 60 * 1000
+    case '24h':
+      return 24 * 60 * 60 * 1000
+    case '3d':
+      return 3 * 24 * 60 * 60 * 1000
+    default:
+      return 4 * 60 * 60 * 1000
+  }
+}
+
+const aggregateSnapshots = (data, maxPoints) => {
+  if (!Array.isArray(data) || data.length <= maxPoints) {
+    return data
+  }
+  const sorted = [...data].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp))
+  const startTime = new Date(sorted[0].timestamp).getTime()
+  const endTime = new Date(sorted[sorted.length - 1].timestamp).getTime()
+  const range = Math.max(endTime - startTime, 1)
+  const bucketSize = Math.max(Math.ceil(range / maxPoints), 60 * 1000)
+  const buckets = new Map()
+
+  for (const snapshot of sorted) {
+    const time = new Date(snapshot.timestamp).getTime()
+    const bucket = Math.floor((time - startTime) / bucketSize)
+    const currentValue = Number(snapshot.total_value)
+    const existing = buckets.get(bucket)
+    if (!existing || currentValue > existing.total_value) {
+      buckets.set(bucket, {
+        timestamp: snapshot.timestamp,
+        total_value: currentValue,
+      })
+    }
+  }
+
+  return Array.from(buckets.keys())
+    .sort((a, b) => a - b)
+    .map((key) => buckets.get(key))
+}
+
 function Dashboard({ wallet: propWallet, positions: propPositions }) {
   const [orders, setOrders] = useState([])
   const [recentCoins, setRecentCoins] = useState([])
   const [selectedSymbol, setSelectedSymbol] = useState(null)
   const [snapshots, setSnapshots] = useState([])
+  const [selectedPeriod, setSelectedPeriod] = useState('4h')
   const [wallet, setWallet] = useState(propWallet || { balance: 0, currency: 'USDT' })
   const [positions, setPositions] = useState(propPositions || [])
 
@@ -44,13 +103,13 @@ function Dashboard({ wallet: propWallet, positions: propPositions }) {
 
   const fetchSnapshots = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE}/wallet/snapshots`)
+      const res = await fetch(`${API_BASE}/wallet/snapshots?period=${selectedPeriod}`)
       if (res.ok) {
         const data = await res.json()
         setSnapshots(data)
       }
     } catch (err) {}
-  }, [])
+  }, [selectedPeriod])
 
   const fetchOrders = useCallback(async () => {
     try {
@@ -59,12 +118,14 @@ function Dashboard({ wallet: propWallet, positions: propPositions }) {
     } catch (err) {}
   }, [])
 
-  // Fetch initial data on mount - only once
   useEffect(() => {
     fetchOrders()
     fetchRecentCoins()
+  }, [fetchOrders, fetchRecentCoins])
+
+  useEffect(() => {
     fetchSnapshots()
-  }, [fetchOrders, fetchRecentCoins, fetchSnapshots])
+  }, [fetchSnapshots])
 
   // Listen for WebSocket updates
   useWebSocketEvent('wallet_update', useCallback((data) => {
@@ -73,7 +134,8 @@ function Dashboard({ wallet: propWallet, positions: propPositions }) {
       balance: data.balance ?? prev.balance,
       currency: data.currency ?? prev.currency
     }))
-  }, []))
+    fetchSnapshots()
+  }, [fetchSnapshots]))
 
   useWebSocketEvent('positions_update', useCallback((data) => {
     if (Array.isArray(data)) {
@@ -89,13 +151,9 @@ function Dashboard({ wallet: propWallet, positions: propPositions }) {
     ))
   }, []))
 
-  useWebSocketEvent('snapshot_update', useCallback((data) => {
-    setSnapshots(prev => {
-      // Add new snapshot and keep sorted by timestamp
-      const newSnapshots = [...prev, data]
-      return newSnapshots.slice(-50) // Keep last 50 snapshots
-    })
-  }, []))
+  useWebSocketEvent('snapshot_update', useCallback(() => {
+    fetchSnapshots()
+  }, [fetchSnapshots]))
 
   useWebSocketEvent('trending_update', useCallback((data) => {
     if (Array.isArray(data)) {
@@ -126,10 +184,34 @@ function Dashboard({ wallet: propWallet, positions: propPositions }) {
   } : null
 
   // Format data for Recharts
-  const chartData = snapshots.map(s => ({
+  const periodMs = periodToMs(selectedPeriod)
+  const maxChartPoints = periodMs >= 24 * 60 * 60 * 1000 ? 120 : 80
+  const aggregatedSnapshots = useMemo(
+    () => aggregateSnapshots(snapshots, maxChartPoints),
+    [snapshots, maxChartPoints]
+  )
+  const chartData = aggregatedSnapshots.map(s => ({
     time: new Date(s.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-    value: s.total_value.toFixed(2),
+    value: Number(s.total_value),
+    timestamp: s.timestamp,
   }))
+
+  const CustomTooltip = ({ active, payload }) => {
+    if (!active || !payload?.length) return null
+    const point = payload[0].payload
+    const pointDate = new Date(point.timestamp)
+    const todayKey = new Date().toDateString()
+    const showDate = pointDate.toDateString() !== todayKey
+    return (
+      <div style={{ backgroundColor: 'rgba(15, 15, 30, 0.9)', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.1)', backdropFilter: 'blur(10px)', padding: '10px 12px' }}>
+        <div style={{ color: '#aaa', marginBottom: '4px' }}>{point.time}</div>
+        {showDate && (
+          <div style={{ color: '#aaa', marginBottom: '6px' }}>{pointDate.toLocaleDateString([], { year: 'numeric', month: 'short', day: 'numeric' })}</div>
+        )}
+        <div style={{ color: '#fff', fontWeight: 600 }}>${Number(point.value).toFixed(2)}</div>
+      </div>
+    )
+  }
 
   return (
     <div className="dashboard-container fade-in">
@@ -170,7 +252,15 @@ function Dashboard({ wallet: propWallet, positions: propPositions }) {
       <div className="chart-section glass-panel">
         <div className="chart-header">
           <h3>Total Value Evolution</h3>
-          <span className="live-indicator">● LIVE</span>
+          <div className="chart-controls">
+            <span className="live-indicator">● LIVE</span>
+            <CustomSelect
+              className="compact-select"
+              value={selectedPeriod}
+              onChange={setSelectedPeriod}
+              options={PERIOD_OPTIONS}
+            />
+          </div>
         </div>
         <div className="chart-container" style={{ height: 300 }}>
           {chartData.length > 0 ? (
@@ -185,11 +275,7 @@ function Dashboard({ wallet: propWallet, positions: propPositions }) {
                 <CartesianGrid strokeDasharray="3 3" stroke="#2a2a4a" vertical={false} />
                 <XAxis dataKey="time" stroke="#7e7e9e" tick={{fill: '#7e7e9e'}} axisLine={false} tickLine={false} />
                 <YAxis stroke="#7e7e9e" tick={{fill: '#7e7e9e'}} domain={['auto', 'auto']} axisLine={false} tickLine={false} tickFormatter={(value) => `$${value}`} />
-                <Tooltip 
-                  contentStyle={{ backgroundColor: 'rgba(15, 15, 30, 0.9)', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.1)', backdropFilter: 'blur(10px)' }}
-                  itemStyle={{ color: '#fff', fontWeight: 600 }}
-                  labelStyle={{ color: '#aaa', marginBottom: '5px' }}
-                />
+                <Tooltip content={<CustomTooltip />} />
                 <Area type="monotone" dataKey="value" stroke="#00f2fe" strokeWidth={3} fillOpacity={1} fill="url(#colorValue)" activeDot={{ r: 6, strokeWidth: 0, fill: '#fff' }} />
               </AreaChart>
             </ResponsiveContainer>

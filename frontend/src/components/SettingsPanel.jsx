@@ -1,36 +1,7 @@
 import React, { useState, useEffect } from 'react'
+import CustomSelect from './CustomSelect'
 
 const API_BASE = '/api'
-
-const CustomSelect = ({ value, onChange, options }) => {
-  const [isOpen, setIsOpen] = useState(false)
-  const selectedOption = options.find(o => o.value === value) || options[0]
-
-  return (
-    <div className="custom-select-container" onMouseLeave={() => setIsOpen(false)}>
-      <div className="custom-select-trigger" onClick={() => setIsOpen(!isOpen)}>
-        <span>{selectedOption?.label}</span>
-        <span className={`custom-select-arrow ${isOpen ? 'open' : ''}`}>▼</span>
-      </div>
-      {isOpen && (
-        <div className="custom-select-dropdown">
-          {options.map(opt => (
-            <div 
-              key={opt.value} 
-              className={`custom-select-option ${opt.value === value ? 'selected' : ''}`}
-              onClick={() => {
-                onChange(opt.value)
-                setIsOpen(false)
-              }}
-            >
-              {opt.label}
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  )
-}
 
 function SettingsPanel() {
   const [settings, setSettings] = useState({})

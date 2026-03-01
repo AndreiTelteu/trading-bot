@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"strings"
+	"time"
 	"trading-go/internal/database"
 	ws "trading-go/internal/websocket"
 
@@ -54,14 +56,29 @@ func UpdateWallet(c *fiber.Ctx) error {
 
 func GetPortfolioSnapshots(c *fiber.Ctx) error {
 	var snapshots []database.PortfolioSnapshot
-	// Return the most recent 100 snapshots, could be configured later
-	if err := database.DB.Order("timestamp desc").Limit(100).Find(&snapshots).Error; err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "Failed to fetch snapshots"})
+
+	period := strings.ToLower(strings.TrimSpace(c.Query("period", "4h")))
+	var duration time.Duration
+	switch period {
+	case "1h":
+		duration = time.Hour
+	case "4h":
+		duration = 4 * time.Hour
+	case "6h":
+		duration = 6 * time.Hour
+	case "12h":
+		duration = 12 * time.Hour
+	case "24h":
+		duration = 24 * time.Hour
+	case "3d", "3days", "3 days":
+		duration = 72 * time.Hour
+	default:
+		duration = 4 * time.Hour
 	}
 
-	// Reverse the order so chronological is ascending
-	for i, j := 0, len(snapshots)-1; i < j; i, j = i+1, j-1 {
-		snapshots[i], snapshots[j] = snapshots[j], snapshots[i]
+	since := time.Now().Add(-duration)
+	if err := database.DB.Where("timestamp >= ?", since).Order("timestamp asc").Find(&snapshots).Error; err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "Failed to fetch snapshots"})
 	}
 
 	return c.JSON(snapshots)

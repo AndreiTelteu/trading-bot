@@ -302,6 +302,29 @@ body::before {
   animation: blink 2s infinite;
 }
 
+.chart-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+}
+
+.period-select {
+  background: rgba(15, 15, 30, 0.9);
+  border: 1px solid rgba(255,255,255,0.15);
+  color: #fff;
+  padding: 0.4rem 0.8rem;
+  border-radius: 12px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  outline: none;
+  appearance: none;
+}
+
+.period-select:focus {
+  border-color: var(--accent-primary);
+  box-shadow: 0 0 0 2px rgba(0, 242, 254, 0.2);
+}
+
 @keyframes blink {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.5; box-shadow: var(--accent-glow); }
@@ -868,6 +891,15 @@ td.negative { color: var(--danger); }
   position: relative;
   width: 250px;
   user-select: none;
+}
+
+.custom-select-container.compact-select {
+  width: 140px;
+}
+
+.custom-select-container.compact-select .custom-select-trigger {
+  padding: 0.5rem 0.7rem;
+  font-size: 0.85rem;
 }
 
 .custom-select-trigger {
