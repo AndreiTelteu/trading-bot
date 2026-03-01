@@ -535,14 +535,35 @@ func AnalyzeTrendingCoins() (*TrendingAnalysisResult, error) {
 		fmt.Sprintf("Auto-trade: %v, buy_only_strong: %v, min_confidence: %.1f", autoTradeEnabled, buyOnlyStrong, minConfidenceToBuy))
 
 	// Get trending data from Binance
-	trendingData, err := GetBinanceTrending(20, 10, 10)
+	trendingData, err := GetBinanceTrending(20, 20, 20)
 	if err != nil {
 		logActivity("error", "Failed to fetch trending data", err.Error())
 		return nil, fmt.Errorf("failed to fetch trending data: %w", err)
 	}
 
-	// Analyze top gainers
-	coinsToAnalyze := trendingData.TopGainers
+	// Combine all trending categories (TopVolume + TopGainers + TopLosers) and deduplicate
+	coinsMap := make(map[string]TrendingCoin)
+	for _, coin := range trendingData.TopVolume {
+		coinsMap[coin.Symbol] = coin
+	}
+	for _, coin := range trendingData.TopGainers {
+		coinsMap[coin.Symbol] = coin
+	}
+	for _, coin := range trendingData.TopLosers {
+		coinsMap[coin.Symbol] = coin
+	}
+
+	// Convert map to slice
+	var allCoins []TrendingCoin
+	for _, coin := range coinsMap {
+		allCoins = append(allCoins, coin)
+	}
+
+	// Limit to topNToAnalyze (prioritize by volume)
+	sort.Slice(allCoins, func(i, j int) bool {
+		return allCoins[i].Volume24h > allCoins[j].Volume24h
+	})
+	coinsToAnalyze := allCoins
 	if len(coinsToAnalyze) > topNToAnalyze {
 		coinsToAnalyze = coinsToAnalyze[:topNToAnalyze]
 	}
