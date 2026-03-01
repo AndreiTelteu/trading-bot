@@ -96,9 +96,21 @@ func ExecuteBuy(req BuyRequest) (interface{}, error) {
 	}
 	database.DB.Create(&order)
 
+	// Calculate total value for broadcast (wallet + open positions)
+	totalValue := wallet.Balance
+	var currentPositions []database.Position
+	database.DB.Where("status = ?", "open").Find(&currentPositions)
+	for _, p := range currentPositions {
+		if p.CurrentPrice != nil {
+			totalValue += p.Amount * (*p.CurrentPrice)
+		} else {
+			totalValue += p.Amount * p.AvgPrice
+		}
+	}
+
 	// Broadcast updates via WebSocket
 	websocket.BroadcastTradeExecuted("buy", symbol, amount, price, wallet.Balance)
-	websocket.BroadcastWalletUpdate(wallet.Balance, wallet.Currency, wallet.Balance)
+	websocket.BroadcastWalletUpdate(wallet.Balance, wallet.Currency, totalValue)
 	websocket.BroadcastPositionUpdate(position)
 
 	return fiber.Map{
@@ -167,9 +179,21 @@ func ExecuteSell(req SellRequest) (interface{}, error) {
 	}
 	database.DB.Create(&order)
 
+	// Calculate total value for broadcast (wallet + open positions)
+	portfolioTotalValue := wallet.Balance
+	var currentPositions []database.Position
+	database.DB.Where("status = ?", "open").Find(&currentPositions)
+	for _, p := range currentPositions {
+		if p.CurrentPrice != nil {
+			portfolioTotalValue += p.Amount * (*p.CurrentPrice)
+		} else {
+			portfolioTotalValue += p.Amount * p.AvgPrice
+		}
+	}
+
 	// Broadcast updates via WebSocket
 	websocket.BroadcastTradeExecuted("sell", symbol, amount, price, wallet.Balance)
-	websocket.BroadcastWalletUpdate(wallet.Balance, wallet.Currency, wallet.Balance)
+	websocket.BroadcastWalletUpdate(wallet.Balance, wallet.Currency, portfolioTotalValue)
 	websocket.BroadcastPositionUpdate(position)
 
 	return fiber.Map{
