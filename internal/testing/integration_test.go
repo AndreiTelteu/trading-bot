@@ -44,8 +44,6 @@ func SetupTestApp() *fiber.App {
 	app = fiber.New()
 
 	cfg := config.Load()
-	database.Initialize(cfg)
-
 	setupTestRoutes(app, cfg)
 
 	return app
@@ -189,7 +187,7 @@ func TestHealthEndpoint(t *testing.T) {
 	SetupTestDB(t)
 	app := SetupTestApp()
 
-	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/health", nil)
 	resp, err := app.Test(req)
 	if err != nil {
 		t.Fatalf("Failed to test request: %v", err)

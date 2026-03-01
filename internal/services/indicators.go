@@ -88,6 +88,9 @@ func CalculateRSI(closes []float64, period int) RSIResult {
 	avgLoss := losses / float64(period)
 
 	if avgLoss == 0 {
+		if avgGain == 0 {
+			return RSIResult{RSI: 50, Signal: "neutral"}
+		}
 		return RSIResult{RSI: 100, Signal: "overbought"}
 	}
 
@@ -137,6 +140,10 @@ func CalculateMACD(closes []float64, fastPeriod, slowPeriod, signalPeriod int) M
 	}
 }
 
+func CalculateEMA(data []float64, period int) float64 {
+	return calculateEMA(data, period)
+}
+
 func calculateEMA(data []float64, period int) float64 {
 	if len(data) < period {
 		return 0
@@ -150,6 +157,25 @@ func calculateEMA(data []float64, period int) float64 {
 	}
 
 	return ema
+}
+
+func CalculateATR(candles []Candle, period int) float64 {
+	if len(candles) < period+1 {
+		return 0
+	}
+
+	trs := make([]float64, len(candles))
+	prevClose := candles[0].Close
+	for i, c := range candles {
+		highLow := c.High - c.Low
+		highClose := math.Abs(c.High - prevClose)
+		lowClose := math.Abs(c.Low - prevClose)
+		tr := math.Max(highLow, math.Max(highClose, lowClose))
+		trs[i] = tr
+		prevClose = c.Close
+	}
+
+	return CalculateEMA(trs, period)
 }
 
 func CalculateBollingerBands(closes []float64, period int, stdDev float64) BollingerBandsResult {
@@ -191,11 +217,11 @@ func CalculateBollingerBands(closes []float64, period int, stdDev float64) Bolli
 }
 
 func CalculateVolumeMA(volumes []float64, period int) VolumeMAResult {
-	if len(volumes) < period {
+	if len(volumes) < period+1 {
 		return VolumeMAResult{VolumeMA: 0, Ratio: 1, Signal: "neutral"}
 	}
 
-	recentVolumes := volumes[len(volumes)-period:]
+	recentVolumes := volumes[len(volumes)-period-1 : len(volumes)-1]
 	sum := 0.0
 	for _, v := range recentVolumes {
 		sum += v
@@ -208,7 +234,7 @@ func CalculateVolumeMA(volumes []float64, period int) VolumeMAResult {
 	signal := "neutral"
 	if ratio > 1.5 {
 		signal = "high"
-	} else if ratio < 0.5 {
+	} else if ratio <= 0.5 {
 		signal = "low"
 	}
 

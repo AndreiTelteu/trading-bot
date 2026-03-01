@@ -106,6 +106,17 @@ func getSettingFloat(settings map[string]string, key string, defaultVal float64)
 	return v
 }
 
+func getSettingString(settings map[string]string, key string, defaultVal string) string {
+	val, ok := settings[key]
+	if !ok {
+		return defaultVal
+	}
+	if val == "" {
+		return defaultVal
+	}
+	return val
+}
+
 // logActivity creates an activity log entry in the database
 func logActivity(logType, message string, details string) {
 	log := database.ActivityLog{
@@ -341,6 +352,81 @@ func convertVolumeToRating(vol VolumeMAResult) (string, int) {
 	return "neutral", 3
 }
 
+func fetchCandles(symbol string, timeframe string, limit int) ([]Candle, error) {
+	ex := GetExchange()
+	cleanSymbol := strings.ReplaceAll(symbol, "/", "")
+
+	ohlcv, err := ex.FetchOHLCV(cleanSymbol, timeframe, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch OHLCV for %s: %w", cleanSymbol, err)
+	}
+
+	if len(ohlcv) == 0 {
+		return nil, fmt.Errorf("no OHLCV data for %s", cleanSymbol)
+	}
+
+	candles := make([]Candle, len(ohlcv))
+	for i, kline := range ohlcv {
+		candles[i] = Candle{
+			Close:  kline.Close,
+			High:   kline.High,
+			Low:    kline.Low,
+			Volume: kline.Volume,
+		}
+	}
+
+	return candles, nil
+}
+
+func analyzeSymbolFromCandles(symbol string, timeframe string, candles []Candle) *AnalyzedCoin {
+	currentPrice := candles[len(candles)-1].Close
+
+	config := GetIndicatorSettings()
+	weights := GetIndicatorWeights()
+
+	indicators := calculateIndicatorResults(candles, config)
+	finalRating, finalSignal := CalculateFinalScore(indicators, weights)
+
+	return &AnalyzedCoin{
+		Symbol:     symbol,
+		Price:      currentPrice,
+		Timeframe:  timeframe,
+		Signal:     finalSignal,
+		Rating:     finalRating,
+		Indicators: indicators,
+	}
+}
+
+func computeRegimeGate(candles []Candle, emaFast int, emaSlow int) bool {
+	if len(candles) < emaSlow {
+		return false
+	}
+
+	closes := make([]float64, len(candles))
+	for i, c := range candles {
+		closes[i] = c.Close
+	}
+
+	fast := CalculateEMA(closes, emaFast)
+	slow := CalculateEMA(closes, emaSlow)
+
+	return fast > slow
+}
+
+func computeVolGate(candles []Candle, price float64, atrPeriod int, minRatio float64, maxRatio float64) bool {
+	if len(candles) < atrPeriod+1 {
+		return false
+	}
+
+	atr := CalculateATR(candles, atrPeriod)
+	if atr <= 0 || price <= 0 {
+		return false
+	}
+
+	ratio := atr / price
+	return ratio >= minRatio && ratio <= maxRatio
+}
+
 // CalculateFinalScore computes weighted final score from indicators
 // matching the old Python calculate_final_score function
 func CalculateFinalScore(indicators []IndicatorResult, weights map[string]float64) (float64, string) {
@@ -396,46 +482,12 @@ func CalculateFinalScore(indicators []IndicatorResult, weights map[string]float6
 
 // analyzeSymbolForTrending performs full analysis for a symbol (used by trending)
 func analyzeSymbolForTrending(symbol string, timeframe string) (*AnalyzedCoin, error) {
-	ex := GetExchange()
-
-	// Binance symbols don't have "/" so ensure format is e.g. "ETHUSDT"
-	cleanSymbol := strings.ReplaceAll(symbol, "/", "")
-
-	ohlcv, err := ex.FetchOHLCV(cleanSymbol, timeframe, 200)
+	candles, err := fetchCandles(symbol, timeframe, 200)
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch OHLCV for %s: %w", cleanSymbol, err)
+		return nil, err
 	}
 
-	if len(ohlcv) == 0 {
-		return nil, fmt.Errorf("no OHLCV data for %s", cleanSymbol)
-	}
-
-	candles := make([]Candle, len(ohlcv))
-	for i, kline := range ohlcv {
-		candles[i] = Candle{
-			Close:  kline.Close,
-			High:   kline.High,
-			Low:    kline.Low,
-			Volume: kline.Volume,
-		}
-	}
-
-	currentPrice := ohlcv[len(ohlcv)-1].Close
-
-	config := GetIndicatorSettings()
-	weights := GetIndicatorWeights()
-
-	indicators := calculateIndicatorResults(candles, config)
-	finalRating, finalSignal := CalculateFinalScore(indicators, weights)
-
-	return &AnalyzedCoin{
-		Symbol:     symbol,
-		Price:      currentPrice,
-		Timeframe:  timeframe,
-		Signal:     finalSignal,
-		Rating:     finalRating,
-		Indicators: indicators,
-	}, nil
+	return analyzeSymbolFromCandles(symbol, timeframe, candles), nil
 }
 
 // executeBuyFromTrending performs a buy based on trending analysis (matching Python execute_buy logic)
@@ -530,6 +582,13 @@ func AnalyzeTrendingCoins() (*TrendingAnalysisResult, error) {
 	topNToAnalyze := getSettingInt(settings, "trending_coins_to_analyze", 5)
 	buyOnlyStrong := getSettingBool(settings, "buy_only_strong", true)
 	minConfidenceToBuy := getSettingFloat(settings, "min_confidence_to_buy", 4.0)
+	regimeGateEnabled := getSettingBool(settings, "regime_gate_enabled", true)
+	regimeTimeframe := getSettingString(settings, "regime_timeframe", "1h")
+	regimeEmaFast := getSettingInt(settings, "regime_ema_fast", 50)
+	regimeEmaSlow := getSettingInt(settings, "regime_ema_slow", 200)
+	volAtrPeriod := getSettingInt(settings, "vol_atr_period", 14)
+	volRatioMin := getSettingFloat(settings, "vol_ratio_min", 0.002)
+	volRatioMax := getSettingFloat(settings, "vol_ratio_max", 0.02)
 
 	logActivity("system", "Starting trending coins analysis",
 		fmt.Sprintf("Auto-trade: %v, buy_only_strong: %v, min_confidence: %.1f", autoTradeEnabled, buyOnlyStrong, minConfidenceToBuy))
@@ -579,7 +638,7 @@ func AnalyzeTrendingCoins() (*TrendingAnalysisResult, error) {
 		// Convert symbol format for analysis (Binance uses ETHUSDT, keep that)
 		symbol := coin.Symbol
 
-		analysis, err := analyzeSymbolForTrending(symbol, "15m")
+		candles15m, err := fetchCandles(symbol, "15m", 200)
 		if err != nil {
 			logActivity("error", fmt.Sprintf("Error analyzing %s", symbol), err.Error())
 			results = append(results, AnalyzedCoin{
@@ -589,6 +648,7 @@ func AnalyzeTrendingCoins() (*TrendingAnalysisResult, error) {
 			continue
 		}
 
+		analysis := analyzeSymbolFromCandles(symbol, "15m", candles15m)
 		analysis.Change24h = coin.Change24h
 
 		// Save to trend analysis history
@@ -617,7 +677,19 @@ func AnalyzeTrendingCoins() (*TrendingAnalysisResult, error) {
 		}
 		confidenceQualifies := analysis.Rating >= minConfidenceToBuy
 
-		if autoTradeEnabled && signalQualifies && confidenceQualifies &&
+		regimeOk := true
+		volOk := true
+		if regimeGateEnabled {
+			candlesHigher, regimeErr := fetchCandles(symbol, regimeTimeframe, 200)
+			if regimeErr != nil {
+				regimeOk = false
+			} else {
+				regimeOk = computeRegimeGate(candlesHigher, regimeEmaFast, regimeEmaSlow)
+			}
+			volOk = computeVolGate(candles15m, analysis.Price, volAtrPeriod, volRatioMin, volRatioMax)
+		}
+
+		if autoTradeEnabled && signalQualifies && confidenceQualifies && regimeOk && volOk &&
 			(int(currentOpenCount)+tradesOpened) < maxPositions {
 
 			// Check if position already exists
