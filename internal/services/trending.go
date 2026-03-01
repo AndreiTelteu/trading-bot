@@ -612,6 +612,9 @@ func AnalyzeTrendingCoins() (*TrendingAnalysisResult, error) {
 					analysis.TradeExecuted = &trueVal
 					logActivity("trade", fmt.Sprintf("Bought %s", symbol),
 						fmt.Sprintf("At $%.2f", analysis.Price))
+
+					// Broadcast wallet and positions updates after successful trade
+					broadcastTradeUpdates()
 				} else {
 					falseVal := false
 					analysis.TradeExecuted = &falseVal
@@ -710,4 +713,37 @@ func GetRecentAnalyzedCoins() ([]AnalyzedCoin, error) {
 	}
 
 	return coins, nil
+}
+
+// broadcastTradeUpdates broadcasts wallet, positions, and orders updates via WebSocket
+// after a successful trade execution
+func broadcastTradeUpdates() {
+	// Get wallet for balance info
+	var wallet database.Wallet
+	if err := database.DB.First(&wallet).Error; err != nil {
+		return
+	}
+
+	// Calculate total value including positions
+	var totalValue float64 = wallet.Balance
+	var positions []database.Position
+	database.DB.Where("status = ?", "open").Find(&positions)
+	for _, pos := range positions {
+		if pos.CurrentPrice != nil {
+			totalValue += pos.Amount * (*pos.CurrentPrice)
+		}
+	}
+
+	// Broadcast wallet update
+	websocket.BroadcastWalletUpdate(wallet.Balance, wallet.Currency, totalValue)
+
+	// Broadcast all positions
+	var allPositions []database.Position
+	database.DB.Order("opened_at DESC").Find(&allPositions)
+	websocket.BroadcastPositionsUpdate(allPositions)
+
+	// Broadcast recent orders
+	var orders []database.Order
+	database.DB.Order("executed_at DESC").Limit(10).Find(&orders)
+	websocket.BroadcastOrdersUpdate(orders)
 }

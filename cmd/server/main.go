@@ -128,6 +128,11 @@ func setupRoutes(app *fiber.App, cfg *config.Config) {
 	trading.Post("/sell", handlers.ExecuteSell)
 	trading.Post("/update-prices", handlers.UpdatePrices)
 
+	// Position trade execution endpoints
+	positionsTrade := api.Group("/positions-trade")
+	positionsTrade.Post("/open", handlers.ExecuteOpenTrade)
+	positionsTrade.Post("/:id/close", handlers.ExecuteCloseTrade)
+
 	analysis := api.Group("/analysis")
 	analysis.Get("/:symbol", handlers.GetAnalysis)
 	analysis.Get("", handlers.GetAnalysisDefault)

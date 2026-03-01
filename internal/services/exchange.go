@@ -93,20 +93,38 @@ func (s *ExchangeService) sign(queryString string) string {
 func (s *ExchangeService) makeRequest(method, endpoint string, params map[string]string) ([]byte, error) {
 	baseURL := s.BaseURL + endpoint
 
-	isPublicEndpoint := strings.Contains(endpoint, "/api/v3/ticker/") || 
-                        strings.Contains(endpoint, "/api/v3/klines") || 
-                        strings.Contains(endpoint, "/api/v3/exchangeInfo")
+	isPublicEndpoint := strings.Contains(endpoint, "/api/v3/ticker/") ||
+		strings.Contains(endpoint, "/api/v3/klines") ||
+		strings.Contains(endpoint, "/api/v3/exchangeInfo")
 
-	if method == "GET" && len(params) > 0 {
-		queryString := ""
+	var bodyData []byte
+	var queryString string
+
+	// Build query string from params
+	if len(params) > 0 {
+		qs := ""
 		for key, value := range params {
-			if queryString != "" {
-				queryString += "&"
+			if qs != "" {
+				qs += "&"
 			}
-			queryString += key + "=" + url.QueryEscape(value)
+			qs += key + "=" + url.QueryEscape(value)
 		}
+		queryString = qs
+	}
 
-		// Only add signature if we have both API key and secret and it's NOT a public endpoint
+	// For POST requests with private endpoints, we need to handle differently
+	if method == "POST" && !isPublicEndpoint && s.APIKey != "" && s.APISecret != "" {
+		// Sign the query string
+		signature := s.sign(queryString)
+		// For POST requests, add signature to params and send as form data
+		if queryString != "" {
+			queryString += "&signature=" + signature
+		} else {
+			queryString = "signature=" + signature
+		}
+		bodyData = []byte(queryString)
+	} else if method == "GET" && queryString != "" {
+		// For GET requests, add signature to URL
 		if !isPublicEndpoint && s.APIKey != "" && s.APISecret != "" {
 			signature := s.sign(queryString)
 			baseURL += "?" + queryString + "&signature=" + signature
@@ -115,13 +133,18 @@ func (s *ExchangeService) makeRequest(method, endpoint string, params map[string
 		}
 	}
 
-	req, err := http.NewRequest(method, baseURL, bytes.NewBuffer([]byte{}))
+	req, err := http.NewRequest(method, baseURL, bytes.NewBuffer(bodyData))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	req.Header.Set("Content-Type", "application/json")
-	
+	// Set content type based on whether we have body data
+	if len(bodyData) > 0 {
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	} else {
+		req.Header.Set("Content-Type", "application/json")
+	}
+
 	// Only add API key header if it's NOT a public endpoint
 	if !isPublicEndpoint && s.APIKey != "" {
 		req.Header.Set("X-MBX-APIKEY", s.APIKey)

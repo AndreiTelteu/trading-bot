@@ -5,48 +5,106 @@ const API_BASE = '/api'
 function PositionsTable({ positions, onRefresh }) {
   const [symbol, setSymbol] = useState('')
   const [amount, setAmount] = useState('')
-  const [avgPrice, setAvgPrice] = useState('')
+  const [price, setPrice] = useState('')
+  const [orderType, setOrderType] = useState('market')
   const [loading, setLoading] = useState(false)
+  const [tradeResult, setTradeResult] = useState(null)
+  const [error, setError] = useState(null)
 
-  const handleAddPosition = async (e) => {
+  const handleOpenTrade = async (e) => {
     e.preventDefault()
-    if (!symbol || !amount || !avgPrice) return
+    if (!symbol || !amount) return
     
     setLoading(true)
+    setError(null)
+    setTradeResult(null)
+    
     try {
-      await fetch(`${API_BASE}/positions`, {
+      const response = await fetch(`${API_BASE}/positions-trade/open`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           symbol: symbol.toUpperCase(),
           amount: parseFloat(amount),
-          avg_price: parseFloat(avgPrice),
-          current_price: parseFloat(avgPrice)
+          price: price ? parseFloat(price) : 0,
+          order_type: orderType
         })
       })
+      
+      const data = await response.json()
+      
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to execute trade')
+      }
+      
+      setTradeResult({
+        type: 'success',
+        action: 'buy',
+        message: `Successfully bought ${data.amount} ${data.symbol} at $${data.price.toFixed(4)}`,
+        details: data
+      })
+      
       setSymbol('')
       setAmount('')
-      setAvgPrice('')
+      setPrice('')
       onRefresh()
     } catch (err) {
-      console.error('Failed to add position:', err)
+      console.error('Failed to execute trade:', err)
+      setError(err.message)
+      setTradeResult({
+        type: 'error',
+        action: 'buy',
+        message: err.message
+      })
     }
     setLoading(false)
   }
 
-  const handleClosePosition = async (positionId) => {
-    if (!confirm('Close this position?')) return
+  const handleCloseTrade = async (positionId, positionSymbol, positionAmount) => {
+    if (!confirm(`Close position ${positionSymbol} (${positionAmount} units)? This will execute a SELL order on the exchange.`)) return
+    
+    setLoading(true)
+    setError(null)
+    setTradeResult(null)
     
     try {
-      await fetch(`${API_BASE}/positions/${positionId}/close`, {
+      const response = await fetch(`${API_BASE}/positions-trade/${positionId}/close`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ reason: 'manual' })
+        body: JSON.stringify({
+          close_reason: 'manual',
+          price: 0,
+          order_type: 'market'
+        })
       })
+      
+      const data = await response.json()
+      
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to close trade')
+      }
+      
+      const pnlSign = data.pnl >= 0 ? '+' : ''
+      const pnlEmoji = data.pnl >= 0 ? '🟢' : '🔴'
+      
+      setTradeResult({
+        type: 'success',
+        action: 'sell',
+        message: `${pnlEmoji} Sold ${data.amount} ${data.symbol} at $${data.price.toFixed(4)} | P&L: ${pnlSign}${data.pnl.toFixed(2)} USDT (${pnlSign}${data.pnl_percent.toFixed(2)}%)`,
+        details: data
+      })
+      
       onRefresh()
     } catch (err) {
-      console.error('Failed to close position:', err)
+      console.error('Failed to close trade:', err)
+      setError(err.message)
+      setTradeResult({
+        type: 'error',
+        action: 'sell',
+        message: err.message
+      })
     }
+    setLoading(false)
   }
 
   const openPositions = positions.filter(p => p.status === 'open')
@@ -63,34 +121,75 @@ function PositionsTable({ positions, onRefresh }) {
       </div>
       
       <div className="glass-panel mb-4">
-        <h3 className="mb-2 uppercase text-muted tracking-wide text-sm font-bold">Add Manual Position</h3>
-        <form className="add-position-form flex gap-3" onSubmit={handleAddPosition}>
-          <input
-            type="text"
-            className="form-input flex-1"
-            placeholder="Asset Symbol (e.g. BTCUSDT)"
-            value={symbol}
-            onChange={e => setSymbol(e.target.value)}
-          />
-          <input
-            type="number"
-            className="form-input flex-1"
-            placeholder="Size / Amount"
-            value={amount}
-            onChange={e => setAmount(e.target.value)}
-            step="any"
-          />
-          <input
-            type="number"
-            className="form-input flex-1"
-            placeholder="Entry Price"
-            value={avgPrice}
-            onChange={e => setAvgPrice(e.target.value)}
-            step="any"
-          />
-          <button type="submit" className="btn-primary" disabled={loading}>
-            {loading ? 'Executing...' : 'Open Position'}
-          </button>
+        <h3 className="mb-3 uppercase text-muted tracking-wide text-sm font-bold">Open New Position</h3>
+        
+        {/* Trade Result Notifications */}
+        {tradeResult && (
+          <div className={`alert ${tradeResult.type === 'success' ? 'alert-success' : 'alert-error'} mb-3`}>
+            <span className="alert-icon">{tradeResult.action === 'buy' ? '💰' : tradeResult.type === 'success' ? '✅' : '❌'}</span>
+            <span className="alert-message">{tradeResult.message}</span>
+            <button 
+              type="button"
+              className="alert-close" 
+              onClick={() => setTradeResult(null)}
+              aria-label="Close notification"
+            >×</button>
+          </div>
+        )}
+        
+        <form className="add-position-form" onSubmit={handleOpenTrade}>
+          <div className="flex gap-3 mb-3">
+            <input
+              type="text"
+              className="form-input flex-1"
+              placeholder="Asset Symbol (e.g. BTCUSDT)"
+              value={symbol}
+              onChange={e => setSymbol(e.target.value)}
+              disabled={loading}
+            />
+            <input
+              type="number"
+              className="form-input flex-1"
+              placeholder="Amount to Buy"
+              value={amount}
+              onChange={e => setAmount(e.target.value)}
+              step="any"
+              disabled={loading}
+            />
+          </div>
+          
+          <div className="flex gap-3 items-center">
+            <select 
+              className="form-input"
+              value={orderType}
+              onChange={e => setOrderType(e.target.value)}
+              disabled={loading}
+              style={{ width: 'auto', minWidth: '120px' }}
+            >
+              <option value="market">Market Order</option>
+              <option value="limit">Limit Order</option>
+            </select>
+            
+            {orderType === 'limit' && (
+              <input
+                type="number"
+                className="form-input flex-1"
+                placeholder="Limit Price (USDT)"
+                value={price}
+                onChange={e => setPrice(e.target.value)}
+                step="any"
+                disabled={loading}
+              />
+            )}
+            
+            <button 
+              type="submit" 
+              className="btn-primary" 
+              disabled={loading || !symbol || !amount}
+            >
+              {loading ? 'Executing...' : 'Open Position'}
+            </button>
+          </div>
         </form>
       </div>
 
@@ -132,8 +231,10 @@ function PositionsTable({ positions, onRefresh }) {
                     </td>
                     <td>
                       <button 
+                        type="button"
                         className="btn-danger"
-                        onClick={() => handleClosePosition(p.id)}
+                        onClick={() => handleCloseTrade(p.id, p.symbol, p.amount)}
+                        disabled={loading}
                       >
                         Close Trade
                       </button>
