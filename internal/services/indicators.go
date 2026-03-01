@@ -41,6 +41,16 @@ type MomentumResult struct {
 	Signal   string
 }
 
+type FeatureVector struct {
+	RSI             float64
+	MACDHistogram   float64
+	BBPercentB      float64
+	MomentumPercent float64
+	VolumeRatio     float64
+	VolatilityRatio float64
+	Valid           bool
+}
+
 type IndicatorConfig struct {
 	RSIPeriod        int
 	RSIOversold      float64
@@ -263,6 +273,90 @@ func CalculateMomentum(closes []float64, period int) MomentumResult {
 	}
 
 	return MomentumResult{Momentum: momentum, Signal: signal}
+}
+
+func CalculateBBPercentB(bb BollingerBandsResult, price float64) float64 {
+	denom := bb.Upper - bb.Lower
+	if denom == 0 {
+		return 0.5
+	}
+	return (price - bb.Lower) / denom
+}
+
+func CalculateVolumeRatio(volumes []float64, ma float64) float64 {
+	if len(volumes) == 0 {
+		return 1
+	}
+	if ma <= 0 {
+		return 1
+	}
+	return volumes[len(volumes)-1] / ma
+}
+
+func CalculateFeatureVector(candles []Candle, config IndicatorConfig) FeatureVector {
+	if config.RSIPeriod <= 0 || config.MACDFastPeriod <= 0 || config.MACDSlowPeriod <= 0 || config.MACDSignalPeriod <= 0 || config.BBPeriod <= 0 || config.VolumeMAPeriod <= 0 || config.MomentumPeriod <= 0 {
+		return FeatureVector{Valid: false}
+	}
+
+	minBars := config.RSIPeriod + 1
+	if config.MACDSlowPeriod+config.MACDSignalPeriod > minBars {
+		minBars = config.MACDSlowPeriod + config.MACDSignalPeriod
+	}
+	if int(config.BBPeriod) > minBars {
+		minBars = int(config.BBPeriod)
+	}
+	if config.VolumeMAPeriod+1 > minBars {
+		minBars = config.VolumeMAPeriod + 1
+	}
+	if config.MomentumPeriod+1 > minBars {
+		minBars = config.MomentumPeriod + 1
+	}
+	if 15 > minBars {
+		minBars = 15
+	}
+
+	if len(candles) < minBars {
+		return FeatureVector{Valid: false}
+	}
+
+	closes := make([]float64, len(candles))
+	volumes := make([]float64, len(candles))
+	for i, c := range candles {
+		closes[i] = c.Close
+		volumes[i] = c.Volume
+	}
+
+	rsi := CalculateRSI(closes, config.RSIPeriod)
+	macd := CalculateMACD(closes, config.MACDFastPeriod, config.MACDSlowPeriod, config.MACDSignalPeriod)
+	bb := CalculateBollingerBands(closes, int(config.BBPeriod), config.BBStd)
+	mom := CalculateMomentum(closes, config.MomentumPeriod)
+	vol := CalculateVolumeMA(volumes, config.VolumeMAPeriod)
+
+	currentPrice := closes[len(closes)-1]
+	bbPercentB := CalculateBBPercentB(bb, currentPrice)
+	volumeRatio := CalculateVolumeRatio(volumes, vol.VolumeMA)
+	volatilityRatio := 0.0
+	atr := CalculateATR(candles, 14)
+	if currentPrice > 0 && atr > 0 {
+		volatilityRatio = atr / currentPrice
+	}
+
+	values := []float64{rsi.RSI, macd.Histogram, bbPercentB, mom.Momentum, volumeRatio, volatilityRatio}
+	for _, v := range values {
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			return FeatureVector{Valid: false}
+		}
+	}
+
+	return FeatureVector{
+		RSI:             rsi.RSI,
+		MACDHistogram:   macd.Histogram,
+		BBPercentB:      bbPercentB,
+		MomentumPercent: mom.Momentum,
+		VolumeRatio:     volumeRatio,
+		VolatilityRatio: volatilityRatio,
+		Valid:           true,
+	}
 }
 
 func CalculateAllIndicators(candles []Candle, config IndicatorConfig) map[string]interface{} {

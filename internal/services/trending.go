@@ -427,6 +427,61 @@ func computeVolGate(candles []Candle, price float64, atrPeriod int, minRatio flo
 	return ratio >= minRatio && ratio <= maxRatio
 }
 
+func computeProbUp(features FeatureVector, beta0 float64, beta1 float64, beta2 float64, beta3 float64, beta4 float64, beta5 float64, beta6 float64) float64 {
+	z := beta0 +
+		beta1*features.RSI +
+		beta2*features.MACDHistogram +
+		beta3*features.BBPercentB +
+		beta4*features.MomentumPercent +
+		beta5*features.VolumeRatio +
+		beta6*features.VolatilityRatio
+
+	if z >= 0 {
+		return 1 / (1 + math.Exp(-z))
+	}
+	expZ := math.Exp(z)
+	return expZ / (1 + expZ)
+}
+
+func computeEV(pUp float64, avgGain float64, avgLoss float64) float64 {
+	if avgGain < 0 {
+		avgGain = 0
+	}
+	if avgLoss < 0 {
+		avgLoss = 0
+	}
+	return pUp*avgGain - (1-pUp)*avgLoss
+}
+
+func computeProbGate(features FeatureVector, settings map[string]string) (float64, float64, bool) {
+	if !features.Valid {
+		return 0, 0, false
+	}
+
+	beta0 := getSettingFloat(settings, "prob_model_beta0", 0)
+	beta1 := getSettingFloat(settings, "prob_model_beta1", 0)
+	beta2 := getSettingFloat(settings, "prob_model_beta2", 0)
+	beta3 := getSettingFloat(settings, "prob_model_beta3", 0)
+	beta4 := getSettingFloat(settings, "prob_model_beta4", 0)
+	beta5 := getSettingFloat(settings, "prob_model_beta5", 0)
+	beta6 := getSettingFloat(settings, "prob_model_beta6", 0)
+
+	pUp := computeProbUp(features, beta0, beta1, beta2, beta3, beta4, beta5, beta6)
+	if math.IsNaN(pUp) || math.IsInf(pUp, 0) {
+		return 0, 0, false
+	}
+
+	avgGain := getSettingFloat(settings, "prob_avg_gain", 0)
+	avgLoss := getSettingFloat(settings, "prob_avg_loss", 0)
+	ev := computeEV(pUp, avgGain, avgLoss)
+
+	pMin := getSettingFloat(settings, "prob_p_min", 0)
+	evMin := getSettingFloat(settings, "prob_ev_min", 0)
+
+	ok := ev > evMin && pUp > pMin
+	return pUp, ev, ok
+}
+
 // CalculateFinalScore computes weighted final score from indicators
 // matching the old Python calculate_final_score function
 func CalculateFinalScore(indicators []IndicatorResult, weights map[string]float64) (float64, string) {
@@ -582,6 +637,7 @@ func AnalyzeTrendingCoins() (*TrendingAnalysisResult, error) {
 	topNToAnalyze := getSettingInt(settings, "trending_coins_to_analyze", 5)
 	buyOnlyStrong := getSettingBool(settings, "buy_only_strong", true)
 	minConfidenceToBuy := getSettingFloat(settings, "min_confidence_to_buy", 4.0)
+	probModelEnabled := getSettingBool(settings, "prob_model_enabled", false)
 	regimeGateEnabled := getSettingBool(settings, "regime_gate_enabled", true)
 	regimeTimeframe := getSettingString(settings, "regime_timeframe", "1h")
 	regimeEmaFast := getSettingInt(settings, "regime_ema_fast", 50)
@@ -676,6 +732,12 @@ func AnalyzeTrendingCoins() (*TrendingAnalysisResult, error) {
 			signalQualifies = analysis.Signal == "BUY" || analysis.Signal == "STRONG_BUY"
 		}
 		confidenceQualifies := analysis.Rating >= minConfidenceToBuy
+		probOk := true
+		if probModelEnabled {
+			features := CalculateFeatureVector(candles15m, GetIndicatorSettings())
+			_, _, probOk = computeProbGate(features, settings)
+			confidenceQualifies = probOk
+		}
 
 		regimeOk := true
 		volOk := true

@@ -235,6 +235,100 @@ func TestCalculateMomentum(t *testing.T) {
 	}
 }
 
+func TestCalculateBBPercentB(t *testing.T) {
+	bb := BollingerBandsResult{
+		Upper:  110,
+		Middle: 100,
+		Lower:  90,
+	}
+	if got := CalculateBBPercentB(bb, 100); math.Abs(got-0.5) > 0.0001 {
+		t.Errorf("CalculateBBPercentB() = %v, want 0.5", got)
+	}
+	if got := CalculateBBPercentB(BollingerBandsResult{Upper: 100, Lower: 100}, 100); math.Abs(got-0.5) > 0.0001 {
+		t.Errorf("CalculateBBPercentB() denom zero = %v, want 0.5", got)
+	}
+}
+
+func TestCalculateVolumeRatio(t *testing.T) {
+	if got := CalculateVolumeRatio([]float64{10, 20}, 10); math.Abs(got-2.0) > 0.0001 {
+		t.Errorf("CalculateVolumeRatio() = %v, want 2.0", got)
+	}
+	if got := CalculateVolumeRatio([]float64{}, 10); math.Abs(got-1.0) > 0.0001 {
+		t.Errorf("CalculateVolumeRatio() empty = %v, want 1.0", got)
+	}
+	if got := CalculateVolumeRatio([]float64{10}, 0); math.Abs(got-1.0) > 0.0001 {
+		t.Errorf("CalculateVolumeRatio() ma<=0 = %v, want 1.0", got)
+	}
+}
+
+func TestCalculateFeatureVector(t *testing.T) {
+	config := DefaultIndicatorConfig()
+	var candles []Candle
+	for i := 0; i < 60; i++ {
+		candles = append(candles, Candle{
+			Close:  100 + float64(i),
+			High:   101 + float64(i),
+			Low:    99 + float64(i),
+			Volume: 1000 + float64(i),
+		})
+	}
+	features := CalculateFeatureVector(candles, config)
+	if !features.Valid {
+		t.Error("CalculateFeatureVector() expected Valid true")
+	}
+	values := []float64{features.RSI, features.MACDHistogram, features.BBPercentB, features.MomentumPercent, features.VolumeRatio, features.VolatilityRatio}
+	for _, v := range values {
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			t.Errorf("CalculateFeatureVector() invalid value %v", v)
+		}
+	}
+
+	features = CalculateFeatureVector(candles[:5], config)
+	if features.Valid {
+		t.Error("CalculateFeatureVector() expected Valid false for insufficient data")
+	}
+}
+
+func TestComputeProbGate(t *testing.T) {
+	settings := map[string]string{
+		"prob_model_beta0": "0",
+		"prob_model_beta1": "0.01",
+		"prob_model_beta2": "0.5",
+		"prob_model_beta3": "0.1",
+		"prob_model_beta4": "0.01",
+		"prob_model_beta5": "0.2",
+		"prob_model_beta6": "0.3",
+		"prob_p_min":       "0.1",
+		"prob_ev_min":      "-1",
+		"prob_avg_gain":    "0.02",
+		"prob_avg_loss":    "0.01",
+	}
+	features := FeatureVector{
+		RSI:             50,
+		MACDHistogram:   0.5,
+		BBPercentB:      0.6,
+		MomentumPercent: 1.2,
+		VolumeRatio:     1.1,
+		VolatilityRatio: 0.01,
+		Valid:           true,
+	}
+	pUp, ev, ok := computeProbGate(features, settings)
+	if !ok {
+		t.Error("computeProbGate() expected ok true")
+	}
+	if pUp <= 0 || pUp >= 1 {
+		t.Errorf("computeProbGate() pUp = %v, want between 0 and 1", pUp)
+	}
+	if math.IsNaN(ev) || math.IsInf(ev, 0) {
+		t.Errorf("computeProbGate() ev invalid: %v", ev)
+	}
+
+	_, _, ok = computeProbGate(FeatureVector{Valid: false}, settings)
+	if ok {
+		t.Error("computeProbGate() expected ok false for invalid features")
+	}
+}
+
 func TestDefaultIndicatorConfig(t *testing.T) {
 	config := DefaultIndicatorConfig()
 

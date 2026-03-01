@@ -146,6 +146,21 @@ function SettingsPanel() {
     { key: 'momentum_period', label: 'Momentum Period', type: 'number' },
   ]
 
+  const probabilisticSettings = [
+    { key: 'prob_model_enabled', label: 'Prob Model Enabled', type: 'boolean' },
+    { key: 'prob_model_beta0', label: 'Prob Beta 0', type: 'number', step: 0.0001 },
+    { key: 'prob_model_beta1', label: 'Prob Beta 1', type: 'number', step: 0.0001 },
+    { key: 'prob_model_beta2', label: 'Prob Beta 2', type: 'number', step: 0.0001 },
+    { key: 'prob_model_beta3', label: 'Prob Beta 3', type: 'number', step: 0.0001 },
+    { key: 'prob_model_beta4', label: 'Prob Beta 4', type: 'number', step: 0.0001 },
+    { key: 'prob_model_beta5', label: 'Prob Beta 5', type: 'number', step: 0.0001 },
+    { key: 'prob_model_beta6', label: 'Prob Beta 6', type: 'number', step: 0.0001 },
+    { key: 'prob_p_min', label: 'Prob P Min', type: 'number', step: 0.0001 },
+    { key: 'prob_ev_min', label: 'Prob EV Min', type: 'number', step: 0.0001 },
+    { key: 'prob_avg_gain', label: 'Prob Avg Gain', type: 'number', step: 0.0001 },
+    { key: 'prob_avg_loss', label: 'Prob Avg Loss', type: 'number', step: 0.0001 },
+  ]
+
   const aiSettings = [
     { key: 'ai_analysis_interval', label: 'Analysis Interval (hours)', type: 'number' },
     { key: 'ai_lookback_days', label: 'Lookback Days', type: 'number' },
@@ -163,6 +178,7 @@ function SettingsPanel() {
 
   const currentSettings = activeSection === 'trading' ? tradingSettings 
     : activeSection === 'indicators' ? indicatorSettings 
+    : activeSection === 'probabilistic' ? probabilisticSettings
     : aiSettings
 
   return (
@@ -181,6 +197,12 @@ function SettingsPanel() {
           onClick={() => setActiveSection('indicators')}
         >
           Indicators
+        </button>
+        <button 
+          className={activeSection === 'probabilistic' ? 'active' : ''}
+          onClick={() => setActiveSection('probabilistic')}
+        >
+          Probabilistic
         </button>
         <button 
           className={activeSection === 'ai' ? 'active' : ''}
