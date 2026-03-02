@@ -88,6 +88,8 @@ type TrendAnalysisHistory struct {
 	Change24h      *float64  `json:"change_24h" gorm:"column:change_24h"`
 	FinalSignal    *string   `json:"final_signal" gorm:"size:20"`
 	FinalRating    *float64  `json:"final_rating"`
+	ProbUp         *float64  `json:"prob_up" gorm:"column:prob_up"`
+	ExpectedValue  *float64  `json:"expected_value" gorm:"column:expected_value"`
 	IndicatorsJSON string    `json:"indicators_json" gorm:"type:text;not null"`
 	AnalyzedAt     time.Time `json:"analyzed_at" gorm:"index"`
 }

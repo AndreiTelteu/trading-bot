@@ -37,6 +37,8 @@ type AnalyzedCoin struct {
 	Signal        string            `json:"signal"`
 	Rating        float64           `json:"rating"`
 	Timeframe     string            `json:"timeframe"`
+	ProbUp        *float64          `json:"prob_up,omitempty"`
+	ExpectedValue *float64          `json:"expected_value,omitempty"`
 	Indicators    []IndicatorResult `json:"indicators"`
 	TradeExecuted *bool             `json:"trade_executed,omitempty"`
 	Error         string            `json:"error,omitempty"`
@@ -707,6 +709,21 @@ func AnalyzeTrendingCoins() (*TrendingAnalysisResult, error) {
 		analysis := analyzeSymbolFromCandles(symbol, "15m", candles15m)
 		analysis.Change24h = coin.Change24h
 
+		var probUp *float64
+		var expectedValue *float64
+		probOk := true
+		if probModelEnabled {
+			features := CalculateFeatureVector(candles15m, GetIndicatorSettings())
+			pUp, ev, ok := computeProbGate(features, settings)
+			probOk = ok
+			if features.Valid {
+				probUp = &pUp
+				expectedValue = &ev
+				analysis.ProbUp = probUp
+				analysis.ExpectedValue = expectedValue
+			}
+		}
+
 		// Save to trend analysis history
 		indicatorsJSON, _ := json.Marshal(analysis.Indicators)
 		history := database.TrendAnalysisHistory{
@@ -716,6 +733,8 @@ func AnalyzeTrendingCoins() (*TrendingAnalysisResult, error) {
 			Change24h:      &coin.Change24h,
 			FinalSignal:    &analysis.Signal,
 			FinalRating:    &analysis.Rating,
+			ProbUp:         probUp,
+			ExpectedValue:  expectedValue,
 			IndicatorsJSON: string(indicatorsJSON),
 			AnalyzedAt:     time.Now(),
 		}
@@ -732,10 +751,7 @@ func AnalyzeTrendingCoins() (*TrendingAnalysisResult, error) {
 			signalQualifies = analysis.Signal == "BUY" || analysis.Signal == "STRONG_BUY"
 		}
 		confidenceQualifies := analysis.Rating >= minConfidenceToBuy
-		probOk := true
 		if probModelEnabled {
-			features := CalculateFeatureVector(candles15m, GetIndicatorSettings())
-			_, _, probOk = computeProbGate(features, settings)
 			confidenceQualifies = probOk
 		}
 
@@ -845,15 +861,27 @@ func GetRecentAnalyzedCoins() ([]AnalyzedCoin, error) {
 		if row.FinalRating != nil {
 			rating = *row.FinalRating
 		}
+		var probUp *float64
+		if row.ProbUp != nil {
+			val := *row.ProbUp
+			probUp = &val
+		}
+		var expectedValue *float64
+		if row.ExpectedValue != nil {
+			val := *row.ExpectedValue
+			expectedValue = &val
+		}
 
 		latestBySymbol[row.Symbol] = AnalyzedCoin{
-			Symbol:     row.Symbol,
-			Price:      price,
-			Change24h:  change,
-			Signal:     signal,
-			Rating:     rating,
-			Timeframe:  row.Timeframe,
-			Indicators: indicators,
+			Symbol:        row.Symbol,
+			Price:         price,
+			Change24h:     change,
+			Signal:        signal,
+			Rating:        rating,
+			Timeframe:     row.Timeframe,
+			ProbUp:        probUp,
+			ExpectedValue: expectedValue,
+			Indicators:    indicators,
 		}
 		orderedSymbols = append(orderedSymbols, row.Symbol)
 
