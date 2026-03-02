@@ -213,6 +213,7 @@ func UpdatePositionsPrices() (interface{}, error) {
 	allowSellAtLoss := getSettingBool(settings, "allow_sell_at_loss", false)
 	sellOnSignal := getSettingBool(settings, "sell_on_signal", true)
 	minConfidenceToSell := getSettingFloat(settings, "min_confidence_to_sell", 3.5)
+	timeStopBars := getSettingInt(settings, "time_stop_bars", 0)
 
 	var positions []database.Position
 	if err := database.DB.Where("status = ?", "open").Find(&positions).Error; err != nil {
@@ -272,14 +273,37 @@ func UpdatePositionsPrices() (interface{}, error) {
 
 			closeReason := ""
 
-			if pnlPercent <= -stopLossPercent {
-				closeReason = "stop_loss"
-			} else if pnlPercent >= takeProfitPercent {
-				closeReason = "take_profit"
-			} else if trailingStopEnabled && positions[i].EntryPrice != nil {
+			if positions[i].StopPrice != nil || positions[i].TakeProfitPrice != nil {
+				if positions[i].StopPrice != nil && currentPrice <= *positions[i].StopPrice {
+					closeReason = "stop_loss"
+				} else if positions[i].TakeProfitPrice != nil && currentPrice >= *positions[i].TakeProfitPrice {
+					closeReason = "take_profit"
+				}
+			} else {
+				if pnlPercent <= -stopLossPercent {
+					closeReason = "stop_loss"
+				} else if pnlPercent >= takeProfitPercent {
+					closeReason = "take_profit"
+				}
+			}
+
+			if closeReason == "" && trailingStopEnabled && positions[i].EntryPrice != nil {
 				dropFromHigh := ((currentPrice - *positions[i].EntryPrice) / *positions[i].EntryPrice) * 100
 				if dropFromHigh <= -trailingStopPercent {
 					closeReason = "trailing_stop"
+				}
+			}
+
+			if closeReason == "" {
+				maxBars := timeStopBars
+				if positions[i].MaxBarsHeld != nil {
+					maxBars = *positions[i].MaxBarsHeld
+				}
+				if maxBars > 0 {
+					barsHeld := int(time.Since(positions[i].OpenedAt) / (15 * time.Minute))
+					if barsHeld >= maxBars && pnlPercent <= 0 {
+						closeReason = "time_stop"
+					}
 				}
 			}
 

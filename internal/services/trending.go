@@ -429,6 +429,102 @@ func computeVolGate(candles []Candle, price float64, atrPeriod int, minRatio flo
 	return ratio >= minRatio && ratio <= maxRatio
 }
 
+func computePortfolioValue(wallet database.Wallet) float64 {
+	total := wallet.Balance
+	var positions []database.Position
+	database.DB.Where("status = ?", "open").Find(&positions)
+	for _, pos := range positions {
+		price := pos.AvgPrice
+		if pos.CurrentPrice != nil {
+			price = *pos.CurrentPrice
+		}
+		total += pos.Amount * price
+	}
+	return total
+}
+
+func computePositionSize(atr float64, price float64, balance float64, portfolioValue float64, settings map[string]string) (float64, float64, float64, float64, *int, error) {
+	if atr <= 0 {
+		return 0, 0, 0, 0, nil, fmt.Errorf("invalid ATR for sizing")
+	}
+	if price <= 0 {
+		return 0, 0, 0, 0, nil, fmt.Errorf("invalid price for sizing")
+	}
+	if balance <= 0 {
+		return 0, 0, 0, 0, nil, fmt.Errorf("insufficient balance")
+	}
+	if portfolioValue <= 0 {
+		return 0, 0, 0, 0, nil, fmt.Errorf("invalid portfolio value")
+	}
+
+	riskPerTrade := getSettingFloat(settings, "risk_per_trade", 0.5)
+	stopMult := getSettingFloat(settings, "stop_mult", 1.5)
+	tpMult := getSettingFloat(settings, "tp_mult", 3.0)
+	maxPositionValue := getSettingFloat(settings, "max_position_value", 0)
+	timeStopBars := getSettingInt(settings, "time_stop_bars", 0)
+
+	if riskPerTrade <= 0 || riskPerTrade > 100 {
+		return 0, 0, 0, 0, nil, fmt.Errorf("risk_per_trade must be between 0 and 100")
+	}
+	if stopMult <= 0 {
+		return 0, 0, 0, 0, nil, fmt.Errorf("stop_mult must be greater than 0")
+	}
+	if tpMult <= 0 {
+		return 0, 0, 0, 0, nil, fmt.Errorf("tp_mult must be greater than 0")
+	}
+	if maxPositionValue < 0 {
+		return 0, 0, 0, 0, nil, fmt.Errorf("max_position_value must be >= 0")
+	}
+	if timeStopBars < 0 {
+		return 0, 0, 0, 0, nil, fmt.Errorf("time_stop_bars must be >= 0")
+	}
+
+	volStop := atr * stopMult
+	if volStop <= 0 {
+		return 0, 0, 0, 0, nil, fmt.Errorf("invalid stop distance from ATR")
+	}
+
+	riskBudget := portfolioValue * (riskPerTrade / 100)
+	if riskBudget <= 0 {
+		return 0, 0, 0, 0, nil, fmt.Errorf("risk budget is too small")
+	}
+
+	positionSize := riskBudget / volStop
+	if positionSize <= 0 {
+		return 0, 0, 0, 0, nil, fmt.Errorf("position size is too small")
+	}
+
+	amountUsdt := positionSize * price
+	if maxPositionValue > 0 && amountUsdt > maxPositionValue {
+		amountUsdt = maxPositionValue
+	}
+	if amountUsdt > balance {
+		amountUsdt = balance
+	}
+	if amountUsdt <= 0 {
+		return 0, 0, 0, 0, nil, fmt.Errorf("calculated order value is too small")
+	}
+
+	cryptoAmount := amountUsdt / price
+	if cryptoAmount <= 0 || math.IsNaN(cryptoAmount) || math.IsInf(cryptoAmount, 0) {
+		return 0, 0, 0, 0, nil, fmt.Errorf("invalid crypto amount")
+	}
+
+	stopPrice := price - volStop
+	takeProfitPrice := price + (atr * tpMult)
+	if stopPrice <= 0 || takeProfitPrice <= 0 {
+		return 0, 0, 0, 0, nil, fmt.Errorf("invalid stop or take-profit price")
+	}
+
+	var maxBarsHeld *int
+	if timeStopBars > 0 {
+		maxBars := timeStopBars
+		maxBarsHeld = &maxBars
+	}
+
+	return amountUsdt, cryptoAmount, stopPrice, takeProfitPrice, maxBarsHeld, nil
+}
+
 func computeProbUp(features FeatureVector, beta0 float64, beta1 float64, beta2 float64, beta3 float64, beta4 float64, beta5 float64, beta6 float64) float64 {
 	z := beta0 +
 		beta1*features.RSI +
@@ -573,19 +669,45 @@ func executeBuyFromTrending(symbol string) (bool, error) {
 		return false, fmt.Errorf("invalid price for %s", pairSymbol)
 	}
 
-	// Calculate amount to buy
-	entryPercent := getSettingFloat(settings, "entry_percent", 5.0)
-	amountUsdt := wallet.Balance * (entryPercent / 100)
+	volSizingEnabled := getSettingBool(settings, "vol_sizing_enabled", false)
+	amountUsdt := 0.0
+	cryptoAmount := 0.0
+	var stopPrice *float64
+	var takeProfitPrice *float64
+	var maxBarsHeld *int
+	var atr float64
 
-	if amountUsdt > wallet.Balance {
-		return false, fmt.Errorf("insufficient balance")
+	if volSizingEnabled {
+		candles, err := fetchCandles(pairSymbol, "15m", 200)
+		if err != nil {
+			return false, fmt.Errorf("failed to fetch candles for %s: %w", pairSymbol, err)
+		}
+		atr = CalculateATR(candles, 14)
+		portfolioValue := computePortfolioValue(wallet)
+		stopVal := 0.0
+		takeProfitVal := 0.0
+		var maxBars *int
+		amountUsdt, cryptoAmount, stopVal, takeProfitVal, maxBars, err = computePositionSize(atr, currentPrice, wallet.Balance, portfolioValue, settings)
+		if err != nil {
+			return false, err
+		}
+		stopPrice = &stopVal
+		takeProfitPrice = &takeProfitVal
+		maxBarsHeld = maxBars
+	} else {
+		entryPercent := getSettingFloat(settings, "entry_percent", 5.0)
+		amountUsdt = wallet.Balance * (entryPercent / 100)
+
+		if amountUsdt > wallet.Balance {
+			return false, fmt.Errorf("insufficient balance")
+		}
+
+		if amountUsdt <= 0 {
+			return false, fmt.Errorf("calculated amount is 0")
+		}
+
+		cryptoAmount = amountUsdt / currentPrice
 	}
-
-	if amountUsdt <= 0 {
-		return false, fmt.Errorf("calculated amount is 0")
-	}
-
-	cryptoAmount := amountUsdt / currentPrice
 
 	// Check for existing position - if exists, update (DCA/average), else create new
 	var existingPosition database.Position
@@ -598,16 +720,34 @@ func executeBuyFromTrending(symbol string) (bool, error) {
 		newAvg := ((oldAmount * oldAvg) + (cryptoAmount * currentPrice)) / (oldAmount + cryptoAmount)
 		existingPosition.Amount += cryptoAmount
 		existingPosition.AvgPrice = newAvg
+		if volSizingEnabled {
+			stopMult := getSettingFloat(settings, "stop_mult", 1.5)
+			tpMult := getSettingFloat(settings, "tp_mult", 3.0)
+			volStop := atr * stopMult
+			volTp := atr * tpMult
+			if volStop > 0 && volTp > 0 {
+				newStop := newAvg - volStop
+				newTakeProfit := newAvg + volTp
+				if newStop > 0 && newTakeProfit > 0 {
+					existingPosition.StopPrice = &newStop
+					existingPosition.TakeProfitPrice = &newTakeProfit
+				}
+			}
+			existingPosition.MaxBarsHeld = maxBarsHeld
+		}
 		database.DB.Save(&existingPosition)
 	} else {
 		position := database.Position{
-			Symbol:       cleanSymbol,
-			Amount:       cryptoAmount,
-			AvgPrice:     currentPrice,
-			EntryPrice:   &currentPrice,
-			CurrentPrice: &currentPrice,
-			Status:       "open",
-			OpenedAt:     time.Now(),
+			Symbol:          cleanSymbol,
+			Amount:          cryptoAmount,
+			AvgPrice:        currentPrice,
+			EntryPrice:      &currentPrice,
+			CurrentPrice:    &currentPrice,
+			StopPrice:       stopPrice,
+			TakeProfitPrice: takeProfitPrice,
+			MaxBarsHeld:     maxBarsHeld,
+			Status:          "open",
+			OpenedAt:        time.Now(),
 		}
 		database.DB.Create(&position)
 	}

@@ -109,6 +109,12 @@ function SettingsPanel() {
   const tradingSettings = [
     { key: 'auto_trade_enabled', label: 'Auto Trade', type: 'boolean' },
     { key: 'entry_percent', label: 'Entry %', type: 'number', step: 0.1 },
+    { key: 'vol_sizing_enabled', label: 'Vol Sizing Enabled', type: 'boolean' },
+    { key: 'risk_per_trade', label: 'Risk Per Trade %', type: 'number', step: 0.1 },
+    { key: 'stop_mult', label: 'ATR Stop Mult', type: 'number', step: 0.1 },
+    { key: 'tp_mult', label: 'ATR TP Mult', type: 'number', step: 0.1 },
+    { key: 'max_position_value', label: 'Max Position Value', type: 'number', step: 1 },
+    { key: 'time_stop_bars', label: 'Time Stop Bars', type: 'number', step: 1 },
     { key: 'stop_loss_percent', label: 'Stop Loss %', type: 'number', step: 0.1 },
     { key: 'take_profit_percent', label: 'Take Profit %', type: 'number', step: 0.1 },
     { key: 'rebuy_percent', label: 'Rebuy %', type: 'number', step: 0.1 },

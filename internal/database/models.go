@@ -13,18 +13,21 @@ type Wallet struct {
 }
 
 type Position struct {
-	ID           uint       `json:"id" gorm:"primaryKey;autoIncrement"`
-	Symbol       string     `json:"symbol" gorm:"size:20;uniqueIndex"`
-	Amount       float64    `json:"amount"`
-	AvgPrice     float64    `json:"avg_price"`
-	EntryPrice   *float64   `json:"entry_price"`
-	CurrentPrice *float64   `json:"current_price"`
-	Pnl          float64    `json:"pnl" gorm:"default:0"`
-	PnlPercent   float64    `json:"pnl_percent" gorm:"default:0"`
-	Status       string     `json:"status" gorm:"size:20;default:open"`
-	OpenedAt     time.Time  `json:"opened_at"`
-	ClosedAt     *time.Time `json:"closed_at"`
-	CloseReason  *string    `json:"close_reason" gorm:"size:50"`
+	ID              uint       `json:"id" gorm:"primaryKey;autoIncrement"`
+	Symbol          string     `json:"symbol" gorm:"size:20;uniqueIndex"`
+	Amount          float64    `json:"amount"`
+	AvgPrice        float64    `json:"avg_price"`
+	EntryPrice      *float64   `json:"entry_price"`
+	CurrentPrice    *float64   `json:"current_price"`
+	StopPrice       *float64   `json:"stop_price"`
+	TakeProfitPrice *float64   `json:"take_profit_price"`
+	MaxBarsHeld     *int       `json:"max_bars_held"`
+	Pnl             float64    `json:"pnl" gorm:"default:0"`
+	PnlPercent      float64    `json:"pnl_percent" gorm:"default:0"`
+	Status          string     `json:"status" gorm:"size:20;default:open"`
+	OpenedAt        time.Time  `json:"opened_at"`
+	ClosedAt        *time.Time `json:"closed_at"`
+	CloseReason     *string    `json:"close_reason" gorm:"size:50"`
 }
 
 type Order struct {

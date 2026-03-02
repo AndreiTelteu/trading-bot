@@ -116,6 +116,18 @@ The server runs on `http://localhost:5001` by default.
 - `GET /api/indicator-weights` - Get indicator weights
 - `PUT /api/indicator-weights` - Update indicator weights
 
+## Volatility-Based Position Sizing
+
+When `vol_sizing_enabled` is true, position sizing uses ATR-based risk budgeting and stores per-position exits.
+
+Key settings:
+- `vol_sizing_enabled`: Enable volatility-adjusted sizing for auto-trades
+- `risk_per_trade`: Risk budget as a percent of portfolio value
+- `stop_mult`: ATR multiplier for stop-loss distance
+- `tp_mult`: ATR multiplier for take-profit distance
+- `max_position_value`: Optional cap on position value (0 disables)
+- `time_stop_bars`: Optional time stop in 15m bars when PnL is not positive
+
 ### WebSocket
 - `WS /ws` - Real-time updates
 
