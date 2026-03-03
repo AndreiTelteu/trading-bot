@@ -54,10 +54,24 @@ function LLMConfig() {
     setTesting(true)
     setMessage(null)
     try {
-      await fetch(`${API_BASE}/llm/test`, { method: 'POST' })
+      const res = await fetch(`${API_BASE}/llm/test`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(config)
+      })
+      if (!res.ok) {
+        let errorMessage = 'Test failed'
+        try {
+          const data = await res.json()
+          if (data?.error) {
+            errorMessage = data.error
+          }
+        } catch {}
+        throw new Error(errorMessage)
+      }
       setMessage({ type: 'success', text: 'Configuration is valid. Note: Actual LLM calls are disabled.' })
     } catch (err) {
-      setMessage({ type: 'error', text: 'Test failed' })
+      setMessage({ type: 'error', text: err.message || 'Test failed' })
     }
     setTesting(false)
   }
@@ -68,13 +82,6 @@ function LLMConfig() {
     { value: 'openrouter', label: 'OpenRouter' },
     { value: 'openai', label: 'OpenAI' },
     { value: 'custom', label: 'Custom' },
-  ]
-
-  const models = [
-    { value: 'google/gemini-2.0-flash-001', label: 'Google Gemini 2.0 Flash' },
-    { value: 'openai/gpt-4o', label: 'GPT-4o' },
-    { value: 'openai/gpt-4o-mini', label: 'GPT-4o Mini' },
-    { value: 'anthropic/claude-3.5-sonnet', label: 'Claude 3.5 Sonnet' },
   ]
 
   return (
@@ -117,10 +124,11 @@ function LLMConfig() {
 
         <div className="form-group">
           <label>Model</label>
-          <CustomSelect
+          <input
+            type="text"
             value={config.model}
-            onChange={val => handleChange('model', val)}
-            options={models}
+            onChange={e => handleChange('model', e.target.value)}
+            placeholder="google/gemini-2.0-flash-001"
           />
         </div>
 

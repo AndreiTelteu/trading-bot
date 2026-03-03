@@ -34,10 +34,18 @@ func SetupTestDB(t *testing.T) {
 		&database.Position{},
 		&database.Order{},
 		&database.Setting{},
+		&database.LLMConfig{},
 	)
 
 	wallet := database.Wallet{Balance: 1000.0, Currency: "USDT"}
 	database.DB.Create(&wallet)
+
+	llmConfig := database.LLMConfig{
+		Provider: "openrouter",
+		BaseURL:  "https://openrouter.ai/api/v1",
+		Model:    "google/gemini-2.0-flash-001",
+	}
+	database.DB.Create(&llmConfig)
 }
 
 func SetupTestApp() *fiber.App {
@@ -97,6 +105,11 @@ func setupTestRoutes(app *fiber.App, cfg *config.Config) {
 	analysis.Get("/:symbol", handlers.GetAnalysis)
 	analysis.Get("", handlers.GetAnalysisDefault)
 	analysis.Post("/analyze", handlers.AnalyzeSymbol)
+
+	llm := api.Group("/llm")
+	llm.Get("/config", handlers.GetLLMConfig)
+	llm.Put("/config", handlers.UpdateLLMConfig)
+	llm.Post("/test", handlers.TestLLMConfig)
 
 	ai := api.Group("/ai")
 	ai.Get("/proposals", handlers.GetAIProposals)

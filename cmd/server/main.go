@@ -149,6 +149,11 @@ func setupRoutes(app *fiber.App, cfg *config.Config) {
 	activity.Get("", handlers.GetActivityLogs)
 	activity.Post("", handlers.CreateActivityLog)
 
+	llm := api.Group("/llm")
+	llm.Get("/config", handlers.GetLLMConfig)
+	llm.Put("/config", handlers.UpdateLLMConfig)
+	llm.Post("/test", handlers.TestLLMConfig)
+
 	// AI routes
 	ai := api.Group("/ai")
 	ai.Get("/proposals", handlers.GetAIProposals)

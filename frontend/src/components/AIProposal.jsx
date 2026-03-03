@@ -13,11 +13,9 @@ function AIProposal() {
   }, [])
 
   const fetchProposals = async () => {
+    setLoading(true)
     try {
-      const url = filter === 'all' 
-        ? `${API_BASE}/ai/proposals`
-        : `${API_BASE}/ai/proposals?status=${filter}`
-      const res = await fetch(url)
+      const res = await fetch(`${API_BASE}/ai/proposals`)
       const data = await res.json()
       setProposals(data)
     } catch (err) {
@@ -61,7 +59,11 @@ function AIProposal() {
   if (loading) return <div>Loading...</div>
 
   const pending = proposals.filter(p => p.status === 'pending')
-  const resolved = proposals.filter(p => p.status !== 'pending')
+  const approved = proposals.filter(p => p.status === 'approved')
+  const denied = proposals.filter(p => p.status === 'denied')
+  const filteredProposals = filter === 'all'
+    ? proposals
+    : proposals.filter(p => p.status === filter)
 
   return (
     <div className="ai-proposal">
@@ -79,35 +81,35 @@ function AIProposal() {
       <div className="filter-tabs">
         <button 
           className={filter === 'all' ? 'active' : ''}
-          onClick={() => { setFilter('all'); fetchProposals() }}
+          onClick={() => { setFilter('all') }}
         >
-          All
+          All ({proposals.length})
         </button>
         <button 
           className={filter === 'pending' ? 'active' : ''}
-          onClick={() => { setFilter('pending'); fetchProposals() }}
+          onClick={() => { setFilter('pending') }}
         >
           Pending ({pending.length})
         </button>
         <button 
           className={filter === 'approved' ? 'active' : ''}
-          onClick={() => { setFilter('approved'); fetchProposals() }}
+          onClick={() => { setFilter('approved') }}
         >
-          Approved
+          Approved ({approved.length})
         </button>
         <button 
           className={filter === 'denied' ? 'active' : ''}
-          onClick={() => { setFilter('denied'); fetchProposals() }}
+          onClick={() => { setFilter('denied') }}
         >
-          Denied
+          Denied ({denied.length})
         </button>
       </div>
 
-      {proposals.length === 0 ? (
+      {filteredProposals.length === 0 ? (
         <p className="no-data">No proposals yet. Click "Generate Proposals" to create new ones.</p>
       ) : (
         <div className="proposals-list">
-          {proposals.map(p => (
+          {filteredProposals.map(p => (
             <div key={p.id} className={`proposal-card ${p.status}`}>
               <div className="proposal-header">
                 <span className={`status-badge ${p.status}`}>{p.status}</span>

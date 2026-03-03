@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react'
+import { createPortal } from 'react-dom'
 import CustomSelect from './CustomSelect'
 
 const API_BASE = '/api'
@@ -9,6 +10,10 @@ function SettingsPanel() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [activeSection, setActiveSection] = useState('trading')
+  const [modalOpen, setModalOpen] = useState(false)
+  const [modalMode, setModalMode] = useState('export')
+  const [modalText, setModalText] = useState('')
+  const [modalError, setModalError] = useState('')
 
   useEffect(() => {
     fetchSettings()
@@ -104,6 +109,82 @@ function SettingsPanel() {
     setSaving(false)
   }
 
+  const openExportModal = () => {
+    const payload = {
+      settings,
+      weights,
+    }
+    setModalMode('export')
+    setModalText(JSON.stringify(payload, null, 2))
+    setModalError('')
+    setModalOpen(true)
+  }
+
+  const openImportModal = () => {
+    setModalMode('import')
+    setModalText('')
+    setModalError('')
+    setModalOpen(true)
+  }
+
+  const closeModal = () => {
+    setModalOpen(false)
+    setModalText('')
+    setModalError('')
+  }
+
+  const handleImportSettings = async () => {
+    setSaving(true)
+    setModalError('')
+    let parsed
+    try {
+      parsed = JSON.parse(modalText)
+    } catch (err) {
+      setModalError('Invalid JSON')
+      setSaving(false)
+      return
+    }
+
+    const nextSettings = parsed && typeof parsed.settings === 'object' && !Array.isArray(parsed.settings)
+      ? parsed.settings
+      : {}
+    const nextWeights = parsed && typeof parsed.weights === 'object' && !Array.isArray(parsed.weights)
+      ? parsed.weights
+      : {}
+
+    setSettings(nextSettings)
+    setWeights(nextWeights)
+
+    try {
+      const settingsPayload = Object.entries(nextSettings).map(([key, value]) => ({
+        key,
+        value: String(value)
+      }))
+      await fetch(`${API_BASE}/settings`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(settingsPayload)
+      })
+
+      const weightsPayload = Object.entries(nextWeights).map(([indicator, weight]) => ({
+        indicator,
+        weight: parseFloat(weight)
+      }))
+      await fetch(`${API_BASE}/indicator-weights`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(weightsPayload)
+      })
+
+      alert('Settings imported!')
+      closeModal()
+    } catch (err) {
+      console.error('Failed to import settings:', err)
+      alert('Failed to import settings')
+    }
+    setSaving(false)
+  }
+
   if (loading) return <div>Loading...</div>
 
   const tradingSettings = [
@@ -187,9 +268,43 @@ function SettingsPanel() {
     : activeSection === 'probabilistic' ? probabilisticSettings
     : aiSettings
 
+  const modalContent = (
+    <div className="modal-overlay">
+      <div className="modal-panel">
+        <div className="modal-header">
+          <h3>{modalMode === 'export' ? 'Export Settings' : 'Import Settings'}</h3>
+          <button className="modal-close" onClick={closeModal}>×</button>
+        </div>
+        <div className="modal-body">
+          <textarea
+            className="modal-textarea"
+            value={modalText}
+            onChange={e => setModalText(e.target.value)}
+            readOnly={modalMode === 'export'}
+          />
+          {modalError && <div className="modal-error">{modalError}</div>}
+        </div>
+        <div className="modal-actions">
+          {modalMode === 'import' && (
+            <button className="btn-primary" onClick={handleImportSettings} disabled={saving}>
+              {saving ? 'Importing...' : 'Import Settings'}
+            </button>
+          )}
+          <button className="btn-danger" onClick={closeModal}>Close</button>
+        </div>
+      </div>
+    </div>
+  )
+
   return (
     <div className="settings-panel">
-      <h2>Settings</h2>
+      <div className="settings-header">
+        <h2>Settings</h2>
+        <div className="settings-actions">
+          <button className="btn-primary" onClick={openExportModal}>Export Settings</button>
+          <button className="btn-danger" onClick={openImportModal}>Import Settings</button>
+        </div>
+      </div>
       
       <div className="settings-tabs">
         <button 
@@ -298,6 +413,7 @@ function SettingsPanel() {
           </div>
         </div>
       )}
+      {modalOpen && createPortal(modalContent, document.body)}
     </div>
   )
 }

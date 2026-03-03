@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 	"trading-go/internal/database"
@@ -38,19 +39,21 @@ func GenerateProposals() (interface{}, error) {
 		return nil, fiber.NewError(500, "Failed to get positions: "+err.Error())
 	}
 
-	settings, err := getSettingsMap()
+	settings, err := getSettingsByCategory([]string{"trading", "indicators", "probabilistic", "ai"})
 	if err != nil {
 		return nil, fiber.NewError(500, "Failed to get settings: "+err.Error())
 	}
 
-	prompt := buildProposalPrompt(analysisData, wallet, positions, settings)
+	weights := GetIndicatorWeights()
+	allowedKeys := buildAllowedParameterKeys(settings, weights)
+	prompt := buildProposalPrompt(analysisData, wallet, positions, settings, weights)
 
 	response, err := callLLM(&llmConfig, prompt)
 	if err != nil {
 		return nil, fiber.NewError(500, "Failed to call LLM: "+err.Error())
 	}
 
-	proposals, err := parseProposalsFromResponse(response)
+	proposals, err := parseProposalsFromResponse(response, settings, weights, allowedKeys)
 	if err != nil {
 		return nil, fiber.NewError(500, "Failed to parse proposals: "+err.Error())
 	}
@@ -153,9 +156,9 @@ func getOpenPositions() ([]map[string]interface{}, error) {
 	return result, nil
 }
 
-func getSettingsMap() (map[string]string, error) {
+func getSettingsByCategory(categories []string) (map[string]string, error) {
 	var settings []database.Setting
-	if err := database.DB.Find(&settings).Error; err != nil {
+	if err := database.DB.Where("category IN ?", categories).Find(&settings).Error; err != nil {
 		return nil, err
 	}
 
@@ -166,33 +169,46 @@ func getSettingsMap() (map[string]string, error) {
 	return result, nil
 }
 
-func buildProposalPrompt(analysisData []AnalysisSummary, wallet map[string]interface{}, positions []map[string]interface{}, settings map[string]string) string {
+func buildAllowedParameterKeys(settings map[string]string, weights map[string]float64) map[string]bool {
+	allowed := make(map[string]bool)
+	for key := range settings {
+		allowed[key] = true
+	}
+	for indicator := range weights {
+		allowed["weight:"+indicator] = true
+	}
+	return allowed
+}
+
+func buildProposalPrompt(analysisData []AnalysisSummary, wallet map[string]interface{}, positions []map[string]interface{}, settings map[string]string, weights map[string]float64) string {
 	analysisJSON, _ := json.Marshal(analysisData)
 	positionsJSON, _ := json.Marshal(positions)
 
 	var sb strings.Builder
-	sb.WriteString("You are a trading AI assistant. Analyze the following data and suggest trading parameter adjustments or actions.\n\n")
+	sb.WriteString("You are a trading AI assistant. Analyze the data and suggest parameter adjustments only.\n\n")
 	sb.WriteString("Current Market Analysis:\n")
 	sb.WriteString(string(analysisJSON))
 	sb.WriteString("\n\nWallet: ")
 	sb.WriteString(fmt.Sprintf("Balance: %.2f %s", wallet["balance"].(float64), wallet["currency"].(string)))
 	sb.WriteString("\n\nOpen Positions:\n")
 	sb.WriteString(string(positionsJSON))
-	sb.WriteString("\n\nCurrent Settings:\n")
+	sb.WriteString("\n\nCurrent Settings (allowed keys):\n")
 	for k, v := range settings {
 		sb.WriteString(fmt.Sprintf("%s: %s\n", k, v))
 	}
-	sb.WriteString("\n\nBased on this data, generate trading proposals. Each proposal should be one of these types:\n")
-	sb.WriteString("- buy_signal: Suggest opening a new position\n")
-	sb.WriteString("- sell_signal: Suggest closing a position\n")
-	sb.WriteString("- parameter_adjustment: Suggest changing a trading parameter\n")
-	sb.WriteString("- risk_management: Suggest risk management action\n\n")
+	sb.WriteString("\n\nCurrent Indicator Weights (allowed keys use prefix weight:):\n")
+	for k, v := range weights {
+		sb.WriteString(fmt.Sprintf("weight:%s: %g\n", k, v))
+	}
+	sb.WriteString("\n\nOnly return proposals of type parameter_adjustment. Each proposal must change exactly one allowed key.\n")
+	sb.WriteString("Allowed keys are the keys listed above in Current Settings plus the weight:* keys listed above.\n")
+	sb.WriteString("Do not return buy/sell/risk proposals. Do not return null values.\n\n")
 	sb.WriteString("Return a JSON array of proposals with these fields:\n")
-	sb.WriteString("- proposal_type: The type of proposal\n")
-	sb.WriteString("- parameter_key: The setting key to change (for parameter_adjustment)\n")
-	sb.WriteString("- old_value: Current value\n")
-	sb.WriteString("- new_value: Proposed new value\n")
-	sb.WriteString("- reasoning: Why this proposal makes sense\n\n")
+	sb.WriteString("- proposal_type: must be parameter_adjustment\n")
+	sb.WriteString("- parameter_key: one allowed key\n")
+	sb.WriteString("- old_value: current value for that key\n")
+	sb.WriteString("- new_value: proposed value for that key\n")
+	sb.WriteString("- reasoning: why this adjustment makes sense\n\n")
 	sb.WriteString("Example: [{\"proposal_type\":\"parameter_adjustment\",\"parameter_key\":\"rsi_period\",\"old_value\":\"14\",\"new_value\":\"20\",\"reasoning\":\"Longer period reduces noise\"}]\n\n")
 	sb.WriteString("Respond with only valid JSON array, no other text:")
 
@@ -253,7 +269,7 @@ func callLLM(config *database.LLMConfig, prompt string) (string, error) {
 	return llmResp.Choices[0].Message.Content, nil
 }
 
-func parseProposalsFromResponse(response string) ([]database.AIProposal, error) {
+func parseProposalsFromResponse(response string, settings map[string]string, weights map[string]float64, allowedKeys map[string]bool) ([]database.AIProposal, error) {
 	response = strings.TrimSpace(response)
 
 	start := -1
@@ -290,15 +306,41 @@ func parseProposalsFromResponse(response string) ([]database.AIProposal, error) 
 		return []database.AIProposal{}, nil
 	}
 
-	proposals := make([]database.AIProposal, len(rawProposals))
-	for i, raw := range rawProposals {
-		proposals[i] = database.AIProposal{
-			ProposalType: raw.ProposalType,
-			ParameterKey: raw.ParameterKey,
-			OldValue:     raw.OldValue,
+	proposals := make([]database.AIProposal, 0, len(rawProposals))
+	for _, raw := range rawProposals {
+		if strings.TrimSpace(raw.ProposalType) != "parameter_adjustment" {
+			continue
+		}
+		if raw.ParameterKey == nil || raw.NewValue == nil {
+			continue
+		}
+		paramKey := strings.TrimSpace(*raw.ParameterKey)
+		if paramKey == "" || !allowedKeys[paramKey] {
+			continue
+		}
+		if strings.TrimSpace(*raw.NewValue) == "" {
+			continue
+		}
+		oldValue := ""
+		if strings.HasPrefix(paramKey, "weight:") {
+			indicator := strings.TrimPrefix(paramKey, "weight:")
+			if weight, ok := weights[indicator]; ok {
+				oldValue = fmt.Sprintf("%g", weight)
+			}
+		} else if current, ok := settings[paramKey]; ok {
+			oldValue = current
+		}
+		if oldValue == "" {
+			continue
+		}
+		oldValueCopy := oldValue
+		proposals = append(proposals, database.AIProposal{
+			ProposalType: "parameter_adjustment",
+			ParameterKey: &paramKey,
+			OldValue:     &oldValueCopy,
 			NewValue:     raw.NewValue,
 			Reasoning:    raw.Reasoning,
-		}
+		})
 	}
 
 	return proposals, nil
@@ -323,14 +365,30 @@ func ApproveProposal(id uint) (interface{}, error) {
 	}
 
 	if proposal.ProposalType == "parameter_adjustment" && proposal.ParameterKey != nil && proposal.NewValue != nil {
-		var setting database.Setting
-		if err := database.DB.First(&setting, "key = ?", *proposal.ParameterKey).Error; err != nil {
-			setting = database.Setting{Key: *proposal.ParameterKey}
-			database.DB.Create(&setting)
+		paramKey := strings.TrimSpace(*proposal.ParameterKey)
+		if strings.HasPrefix(paramKey, "weight:") {
+			indicator := strings.TrimSpace(strings.TrimPrefix(paramKey, "weight:"))
+			if indicator != "" {
+				if weightValue, err := strconv.ParseFloat(strings.TrimSpace(*proposal.NewValue), 64); err == nil {
+					var weight database.IndicatorWeight
+					if err := database.DB.First(&weight, "indicator = ?", indicator).Error; err != nil {
+						weight = database.IndicatorWeight{Indicator: indicator}
+						database.DB.Create(&weight)
+					}
+					weight.Weight = weightValue
+					database.DB.Save(&weight)
+				}
+			}
+		} else {
+			var setting database.Setting
+			if err := database.DB.First(&setting, "key = ?", paramKey).Error; err != nil {
+				setting = database.Setting{Key: paramKey}
+				database.DB.Create(&setting)
+			}
+			setting.Value = *proposal.NewValue
+			setting.UpdatedAt = time.Now()
+			database.DB.Save(&setting)
 		}
-		setting.Value = *proposal.NewValue
-		setting.UpdatedAt = time.Now()
-		database.DB.Save(&setting)
 	}
 
 	return fiber.Map{
