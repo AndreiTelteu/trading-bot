@@ -42,6 +42,40 @@ const periodToMs = (period) => {
   }
 }
 
+const backfillMissingHours = (data, periodMs) => {
+  if (!Array.isArray(data)) {
+    return []
+  }
+  const now = Date.now()
+  const startTime = now - periodMs
+  const hourKey = (timeMs) => {
+    const rounded = new Date(timeMs)
+    rounded.setMinutes(0, 0, 0)
+    return rounded.getTime()
+  }
+  const withinRange = data.filter((snapshot) => {
+    const time = new Date(snapshot.timestamp).getTime()
+    return !Number.isNaN(time) && time >= startTime && time <= now
+  })
+  const hoursWithData = new Set()
+  for (const snapshot of withinRange) {
+    const time = new Date(snapshot.timestamp).getTime()
+    if (!Number.isNaN(time)) {
+      hoursWithData.add(hourKey(time))
+    }
+  }
+  const placeholders = []
+  for (let t = hourKey(startTime); t <= hourKey(now); t += 60 * 60 * 1000) {
+    if (!hoursWithData.has(t)) {
+      placeholders.push({
+        timestamp: new Date(t).toISOString(),
+        total_value: null,
+      })
+    }
+  }
+  return [...withinRange, ...placeholders].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp))
+}
+
 const aggregateSnapshots = (data, maxPoints) => {
   if (!Array.isArray(data) || data.length <= maxPoints) {
     return data
@@ -56,13 +90,22 @@ const aggregateSnapshots = (data, maxPoints) => {
   for (const snapshot of sorted) {
     const time = new Date(snapshot.timestamp).getTime()
     const bucket = Math.floor((time - startTime) / bucketSize)
-    const currentValue = Number(snapshot.total_value)
+    const currentValue = snapshot.total_value === null || snapshot.total_value === undefined ? null : Number(snapshot.total_value)
     const existing = buckets.get(bucket)
-    if (!existing || currentValue > existing.total_value) {
-      buckets.set(bucket, {
-        timestamp: snapshot.timestamp,
-        total_value: currentValue,
-      })
+    if (currentValue === null) {
+      if (!existing) {
+        buckets.set(bucket, {
+          timestamp: snapshot.timestamp,
+          total_value: null,
+        })
+      }
+    } else {
+      if (!existing || existing.total_value === null || currentValue > existing.total_value) {
+        buckets.set(bucket, {
+          timestamp: snapshot.timestamp,
+          total_value: currentValue,
+        })
+      }
     }
   }
 
@@ -224,13 +267,17 @@ function Dashboard({ wallet: propWallet, positions: propPositions }) {
   // Format data for Recharts
   const periodMs = periodToMs(selectedPeriod)
   const maxChartPoints = periodMs >= 24 * 60 * 60 * 1000 ? 120 : 80
+  const filledSnapshots = useMemo(
+    () => backfillMissingHours(snapshots, periodMs),
+    [snapshots, periodMs]
+  )
   const aggregatedSnapshots = useMemo(
-    () => aggregateSnapshots(snapshots, maxChartPoints),
-    [snapshots, maxChartPoints]
+    () => aggregateSnapshots(filledSnapshots, maxChartPoints),
+    [filledSnapshots, maxChartPoints]
   )
   const chartData = aggregatedSnapshots.map(s => ({
     time: new Date(s.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-    value: Number(s.total_value),
+    value: s.total_value === null || s.total_value === undefined ? null : Number(s.total_value),
     timestamp: s.timestamp,
   }))
 
@@ -246,7 +293,7 @@ function Dashboard({ wallet: propWallet, positions: propPositions }) {
         {showDate && (
           <div style={{ color: '#aaa', marginBottom: '6px' }}>{pointDate.toLocaleDateString([], { year: 'numeric', month: 'short', day: 'numeric' })}</div>
         )}
-        <div style={{ color: '#fff', fontWeight: 600 }}>${Number(point.value).toFixed(2)}</div>
+        <div style={{ color: '#fff', fontWeight: 600 }}>{point.value === null ? 'No data' : `$${Number(point.value).toFixed(2)}`}</div>
       </div>
     )
   }
