@@ -365,7 +365,7 @@ function Dashboard({ wallet: propWallet, positions: propPositions }) {
               </AreaChart>
             </ResponsiveContainer>
           ) : (
-             <div className="empty-chart">Waiting for price updates to build history...</div>
+            <div className="empty-chart">Waiting for price updates to build history...</div>
           )}
         </div>
       </div>
@@ -406,7 +406,7 @@ function Dashboard({ wallet: propWallet, positions: propPositions }) {
         </div>
 
         <div className="analysis-card glass-panel" style={{ width: '100%' }}>
-           <div className="analysis-header">
+          <div className="analysis-header">
             <h3>AI Market Scanner</h3>
             <span className="live-indicator">● Live Activity</span>
           </div>
@@ -475,27 +475,27 @@ function Dashboard({ wallet: propWallet, positions: propPositions }) {
             </div>
 
             <div className="signal-box p-4 rounded bg-dark-glass mb-4 border border-glass" style={{ background: 'rgba(0,0,0,0.2)', padding: '1rem', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.1)', marginBottom: '1rem' }}>
-               <div className="flex-between mb-2" style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
-                 <span className="text-muted">Signal</span>
-                 <span className={`signal-badge signal-${modalData.signal?.toLowerCase()}`}>{modalData.signal?.replace('_', ' ')}</span>
-               </div>
-               <div className="flex-between" style={{ display: 'flex', justifyContent: 'space-between' }}>
-                 <span className="text-muted">Confidence Rating</span>
-                 <div className="rating-bar">
-                   <span style={{ fontWeight: 'bold', color: modalData.rating >= 7 ? '#52b788' : modalData.rating >= 4 ? '#e9c46a' : '#e76f51' }}>
-                     {modalData.rating}/10
-                   </span>
-                 </div>
-               </div>
+              <div className="flex-between mb-2" style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+                <span className="text-muted">Signal</span>
+                <span className={`signal-badge signal-${modalData.signal?.toLowerCase()}`}>{modalData.signal?.replace('_', ' ')}</span>
+              </div>
+              <div className="flex-between" style={{ display: 'flex', justifyContent: 'space-between' }}>
+                <span className="text-muted">Confidence Rating</span>
+                <div className="rating-bar">
+                  <span style={{ fontWeight: 'bold', color: modalData.rating >= 7 ? '#52b788' : modalData.rating >= 4 ? '#e9c46a' : '#e76f51' }}>
+                    {modalData.rating}/10
+                  </span>
+                </div>
+              </div>
             </div>
 
             {modalData.decision && (
               <div className="decision-box p-4 rounded bg-dark-glass mb-4 border border-glass" style={{ background: 'rgba(0,0,0,0.2)', padding: '1rem', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.1)', marginBottom: '1rem' }}>
                 <h4 className="text-muted mb-2 uppercase text-xs" style={{ textTransform: 'uppercase', fontSize: '0.75rem', marginBottom: '0.5rem' }}>AI Decision</h4>
                 <div className="flex items-center gap-2 mb-2">
-                   <span className={`font-bold ${modalData.decision === 'buy' ? 'positive' : 'text-muted'}`} style={{ color: modalData.decision === 'buy' ? '#52b788' : '#aaa' }}>
-                     {modalData.decision.toUpperCase()}
-                   </span>
+                  <span className={`font-bold ${modalData.decision === 'buy' ? 'positive' : 'text-muted'}`} style={{ color: modalData.decision === 'buy' ? '#52b788' : '#aaa' }}>
+                    {modalData.decision.toUpperCase()}
+                  </span>
                 </div>
                 <p className="text-sm italic opacity-80">{modalData.decision_reason}</p>
               </div>
@@ -515,7 +515,7 @@ function Dashboard({ wallet: propWallet, positions: propPositions }) {
             </div>
           </div>
         ) : (
-           <p>No details available.</p>
+          <p>No details available.</p>
         )}
       </Modal>
     </div>
