@@ -84,17 +84,25 @@ type ActivityLog struct {
 }
 
 type TrendAnalysisHistory struct {
-	ID             uint      `json:"id" gorm:"primaryKey;autoIncrement"`
-	Symbol         string    `json:"symbol" gorm:"size:20;index"`
-	Timeframe      string    `json:"timeframe" gorm:"size:10;default:15m"`
-	CurrentPrice   *float64  `json:"current_price"`
-	Change24h      *float64  `json:"change_24h" gorm:"column:change_24h"`
-	FinalSignal    *string   `json:"final_signal" gorm:"size:20"`
-	FinalRating    *float64  `json:"final_rating"`
-	ProbUp         *float64  `json:"prob_up" gorm:"column:prob_up"`
-	ExpectedValue  *float64  `json:"expected_value" gorm:"column:expected_value"`
-	IndicatorsJSON string    `json:"indicators_json" gorm:"type:text;not null"`
-	AnalyzedAt     time.Time `json:"analyzed_at" gorm:"index"`
+	ID                  uint      `json:"id" gorm:"primaryKey;autoIncrement"`
+	Symbol              string    `json:"symbol" gorm:"size:20;index"`
+	Timeframe           string    `json:"timeframe" gorm:"size:10;default:15m"`
+	CurrentPrice        *float64  `json:"current_price"`
+	Change24h           *float64  `json:"change_24h" gorm:"column:change_24h"`
+	FinalSignal         *string   `json:"final_signal" gorm:"size:20"`
+	FinalRating         *float64  `json:"final_rating"`
+	ProbUp              *float64  `json:"prob_up" gorm:"column:prob_up"`
+	ExpectedValue       *float64  `json:"expected_value" gorm:"column:expected_value"`
+	AutoTrade           *bool     `json:"auto_trade"`
+	SignalQualifies     *bool     `json:"signal_qualifies"`
+	ConfidenceQualifies *bool     `json:"confidence_qualifies"`
+	RegimeOk            *bool     `json:"regime_ok"`
+	VolOk               *bool     `json:"vol_ok"`
+	ProbOk              *bool     `json:"prob_ok"`
+	Decision            *string   `json:"decision" gorm:"size:20"`
+	DecisionReason      *string   `json:"decision_reason" gorm:"type:text"`
+	IndicatorsJSON      string    `json:"indicators_json" gorm:"type:text;not null"`
+	AnalyzedAt          time.Time `json:"analyzed_at" gorm:"index"`
 }
 
 type PortfolioSnapshot struct {

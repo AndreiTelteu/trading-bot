@@ -84,11 +84,18 @@ func GenerateProposals() (interface{}, error) {
 }
 
 type AnalysisSummary struct {
-	Symbol       string  `json:"symbol"`
-	Signal       string  `json:"signal"`
-	Rating       float64 `json:"rating"`
-	CurrentPrice float64 `json:"current_price"`
-	Change24h    float64 `json:"change_24h"`
+	Symbol              string  `json:"symbol"`
+	Signal              string  `json:"signal"`
+	Rating              float64 `json:"rating"`
+	CurrentPrice        float64 `json:"current_price"`
+	Change24h           float64 `json:"change_24h"`
+	SignalQualifies     *bool   `json:"signal_qualifies,omitempty"`
+	ConfidenceQualifies *bool   `json:"confidence_qualifies,omitempty"`
+	RegimeOk            *bool   `json:"regime_ok,omitempty"`
+	VolOk               *bool   `json:"vol_ok,omitempty"`
+	ProbOk              *bool   `json:"prob_ok,omitempty"`
+	Decision            *string `json:"decision,omitempty"`
+	DecisionReason      *string `json:"decision_reason,omitempty"`
 }
 
 func getRecentAnalysisData() ([]AnalysisSummary, error) {
@@ -113,6 +120,34 @@ func getRecentAnalysisData() ([]AnalysisSummary, error) {
 			}
 			if h.Change24h != nil {
 				summary.Change24h = *h.Change24h
+			}
+			if h.SignalQualifies != nil {
+				val := *h.SignalQualifies
+				summary.SignalQualifies = &val
+			}
+			if h.ConfidenceQualifies != nil {
+				val := *h.ConfidenceQualifies
+				summary.ConfidenceQualifies = &val
+			}
+			if h.RegimeOk != nil {
+				val := *h.RegimeOk
+				summary.RegimeOk = &val
+			}
+			if h.VolOk != nil {
+				val := *h.VolOk
+				summary.VolOk = &val
+			}
+			if h.ProbOk != nil {
+				val := *h.ProbOk
+				summary.ProbOk = &val
+			}
+			if h.Decision != nil {
+				val := *h.Decision
+				summary.Decision = &val
+			}
+			if h.DecisionReason != nil {
+				val := *h.DecisionReason
+				summary.DecisionReason = &val
 			}
 			symbolMap[h.Symbol] = summary
 		}
@@ -192,6 +227,21 @@ func buildProposalPrompt(analysisData []AnalysisSummary, wallet map[string]inter
 	sb.WriteString(fmt.Sprintf("Balance: %.2f %s", wallet["balance"].(float64), wallet["currency"].(string)))
 	sb.WriteString("\n\nOpen Positions:\n")
 	sb.WriteString(string(positionsJSON))
+	sb.WriteString("\n\nHow the trading logic uses settings:\n")
+	sb.WriteString("- Auto-trade runs only if auto_trade_enabled is true and max_positions is not exceeded.\n")
+	sb.WriteString("- Signal gate: buy_only_strong=true requires STRONG_BUY; false allows BUY or STRONG_BUY.\n")
+	sb.WriteString("- Confidence gate: if prob_model_enabled=true, the model gate overrides min_confidence_to_buy.\n")
+	sb.WriteString("- Prob gate uses prob_model_beta0..beta6 with features (RSI, MACD hist, BB %B, momentum %, volume ratio, volatility ratio) to compute p_up via sigmoid, then EV = p_up*prob_avg_gain - (1-p_up)*prob_avg_loss; buy only if p_up>prob_p_min and EV>prob_ev_min.\n")
+	sb.WriteString("- Regime gate: if regime_gate_enabled=true, requires EMA(fast) > EMA(slow) on regime_timeframe.\n")
+	sb.WriteString("- Vol gate: ATR/price on 15m must be between vol_ratio_min and vol_ratio_max.\n")
+	sb.WriteString("- Vol sizing: if vol_sizing_enabled=true, risk_per_trade and stop_mult define position size via ATR stop distance; max_position_value caps order size.\n")
+	sb.WriteString("- Exit logic uses stop_loss_percent/take_profit_percent unless per-position ATR stop/tp were set by vol sizing.\n")
+	sb.WriteString("- Trailing stop uses trailing_stop_enabled and trailing_stop_percent.\n")
+	sb.WriteString("- Time stop uses time_stop_bars if > 0 and exits only when PnL <= 0.\n")
+	sb.WriteString("\nImportant interactions and failure modes:\n")
+	sb.WriteString("- If prob_model_enabled=true and betas are all 0, p_up defaults to 0.5 and may fail prob_p_min.\n")
+	sb.WriteString("- Tight vol_ratio_min/max can block trades in low or high volatility regimes.\n")
+	sb.WriteString("- High min_confidence_to_buy combined with buy_only_strong can suppress trades.\n")
 	sb.WriteString("\n\nCurrent Settings (allowed keys):\n")
 	for k, v := range settings {
 		sb.WriteString(fmt.Sprintf("%s: %s\n", k, v))

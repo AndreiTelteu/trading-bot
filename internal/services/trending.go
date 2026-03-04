@@ -864,22 +864,6 @@ func AnalyzeTrendingCoins() (*TrendingAnalysisResult, error) {
 			}
 		}
 
-		// Save to trend analysis history
-		indicatorsJSON, _ := json.Marshal(analysis.Indicators)
-		history := database.TrendAnalysisHistory{
-			Symbol:         symbol,
-			Timeframe:      "15m",
-			CurrentPrice:   &analysis.Price,
-			Change24h:      &coin.Change24h,
-			FinalSignal:    &analysis.Signal,
-			FinalRating:    &analysis.Rating,
-			ProbUp:         probUp,
-			ExpectedValue:  expectedValue,
-			IndicatorsJSON: string(indicatorsJSON),
-			AnalyzedAt:     time.Now(),
-		}
-		database.DB.Create(&history)
-
 		logActivity("analysis", fmt.Sprintf("Analyzed %s", symbol),
 			fmt.Sprintf("Signal: %s, Rating: %.2f", analysis.Signal, analysis.Rating))
 
@@ -907,6 +891,26 @@ func AnalyzeTrendingCoins() (*TrendingAnalysisResult, error) {
 			volOk = computeVolGate(candles15m, analysis.Price, volAtrPeriod, volRatioMin, volRatioMax)
 		}
 
+		decision := "skip"
+		decisionReason := ""
+
+		if !autoTradeEnabled {
+			decisionReason = "auto_trade_disabled"
+		} else if !signalQualifies {
+			decisionReason = "signal_not_qualified"
+		} else if !confidenceQualifies {
+			decisionReason = "confidence_not_qualified"
+		} else if !regimeOk {
+			decisionReason = "regime_gate_failed"
+		} else if !volOk {
+			decisionReason = "vol_gate_failed"
+		} else if (int(currentOpenCount) + tradesOpened) >= maxPositions {
+			decisionReason = "max_positions_reached"
+		} else {
+			decision = "buy_candidate"
+			decisionReason = "passed_gates"
+		}
+
 		if autoTradeEnabled && signalQualifies && confidenceQualifies && regimeOk && volOk &&
 			(int(currentOpenCount)+tradesOpened) < maxPositions {
 
@@ -921,6 +925,8 @@ func AnalyzeTrendingCoins() (*TrendingAnalysisResult, error) {
 					tradesOpened++
 					trueVal := true
 					analysis.TradeExecuted = &trueVal
+					decision = "buy"
+					decisionReason = "order_executed"
 					logActivity("trade", fmt.Sprintf("Bought %s", symbol),
 						fmt.Sprintf("At $%.2f", analysis.Price))
 
@@ -933,12 +939,39 @@ func AnalyzeTrendingCoins() (*TrendingAnalysisResult, error) {
 					if buyErr != nil {
 						errMsg = buyErr.Error()
 					}
+					decision = "buy_failed"
+					decisionReason = errMsg
 					logActivity("trade", fmt.Sprintf("Failed to buy %s", symbol), errMsg)
 				}
 			} else {
+				decision = "skip"
+				decisionReason = "position_exists"
 				logActivity("trade", fmt.Sprintf("Skipped %s - position already exists", symbol), "")
 			}
 		}
+
+		indicatorsJSON, _ := json.Marshal(analysis.Indicators)
+		history := database.TrendAnalysisHistory{
+			Symbol:              symbol,
+			Timeframe:           "15m",
+			CurrentPrice:        &analysis.Price,
+			Change24h:           &coin.Change24h,
+			FinalSignal:         &analysis.Signal,
+			FinalRating:         &analysis.Rating,
+			ProbUp:              probUp,
+			ExpectedValue:       expectedValue,
+			AutoTrade:           &autoTradeEnabled,
+			SignalQualifies:     &signalQualifies,
+			ConfidenceQualifies: &confidenceQualifies,
+			RegimeOk:            &regimeOk,
+			VolOk:               &volOk,
+			ProbOk:              &probOk,
+			Decision:            &decision,
+			DecisionReason:      &decisionReason,
+			IndicatorsJSON:      string(indicatorsJSON),
+			AnalyzedAt:          time.Now(),
+		}
+		database.DB.Create(&history)
 
 		results = append(results, *analysis)
 	}
