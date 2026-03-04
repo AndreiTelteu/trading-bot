@@ -31,17 +31,19 @@ type TrendingData struct {
 
 // AnalyzedCoin represents the result of analyzing a single coin
 type AnalyzedCoin struct {
-	Symbol        string            `json:"symbol"`
-	Price         float64           `json:"price"`
-	Change24h     float64           `json:"change_24h"`
-	Signal        string            `json:"signal"`
-	Rating        float64           `json:"rating"`
-	Timeframe     string            `json:"timeframe"`
-	ProbUp        *float64          `json:"prob_up,omitempty"`
-	ExpectedValue *float64          `json:"expected_value,omitempty"`
-	Indicators    []IndicatorResult `json:"indicators"`
-	TradeExecuted *bool             `json:"trade_executed,omitempty"`
-	Error         string            `json:"error,omitempty"`
+	Symbol         string            `json:"symbol"`
+	Price          float64           `json:"price"`
+	Change24h      float64           `json:"change_24h"`
+	Signal         string            `json:"signal"`
+	Rating         float64           `json:"rating"`
+	Timeframe      string            `json:"timeframe"`
+	ProbUp         *float64          `json:"prob_up,omitempty"`
+	ExpectedValue  *float64          `json:"expected_value,omitempty"`
+	Indicators     []IndicatorResult `json:"indicators"`
+	TradeExecuted  *bool             `json:"trade_executed,omitempty"`
+	Error          string            `json:"error,omitempty"`
+	Decision       string            `json:"decision,omitempty"`
+	DecisionReason string            `json:"decision_reason,omitempty"`
 }
 
 // IndicatorResult stores a single indicator's analysis
@@ -1069,6 +1071,72 @@ func GetRecentAnalyzedCoins() ([]AnalyzedCoin, error) {
 	}
 
 	return coins, nil
+}
+
+// GetLatestAnalysisForSymbol returns the most recent analysis for a specific symbol
+func GetLatestAnalysisForSymbol(symbol string) (*AnalyzedCoin, error) {
+	var history database.TrendAnalysisHistory
+	if err := database.DB.
+		Where("symbol = ?", symbol).
+		Order("analyzed_at DESC").
+		First(&history).Error; err != nil {
+		return nil, err
+	}
+
+	var indicators []IndicatorResult
+	if history.IndicatorsJSON != "" {
+		json.Unmarshal([]byte(history.IndicatorsJSON), &indicators)
+	}
+
+	price := 0.0
+	if history.CurrentPrice != nil {
+		price = *history.CurrentPrice
+	}
+	change := 0.0
+	if history.Change24h != nil {
+		change = *history.Change24h
+	}
+	signal := ""
+	if history.FinalSignal != nil {
+		signal = *history.FinalSignal
+	}
+	rating := 0.0
+	if history.FinalRating != nil {
+		rating = *history.FinalRating
+	}
+	var probUp *float64
+	if history.ProbUp != nil {
+		val := *history.ProbUp
+		probUp = &val
+	}
+	var expectedValue *float64
+	if history.ExpectedValue != nil {
+		val := *history.ExpectedValue
+		expectedValue = &val
+	}
+
+	decision := ""
+	if history.Decision != nil {
+		decision = *history.Decision
+	}
+	decisionReason := ""
+	if history.DecisionReason != nil {
+		decisionReason = *history.DecisionReason
+	}
+
+	return &AnalyzedCoin{
+		Symbol:         history.Symbol,
+		Price:          price,
+		Change24h:      change,
+		Signal:         signal,
+		Rating:         rating,
+		Timeframe:      history.Timeframe,
+		ProbUp:         probUp,
+		ExpectedValue:  expectedValue,
+		Indicators:     indicators,
+		Decision:       decision,
+		DecisionReason: decisionReason,
+	}, nil
 }
 
 // broadcastTradeUpdates broadcasts wallet, positions, and orders updates via WebSocket

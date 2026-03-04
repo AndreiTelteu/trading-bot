@@ -66,6 +66,20 @@ func GetTrendingRecent(c *fiber.Ctx) error {
 	})
 }
 
+func GetAnalysisHistory(c *fiber.Ctx) error {
+	symbol := c.Params("symbol")
+	if symbol == "" {
+		return c.Status(400).JSON(fiber.Map{"error": "Symbol is required"})
+	}
+
+	result, err := services.GetLatestAnalysisForSymbol(symbol)
+	if err != nil {
+		return c.Status(404).JSON(fiber.Map{"error": "Analysis not found"})
+	}
+
+	return c.JSON(result)
+}
+
 func AnalyzeSymbol(c *fiber.Ctx) error {
 	var req AnalyzeRequest
 	// Try to parse body, but allow empty body (use defaults)

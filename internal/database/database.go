@@ -121,6 +121,13 @@ func SeedData() error {
 		{Key: "ai_lookback_days", Value: "30", Category: strPtr("ai")},
 		{Key: "ai_min_proposals", Value: "1", Category: strPtr("ai")},
 		{Key: "ai_auto_apply_days", Value: "0", Category: strPtr("ai")},
+		{Key: "ai_goal", Value: "", Category: strPtr("ai")},
+		{Key: "ai_locked_keys", Value: "", Category: strPtr("ai")},
+		{Key: "ai_change_budget_pct", Value: "10", Category: strPtr("ai")},
+		{Key: "ai_max_proposals", Value: "5", Category: strPtr("ai")},
+		{Key: "ai_max_keys_per_category", Value: "2", Category: strPtr("ai")},
+		{Key: "ai_recent_decisions_limit", Value: "10", Category: strPtr("ai")},
+		{Key: "ai_gate_metrics_limit", Value: "200", Category: strPtr("ai")},
 	}
 	for _, s := range settings {
 		var existing Setting

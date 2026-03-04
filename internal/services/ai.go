@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -39,21 +41,28 @@ func GenerateProposals() (interface{}, error) {
 		return nil, fiber.NewError(500, "Failed to get positions: "+err.Error())
 	}
 
-	settings, err := getSettingsByCategory([]string{"trading", "indicators", "probabilistic", "ai"})
+	settings, settingCategories, err := getSettingsByCategory([]string{"trading", "indicators", "probabilistic", "ai"})
 	if err != nil {
 		return nil, fiber.NewError(500, "Failed to get settings: "+err.Error())
 	}
 
 	weights := GetIndicatorWeights()
-	allowedKeys := buildAllowedParameterKeys(settings, weights)
-	prompt := buildProposalPrompt(analysisData, wallet, positions, settings, weights)
+	lockedKeys := parseLockedKeys(settings)
+	allowedKeys := buildAllowedParameterKeys(settings, weights, lockedKeys)
+
+	gateLimit := getSettingIntFromMap(settings, "ai_gate_metrics_limit", 200)
+	gateMetrics, _ := getGateMetrics(gateLimit)
+	decisionLimit := getSettingIntFromMap(settings, "ai_recent_decisions_limit", 10)
+	recentDecisions, _ := getRecentDecisionSummaries(decisionLimit)
+
+	prompt := buildProposalPrompt(analysisData, wallet, positions, settings, weights, gateMetrics, recentDecisions, lockedKeys)
 
 	response, err := callLLM(&llmConfig, prompt)
 	if err != nil {
 		return nil, fiber.NewError(500, "Failed to call LLM: "+err.Error())
 	}
 
-	proposals, err := parseProposalsFromResponse(response, settings, weights, allowedKeys)
+	proposals, err := parseProposalsFromResponse(response, settings, weights, allowedKeys, settingCategories)
 	if err != nil {
 		return nil, fiber.NewError(500, "Failed to parse proposals: "+err.Error())
 	}
@@ -96,6 +105,25 @@ type AnalysisSummary struct {
 	ProbOk              *bool   `json:"prob_ok,omitempty"`
 	Decision            *string `json:"decision,omitempty"`
 	DecisionReason      *string `json:"decision_reason,omitempty"`
+}
+
+type GateMetrics struct {
+	Total                int            `json:"total"`
+	SignalPassRate       float64        `json:"signal_pass_rate"`
+	ConfidencePassRate   float64        `json:"confidence_pass_rate"`
+	RegimePassRate       float64        `json:"regime_pass_rate"`
+	VolPassRate          float64        `json:"vol_pass_rate"`
+	ProbPassRate         float64        `json:"prob_pass_rate"`
+	DecisionCounts       map[string]int `json:"decision_counts"`
+	MostCommonSkipReason string         `json:"most_common_skip_reason"`
+}
+
+type DecisionSummary struct {
+	Symbol   string  `json:"symbol"`
+	Decision string  `json:"decision"`
+	Reason   string  `json:"reason"`
+	Signal   string  `json:"signal"`
+	Rating   float64 `json:"rating"`
 }
 
 func getRecentAnalysisData() ([]AnalysisSummary, error) {
@@ -160,6 +188,111 @@ func getRecentAnalysisData() ([]AnalysisSummary, error) {
 	return result, nil
 }
 
+func getGateMetrics(limit int) (GateMetrics, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+
+	var history []database.TrendAnalysisHistory
+	if err := database.DB.Order("analyzed_at DESC").Limit(limit).Find(&history).Error; err != nil {
+		return GateMetrics{}, err
+	}
+
+	total := len(history)
+	if total == 0 {
+		return GateMetrics{DecisionCounts: map[string]int{}}, nil
+	}
+
+	signalCount := 0
+	confidenceCount := 0
+	regimeCount := 0
+	volCount := 0
+	probCount := 0
+	decisionCounts := make(map[string]int)
+	skipReasonCounts := make(map[string]int)
+
+	for _, row := range history {
+		if row.SignalQualifies != nil && *row.SignalQualifies {
+			signalCount++
+		}
+		if row.ConfidenceQualifies != nil && *row.ConfidenceQualifies {
+			confidenceCount++
+		}
+		if row.RegimeOk != nil && *row.RegimeOk {
+			regimeCount++
+		}
+		if row.VolOk != nil && *row.VolOk {
+			volCount++
+		}
+		if row.ProbOk != nil && *row.ProbOk {
+			probCount++
+		}
+		if row.Decision != nil {
+			decisionCounts[*row.Decision]++
+			if *row.Decision == "skip" && row.DecisionReason != nil && *row.DecisionReason != "" {
+				skipReasonCounts[*row.DecisionReason]++
+			}
+		}
+	}
+
+	mostCommonSkip := ""
+	maxSkip := 0
+	for reason, count := range skipReasonCounts {
+		if count > maxSkip {
+			maxSkip = count
+			mostCommonSkip = reason
+		}
+	}
+
+	return GateMetrics{
+		Total:                total,
+		SignalPassRate:       (float64(signalCount) / float64(total)) * 100,
+		ConfidencePassRate:   (float64(confidenceCount) / float64(total)) * 100,
+		RegimePassRate:       (float64(regimeCount) / float64(total)) * 100,
+		VolPassRate:          (float64(volCount) / float64(total)) * 100,
+		ProbPassRate:         (float64(probCount) / float64(total)) * 100,
+		DecisionCounts:       decisionCounts,
+		MostCommonSkipReason: mostCommonSkip,
+	}, nil
+}
+
+func getRecentDecisionSummaries(limit int) ([]DecisionSummary, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	var history []database.TrendAnalysisHistory
+	if err := database.DB.Order("analyzed_at DESC").Limit(limit).Find(&history).Error; err != nil {
+		return nil, err
+	}
+	result := make([]DecisionSummary, 0, len(history))
+	for _, row := range history {
+		signal := ""
+		if row.FinalSignal != nil {
+			signal = *row.FinalSignal
+		}
+		rating := 0.0
+		if row.FinalRating != nil {
+			rating = *row.FinalRating
+		}
+		decision := ""
+		if row.Decision != nil {
+			decision = *row.Decision
+		}
+		reason := ""
+		if row.DecisionReason != nil {
+			reason = *row.DecisionReason
+		}
+		result = append(result, DecisionSummary{
+			Symbol:   row.Symbol,
+			Decision: decision,
+			Reason:   reason,
+			Signal:   signal,
+			Rating:   rating,
+		})
+	}
+	return result, nil
+}
+
 func getWalletData() (map[string]interface{}, error) {
 	var wallet database.Wallet
 	if err := database.DB.First(&wallet).Error; err != nil {
@@ -191,33 +324,60 @@ func getOpenPositions() ([]map[string]interface{}, error) {
 	return result, nil
 }
 
-func getSettingsByCategory(categories []string) (map[string]string, error) {
+func getSettingsByCategory(categories []string) (map[string]string, map[string]string, error) {
 	var settings []database.Setting
 	if err := database.DB.Where("category IN ?", categories).Find(&settings).Error; err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	result := make(map[string]string)
+	categoriesMap := make(map[string]string)
 	for _, s := range settings {
 		result[s.Key] = s.Value
+		if s.Category != nil {
+			categoriesMap[s.Key] = *s.Category
+		}
 	}
-	return result, nil
+	return result, categoriesMap, nil
 }
 
-func buildAllowedParameterKeys(settings map[string]string, weights map[string]float64) map[string]bool {
+func parseLockedKeys(settings map[string]string) map[string]bool {
+	locked := make(map[string]bool)
+	raw, ok := settings["ai_locked_keys"]
+	if !ok {
+		return locked
+	}
+	parts := strings.Split(raw, ",")
+	for _, p := range parts {
+		key := strings.TrimSpace(p)
+		if key != "" {
+			locked[key] = true
+		}
+	}
+	return locked
+}
+
+func buildAllowedParameterKeys(settings map[string]string, weights map[string]float64, lockedKeys map[string]bool) map[string]bool {
 	allowed := make(map[string]bool)
 	for key := range settings {
-		allowed[key] = true
+		if !lockedKeys[key] {
+			allowed[key] = true
+		}
 	}
 	for indicator := range weights {
-		allowed["weight:"+indicator] = true
+		key := "weight:" + indicator
+		if !lockedKeys[key] {
+			allowed[key] = true
+		}
 	}
 	return allowed
 }
 
-func buildProposalPrompt(analysisData []AnalysisSummary, wallet map[string]interface{}, positions []map[string]interface{}, settings map[string]string, weights map[string]float64) string {
+func buildProposalPrompt(analysisData []AnalysisSummary, wallet map[string]interface{}, positions []map[string]interface{}, settings map[string]string, weights map[string]float64, gateMetrics GateMetrics, recentDecisions []DecisionSummary, lockedKeys map[string]bool) string {
 	analysisJSON, _ := json.Marshal(analysisData)
 	positionsJSON, _ := json.Marshal(positions)
+	gateMetricsJSON, _ := json.Marshal(gateMetrics)
+	recentDecisionsJSON, _ := json.Marshal(recentDecisions)
 
 	var sb strings.Builder
 	sb.WriteString("You are a trading AI assistant. Analyze the data and suggest parameter adjustments only.\n\n")
@@ -227,6 +387,14 @@ func buildProposalPrompt(analysisData []AnalysisSummary, wallet map[string]inter
 	sb.WriteString(fmt.Sprintf("Balance: %.2f %s", wallet["balance"].(float64), wallet["currency"].(string)))
 	sb.WriteString("\n\nOpen Positions:\n")
 	sb.WriteString(string(positionsJSON))
+	if goal := strings.TrimSpace(settings["ai_goal"]); goal != "" {
+		sb.WriteString("\n\nDesired Outcome:\n")
+		sb.WriteString(goal)
+	}
+	sb.WriteString("\n\nRecent Decisions:\n")
+	sb.WriteString(string(recentDecisionsJSON))
+	sb.WriteString("\n\nGate Pass Rates:\n")
+	sb.WriteString(string(gateMetricsJSON))
 	sb.WriteString("\n\nHow the trading logic uses settings:\n")
 	sb.WriteString("- Auto-trade runs only if auto_trade_enabled is true and max_positions is not exceeded.\n")
 	sb.WriteString("- Signal gate: buy_only_strong=true requires STRONG_BUY; false allows BUY or STRONG_BUY.\n")
@@ -242,6 +410,20 @@ func buildProposalPrompt(analysisData []AnalysisSummary, wallet map[string]inter
 	sb.WriteString("- If prob_model_enabled=true and betas are all 0, p_up defaults to 0.5 and may fail prob_p_min.\n")
 	sb.WriteString("- Tight vol_ratio_min/max can block trades in low or high volatility regimes.\n")
 	sb.WriteString("- High min_confidence_to_buy combined with buy_only_strong can suppress trades.\n")
+	sb.WriteString("\nConstraints:\n")
+	sb.WriteString(fmt.Sprintf("- Max proposals per run: %d\n", getSettingIntFromMap(settings, "ai_max_proposals", 5)))
+	sb.WriteString(fmt.Sprintf("- Max numeric change per proposal: %.2f%%\n", getSettingFloatFromMap(settings, "ai_change_budget_pct", 10)))
+	sb.WriteString(fmt.Sprintf("- Max keys per category: %d\n", getSettingIntFromMap(settings, "ai_max_keys_per_category", 2)))
+	if len(lockedKeys) > 0 {
+		lockedList := make([]string, 0, len(lockedKeys))
+		for key := range lockedKeys {
+			lockedList = append(lockedList, key)
+		}
+		sort.Strings(lockedList)
+		sb.WriteString("\nLocked Keys (do not change):\n")
+		sb.WriteString(strings.Join(lockedList, ", "))
+		sb.WriteString("\n")
+	}
 	sb.WriteString("\n\nCurrent Settings (allowed keys):\n")
 	for k, v := range settings {
 		sb.WriteString(fmt.Sprintf("%s: %s\n", k, v))
@@ -266,6 +448,7 @@ func buildProposalPrompt(analysisData []AnalysisSummary, wallet map[string]inter
 }
 
 func callLLM(config *database.LLMConfig, prompt string) (string, error) {
+	timeoutSeconds := 300
 	payload := map[string]interface{}{
 		"model": config.Model,
 		"messages": []map[string]interface{}{
@@ -287,7 +470,7 @@ func callLLM(config *database.LLMConfig, prompt string) (string, error) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+*config.APIKey)
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := &http.Client{Timeout: time.Duration(timeoutSeconds) * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
@@ -319,7 +502,7 @@ func callLLM(config *database.LLMConfig, prompt string) (string, error) {
 	return llmResp.Choices[0].Message.Content, nil
 }
 
-func parseProposalsFromResponse(response string, settings map[string]string, weights map[string]float64, allowedKeys map[string]bool) ([]database.AIProposal, error) {
+func parseProposalsFromResponse(response string, settings map[string]string, weights map[string]float64, allowedKeys map[string]bool, categories map[string]string) ([]database.AIProposal, error) {
 	response = strings.TrimSpace(response)
 
 	start := -1
@@ -357,6 +540,10 @@ func parseProposalsFromResponse(response string, settings map[string]string, wei
 	}
 
 	proposals := make([]database.AIProposal, 0, len(rawProposals))
+	maxPerCategory := getSettingIntFromMap(settings, "ai_max_keys_per_category", 2)
+	maxProposals := getSettingIntFromMap(settings, "ai_max_proposals", 5)
+	changeBudgetPct := getSettingFloatFromMap(settings, "ai_change_budget_pct", 10)
+	categoryCounts := make(map[string]int)
 	for _, raw := range rawProposals {
 		if strings.TrimSpace(raw.ProposalType) != "parameter_adjustment" {
 			continue
@@ -383,6 +570,27 @@ func parseProposalsFromResponse(response string, settings map[string]string, wei
 		if oldValue == "" {
 			continue
 		}
+		if changeBudgetPct > 0 {
+			oldNum, oldErr := strconv.ParseFloat(strings.TrimSpace(oldValue), 64)
+			newNum, newErr := strconv.ParseFloat(strings.TrimSpace(*raw.NewValue), 64)
+			if oldErr == nil && newErr == nil && oldNum != 0 {
+				pctChange := math.Abs((newNum-oldNum)/oldNum) * 100
+				if pctChange > changeBudgetPct {
+					continue
+				}
+			}
+		}
+
+		category := "unknown"
+		if strings.HasPrefix(paramKey, "weight:") {
+			category = "weights"
+		} else if cat, ok := categories[paramKey]; ok && cat != "" {
+			category = cat
+		}
+		if maxPerCategory > 0 && categoryCounts[category] >= maxPerCategory {
+			continue
+		}
+
 		oldValueCopy := oldValue
 		proposals = append(proposals, database.AIProposal{
 			ProposalType: "parameter_adjustment",
@@ -391,9 +599,37 @@ func parseProposalsFromResponse(response string, settings map[string]string, wei
 			NewValue:     raw.NewValue,
 			Reasoning:    raw.Reasoning,
 		})
+		categoryCounts[category]++
+		if maxProposals > 0 && len(proposals) >= maxProposals {
+			break
+		}
 	}
 
 	return proposals, nil
+}
+
+func getSettingIntFromMap(settings map[string]string, key string, defaultVal int) int {
+	val, ok := settings[key]
+	if !ok {
+		return defaultVal
+	}
+	parsed, err := strconv.Atoi(strings.TrimSpace(val))
+	if err != nil {
+		return defaultVal
+	}
+	return parsed
+}
+
+func getSettingFloatFromMap(settings map[string]string, key string, defaultVal float64) float64 {
+	val, ok := settings[key]
+	if !ok {
+		return defaultVal
+	}
+	parsed, err := strconv.ParseFloat(strings.TrimSpace(val), 64)
+	if err != nil {
+		return defaultVal
+	}
+	return parsed
 }
 
 func ApproveProposal(id uint) (interface{}, error) {

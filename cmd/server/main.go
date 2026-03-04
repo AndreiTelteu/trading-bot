@@ -134,6 +134,7 @@ func setupRoutes(app *fiber.App, cfg *config.Config) {
 	positionsTrade.Post("/:id/close", handlers.ExecuteCloseTrade)
 
 	analysis := api.Group("/analysis")
+	analysis.Get("/history/:symbol", handlers.GetAnalysisHistory)
 	analysis.Get("/:symbol", handlers.GetAnalysis)
 	analysis.Get("", handlers.GetAnalysisDefault)
 	analysis.Post("/analyze", handlers.AnalyzeSymbol)

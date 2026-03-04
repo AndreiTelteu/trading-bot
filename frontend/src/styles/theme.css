@@ -823,6 +823,16 @@ input:focus, select:focus, button:focus {
   backdrop-filter: blur(20px);
 }
 
+.modal-panel.glass-panel {
+  background: var(--bg-panel-hover);
+  border-color: rgba(255, 255, 255, 0.15);
+}
+
+.modal-panel.glass-panel:hover {
+  background: var(--bg-panel-hover);
+  border-color: rgba(255, 255, 255, 0.15);
+}
+
 .modal-header {
   display: flex;
   align-items: center;
