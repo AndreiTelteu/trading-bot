@@ -84,6 +84,8 @@ flowchart TD
   - `go run cmd/server/main.go` or `make run`
 - Local dev (frontend):
   - `cd frontend && npm install && npm run dev`
+- Backtest CLI:
+  - `go run cmd/backtest/main.go -symbols BTCUSDT,ETHUSDT -start 2024-01-01 -end 2024-06-30 -fee-bps 8 -slippage-bps 3`
 - Full build:
   - `make build-all` (build frontend + production backend)
 - Docker build/run:

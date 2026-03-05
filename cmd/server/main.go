@@ -150,6 +150,11 @@ func setupRoutes(app *fiber.App, cfg *config.Config) {
 	activity.Get("", handlers.GetActivityLogs)
 	activity.Post("", handlers.CreateActivityLog)
 
+	backtest := api.Group("/backtest")
+	backtest.Post("/start", handlers.StartBacktest)
+	backtest.Get("/status/:id", handlers.GetBacktestStatus)
+	backtest.Get("/latest", handlers.GetLatestBacktestStatus)
+
 	llm := api.Group("/llm")
 	llm.Get("/config", handlers.GetLLMConfig)
 	llm.Put("/config", handlers.UpdateLLMConfig)

@@ -21,6 +21,8 @@ type Position struct {
 	CurrentPrice    *float64   `json:"current_price"`
 	StopPrice       *float64   `json:"stop_price"`
 	TakeProfitPrice *float64   `json:"take_profit_price"`
+	TrailingStopPrice *float64 `json:"trailing_stop_price"`
+	LastAtrValue      *float64 `json:"last_atr_value"`
 	MaxBarsHeld     *int       `json:"max_bars_held"`
 	Pnl             float64    `json:"pnl" gorm:"default:0"`
 	PnlPercent      float64    `json:"pnl_percent" gorm:"default:0"`
@@ -83,6 +85,19 @@ type ActivityLog struct {
 	Timestamp time.Time `json:"timestamp" gorm:"index"`
 }
 
+type BacktestJob struct {
+	ID         uint       `json:"id" gorm:"primaryKey;autoIncrement"`
+	Status     string     `json:"status" gorm:"size:20;default:pending"`
+	Progress   float64    `json:"progress"`
+	Message    *string    `json:"message" gorm:"size:500"`
+	SummaryJSON *string   `json:"summary_json" gorm:"type:text"`
+	Error      *string    `json:"error" gorm:"type:text"`
+	StartedAt  *time.Time `json:"started_at"`
+	FinishedAt *time.Time `json:"finished_at"`
+	CreatedAt  time.Time  `json:"created_at"`
+	UpdatedAt  time.Time  `json:"updated_at"`
+}
+
 type TrendAnalysisHistory struct {
 	ID                  uint      `json:"id" gorm:"primaryKey;autoIncrement"`
 	Symbol              string    `json:"symbol" gorm:"size:20;index"`
@@ -108,5 +123,6 @@ type TrendAnalysisHistory struct {
 type PortfolioSnapshot struct {
 	ID         uint      `json:"id" gorm:"primaryKey;autoIncrement"`
 	TotalValue float64   `json:"total_value"`
+	VolatilityAnnualized *float64 `json:"volatility_annualized"`
 	Timestamp  time.Time `json:"timestamp" gorm:"index"`
 }

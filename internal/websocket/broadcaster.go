@@ -148,6 +148,23 @@ func BroadcastTradeExecuted(tradeType string, symbol string, amount float64, pri
 	})
 }
 
+func BroadcastBacktestProgress(jobID uint, status string, progress float64, message string) {
+	Broadcast("backtest_progress", map[string]interface{}{
+		"job_id":   jobID,
+		"status":   status,
+		"progress": progress,
+		"message":  message,
+	})
+}
+
+func BroadcastBacktestComplete(jobID uint, status string, summary interface{}) {
+	Broadcast("backtest_complete", map[string]interface{}{
+		"job_id":  jobID,
+		"status":  status,
+		"summary": summary,
+	})
+}
+
 // BroadcastConnectionEstablished sends to a specific client on connection
 func BroadcastConnectionEstablished(client *Client, clientID string) {
 	msg := &Message{

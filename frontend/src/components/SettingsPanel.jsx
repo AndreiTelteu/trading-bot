@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { createPortal } from 'react-dom'
 import CustomSelect from './CustomSelect'
+import { useWebSocketEvent } from '../hooks/useWebSocket'
 
 const API_BASE = '/api'
 
@@ -14,10 +15,13 @@ function SettingsPanel() {
   const [modalMode, setModalMode] = useState('export')
   const [modalText, setModalText] = useState('')
   const [modalError, setModalError] = useState('')
+  const [backtestJob, setBacktestJob] = useState(null)
+  const [startingBacktest, setStartingBacktest] = useState(false)
 
   useEffect(() => {
     fetchSettings()
     fetchWeights()
+    fetchLatestBacktest()
   }, [])
 
   const fetchSettings = async () => {
@@ -56,6 +60,19 @@ function SettingsPanel() {
       setWeights(weightsMap)
     } catch (err) {
       console.error('Failed to fetch weights:', err)
+    }
+  }
+
+  const fetchLatestBacktest = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/backtest/latest`)
+      if (!res.ok) {
+        return
+      }
+      const data = await res.json()
+      setBacktestJob(data)
+    } catch (err) {
+      console.error('Failed to fetch backtest status:', err)
     }
   }
 
@@ -108,6 +125,56 @@ function SettingsPanel() {
     }
     setSaving(false)
   }
+
+  const handleStartBacktest = async () => {
+    setStartingBacktest(true)
+    try {
+      const res = await fetch(`${API_BASE}/backtest/start`, { method: 'POST' })
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`)
+      }
+      const data = await res.json()
+      setBacktestJob(data)
+    } catch (err) {
+      console.error('Failed to start backtest:', err)
+      alert('Failed to start backtest')
+    }
+    setStartingBacktest(false)
+  }
+
+  useWebSocketEvent('backtest_status', (data) => {
+    setBacktestJob(data)
+  })
+
+  useWebSocketEvent('backtest_progress', (data) => {
+    setBacktestJob(prev => {
+      if (!prev || prev.id === data.job_id) {
+        return {
+          ...(prev || {}),
+          id: data.job_id,
+          status: data.status,
+          progress: data.progress,
+          message: data.message,
+        }
+      }
+      return prev
+    })
+  })
+
+  useWebSocketEvent('backtest_complete', (data) => {
+    setBacktestJob(prev => {
+      if (!prev || prev.id === data.job_id) {
+        return {
+          ...(prev || {}),
+          id: data.job_id,
+          status: data.status,
+          progress: 1,
+          summary: data.summary,
+        }
+      }
+      return prev
+    })
+  })
 
   const openExportModal = () => {
     const payload = {
@@ -248,6 +315,22 @@ function SettingsPanel() {
     { key: 'prob_avg_loss', label: 'Prob Avg Loss', type: 'number', step: 0.0001 },
   ]
 
+  const atrSettings = [
+    { key: 'atr_trailing_enabled', label: 'ATR Trailing Enabled', type: 'boolean' },
+    { key: 'atr_trailing_mult', label: 'ATR Trailing Mult', type: 'number', step: 0.1 },
+    { key: 'atr_trailing_period', label: 'ATR Trailing Period', type: 'number' },
+    { key: 'atr_annualization_enabled', label: 'ATR Annualization', type: 'boolean' },
+    { key: 'atr_annualization_days', label: 'ATR Annualization Days', type: 'number' },
+  ]
+
+  const backtestSettings = [
+    { key: 'backtest_symbols', label: 'Backtest Symbols', type: 'text' },
+    { key: 'backtest_start', label: 'Backtest Start (YYYY-MM-DD or RFC3339)', type: 'text' },
+    { key: 'backtest_end', label: 'Backtest End (YYYY-MM-DD or RFC3339)', type: 'text' },
+    { key: 'backtest_fee_bps', label: 'Backtest Fee (bps)', type: 'number', step: 1 },
+    { key: 'backtest_slippage_bps', label: 'Backtest Slippage (bps)', type: 'number', step: 1 },
+  ]
+
   const aiSettings = [
     { key: 'ai_analysis_interval', label: 'Analysis Interval (hours)', type: 'number' },
     { key: 'ai_lookback_days', label: 'Lookback Days', type: 'number' },
@@ -263,9 +346,14 @@ function SettingsPanel() {
     { key: 'momentum', label: 'Momentum' },
   ]
 
+  const backtestProgress = backtestJob?.progress != null ? Math.min(1, Math.max(0, backtestJob.progress)) : null
+  const backtestProgressPercent = backtestProgress != null ? Math.round(backtestProgress * 100) : null
+
   const currentSettings = activeSection === 'trading' ? tradingSettings 
     : activeSection === 'indicators' ? indicatorSettings 
     : activeSection === 'probabilistic' ? probabilisticSettings
+    : activeSection === 'atr' ? atrSettings
+    : activeSection === 'backtest' ? backtestSettings
     : aiSettings
 
   const modalContent = (
@@ -332,6 +420,18 @@ function SettingsPanel() {
           AI Settings
         </button>
         <button 
+          className={activeSection === 'atr' ? 'active' : ''}
+          onClick={() => setActiveSection('atr')}
+        >
+          ATR
+        </button>
+        <button 
+          className={activeSection === 'backtest' ? 'active' : ''}
+          onClick={() => setActiveSection('backtest')}
+        >
+          Backtest
+        </button>
+        <button 
           className={activeSection === 'weights' ? 'active' : ''}
           onClick={() => setActiveSection('weights')}
         >
@@ -366,6 +466,35 @@ function SettingsPanel() {
           <button className="btn-save" onClick={handleSaveSettings} disabled={saving}>
             {saving ? 'Saving...' : 'Save Settings'}
           </button>
+          {activeSection === 'backtest' && (
+            <div className="form-group">
+              <button className="btn-primary" onClick={handleStartBacktest} disabled={startingBacktest || backtestJob?.status === 'running'}>
+                {startingBacktest || backtestJob?.status === 'running' ? 'Backtest Running...' : 'Run Backtest'}
+              </button>
+              {backtestJob && (
+                <div className="text-muted text-sm">
+                  Status: {backtestJob.status || 'unknown'} {backtestProgressPercent != null ? `(${backtestProgressPercent}%)` : ''}
+                  {backtestJob.message ? ` - ${backtestJob.message}` : ''}
+                </div>
+              )}
+              {backtestProgressPercent != null && (
+                <div style={{ width: '100%', marginTop: '0.75rem' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.35rem' }}>
+                    <span className="text-muted text-sm">Progress</span>
+                    <span className="text-muted text-sm">{backtestProgressPercent}%</span>
+                  </div>
+                  <div style={{ height: '8px', background: 'rgba(255,255,255,0.08)', borderRadius: '999px', overflow: 'hidden' }}>
+                    <div style={{ width: `${backtestProgressPercent}%`, height: '100%', background: 'linear-gradient(135deg, var(--accent-primary), var(--accent-secondary))' }} />
+                  </div>
+                </div>
+              )}
+              {backtestJob?.summary?.validation && (
+                <div className="text-muted text-sm">
+                  Validation: {backtestJob.summary.validation.passed ? 'Passed' : 'Failed'} ({backtestJob.summary.validation.windows} windows)
+                </div>
+              )}
+            </div>
+          )}
         </div>
       ) : (
         <div className="weights-form fade-in">

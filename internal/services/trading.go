@@ -210,6 +210,11 @@ func UpdatePositionsPrices() (interface{}, error) {
 	takeProfitPercent := getSettingFloat(settings, "take_profit_percent", 30.0)
 	trailingStopEnabled := getSettingBool(settings, "trailing_stop_enabled", false)
 	trailingStopPercent := getSettingFloat(settings, "trailing_stop_percent", 10.0)
+	atrTrailingEnabled := getSettingBool(settings, "atr_trailing_enabled", false)
+	atrTrailingMult := getSettingFloat(settings, "atr_trailing_mult", 1.0)
+	atrTrailingPeriod := getSettingInt(settings, "atr_trailing_period", 14)
+	atrAnnualizationEnabled := getSettingBool(settings, "atr_annualization_enabled", false)
+	atrAnnualizationDays := getSettingInt(settings, "atr_annualization_days", 365)
 	allowSellAtLoss := getSettingBool(settings, "allow_sell_at_loss", false)
 	sellOnSignal := getSettingBool(settings, "sell_on_signal", true)
 	minConfidenceToSell := getSettingFloat(settings, "min_confidence_to_sell", 3.5)
@@ -261,6 +266,32 @@ func UpdatePositionsPrices() (interface{}, error) {
 			positions[i].Pnl = pnl
 			positions[i].PnlPercent = pnlPercent
 
+			if atrTrailingEnabled && atrTrailingMult > 0 {
+				candles, err := fetchCandles(tickerKey, "15m", 200)
+				if err == nil {
+					atr := getAtrValue(candles, atrTrailingPeriod, atrAnnualizationEnabled, 15, atrAnnualizationDays)
+					if atr > 0 {
+						positions[i].LastAtrValue = &atr
+						if positions[i].TrailingStopPrice == nil {
+							entryBase := positions[i].AvgPrice
+							if positions[i].EntryPrice != nil {
+								entryBase = *positions[i].EntryPrice
+							}
+							entryStop := entryBase - (atr * atrTrailingMult)
+							if entryStop > 0 {
+								positions[i].TrailingStopPrice = &entryStop
+							}
+						}
+						candidateStop := currentPrice - (atr * atrTrailingMult)
+						if candidateStop > 0 {
+							if positions[i].TrailingStopPrice == nil || candidateStop > *positions[i].TrailingStopPrice {
+								positions[i].TrailingStopPrice = &candidateStop
+							}
+						}
+					}
+				}
+			}
+
 			// Update trailing peak
 			if trailingStopEnabled {
 				if positions[i].EntryPrice == nil {
@@ -271,28 +302,7 @@ func UpdatePositionsPrices() (interface{}, error) {
 				}
 			}
 
-			closeReason := ""
-
-			if positions[i].StopPrice != nil || positions[i].TakeProfitPrice != nil {
-				if positions[i].StopPrice != nil && currentPrice <= *positions[i].StopPrice {
-					closeReason = "stop_loss"
-				} else if positions[i].TakeProfitPrice != nil && currentPrice >= *positions[i].TakeProfitPrice {
-					closeReason = "take_profit"
-				}
-			} else {
-				if pnlPercent <= -stopLossPercent {
-					closeReason = "stop_loss"
-				} else if pnlPercent >= takeProfitPercent {
-					closeReason = "take_profit"
-				}
-			}
-
-			if closeReason == "" && trailingStopEnabled && positions[i].EntryPrice != nil {
-				dropFromHigh := ((currentPrice - *positions[i].EntryPrice) / *positions[i].EntryPrice) * 100
-				if dropFromHigh <= -trailingStopPercent {
-					closeReason = "trailing_stop"
-				}
-			}
+			closeReason := resolveCloseReason(currentPrice, pnlPercent, positions[i].StopPrice, positions[i].TakeProfitPrice, atrTrailingEnabled, positions[i].TrailingStopPrice, trailingStopEnabled, positions[i].EntryPrice, trailingStopPercent, stopLossPercent, takeProfitPercent)
 
 			if closeReason == "" {
 				maxBars := timeStopBars
@@ -345,6 +355,35 @@ func UpdatePositionsPrices() (interface{}, error) {
 	database.DB.Where("status = ?", "open").Find(&openPositions)
 
 	totalSnapshotValue := latestWallet.Balance
+	var snapshotVolatility *float64
+	if atrAnnualizationEnabled {
+		var sum float64
+		var count int
+		for _, pos := range openPositions {
+			if pos.LastAtrValue != nil {
+				sum += *pos.LastAtrValue
+				count++
+				continue
+			}
+			symbol := pos.Symbol
+			if !strings.HasSuffix(symbol, "USDT") {
+				symbol += "USDT"
+			}
+			candles, err := fetchCandles(symbol, "15m", 200)
+			if err != nil {
+				continue
+			}
+			atr := getAtrValue(candles, atrTrailingPeriod, atrAnnualizationEnabled, 15, atrAnnualizationDays)
+			if atr > 0 {
+				sum += atr
+				count++
+			}
+		}
+		if count > 0 {
+			avg := sum / float64(count)
+			snapshotVolatility = &avg
+		}
+	}
 	for _, pos := range openPositions {
 		if pos.CurrentPrice != nil {
 			totalSnapshotValue += pos.Amount * (*pos.CurrentPrice)
@@ -353,8 +392,9 @@ func UpdatePositionsPrices() (interface{}, error) {
 		}
 	}
 	snapshot := database.PortfolioSnapshot{
-		TotalValue: totalSnapshotValue,
-		Timestamp:  time.Now(),
+		TotalValue:           totalSnapshotValue,
+		VolatilityAnnualized: snapshotVolatility,
+		Timestamp:            time.Now(),
 	}
 	database.DB.Create(&snapshot)
 
@@ -365,6 +405,33 @@ func UpdatePositionsPrices() (interface{}, error) {
 	websocket.BroadcastWalletUpdate(latestWallet.Balance, latestWallet.Currency, totalSnapshotValue)
 
 	return fiber.Map{"success": true, "updated": updatedCount}, nil
+}
+
+func resolveCloseReason(currentPrice float64, pnlPercent float64, stopPrice *float64, takeProfitPrice *float64, atrTrailingEnabled bool, trailingStopPrice *float64, trailingStopEnabled bool, entryPrice *float64, trailingStopPercent float64, stopLossPercent float64, takeProfitPercent float64) string {
+	if stopPrice != nil && currentPrice <= *stopPrice {
+		return "stop_loss"
+	}
+	if takeProfitPrice != nil && currentPrice >= *takeProfitPrice {
+		return "take_profit"
+	}
+	if atrTrailingEnabled && trailingStopPrice != nil && currentPrice <= *trailingStopPrice {
+		return "atr_trailing_stop"
+	}
+	if trailingStopEnabled && entryPrice != nil {
+		dropFromHigh := ((currentPrice - *entryPrice) / *entryPrice) * 100
+		if dropFromHigh <= -trailingStopPercent {
+			return "trailing_stop"
+		}
+	}
+	if stopPrice == nil && takeProfitPrice == nil {
+		if pnlPercent <= -stopLossPercent {
+			return "stop_loss"
+		}
+		if pnlPercent >= takeProfitPercent {
+			return "take_profit"
+		}
+	}
+	return ""
 }
 
 func CheckStopLoss(symbol string, stopLossPercent float64) (bool, string, error) {

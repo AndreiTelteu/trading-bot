@@ -96,6 +96,11 @@ func sendFullSyncToClient(client *ws.Client) {
 		ws.SendToClient(client, "orders_update", orders)
 	}
 
+	var job database.BacktestJob
+	if err := database.DB.Order("created_at DESC").First(&job).Error; err == nil {
+		ws.SendToClient(client, "backtest_status", job)
+	}
+
 	log.Printf("[WS] Full sync sent to client")
 }
 

@@ -24,13 +24,6 @@ Non-Goals
 - Exchange integration changes
 - UI visualization of backtest results (CSV/JSON output is sufficient)
 
-Order of Execution
-1) Add volatility annualization utilities and settings
-2) Implement ATR-based trailing stop logic for open positions
-3) Build backtest engine with benchmark strategy
-4) Add walk-forward + bootstrap validation harness
-5) Add tests for volatility math, trailing stop behavior, and backtest outputs
-
 Requirements
 1) Optional trailing ATR-based stop
 - Must be disabled by default
@@ -177,3 +170,109 @@ Dependencies
 Rollout
 - Feature flags in settings (atr_trailing_enabled, atr_annualization_enabled)
 - Start with paper trading only, then enable for auto-trade after validation passes
+
+Enhanced Plan (Detailed)
+
+Phase 0: Baseline conventions
+- ATR inputs default to 15m candles unless a backtest timeframe override is provided
+- All new settings are seeded in SeedData and returned by GetAllSettings, preserving behavior when disabled
+- Bootstrap and walk-forward use a fixed RNG seed for reproducibility
+
+Phase 1: Data model and settings
+- Position model: add TrailingStopPrice *float64 and LastAtrValue *float64
+- PortfolioSnapshot model: add VolatilityAnnualized *float64
+- New settings defaults:
+  - atr_trailing_enabled: false
+  - atr_trailing_mult: 1.0
+  - atr_trailing_period: 14
+  - atr_annualization_enabled: false
+  - atr_annualization_days: 365
+  - backtest_fee_bps: 10
+  - backtest_slippage_bps: 5
+  - backtest_start: empty
+  - backtest_end: empty
+  - backtest_symbols: empty
+- Ensure GetAllSettings parses typed values with fallbacks
+
+Phase 2: Annualized ATR utilities
+- indicators.go: CalculateAnnualizedATR(candles, period, timeframeMinutes, annualizationDays)
+- trending.go: getAtrValue(candles, period, annualizeEnabled, timeframeMinutes, annualizationDays)
+- Use annualized ATR consistently for sizing, trailing stop distance, and volatility reporting when enabled
+
+Phase 3: ATR trailing stop behavior
+- On open: TrailingStopPrice = entryPrice - (atr * atr_trailing_mult)
+- On each UpdatePositionsPrices:
+  - Recompute ATR on last N bars for symbol
+  - candidateStop = currentPrice - (atr * atr_trailing_mult)
+  - Update only if candidateStop > TrailingStopPrice
+  - If currentPrice <= TrailingStopPrice, closeReason = atr_trailing_stop
+- Exit precedence:
+  - StopPrice / TakeProfitPrice
+  - ATR trailing stop
+  - Percent trailing stop
+  - Percent stop loss / take profit
+  - time_stop
+  - sell_signal
+
+Phase 4: Backtest engine
+- internal/backtest package with deterministic bar iteration
+- BacktestConfig: symbols, start, end, timeframe, feeBps, slippageBps, maxPositions, timeStopBars, strategyMode
+- Strategy modes:
+  - baseline: entry_percent + percent stops
+  - vol_sizing: risk_per_trade + ATR exits
+- Execution per bar:
+  - Compute indicators on rolling window
+  - Evaluate entry signal
+  - Enforce max_positions
+  - Apply fees and slippage at entry and exit
+  - Apply exit precedence with time_stop
+- Output:
+  - JSON summary per run
+  - CSV equity curve per symbol and portfolio
+
+Phase 5: Validation harness
+- Rolling walk-forward split:
+  - Train window 12 months, test window 3 months
+  - Slide by test window length
+- Bootstrap CI:
+  - Compute metrics per window
+  - 95% CI with fixed seed
+- Acceptance rule:
+  - Candidate must beat baseline CI for at least 2 metrics
+
+Phase 6: Background execution and progress reporting
+- Create a backtest job record with status, progress, started_at, finished_at, error
+- Start endpoint returns job_id immediately
+- Run backtest/validation in a goroutine, updating progress and status
+- Broadcast progress via WebSocket events:
+  - backtest_progress: {job_id, status, progress, message}
+  - backtest_complete: {job_id, status, summary}
+- Log milestones to ActivityLog for persistence and UI display
+
+Phase 7: UI progress bar and results visibility
+- Add a backtest run action in the UI that calls the start endpoint
+- Subscribe to backtest_progress and backtest_complete over WebSocket
+- Show a progress bar with status text and percent
+- Persist the latest job state in UI state so reconnects can recover using a status endpoint
+
+Metric definitions
+- Sharpe: mean(returns) / std(returns) * sqrt(bars_per_year)
+- Max drawdown: max peak-to-trough equity decline
+- Win rate: wins / total trades
+- Profit factor: gross profit / gross loss
+- Avg win/loss: mean PnL of winning/losing trades
+- Return volatility: std(returns)
+
+Data requirements
+- Default to existing candle fetching utilities for backtest runs
+- Optional offline CSV/JSON under a data folder if needed later
+
+Implementation sequencing (refined)
+- Step 1: Settings and models
+- Step 2: Annualized ATR helpers and integration
+- Step 3: ATR trailing stop logic with precedence
+- Step 4: Backtest core and outputs
+- Step 5: Validation harness
+- Step 6: Background job execution and progress events
+- Step 7: UI progress bar and job status display
+- Step 8: Tests and verification

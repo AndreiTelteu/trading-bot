@@ -401,6 +401,17 @@ func analyzeSymbolFromCandles(symbol string, timeframe string, candles []Candle)
 	}
 }
 
+func AnalyzeCandles(candles []Candle) (float64, string) {
+	if len(candles) == 0 {
+		return 0, "NEUTRAL"
+	}
+	config := GetIndicatorSettings()
+	weights := GetIndicatorWeights()
+	indicators := calculateIndicatorResults(candles, config)
+	finalRating, finalSignal := CalculateFinalScore(indicators, weights)
+	return finalRating, finalSignal
+}
+
 func computeRegimeGate(candles []Candle, emaFast int, emaSlow int) bool {
 	if len(candles) < emaSlow {
 		return false
@@ -429,6 +440,13 @@ func computeVolGate(candles []Candle, price float64, atrPeriod int, minRatio flo
 
 	ratio := atr / price
 	return ratio >= minRatio && ratio <= maxRatio
+}
+
+func getAtrValue(candles []Candle, period int, annualizeEnabled bool, timeframeMinutes int, annualizationDays int) float64 {
+	if annualizeEnabled {
+		return CalculateAnnualizedATR(candles, period, timeframeMinutes, annualizationDays)
+	}
+	return CalculateATR(candles, period)
 }
 
 func computePortfolioValue(wallet database.Wallet) float64 {
@@ -672,6 +690,11 @@ func executeBuyFromTrending(symbol string) (bool, error) {
 	}
 
 	volSizingEnabled := getSettingBool(settings, "vol_sizing_enabled", false)
+	atrTrailingEnabled := getSettingBool(settings, "atr_trailing_enabled", false)
+	atrTrailingMult := getSettingFloat(settings, "atr_trailing_mult", 1.0)
+	atrTrailingPeriod := getSettingInt(settings, "atr_trailing_period", 14)
+	atrAnnualizationEnabled := getSettingBool(settings, "atr_annualization_enabled", false)
+	atrAnnualizationDays := getSettingInt(settings, "atr_annualization_days", 365)
 	amountUsdt := 0.0
 	cryptoAmount := 0.0
 	var stopPrice *float64
@@ -684,7 +707,7 @@ func executeBuyFromTrending(symbol string) (bool, error) {
 		if err != nil {
 			return false, fmt.Errorf("failed to fetch candles for %s: %w", pairSymbol, err)
 		}
-		atr = CalculateATR(candles, 14)
+		atr = getAtrValue(candles, atrTrailingPeriod, atrAnnualizationEnabled, 15, atrAnnualizationDays)
 		portfolioValue := computePortfolioValue(wallet)
 		stopVal := 0.0
 		takeProfitVal := 0.0
@@ -737,19 +760,39 @@ func executeBuyFromTrending(symbol string) (bool, error) {
 			}
 			existingPosition.MaxBarsHeld = maxBarsHeld
 		}
+		if atrTrailingEnabled && atr > 0 && atrTrailingMult > 0 {
+			candidateStop := currentPrice - (atr * atrTrailingMult)
+			if candidateStop > 0 {
+				if existingPosition.TrailingStopPrice == nil || candidateStop > *existingPosition.TrailingStopPrice {
+					existingPosition.TrailingStopPrice = &candidateStop
+				}
+			}
+			existingPosition.LastAtrValue = &atr
+		}
 		database.DB.Save(&existingPosition)
 	} else {
+		var trailingStopPrice *float64
+		var lastAtrValue *float64
+		if atrTrailingEnabled && atr > 0 && atrTrailingMult > 0 {
+			entryStop := currentPrice - (atr * atrTrailingMult)
+			if entryStop > 0 {
+				trailingStopPrice = &entryStop
+			}
+			lastAtrValue = &atr
+		}
 		position := database.Position{
-			Symbol:          cleanSymbol,
-			Amount:          cryptoAmount,
-			AvgPrice:        currentPrice,
-			EntryPrice:      &currentPrice,
-			CurrentPrice:    &currentPrice,
-			StopPrice:       stopPrice,
-			TakeProfitPrice: takeProfitPrice,
-			MaxBarsHeld:     maxBarsHeld,
-			Status:          "open",
-			OpenedAt:        time.Now(),
+			Symbol:            cleanSymbol,
+			Amount:            cryptoAmount,
+			AvgPrice:          currentPrice,
+			EntryPrice:        &currentPrice,
+			CurrentPrice:      &currentPrice,
+			StopPrice:         stopPrice,
+			TakeProfitPrice:   takeProfitPrice,
+			TrailingStopPrice: trailingStopPrice,
+			LastAtrValue:      lastAtrValue,
+			MaxBarsHeld:       maxBarsHeld,
+			Status:            "open",
+			OpenedAt:          time.Now(),
 		}
 		database.DB.Create(&position)
 	}

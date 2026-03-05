@@ -334,9 +334,67 @@ func (s *ExchangeService) FetchOHLCV(symbol, interval string, limit int) ([]OHLC
 		return nil, fmt.Errorf("failed to parse klines response: %w", err)
 	}
 
+	return parseOHLCV(klines), nil
+}
+
+func (s *ExchangeService) FetchOHLCVRange(symbol, interval string, start time.Time, end time.Time) ([]OHLCV, error) {
+	if start.IsZero() && end.IsZero() {
+		return s.FetchOHLCV(symbol, interval, 1000)
+	}
+
+	startMs := start.UnixMilli()
+	var endMs int64
+	if !end.IsZero() {
+		endMs = end.UnixMilli()
+	}
+
+	var result []OHLCV
+	for {
+		params := map[string]string{
+			"symbol":    symbol,
+			"interval":  interval,
+			"limit":     "1000",
+			"startTime": strconv.FormatInt(startMs, 10),
+		}
+		if endMs > 0 {
+			params["endTime"] = strconv.FormatInt(endMs, 10)
+		}
+
+		data, err := s.makeRequest("GET", "/api/v3/klines", params)
+		if err != nil {
+			return nil, err
+		}
+
+		var klines [][]interface{}
+		if err := json.Unmarshal(data, &klines); err != nil {
+			return nil, fmt.Errorf("failed to parse klines response: %w", err)
+		}
+
+		parsed := parseOHLCV(klines)
+		if len(parsed) == 0 {
+			break
+		}
+		result = append(result, parsed...)
+
+		last := parsed[len(parsed)-1]
+		if last.CloseTime <= startMs {
+			break
+		}
+		startMs = last.CloseTime + 1
+		if endMs > 0 && startMs >= endMs {
+			break
+		}
+		if len(parsed) < 1000 {
+			break
+		}
+	}
+
+	return result, nil
+}
+
+func parseOHLCV(klines [][]interface{}) []OHLCV {
 	result := make([]OHLCV, len(klines))
 	for i, kline := range klines {
-		// Parse fields safely from Binance response (can be string or float64)
 		var open, high, low, close, volume float64
 		var openTime, closeTime int64
 
@@ -397,5 +455,5 @@ func (s *ExchangeService) FetchOHLCV(symbol, interval string, limit int) ([]OHLC
 		}
 	}
 
-	return result, nil
+	return result
 }

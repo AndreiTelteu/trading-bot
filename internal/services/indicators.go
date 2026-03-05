@@ -188,6 +188,21 @@ func CalculateATR(candles []Candle, period int) float64 {
 	return CalculateEMA(trs, period)
 }
 
+func CalculateAnnualizedATR(candles []Candle, period int, timeframeMinutes int, annualizationDays int) float64 {
+	atr := CalculateATR(candles, period)
+	if atr <= 0 {
+		return 0
+	}
+	if timeframeMinutes <= 0 || annualizationDays <= 0 {
+		return atr
+	}
+	barsPerYear := float64(annualizationDays*24*60) / float64(timeframeMinutes)
+	if barsPerYear <= 0 {
+		return atr
+	}
+	return atr * math.Sqrt(barsPerYear)
+}
+
 func CalculateBollingerBands(closes []float64, period int, stdDev float64) BollingerBandsResult {
 	if len(closes) < period {
 		return BollingerBandsResult{Upper: 0, Middle: 0, Lower: 0, Signal: "neutral"}

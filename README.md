@@ -73,6 +73,22 @@ The server runs on `http://localhost:5001` by default.
 | `make docker-build` | Build Docker image |
 | `make docker-run` | Run Docker container |
 
+## Backtest CLI
+
+Run backtest using persisted settings:
+
+```bash
+go run cmd/backtest/main.go
+```
+
+Run backtest with overrides:
+
+```bash
+go run cmd/backtest/main.go -symbols BTCUSDT,ETHUSDT -start 2024-01-01 -end 2024-06-30 -fee-bps 8 -slippage-bps 3
+```
+
+Accepted date formats: `YYYY-MM-DD` or RFC3339.
+
 ## API Endpoints
 
 ### Health & Config

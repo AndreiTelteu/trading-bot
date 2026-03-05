@@ -249,6 +249,35 @@ func TestCalculateBBPercentB(t *testing.T) {
 	}
 }
 
+func TestCalculateAnnualizedATR(t *testing.T) {
+	var candles []Candle
+	for i := 0; i < 30; i++ {
+		close := 100 + float64(i)
+		candles = append(candles, Candle{
+			Close:  close,
+			High:   close + 2,
+			Low:    close - 2,
+			Volume: 1000,
+		})
+	}
+	atr := CalculateATR(candles, 14)
+	if atr <= 0 {
+		t.Fatalf("CalculateATR() expected > 0, got %v", atr)
+	}
+
+	annualized := CalculateAnnualizedATR(candles, 14, 60, 365)
+	barsPerYear := float64(365*24) / 1
+	expected := atr * math.Sqrt(barsPerYear)
+	if math.Abs(annualized-expected) > 0.0001 {
+		t.Errorf("CalculateAnnualizedATR() = %v, want %v", annualized, expected)
+	}
+
+	unscaled := CalculateAnnualizedATR(candles, 14, 0, 365)
+	if math.Abs(unscaled-atr) > 0.0001 {
+		t.Errorf("CalculateAnnualizedATR() with disabled scaling = %v, want %v", unscaled, atr)
+	}
+}
+
 func TestCalculateVolumeRatio(t *testing.T) {
 	if got := CalculateVolumeRatio([]float64{10, 20}, 10); math.Abs(got-2.0) > 0.0001 {
 		t.Errorf("CalculateVolumeRatio() = %v, want 2.0", got)
