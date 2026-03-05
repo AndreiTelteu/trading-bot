@@ -5,6 +5,22 @@ import { useWebSocketEvent } from '../hooks/useWebSocket'
 
 const API_BASE = '/api'
 
+const normalizeBacktestJob = (job) => {
+  if (!job) return job
+  if (job.summary || typeof job.summary_json !== 'string' || job.summary_json.trim() === '') {
+    return job
+  }
+
+  try {
+    return {
+      ...job,
+      summary: JSON.parse(job.summary_json),
+    }
+  } catch {
+    return job
+  }
+}
+
 function SettingsPanel() {
   const [settings, setSettings] = useState({})
   const [weights, setWeights] = useState({})
@@ -70,7 +86,7 @@ function SettingsPanel() {
         return
       }
       const data = await res.json()
-      setBacktestJob(data)
+      setBacktestJob(normalizeBacktestJob(data))
     } catch (err) {
       console.error('Failed to fetch backtest status:', err)
     }
@@ -134,7 +150,7 @@ function SettingsPanel() {
         throw new Error(`HTTP ${res.status}`)
       }
       const data = await res.json()
-      setBacktestJob(data)
+      setBacktestJob(normalizeBacktestJob(data))
     } catch (err) {
       console.error('Failed to start backtest:', err)
       alert('Failed to start backtest')
@@ -143,7 +159,7 @@ function SettingsPanel() {
   }
 
   useWebSocketEvent('backtest_status', (data) => {
-    setBacktestJob(data)
+    setBacktestJob(normalizeBacktestJob(data))
   })
 
   useWebSocketEvent('backtest_progress', (data) => {
@@ -548,3 +564,6 @@ function SettingsPanel() {
 }
 
 export default SettingsPanel
+
+
+

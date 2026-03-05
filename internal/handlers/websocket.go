@@ -4,6 +4,7 @@ import (
 	"log"
 	"time"
 
+	"trading-go/internal/backtest"
 	"trading-go/internal/database"
 	ws "trading-go/internal/websocket"
 
@@ -98,7 +99,10 @@ func sendFullSyncToClient(client *ws.Client) {
 
 	var job database.BacktestJob
 	if err := database.DB.Order("created_at DESC").First(&job).Error; err == nil {
-		ws.SendToClient(client, "backtest_status", job)
+		response, buildErr := backtest.BuildBacktestJobResponse(&job)
+		if buildErr == nil {
+			ws.SendToClient(client, "backtest_status", response)
+		}
 	}
 
 	log.Printf("[WS] Full sync sent to client")

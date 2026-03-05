@@ -702,12 +702,15 @@ func executeBuyFromTrending(symbol string) (bool, error) {
 	var maxBarsHeld *int
 	var atr float64
 
-	if volSizingEnabled {
+	if volSizingEnabled || atrTrailingEnabled {
 		candles, err := fetchCandles(pairSymbol, "15m", 200)
 		if err != nil {
 			return false, fmt.Errorf("failed to fetch candles for %s: %w", pairSymbol, err)
 		}
 		atr = getAtrValue(candles, atrTrailingPeriod, atrAnnualizationEnabled, 15, atrAnnualizationDays)
+	}
+
+	if volSizingEnabled {
 		portfolioValue := computePortfolioValue(wallet)
 		stopVal := 0.0
 		takeProfitVal := 0.0
