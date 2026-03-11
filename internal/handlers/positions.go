@@ -45,17 +45,41 @@ func CreatePosition(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "Position already exists for this symbol"})
 	}
 
-	position := database.Position{
-		Symbol:     req.Symbol,
-		Amount:     req.Amount,
-		AvgPrice:   req.AvgPrice,
-		EntryPrice: req.EntryPrice,
-		Status:     "open",
-		OpenedAt:   time.Now(),
-	}
+	now := time.Now()
+	position := database.Position{}
+	if err := database.DB.Where("symbol = ?", req.Symbol).First(&position).Error; err == nil {
+		position.Amount = req.Amount
+		position.AvgPrice = req.AvgPrice
+		position.EntryPrice = req.EntryPrice
+		position.CurrentPrice = nil
+		position.StopPrice = nil
+		position.TakeProfitPrice = nil
+		position.TrailingStopPrice = nil
+		position.LastAtrValue = nil
+		position.MaxBarsHeld = nil
+		position.Pnl = 0
+		position.PnlPercent = 0
+		position.Status = "open"
+		position.OpenedAt = now
+		position.ClosedAt = nil
+		position.CloseReason = nil
 
-	if err := database.DB.Create(&position).Error; err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "Failed to create position"})
+		if err := database.DB.Save(&position).Error; err != nil {
+			return c.Status(500).JSON(fiber.Map{"error": "Failed to reopen position"})
+		}
+	} else {
+		position = database.Position{
+			Symbol:     req.Symbol,
+			Amount:     req.Amount,
+			AvgPrice:   req.AvgPrice,
+			EntryPrice: req.EntryPrice,
+			Status:     "open",
+			OpenedAt:   now,
+		}
+
+		if err := database.DB.Create(&position).Error; err != nil {
+			return c.Status(500).JSON(fiber.Map{"error": "Failed to create position"})
+		}
 	}
 
 	if wsHub != nil {
@@ -183,18 +207,47 @@ func ExecuteOpenTrade(c *fiber.Ctx) error {
 	wallet.Balance -= totalCost
 	database.DB.Save(&wallet)
 
-	// Create position record
-	position := database.Position{
-		Symbol:     req.Symbol,
-		Amount:     req.Amount,
-		AvgPrice:   price,
-		EntryPrice: &price,
-		Status:     "open",
-		OpenedAt:   time.Now(),
-	}
+	// Create or reopen position record.
+	now := time.Now()
+	position := database.Position{}
+	if err := database.DB.Where("symbol = ?", req.Symbol).First(&position).Error; err == nil {
+		if position.Status == "open" {
+			return c.Status(400).JSON(fiber.Map{"error": "Position already exists for this symbol"})
+		}
 
-	if err := database.DB.Create(&position).Error; err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "Failed to create position record"})
+		position.Amount = req.Amount
+		position.AvgPrice = price
+		position.EntryPrice = &price
+		position.CurrentPrice = &price
+		position.StopPrice = nil
+		position.TakeProfitPrice = nil
+		position.TrailingStopPrice = nil
+		position.LastAtrValue = nil
+		position.MaxBarsHeld = nil
+		position.Pnl = 0
+		position.PnlPercent = 0
+		position.Status = "open"
+		position.OpenedAt = now
+		position.ClosedAt = nil
+		position.CloseReason = nil
+
+		if err := database.DB.Save(&position).Error; err != nil {
+			return c.Status(500).JSON(fiber.Map{"error": "Failed to reopen position record"})
+		}
+	} else {
+		position = database.Position{
+			Symbol:       req.Symbol,
+			Amount:       req.Amount,
+			AvgPrice:     price,
+			EntryPrice:   &price,
+			CurrentPrice: &price,
+			Status:       "open",
+			OpenedAt:     now,
+		}
+
+		if err := database.DB.Create(&position).Error; err != nil {
+			return c.Status(500).JSON(fiber.Map{"error": "Failed to create position record"})
+		}
 	}
 
 	// Create order record

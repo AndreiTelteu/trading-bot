@@ -737,11 +737,11 @@ func executeBuyFromTrending(symbol string) (bool, error) {
 		cryptoAmount = amountUsdt / currentPrice
 	}
 
-	// Check for existing position - if exists, update (DCA/average), else create new
+	// Reuse the existing row for this symbol to match the unique symbol constraint.
 	var existingPosition database.Position
-	hasExisting := database.DB.Where("symbol = ? AND status = ?", cleanSymbol, "open").First(&existingPosition).Error == nil
+	hasExisting := database.DB.Where("symbol = ?", cleanSymbol).First(&existingPosition).Error == nil
 
-	if hasExisting {
+	if hasExisting && existingPosition.Status == "open" {
 		// Average into position
 		oldAmount := existingPosition.Amount
 		oldAvg := existingPosition.AvgPrice
@@ -783,21 +783,45 @@ func executeBuyFromTrending(symbol string) (bool, error) {
 			}
 			lastAtrValue = &atr
 		}
-		position := database.Position{
-			Symbol:            cleanSymbol,
-			Amount:            cryptoAmount,
-			AvgPrice:          currentPrice,
-			EntryPrice:        &currentPrice,
-			CurrentPrice:      &currentPrice,
-			StopPrice:         stopPrice,
-			TakeProfitPrice:   takeProfitPrice,
-			TrailingStopPrice: trailingStopPrice,
-			LastAtrValue:      lastAtrValue,
-			MaxBarsHeld:       maxBarsHeld,
-			Status:            "open",
-			OpenedAt:          time.Now(),
+		now := time.Now()
+		if hasExisting {
+			existingPosition.Amount = cryptoAmount
+			existingPosition.AvgPrice = currentPrice
+			existingPosition.EntryPrice = &currentPrice
+			existingPosition.CurrentPrice = &currentPrice
+			existingPosition.StopPrice = stopPrice
+			existingPosition.TakeProfitPrice = takeProfitPrice
+			existingPosition.TrailingStopPrice = trailingStopPrice
+			existingPosition.LastAtrValue = lastAtrValue
+			existingPosition.MaxBarsHeld = maxBarsHeld
+			existingPosition.Pnl = 0
+			existingPosition.PnlPercent = 0
+			existingPosition.Status = "open"
+			existingPosition.OpenedAt = now
+			existingPosition.ClosedAt = nil
+			existingPosition.CloseReason = nil
+			if err := database.DB.Save(&existingPosition).Error; err != nil {
+				return false, fmt.Errorf("failed to reopen position for %s: %w", cleanSymbol, err)
+			}
+		} else {
+			position := database.Position{
+				Symbol:            cleanSymbol,
+				Amount:            cryptoAmount,
+				AvgPrice:          currentPrice,
+				EntryPrice:        &currentPrice,
+				CurrentPrice:      &currentPrice,
+				StopPrice:         stopPrice,
+				TakeProfitPrice:   takeProfitPrice,
+				TrailingStopPrice: trailingStopPrice,
+				LastAtrValue:      lastAtrValue,
+				MaxBarsHeld:       maxBarsHeld,
+				Status:            "open",
+				OpenedAt:          now,
+			}
+			if err := database.DB.Create(&position).Error; err != nil {
+				return false, fmt.Errorf("failed to create position for %s: %w", cleanSymbol, err)
+			}
 		}
-		database.DB.Create(&position)
 	}
 
 	// Create order record
@@ -962,10 +986,10 @@ func AnalyzeTrendingCoins() (*TrendingAnalysisResult, error) {
 		if autoTradeEnabled && signalQualifies && confidenceQualifies && regimeOk && volOk &&
 			(int(currentOpenCount)+tradesOpened) < maxPositions {
 
-			// Check if position already exists
+			// Only an open position should block a new trending buy.
 			cleanSymbol := strings.ReplaceAll(symbol, "USDT", "")
 			var existingPosition database.Position
-			hasExisting := database.DB.Where("symbol = ?", cleanSymbol).First(&existingPosition).Error == nil
+			hasExisting := database.DB.Where("symbol = ? AND status = ?", cleanSymbol, "open").First(&existingPosition).Error == nil
 
 			if !hasExisting {
 				success, buyErr := executeBuyFromTrending(symbol)

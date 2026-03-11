@@ -76,15 +76,46 @@ func ExecuteBuy(req BuyRequest) (interface{}, error) {
 	wallet.Balance -= totalCost
 	database.DB.Save(&wallet)
 
-	position := database.Position{
-		Symbol:     symbol,
-		Amount:     amount,
-		AvgPrice:   price,
-		EntryPrice: &price,
-		Status:     "open",
-		OpenedAt:   time.Now(),
+	now := time.Now()
+	position := database.Position{}
+	if err := database.DB.Where("symbol = ?", symbol).First(&position).Error; err == nil {
+		if position.Status == "open" {
+			return nil, fiber.NewError(400, "Position already exists for this symbol")
+		}
+
+		position.Amount = amount
+		position.AvgPrice = price
+		position.EntryPrice = &price
+		position.CurrentPrice = &price
+		position.StopPrice = nil
+		position.TakeProfitPrice = nil
+		position.TrailingStopPrice = nil
+		position.LastAtrValue = nil
+		position.MaxBarsHeld = nil
+		position.Pnl = 0
+		position.PnlPercent = 0
+		position.Status = "open"
+		position.OpenedAt = now
+		position.ClosedAt = nil
+		position.CloseReason = nil
+
+		if err := database.DB.Save(&position).Error; err != nil {
+			return nil, fiber.NewError(500, "Failed to reopen position")
+		}
+	} else {
+		position = database.Position{
+			Symbol:       symbol,
+			Amount:       amount,
+			AvgPrice:     price,
+			EntryPrice:   &price,
+			CurrentPrice: &price,
+			Status:       "open",
+			OpenedAt:     now,
+		}
+		if err := database.DB.Create(&position).Error; err != nil {
+			return nil, fiber.NewError(500, "Failed to create position")
+		}
 	}
-	database.DB.Create(&position)
 
 	order := database.Order{
 		OrderType:    "buy",
