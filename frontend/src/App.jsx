@@ -10,6 +10,27 @@ import { getWebSocketManager } from './services/websocketManager'
 
 const API_BASE = '/api'
 
+const mergePositions = (prevPositions, incomingPositions) => {
+  const closedPositions = prevPositions.filter(position => position.status === 'closed')
+  const mergedOpenPositions = incomingPositions.map((incomingPosition) => {
+    const existingPosition = prevPositions.find(position => position.id === incomingPosition.id || position.symbol === incomingPosition.symbol)
+    return existingPosition ? { ...existingPosition, ...incomingPosition } : incomingPosition
+  })
+
+  return [...mergedOpenPositions, ...closedPositions]
+}
+
+const upsertPosition = (prevPositions, nextPosition) => {
+  const index = prevPositions.findIndex(position => position.id === nextPosition.id || position.symbol === nextPosition.symbol)
+  if (index === -1) {
+    return [nextPosition, ...prevPositions]
+  }
+
+  const updatedPositions = [...prevPositions]
+  updatedPositions[index] = { ...updatedPositions[index], ...nextPosition }
+  return updatedPositions
+}
+
 function App() {
   const [activeTab, setActiveTab] = useState('dashboard')
   const [wallet, setWallet] = useState({ balance: 0, currency: 'USDT' })
@@ -72,22 +93,18 @@ function App() {
 
   useWebSocketEvent('positions_update', useCallback((data) => {
     if (Array.isArray(data)) {
-      setPositions(data)
+      setPositions(prev => mergePositions(prev, data))
     } else if (data.positions) {
-      setPositions(data.positions)
+      setPositions(prev => mergePositions(prev, data.positions))
     }
   }, []))
 
   useWebSocketEvent('position_update', useCallback((data) => {
-    setPositions(prev => prev.map(p => 
-      p.symbol === data.symbol 
-        ? { ...p, ...data }
-        : p
-    ))
+    setPositions(prev => upsertPosition(prev, data))
   }, []))
 
   useWebSocketEvent('position_closed', useCallback((data) => {
-    setPositions(prev => prev.map(p => 
+    setPositions(prev => prev.map(p =>
       p.id === data.position_id || p.symbol === data.symbol
         ? { ...p, status: 'closed', close_reason: data.reason, pnl: data.pnl }
         : p

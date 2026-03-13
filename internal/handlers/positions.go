@@ -14,7 +14,7 @@ import (
 
 func GetPositions(c *fiber.Ctx) error {
 	var positions []database.Position
-	if err := database.DB.Find(&positions).Error; err != nil {
+	if err := database.DB.Order("CASE WHEN status = 'open' THEN 0 ELSE 1 END ASC").Order("closed_at DESC").Order("opened_at DESC").Find(&positions).Error; err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "Failed to fetch positions"})
 	}
 	if positions == nil {
