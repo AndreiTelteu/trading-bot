@@ -42,6 +42,73 @@ type UpdatePricesRequest struct {
 	Prices map[string]float64 `json:"prices"`
 }
 
+func createPortfolioSnapshot() (database.PortfolioSnapshot, database.Wallet, []database.Position, error) {
+	var wallet database.Wallet
+	if err := database.DB.First(&wallet).Error; err != nil {
+		return database.PortfolioSnapshot{}, database.Wallet{}, nil, fiber.NewError(500, "Failed to fetch wallet")
+	}
+
+	var openPositions []database.Position
+	if err := database.DB.Where("status = ?", "open").Find(&openPositions).Error; err != nil {
+		return database.PortfolioSnapshot{}, database.Wallet{}, nil, fiber.NewError(500, "Failed to fetch positions")
+	}
+
+	settings := GetAllSettings()
+	atrAnnualizationEnabled := getSettingBool(settings, "atr_annualization_enabled", false)
+	atrAnnualizationDays := getSettingInt(settings, "atr_annualization_days", 365)
+	atrTrailingPeriod := getSettingInt(settings, "atr_trailing_period", 14)
+
+	totalSnapshotValue := wallet.Balance
+	var snapshotVolatility *float64
+	if atrAnnualizationEnabled {
+		var sum float64
+		var count int
+		for _, pos := range openPositions {
+			if pos.LastAtrValue != nil {
+				sum += *pos.LastAtrValue
+				count++
+				continue
+			}
+			symbol := pos.Symbol
+			if !strings.HasSuffix(symbol, "USDT") {
+				symbol += "USDT"
+			}
+			candles, err := fetchCandles(symbol, "15m", 200)
+			if err != nil {
+				continue
+			}
+			atr := getAtrValue(candles, atrTrailingPeriod, atrAnnualizationEnabled, 15, atrAnnualizationDays)
+			if atr > 0 {
+				sum += atr
+				count++
+			}
+		}
+		if count > 0 {
+			avg := sum / float64(count)
+			snapshotVolatility = &avg
+		}
+	}
+
+	for _, pos := range openPositions {
+		if pos.CurrentPrice != nil {
+			totalSnapshotValue += pos.Amount * (*pos.CurrentPrice)
+		} else {
+			totalSnapshotValue += pos.Amount * pos.AvgPrice
+		}
+	}
+
+	snapshot := database.PortfolioSnapshot{
+		TotalValue:           totalSnapshotValue,
+		VolatilityAnnualized: snapshotVolatility,
+		Timestamp:            time.Now(),
+	}
+	if err := database.DB.Create(&snapshot).Error; err != nil {
+		return database.PortfolioSnapshot{}, database.Wallet{}, nil, fiber.NewError(500, "Failed to create portfolio snapshot")
+	}
+
+	return snapshot, wallet, openPositions, nil
+}
+
 func ExecuteBuy(req BuyRequest) (interface{}, error) {
 	var wallet database.Wallet
 	if err := database.DB.First(&wallet).Error; err != nil {
@@ -257,6 +324,13 @@ func UpdatePositionsPrices() (interface{}, error) {
 	}
 
 	if len(positions) == 0 {
+		snapshot, wallet, _, err := createPortfolioSnapshot()
+		if err != nil {
+			return nil, err
+		}
+		websocket.BroadcastSnapshotUpdate(snapshot.Timestamp, snapshot.TotalValue)
+		websocket.BroadcastPositionsUpdate([]database.Position{})
+		websocket.BroadcastWalletUpdate(wallet.Balance, wallet.Currency, snapshot.TotalValue)
 		return fiber.Map{"success": true, "updated": 0}, nil
 	}
 
@@ -380,60 +454,16 @@ func UpdatePositionsPrices() (interface{}, error) {
 		}
 	}
 
-	var latestWallet database.Wallet
-	database.DB.First(&latestWallet)
-	var openPositions []database.Position
-	database.DB.Where("status = ?", "open").Find(&openPositions)
-
-	totalSnapshotValue := latestWallet.Balance
-	var snapshotVolatility *float64
-	if atrAnnualizationEnabled {
-		var sum float64
-		var count int
-		for _, pos := range openPositions {
-			if pos.LastAtrValue != nil {
-				sum += *pos.LastAtrValue
-				count++
-				continue
-			}
-			symbol := pos.Symbol
-			if !strings.HasSuffix(symbol, "USDT") {
-				symbol += "USDT"
-			}
-			candles, err := fetchCandles(symbol, "15m", 200)
-			if err != nil {
-				continue
-			}
-			atr := getAtrValue(candles, atrTrailingPeriod, atrAnnualizationEnabled, 15, atrAnnualizationDays)
-			if atr > 0 {
-				sum += atr
-				count++
-			}
-		}
-		if count > 0 {
-			avg := sum / float64(count)
-			snapshotVolatility = &avg
-		}
+	snapshot, latestWallet, _, err := createPortfolioSnapshot()
+	if err != nil {
+		return nil, err
 	}
-	for _, pos := range openPositions {
-		if pos.CurrentPrice != nil {
-			totalSnapshotValue += pos.Amount * (*pos.CurrentPrice)
-		} else {
-			totalSnapshotValue += pos.Amount * pos.AvgPrice
-		}
-	}
-	snapshot := database.PortfolioSnapshot{
-		TotalValue:           totalSnapshotValue,
-		VolatilityAnnualized: snapshotVolatility,
-		Timestamp:            time.Now(),
-	}
-	database.DB.Create(&snapshot)
 
 	// Broadcast updates via WebSocket
-	websocket.BroadcastSnapshotUpdate(snapshot.Timestamp, totalSnapshotValue)
+	websocket.BroadcastSnapshotUpdate(snapshot.Timestamp, snapshot.TotalValue)
 	websocket.BroadcastPositionsUpdate(positions)
 
-	websocket.BroadcastWalletUpdate(latestWallet.Balance, latestWallet.Currency, totalSnapshotValue)
+	websocket.BroadcastWalletUpdate(latestWallet.Balance, latestWallet.Currency, snapshot.TotalValue)
 
 	return fiber.Map{"success": true, "updated": updatedCount}, nil
 }

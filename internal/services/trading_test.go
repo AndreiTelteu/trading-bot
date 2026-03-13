@@ -10,6 +10,7 @@ import (
 	"trading-go/internal/database"
 
 	"github.com/glebarez/sqlite"
+	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
 )
 
@@ -160,5 +161,61 @@ func TestUpdatePositionsPricesAtrTrailingStopRatchet(t *testing.T) {
 	}
 	if math.Abs(*updatedETH.TrailingStopPrice-140.0) > 0.0001 {
 		t.Errorf("ETH trailing stop = %v, want 140", *updatedETH.TrailingStopPrice)
+	}
+}
+
+func TestUpdatePositionsPricesCreatesSnapshotWithoutOpenPositions(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("Failed to connect to test database: %v", err)
+	}
+	database.DB = db
+	database.DB.AutoMigrate(
+		&database.Wallet{},
+		&database.Position{},
+		&database.Order{},
+		&database.Setting{},
+		&database.IndicatorWeight{},
+		&database.ActivityLog{},
+		&database.PortfolioSnapshot{},
+	)
+
+	database.DB.Create(&database.Wallet{Balance: 1234.5, Currency: "USDT"})
+
+	result, err := UpdatePositionsPrices()
+	if err != nil {
+		t.Fatalf("UpdatePositionsPrices() error = %v", err)
+	}
+
+	resultMap, ok := result.(fiber.Map)
+	if !ok {
+		t.Fatalf("UpdatePositionsPrices() result type = %T, want fiber.Map", result)
+	}
+	if updated, ok := resultMap["updated"].(int); !ok || updated != 0 {
+		t.Fatalf("UpdatePositionsPrices() updated = %#v, want 0", resultMap["updated"])
+	}
+
+	var snapshots []database.PortfolioSnapshot
+	if err := database.DB.Order("timestamp asc").Find(&snapshots).Error; err != nil {
+		t.Fatalf("Failed to load snapshots: %v", err)
+	}
+	if len(snapshots) != 1 {
+		t.Fatalf("snapshot count = %d, want 1", len(snapshots))
+	}
+	if math.Abs(snapshots[0].TotalValue-1234.5) > 0.0001 {
+		t.Fatalf("snapshot total_value = %v, want 1234.5", snapshots[0].TotalValue)
+	}
+	if snapshots[0].VolatilityAnnualized != nil {
+		t.Fatalf("snapshot volatility should be nil when no open positions")
+	}
+	if snapshots[0].Timestamp.IsZero() {
+		t.Fatalf("snapshot timestamp should be set")
+	}
+	var openPositions int64
+	if err := database.DB.Model(&database.Position{}).Where("status = ?", "open").Count(&openPositions).Error; err != nil {
+		t.Fatalf("Failed to count positions: %v", err)
+	}
+	if openPositions != 0 {
+		t.Fatalf("open positions = %d, want 0", openPositions)
 	}
 }
