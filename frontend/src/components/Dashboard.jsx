@@ -14,6 +14,15 @@ const SIGNAL_COLORS = {
   STRONG_SELL: '#e63946',
 }
 
+const getCoinCreatedAt = (coin) => {
+  const rawValue = coin?.created_at || coin?.createdAt || coin?.timestamp
+  const parsed = new Date(rawValue).getTime()
+  return Number.isNaN(parsed) ? 0 : parsed
+}
+
+const sortCoinsNewestFirst = (coins) => [...coins].sort((a, b) => getCoinCreatedAt(b) - getCoinCreatedAt(a))
+const INITIAL_RECENT_COINS_LIMIT = 30
+
 const PERIOD_OPTIONS = [
   { value: '1h', label: '1h' },
   { value: '4h', label: '4h' },
@@ -141,7 +150,7 @@ function Dashboard({ wallet: propWallet, positions: propPositions }) {
       if (res.ok) {
         const data = await res.json()
         const coins = data.coins || []
-        setRecentCoins(coins)
+        setRecentCoins(sortCoinsNewestFirst(coins).slice(0, INITIAL_RECENT_COINS_LIMIT))
       }
     } catch (err) {}
   }, [])
@@ -210,9 +219,9 @@ function Dashboard({ wallet: propWallet, positions: propPositions }) {
       }
 
       setRecentCoins(prev => {
-        // Remove existing entry for this symbol if any, then add new one
+        const createdAt = log.created_at || log.timestamp || new Date().toISOString()
         const filtered = prev.filter(c => c.symbol !== symbol)
-        return [...filtered, { symbol, signal }]
+        return sortCoinsNewestFirst([...filtered, { symbol, signal, created_at: createdAt }])
       })
     }
   }, []))
@@ -247,9 +256,9 @@ function Dashboard({ wallet: propWallet, positions: propPositions }) {
   // Keep trending_update as a fallback/sync, but prioritize activity logs for "live" feel
   useWebSocketEvent('trending_update', useCallback((data) => {
     if (Array.isArray(data)) {
-      setRecentCoins(data)
+      setRecentCoins(sortCoinsNewestFirst(data).slice(0, INITIAL_RECENT_COINS_LIMIT))
     } else if (data.coins) {
-      setRecentCoins(data.coins)
+      setRecentCoins(sortCoinsNewestFirst(data.coins).slice(0, INITIAL_RECENT_COINS_LIMIT))
     }
   }, []))
 
@@ -410,7 +419,7 @@ function Dashboard({ wallet: propWallet, positions: propPositions }) {
             <h3>AI Market Scanner</h3>
             <span className="live-indicator">● Live Activity</span>
           </div>
-          <div className="coin-list-flex" style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', marginTop: '15px' }}>
+          <div className="coin-list-flex fancy-scroll" style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginTop: '15px', maxHeight: '260px', overflowY: 'auto', alignContent: 'flex-start', paddingRight: '4px' }}>
             {recentCoins.map((coin, idx) => (
               <button 
                 key={`${coin.symbol}-${idx}`}
@@ -419,10 +428,11 @@ function Dashboard({ wallet: propWallet, positions: propPositions }) {
                 style={{ 
                   display: 'flex', 
                   alignItems: 'center', 
-                  gap: '8px',
-                  padding: '8px 12px',
+                  gap: '6px',
+                  padding: '6px 10px',
                   background: coin.symbol === selectedSymbol ? 'rgba(255,255,255,0.15)' : 'rgba(255,255,255,0.05)',
                   border: coin.symbol === selectedSymbol ? '1px solid rgba(255,255,255,0.3)' : '1px solid rgba(255,255,255,0.1)',
+                  borderLeft: `4px solid ${SIGNAL_COLORS[coin.signal] || '#888'}`,
                   borderRadius: '6px',
                   cursor: 'pointer',
                   color: '#fff',
@@ -431,11 +441,6 @@ function Dashboard({ wallet: propWallet, positions: propPositions }) {
                 onClick={() => setSelectedSymbol(coin.symbol)}
               >
                 <span style={{ fontWeight: 600 }}>{coin.symbol.replace('/USDT', '').replace('USDT', '')}</span>
-                <span style={{ 
-                  color: SIGNAL_COLORS[coin.signal] || '#888',
-                  fontSize: '1.2em',
-                  lineHeight: 1
-                }}>●</span>
               </button>
             ))}
             {recentCoins.length === 0 && <p className="text-muted" style={{ width: '100%', fontStyle: 'italic' }}>Waiting for live market activity...</p>}

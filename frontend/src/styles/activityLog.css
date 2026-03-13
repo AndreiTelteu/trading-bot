@@ -123,11 +123,6 @@
   gap: 0.8rem;
 }
 
-.fancy-scroll::-webkit-scrollbar { width: 6px; }
-.fancy-scroll::-webkit-scrollbar-track { background: transparent; }
-.fancy-scroll::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 10px; }
-.fancy-scroll::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.2); }
-
 .empty-state {
   display: flex;
   flex-direction: column;
