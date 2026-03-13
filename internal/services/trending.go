@@ -37,6 +37,7 @@ type AnalyzedCoin struct {
 	Signal         string            `json:"signal"`
 	Rating         float64           `json:"rating"`
 	Timeframe      string            `json:"timeframe"`
+	CreatedAt      time.Time         `json:"created_at"`
 	ProbUp         *float64          `json:"prob_up,omitempty"`
 	ExpectedValue  *float64          `json:"expected_value,omitempty"`
 	Indicators     []IndicatorResult `json:"indicators"`
@@ -395,6 +396,7 @@ func analyzeSymbolFromCandles(symbol string, timeframe string, candles []Candle)
 		Symbol:     symbol,
 		Price:      currentPrice,
 		Timeframe:  timeframe,
+		CreatedAt:  time.Now().UTC(),
 		Signal:     finalSignal,
 		Rating:     finalRating,
 		Indicators: indicators,
@@ -919,6 +921,7 @@ func AnalyzeTrendingCoins() (*TrendingAnalysisResult, error) {
 		}
 
 		analysis := analyzeSymbolFromCandles(symbol, "15m", candles15m)
+		analysis.CreatedAt = time.Now().UTC()
 		analysis.Change24h = coin.Change24h
 
 		var probUp *float64
@@ -1072,19 +1075,13 @@ func GetRecentAnalyzedCoins() ([]AnalyzedCoin, error) {
 	var history []database.TrendAnalysisHistory
 	if err := database.DB.
 		Order("analyzed_at DESC").
-		Limit(200).
 		Find(&history).Error; err != nil {
 		return nil, err
 	}
 
-	latestBySymbol := make(map[string]AnalyzedCoin)
-	var orderedSymbols []string
+	coins := make([]AnalyzedCoin, 0, len(history))
 
 	for _, row := range history {
-		if _, exists := latestBySymbol[row.Symbol]; exists {
-			continue
-		}
-
 		var indicators []IndicatorResult
 		if row.IndicatorsJSON != "" {
 			json.Unmarshal([]byte(row.IndicatorsJSON), &indicators)
@@ -1117,27 +1114,18 @@ func GetRecentAnalyzedCoins() ([]AnalyzedCoin, error) {
 			expectedValue = &val
 		}
 
-		latestBySymbol[row.Symbol] = AnalyzedCoin{
+		coins = append(coins, AnalyzedCoin{
 			Symbol:        row.Symbol,
 			Price:         price,
 			Change24h:     change,
 			Signal:        signal,
 			Rating:        rating,
 			Timeframe:     row.Timeframe,
+			CreatedAt:     row.AnalyzedAt,
 			ProbUp:        probUp,
 			ExpectedValue: expectedValue,
 			Indicators:    indicators,
-		}
-		orderedSymbols = append(orderedSymbols, row.Symbol)
-
-		if len(latestBySymbol) >= 20 {
-			break
-		}
-	}
-
-	var coins []AnalyzedCoin
-	for _, sym := range orderedSymbols {
-		coins = append(coins, latestBySymbol[sym])
+		})
 	}
 
 	return coins, nil
@@ -1201,6 +1189,7 @@ func GetLatestAnalysisForSymbol(symbol string) (*AnalyzedCoin, error) {
 		Signal:         signal,
 		Rating:         rating,
 		Timeframe:      history.Timeframe,
+		CreatedAt:      history.AnalyzedAt,
 		ProbUp:         probUp,
 		ExpectedValue:  expectedValue,
 		Indicators:     indicators,

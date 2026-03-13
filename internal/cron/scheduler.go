@@ -22,21 +22,28 @@ func Start() {
 	scheduler = cron.New()
 
 	// Price update every 1 minute
-	scheduler.AddFunc("@every 1m", func() {
+	var err error
+	priceJobID, err = scheduler.AddFunc("@every 1m", func() {
 		if err := runPriceUpdate(); err != nil {
 			log.Printf("Price update job failed: %v", err)
 		}
 	})
+	if err != nil {
+		log.Printf("Failed to register price update job: %v", err)
+	}
 
 	// Trending analysis every 15 minutes
-	scheduler.AddFunc("0 */15 * * * *", func() {
+	trendingJobID, err = scheduler.AddFunc("*/15 * * * *", func() {
 		if err := runTrendingAnalysis(); err != nil {
 			log.Printf("Trending analysis job failed: %v", err)
 		}
 	})
+	if err != nil {
+		log.Printf("Failed to register trending analysis job: %v", err)
+	}
 
 	scheduler.Start()
-	log.Println("Cron scheduler started")
+	log.Printf("Cron scheduler started (priceJobID=%d, trendingJobID=%d)", priceJobID, trendingJobID)
 }
 
 func Stop() {
