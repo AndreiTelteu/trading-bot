@@ -1,6 +1,9 @@
 package backtest
 
-import "time"
+import (
+	"time"
+	"trading-go/internal/services"
+)
 
 type StrategyMode string
 
@@ -13,6 +16,8 @@ type BacktestConfig struct {
 	Symbols                 []string
 	Start                   time.Time
 	End                     time.Time
+	IndicatorConfig         services.IndicatorConfig
+	IndicatorWeights        map[string]float64
 	Timeframe               string
 	TimeframeMinutes        int
 	InitialBalance          float64

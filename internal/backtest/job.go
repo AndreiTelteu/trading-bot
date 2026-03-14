@@ -355,6 +355,8 @@ func prepareBacktestInputsWithSettings(settings map[string]string) (BacktestConf
 		Symbols:                 symbols,
 		Start:                   start,
 		End:                     end,
+		IndicatorConfig:         services.GetIndicatorSettings(),
+		IndicatorWeights:        services.GetIndicatorWeights(),
 		Timeframe:               timeframe,
 		TimeframeMinutes:        timeframeMinutes,
 		InitialBalance:          wallet.Balance,

@@ -9,18 +9,18 @@ import (
 )
 
 type positionState struct {
-	Symbol         string
-	EntryPrice     float64
-	Size           float64
-	StopPrice      *float64
-	TakeProfit     *float64
-	TrailingStop   *float64
-	HighestPrice   float64
-	OpenedIndex    int
-	BarsHeld       int
-	EntryTime      time.Time
-	LastAtr        float64
-	EntryFee       float64
+	Symbol       string
+	EntryPrice   float64
+	Size         float64
+	StopPrice    *float64
+	TakeProfit   *float64
+	TrailingStop *float64
+	HighestPrice float64
+	OpenedIndex  int
+	BarsHeld     int
+	EntryTime    time.Time
+	LastAtr      float64
+	EntryFee     float64
 }
 
 type barContext struct {
@@ -33,6 +33,15 @@ func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (Bac
 	if config.InitialBalance <= 0 {
 		return BacktestResult{}, fmt.Errorf("initial balance must be > 0")
 	}
+	indicatorConfig := config.IndicatorConfig
+	if indicatorConfig == (services.IndicatorConfig{}) {
+		indicatorConfig = services.GetIndicatorSettings()
+	}
+	indicatorWeights := config.IndicatorWeights
+	if len(indicatorWeights) == 0 {
+		indicatorWeights = services.GetIndicatorWeights()
+	}
+
 	aligned, err := alignSeries(series, config.Start, config.End)
 	if err != nil {
 		return BacktestResult{}, err
@@ -82,7 +91,7 @@ func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (Bac
 
 		for _, symbol := range symbols {
 			window := buildCandles(aligned[symbol], idx, lookback)
-			rating, signal := services.AnalyzeCandles(window)
+			rating, signal := services.AnalyzeCandlesWithConfig(window, indicatorConfig, indicatorWeights)
 			atr := computeAtr(window, config)
 			contexts[symbol] = barContext{
 				Rating: rating,

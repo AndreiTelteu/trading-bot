@@ -409,6 +409,13 @@ func AnalyzeCandles(candles []Candle) (float64, string) {
 	}
 	config := GetIndicatorSettings()
 	weights := GetIndicatorWeights()
+	return AnalyzeCandlesWithConfig(candles, config, weights)
+}
+
+func AnalyzeCandlesWithConfig(candles []Candle, config IndicatorConfig, weights map[string]float64) (float64, string) {
+	if len(candles) == 0 {
+		return 0, "NEUTRAL"
+	}
 	indicators := calculateIndicatorResults(candles, config)
 	finalRating, finalSignal := CalculateFinalScore(indicators, weights)
 	return finalRating, finalSignal
