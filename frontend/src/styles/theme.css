@@ -76,6 +76,9 @@ body::before {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  width: 100%;
+  max-width: 1600px;
+  margin: 0 auto;
   padding: 1.5rem 3rem;
   background: rgba(7, 7, 20, 0.8);
   backdrop-filter: blur(20px);
@@ -99,11 +102,14 @@ body::before {
 .nav {
   display: flex;
   gap: 1rem;
+  width: 100%;
+  max-width: 1600px;
+  margin: 1rem auto 0;
   padding: 1.5rem 3rem;
-  margin-top: 1rem;
 }
 
-.nav button {
+.nav button,
+.nav .nav-link {
   padding: 0.75rem 1.5rem;
   background: var(--bg-panel);
   border: 1px solid var(--border-glass);
@@ -115,16 +121,21 @@ body::before {
   cursor: pointer;
   transition: var(--transition-fast);
   backdrop-filter: blur(10px);
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
 }
 
-.nav button:hover {
+.nav button:hover,
+.nav .nav-link:hover {
   background: var(--bg-panel-hover);
   color: var(--text-main);
   transform: translateY(-2px);
   box-shadow: 0 6px 15px rgba(0,0,0,0.3);
 }
 
-.nav button.active {
+.nav button.active,
+.nav .nav-link.active {
   background: linear-gradient(135deg, rgba(0, 242, 254, 0.2), rgba(79, 172, 254, 0.1));
   border-color: var(--accent-primary);
   color: var(--accent-primary);
@@ -742,7 +753,7 @@ input:focus, select:focus, button:focus {
   padding-bottom: 1rem;
 }
 
-.settings-tabs button, .filter-tabs button {
+.settings-tabs button, .settings-tabs a, .filter-tabs button {
   padding: 0.8rem 1.5rem;
   background: transparent;
   border: 1px solid transparent;
@@ -751,9 +762,10 @@ input:focus, select:focus, button:focus {
   cursor: pointer;
   transition: var(--transition-fast);
   border-radius: var(--radius-sm);
+  text-decoration: none;
 }
 
-.settings-tabs button.active, .filter-tabs button.active {
+.settings-tabs button.active, .settings-tabs a.active, .filter-tabs button.active {
   background: rgba(0, 242, 254, 0.1);
   color: var(--accent-primary);
   border-color: rgba(0, 242, 254, 0.3);

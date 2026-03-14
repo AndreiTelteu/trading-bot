@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import { createPortal } from 'react-dom'
+import { Link } from '@tanstack/react-router'
 import CustomSelect from './CustomSelect'
 import { useWebSocketEvent } from '../hooks/useWebSocket'
 
@@ -21,12 +22,21 @@ const normalizeBacktestJob = (job) => {
   }
 }
 
-function SettingsPanel() {
+const SETTINGS_SECTIONS = [
+  { key: 'trading', label: 'Trading', to: '/settings/trading' },
+  { key: 'indicators', label: 'Indicators', to: '/settings/indicators' },
+  { key: 'probabilistic', label: 'Probabilistic', to: '/settings/probabilistic' },
+  { key: 'ai', label: 'AI Settings', to: '/settings/ai' },
+  { key: 'atr', label: 'ATR', to: '/settings/atr' },
+  { key: 'backtest', label: 'Backtest', to: '/settings/backtest' },
+  { key: 'weights', label: 'Weights', to: '/settings/weights' },
+]
+
+function SettingsPanel({ activeSection }) {
   const [settings, setSettings] = useState({})
   const [weights, setWeights] = useState({})
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
-  const [activeSection, setActiveSection] = useState('trading')
   const [modalOpen, setModalOpen] = useState(false)
   const [modalMode, setModalMode] = useState('export')
   const [modalText, setModalText] = useState('')
@@ -411,48 +421,15 @@ function SettingsPanel() {
       </div>
       
       <div className="settings-tabs">
-        <button 
-          className={activeSection === 'trading' ? 'active' : ''}
-          onClick={() => setActiveSection('trading')}
-        >
-          Trading
-        </button>
-        <button 
-          className={activeSection === 'indicators' ? 'active' : ''}
-          onClick={() => setActiveSection('indicators')}
-        >
-          Indicators
-        </button>
-        <button 
-          className={activeSection === 'probabilistic' ? 'active' : ''}
-          onClick={() => setActiveSection('probabilistic')}
-        >
-          Probabilistic
-        </button>
-        <button 
-          className={activeSection === 'ai' ? 'active' : ''}
-          onClick={() => setActiveSection('ai')}
-        >
-          AI Settings
-        </button>
-        <button 
-          className={activeSection === 'atr' ? 'active' : ''}
-          onClick={() => setActiveSection('atr')}
-        >
-          ATR
-        </button>
-        <button 
-          className={activeSection === 'backtest' ? 'active' : ''}
-          onClick={() => setActiveSection('backtest')}
-        >
-          Backtest
-        </button>
-        <button 
-          className={activeSection === 'weights' ? 'active' : ''}
-          onClick={() => setActiveSection('weights')}
-        >
-          Weights
-        </button>
+        {SETTINGS_SECTIONS.map(section => (
+          <Link
+            key={section.key}
+            to={section.to}
+            className={activeSection === section.key ? 'active' : ''}
+          >
+            {section.label}
+          </Link>
+        ))}
       </div>
 
       {activeSection !== 'weights' ? (

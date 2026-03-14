@@ -1,9 +1,5 @@
-import React, { useState, useEffect, useCallback } from 'react'
-import Dashboard from './components/Dashboard'
-import PositionsTable from './components/PositionsTable'
-import SettingsPanel from './components/SettingsPanel'
-import AIProposal from './components/AIProposal'
-import LLMConfig from './components/LLMConfig'
+import React, { useState, useEffect, useCallback, useMemo, useContext } from 'react'
+import { Link, Outlet } from '@tanstack/react-router'
 import ActivityLog from './components/ActivityLog'
 import { useWebSocket, useWebSocketEvent } from './hooks/useWebSocket'
 import { getWebSocketManager } from './services/websocketManager'
@@ -31,15 +27,25 @@ const upsertPosition = (prevPositions, nextPosition) => {
   return updatedPositions
 }
 
+const AppDataContext = React.createContext(null)
+
+export const useAppData = () => {
+  const context = useContext(AppDataContext)
+
+  if (!context) {
+    throw new Error('useAppData must be used within App')
+  }
+
+  return context
+}
+
 function App() {
-  const [activeTab, setActiveTab] = useState('dashboard')
   const [wallet, setWallet] = useState({ balance: 0, currency: 'USDT' })
   const [positions, setPositions] = useState([])
   const [showActivity, setShowActivity] = useState(true)
   const [isRunning, setIsRunning] = useState(false)
-  
-  // Use WebSocket hook for connection state and send function
-  const { isConnected, connectionState, send } = useWebSocket()
+
+  const { isConnected } = useWebSocket()
 
   const fetchWallet = useCallback(async () => {
     try {
@@ -67,22 +73,16 @@ function App() {
     }
   }, [])
 
-  // Initialize WebSocket connection on mount - only runs once
   useEffect(() => {
-    // Fetch initial data via HTTP
     fetchWallet()
     fetchPositions()
-    
-    // WebSocket manager connects automatically when first component mounts
+
     const manager = getWebSocketManager()
     if (manager.getConnectionState() === 'disconnected') {
       manager.connect()
     }
-    // No cleanup here - we want the WebSocket to persist for the session
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []) // Empty dependency array - only run once on mount
+  }, [fetchPositions, fetchWallet])
 
-  // Listen for WebSocket events
   useWebSocketEvent('wallet_update', useCallback((data) => {
     setWallet(prev => ({
       ...prev,
@@ -132,90 +132,51 @@ function App() {
     }
   }
 
-  const renderContent = () => {
-    switch (activeTab) {
-      case 'dashboard':
-        return <Dashboard wallet={wallet} positions={positions} />
-      case 'positions':
-        return <PositionsTable positions={positions} onRefresh={fetchPositions} />
-      case 'settings':
-        return <SettingsPanel />
-      case 'ai':
-        return <AIProposal />
-      case 'llm':
-        return <LLMConfig />
-      default:
-        return <Dashboard wallet={wallet} positions={positions} />
-    }
-  }
+  const appData = useMemo(() => ({
+    wallet,
+    positions,
+    fetchPositions,
+  }), [wallet, positions, fetchPositions])
 
   return (
-    <div className="app">
-      <header className="header">
-        <h1>Trading Bot</h1>
-        <div className="header-actions">
-          <button 
-            type="button"
-            className={`activity-toggle ${showActivity ? 'active' : ''}`}
-            onClick={() => setShowActivity(!showActivity)}
-          >
-            Activity Log
-          </button>
-          <div className={`connection-status ${isConnected ? 'connected' : 'disconnected'}`}>
-            {isConnected ? 'Connected' : 'Disconnected'}
+    <AppDataContext.Provider value={appData}>
+      <div className="app">
+        <header className="header">
+          <h1>Trading Bot</h1>
+          <div className="header-actions">
+            <button
+              type="button"
+              className={`activity-toggle ${showActivity ? 'active' : ''}`}
+              onClick={() => setShowActivity(!showActivity)}
+            >
+              Activity Log
+            </button>
+            <div className={`connection-status ${isConnected ? 'connected' : 'disconnected'}`}>
+              {isConnected ? 'Connected' : 'Disconnected'}
+            </div>
           </div>
-        </div>
-      </header>
-      
-      <nav className="nav">
-        <button 
-          type="button"
-          className={activeTab === 'dashboard' ? 'active' : ''} 
-          onClick={() => setActiveTab('dashboard')}
-        >
-          Dashboard
-        </button>
-        <button 
-          type="button"
-          className={activeTab === 'positions' ? 'active' : ''} 
-          onClick={() => setActiveTab('positions')}
-        >
-          Positions
-        </button>
-        <button 
-          type="button"
-          className={activeTab === 'settings' ? 'active' : ''} 
-          onClick={() => setActiveTab('settings')}
-        >
-          Settings
-        </button>
-        <button 
-          type="button"
-          className={activeTab === 'ai' ? 'active' : ''} 
-          onClick={() => setActiveTab('ai')}
-        >
-          AI Proposals
-        </button>
-        <button 
-          type="button"
-          className={activeTab === 'llm' ? 'active' : ''} 
-          onClick={() => setActiveTab('llm')}
-        >
-          LLM Config
-        </button>
-      </nav>
-      
-      <div className={`main ${showActivity ? 'with-sidebar' : ''}`}>
-        <div className="content">
-          {renderContent()}
-        </div>
-        {showActivity && (
-          <div className="sidebar">
-            <ActivityLog onRunAnalysis={handleRunAnalysis} isRunning={isRunning} />
+        </header>
+
+        <nav className="nav">
+          <Link to="/" className="nav-link" activeProps={{ className: 'active' }}>Dashboard</Link>
+          <Link to="/positions" className="nav-link" activeProps={{ className: 'active' }}>Positions</Link>
+          <Link to="/settings" className="nav-link" activeProps={{ className: 'active' }}>Settings</Link>
+          <Link to="/ai" className="nav-link" activeProps={{ className: 'active' }}>AI Proposals</Link>
+          <Link to="/llm" className="nav-link" activeProps={{ className: 'active' }}>LLM Config</Link>
+        </nav>
+
+        <div className={`main ${showActivity ? 'with-sidebar' : ''}`}>
+          <div className="content">
+            <Outlet />
           </div>
-        )}
+          {showActivity && (
+            <div className="sidebar">
+              <ActivityLog onRunAnalysis={handleRunAnalysis} isRunning={isRunning} />
+            </div>
+          )}
+        </div>
       </div>
-    </div>
+    </AppDataContext.Provider>
   )
 }
 
