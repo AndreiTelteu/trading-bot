@@ -7,6 +7,14 @@ import (
 	"github.com/gofiber/fiber/v2"
 )
 
+func ListBacktestJobs(c *fiber.Ctx) error {
+	jobs, err := backtest.ListBacktestJobResponses()
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "Failed to fetch backtest jobs"})
+	}
+	return c.JSON(jobs)
+}
+
 func StartBacktest(c *fiber.Ctx) error {
 	job, err := backtest.StartBacktestJob()
 	if err != nil {

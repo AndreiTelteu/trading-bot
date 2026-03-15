@@ -1,7 +1,9 @@
 import React, { useState, useEffect } from 'react'
 import { createPortal } from 'react-dom'
 import { Link } from '@tanstack/react-router'
+import AlertDialog from './AlertDialog'
 import CustomSelect from './CustomSelect'
+import useAlertDialog from '../hooks/useAlertDialog'
 import { useWebSocketEvent } from '../hooks/useWebSocket'
 
 const API_BASE = '/api'
@@ -20,6 +22,147 @@ const normalizeBacktestJob = (job) => {
   } catch {
     return job
   }
+}
+
+const formatBacktestDate = (value) => {
+  if (!value) return 'Unknown time'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return 'Unknown time'
+  return date.toLocaleString()
+}
+
+const getBacktestSummary = (job) => job?.summary || null
+
+const getBacktestMetrics = (job, strategyKey) => {
+  const summary = getBacktestSummary(job)
+  const strategy = summary?.[strategyKey]
+  return strategy?.Metrics || strategy?.metrics || {}
+}
+
+const getBacktestSymbols = (job) => {
+  const summary = getBacktestSummary(job)
+  const equityBySymbol = summary?.baseline?.EquityBySymbol || summary?.baseline?.equityBySymbol || {}
+  return Object.keys(equityBySymbol)
+}
+
+const formatMetricValue = (value, digits = 2, suffix = '', multiplier = 1, prefix = '') => {
+  const num = Number(value)
+  if (!Number.isFinite(num)) return '—'
+  return `${prefix}${(num * multiplier).toFixed(digits)}${suffix}`
+}
+
+const OPTIMIZATION_MODE_LABELS = {
+  strict: 'Strict pass',
+  hypothesis_fallback: 'Best-effort fallback',
+  none: 'No accepted proposals',
+}
+
+const formatOptimizationMode = (mode) => OPTIMIZATION_MODE_LABELS[mode] || mode || 'Unknown'
+
+const formatOptimizationReason = (reason) => {
+  if (!reason) return 'Unknown reason'
+  return reason
+    .split('_')
+    .map(part => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ')
+}
+
+function BacktestOptimizationDialogContent({ result }) {
+  const proposals = Array.isArray(result?.proposals) ? result.proposals : []
+  const attempts = Array.isArray(result?.attempts) ? result.attempts : []
+
+  return (
+    <div style={{ display: 'grid', gap: '1rem' }}>
+      <div className="job-meta-info">
+        <div className="meta-item">
+          <span className="meta-label">Backtest</span>
+          <span className="meta-value">#{result?.job_id || '—'}</span>
+        </div>
+        <div className="meta-item">
+          <span className="meta-label">Created</span>
+          <span className="meta-value">{result?.count || 0}</span>
+        </div>
+        <div className="meta-item">
+          <span className="meta-label">Mode</span>
+          <span className="meta-value">{formatOptimizationMode(result?.attempt_mode)}</span>
+        </div>
+      </div>
+
+      {proposals.length > 0 && (
+        <div>
+          <div className="text-muted text-sm" style={{ marginBottom: '0.5rem' }}>Accepted proposals</div>
+          <div style={{ display: 'grid', gap: '0.65rem' }}>
+            {proposals.map((proposal, index) => (
+              <div key={proposal.id || `${proposal.parameter_key}-${index}`} className="glass-panel" style={{ padding: '0.85rem 1rem' }}>
+                <div className="metric-row">
+                  <span className="metric-name">{proposal.parameter_key || 'Parameter'}</span>
+                  <span className="metric-value">{proposal.old_value ?? '—'} → {proposal.new_value ?? '—'}</span>
+                </div>
+                {proposal.reasoning && (
+                  <p className="text-muted text-sm" style={{ margin: '0.6rem 0 0' }}>
+                    {proposal.reasoning}
+                  </p>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {attempts.length > 0 && (
+        <div>
+          <div className="text-muted text-sm" style={{ marginBottom: '0.5rem' }}>Attempt diagnostics</div>
+          <div style={{ display: 'grid', gap: '0.65rem' }}>
+            {attempts.map((attempt, index) => {
+              const rejectedEntries = Object.entries(attempt?.diagnostics?.rejected_counts || {})
+
+              return (
+                <div key={`${attempt.mode || 'attempt'}-${index}`} className="glass-panel" style={{ padding: '0.85rem 1rem' }}>
+                  <div className="metric-row">
+                    <span className="metric-name">{formatOptimizationMode(attempt.mode)}</span>
+                    <span className="metric-value">{attempt.accepted_count || 0} accepted</span>
+                  </div>
+                  {attempt.finish_reason && (
+                    <p className="text-muted text-sm" style={{ margin: '0.6rem 0 0' }}>
+                      Finish reason: <span className="metric-value">{attempt.finish_reason}</span>
+                    </p>
+                  )}
+                  {attempt.error ? (
+                    <p className="negative text-sm" style={{ margin: '0.6rem 0 0' }}>{attempt.error}</p>
+                  ) : rejectedEntries.length > 0 ? (
+                    <>
+                      <ul style={{ margin: '0.6rem 0 0', paddingLeft: '1.2rem' }}>
+                        {rejectedEntries.map(([reason, count]) => (
+                          <li key={reason} className="text-muted text-sm">
+                            {formatOptimizationReason(reason)}: {count}
+                          </li>
+                        ))}
+                      </ul>
+                      {attempt.raw_response && (
+                        <div style={{ marginTop: '0.75rem' }}>
+                          <div className="text-muted text-sm" style={{ marginBottom: '0.4rem' }}>
+                            Raw AI response
+                          </div>
+                          <textarea
+                            readOnly
+                            value={attempt.raw_response}
+                            className="modal-textarea"
+                            style={{ minHeight: '160px' }}
+                          />
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <p className="text-muted text-sm" style={{ margin: '0.6rem 0 0' }}>No validation rejections.</p>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  )
 }
 
 const SETTINGS_SECTIONS = [
@@ -42,12 +185,17 @@ function SettingsPanel({ activeSection }) {
   const [modalText, setModalText] = useState('')
   const [modalError, setModalError] = useState('')
   const [backtestJob, setBacktestJob] = useState(null)
+  const [backtestJobs, setBacktestJobs] = useState([])
+  const [selectedBacktestId, setSelectedBacktestId] = useState('')
   const [startingBacktest, setStartingBacktest] = useState(false)
+  const [optimizingBacktest, setOptimizingBacktest] = useState(false)
+  const optimizeBacktestDialog = useAlertDialog()
 
   useEffect(() => {
     fetchSettings()
     fetchWeights()
     fetchLatestBacktest()
+    fetchBacktestJobs()
   }, [])
 
   const fetchSettings = async () => {
@@ -96,10 +244,41 @@ function SettingsPanel({ activeSection }) {
         return
       }
       const data = await res.json()
-      setBacktestJob(normalizeBacktestJob(data))
+      const normalized = normalizeBacktestJob(data)
+      setBacktestJob(normalized)
+      upsertBacktestJob(normalized)
     } catch (err) {
       console.error('Failed to fetch backtest status:', err)
     }
+  }
+
+  const fetchBacktestJobs = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/backtest/jobs`)
+      if (!res.ok) {
+        return
+      }
+      const data = await res.json()
+      const normalizedJobs = Array.isArray(data) ? data.map(normalizeBacktestJob) : []
+      setBacktestJobs(normalizedJobs)
+      setSelectedBacktestId(prev => prev || (normalizedJobs[0] ? String(normalizedJobs[0].id) : ''))
+    } catch (err) {
+      console.error('Failed to fetch backtest jobs:', err)
+    }
+  }
+
+  const upsertBacktestJob = (job) => {
+    if (!job || !job.id) return
+    const normalized = normalizeBacktestJob(job)
+    setBacktestJobs(prev => {
+      const existing = prev.find(item => item.id === normalized.id)
+      const next = existing
+        ? prev.map(item => item.id === normalized.id ? { ...item, ...normalized } : item)
+        : [normalized, ...prev]
+      next.sort((a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime())
+      return next
+    })
+    setSelectedBacktestId(prev => prev || String(normalized.id))
   }
 
   const handleSettingChange = (key, value) => {
@@ -160,7 +339,10 @@ function SettingsPanel({ activeSection }) {
         throw new Error(`HTTP ${res.status}`)
       }
       const data = await res.json()
-      setBacktestJob(normalizeBacktestJob(data))
+      const normalized = normalizeBacktestJob(data)
+      setBacktestJob(normalized)
+      upsertBacktestJob(normalized)
+      setSelectedBacktestId(String(normalized.id))
     } catch (err) {
       console.error('Failed to start backtest:', err)
       alert('Failed to start backtest')
@@ -169,19 +351,23 @@ function SettingsPanel({ activeSection }) {
   }
 
   useWebSocketEvent('backtest_status', (data) => {
-    setBacktestJob(normalizeBacktestJob(data))
+    const normalized = normalizeBacktestJob(data)
+    setBacktestJob(normalized)
+    upsertBacktestJob(normalized)
   })
 
   useWebSocketEvent('backtest_progress', (data) => {
     setBacktestJob(prev => {
+      const next = {
+        ...(prev || {}),
+        id: data.job_id,
+        status: data.status,
+        progress: data.progress,
+        message: data.message,
+      }
+      upsertBacktestJob(next)
       if (!prev || prev.id === data.job_id) {
-        return {
-          ...(prev || {}),
-          id: data.job_id,
-          status: data.status,
-          progress: data.progress,
-          message: data.message,
-        }
+        return next
       }
       return prev
     })
@@ -189,18 +375,90 @@ function SettingsPanel({ activeSection }) {
 
   useWebSocketEvent('backtest_complete', (data) => {
     setBacktestJob(prev => {
+      const next = normalizeBacktestJob({
+        ...(prev || {}),
+        id: data.job_id,
+        status: data.status,
+        progress: 1,
+        summary: data.summary,
+      })
+      upsertBacktestJob(next)
       if (!prev || prev.id === data.job_id) {
-        return {
-          ...(prev || {}),
-          id: data.job_id,
-          status: data.status,
-          progress: 1,
-          summary: data.summary,
-        }
+        return next
       }
       return prev
     })
   })
+
+  const handleOptimizeBacktest = async () => {
+    if (!selectedBacktestId) return
+
+    setOptimizingBacktest(true)
+    try {
+      const res = await fetch(`${API_BASE}/ai/optimize-backtest`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ job_id: Number(selectedBacktestId) })
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        const error = new Error(data.error || `HTTP ${res.status}`)
+        error.details = data
+        error.status = res.status
+        throw error
+      }
+
+      const hasProposals = Array.isArray(data.proposals) && data.proposals.length > 0
+      optimizeBacktestDialog.openDialog({
+        tone: hasProposals ? 'success' : 'warning',
+        title: hasProposals ? 'Backtest optimization complete' : 'No optimization proposals created',
+        message: data.message || (hasProposals
+          ? `Created ${data.count || 0} backtest optimization proposal(s).`
+          : 'The AI response did not produce any accepted proposals.'),
+        description: hasProposals && data.used_fallback
+          ? 'The fallback hypothesis pass was used to turn the selected backtest into proposal candidates.'
+          : `Selected backtest: #${data.job_id || selectedBacktestId}`,
+        buttons: [
+          {
+            label: 'Close',
+            variant: 'primary',
+            autoFocus: true,
+            closeOnClick: true,
+          },
+        ],
+        children: <BacktestOptimizationDialogContent result={data} />,
+      })
+    } catch (err) {
+      console.error('Failed to optimize backtest:', err)
+      optimizeBacktestDialog.openDialog({
+        tone: 'danger',
+        title: 'Backtest optimization failed',
+        message: err.message || 'Failed to optimize backtest',
+        description: `Selected backtest: #${selectedBacktestId}`,
+        buttons: [
+          {
+            label: 'Close',
+            variant: 'primary',
+            autoFocus: true,
+            closeOnClick: true,
+          },
+        ],
+        children: err?.details ? (
+          <div className="job-meta-info">
+            <div className="meta-item">
+              <span className="meta-label">HTTP Status</span>
+              <span className="meta-value">{err.status || '—'}</span>
+            </div>
+            <div className="meta-item">
+              <span className="meta-label">Error</span>
+              <span className="meta-value">{err.details.error || err.message}</span>
+            </div>
+          </div>
+        ) : null,
+      })
+    }
+    setOptimizingBacktest(false)
+  }
 
   const openExportModal = () => {
     const payload = {
@@ -374,6 +632,23 @@ function SettingsPanel({ activeSection }) {
 
   const backtestProgress = backtestJob?.progress != null ? Math.min(1, Math.max(0, backtestJob.progress)) : null
   const backtestProgressPercent = backtestProgress != null ? Math.round(backtestProgress * 100) : null
+  const selectedBacktestJob = backtestJobs.find(job => String(job.id) === selectedBacktestId) || null
+  const selectedBacktestHasSummary = Boolean(getBacktestSummary(selectedBacktestJob))
+  const backtestOptions = backtestJobs.map(job => {
+    const symbols = getBacktestSymbols(job)
+    const suffix = symbols.length > 0 ? ` • ${symbols.join(', ')}` : ''
+    return {
+      value: String(job.id),
+      label: `#${job.id} • ${job.status || 'unknown'} • ${formatBacktestDate(job.created_at)}${suffix}`,
+    }
+  })
+  const backtestMetricRows = [
+    { key: 'TradeCount', label: 'Trade Count', digits: 0 },
+    { key: 'WinRate', label: 'Win Rate', digits: 2, suffix: '%', multiplier: 100 },
+    { key: 'ProfitFactor', label: 'Profit Factor', digits: 2 },
+    { key: 'AvgWin', label: 'Avg Win', digits: 2, prefix: '$' },
+    { key: 'AvgLoss', label: 'Avg Loss', digits: 2, prefix: '$' },
+  ]
 
   const currentSettings = activeSection === 'trading' ? tradingSettings 
     : activeSection === 'indicators' ? indicatorSettings 
@@ -436,7 +711,7 @@ function SettingsPanel({ activeSection }) {
         <div className="settings-form">
           {currentSettings.map(s => (
             <div key={s.key} className="form-group">
-              <label>{s.label}</label>
+              <label htmlFor={`setting-${s.key}`}>{s.label}</label>
               {s.type === 'boolean' ? (
                 <CustomSelect
                   value={settings[s.key] === true ? 'true' : 'false'}
@@ -445,9 +720,11 @@ function SettingsPanel({ activeSection }) {
                     { value: 'true', label: 'True' },
                     { value: 'false', label: 'False' }
                   ]}
+                  id={`setting-${s.key}`}
                 />
               ) : (
                 <input
+                  id={`setting-${s.key}`}
                   type={s.type}
                   step={s.step || 1}
                   value={settings[s.key] || ''}
@@ -460,32 +737,135 @@ function SettingsPanel({ activeSection }) {
             {saving ? 'Saving...' : 'Save Settings'}
           </button>
           {activeSection === 'backtest' && (
-            <div className="form-group">
-              <button className="btn-primary" onClick={handleStartBacktest} disabled={startingBacktest || backtestJob?.status === 'running'}>
-                {startingBacktest || backtestJob?.status === 'running' ? 'Backtest Running...' : 'Run Backtest'}
-              </button>
-              {backtestJob && (
-                <div className="text-muted text-sm">
-                  Status: {backtestJob.status || 'unknown'} {backtestProgressPercent != null ? `(${backtestProgressPercent}%)` : ''}
-                  {backtestJob.message ? ` - ${backtestJob.message}` : ''}
+            <div className="backtest-controls-wrapper glass-panel fade-in">
+              <div className="backtest-header-bar">
+                <div className="backtest-action-buttons">
+                  <button className="btn-primary" onClick={handleStartBacktest} disabled={startingBacktest || backtestJob?.status === 'running'}>
+                    <span className="btn-icon">▶</span>
+                    {startingBacktest || backtestJob?.status === 'running' ? 'Running...' : 'Run Backtest'}
+                  </button>
+                  <button className="btn-save btn-optimize" onClick={handleOptimizeBacktest} disabled={optimizingBacktest || !selectedBacktestId || !selectedBacktestHasSummary}>
+                    <span className="btn-icon">✨</span>
+                    {optimizingBacktest ? 'Optimizing...' : 'AI Optimize'}
+                  </button>
                 </div>
-              )}
+                {backtestJob && (
+                  <div className="backtest-status-pill">
+                    <span className={`status-dot ${backtestJob.status === 'running' ? 'running' : 'completed'}`}></span>
+                    Status: {backtestJob.status || 'unknown'} {backtestProgressPercent != null ? `(${backtestProgressPercent}%)` : ''}
+                    {backtestJob.message ? ` - ${backtestJob.message}` : ''}
+                  </div>
+                )}
+              </div>
+
               {backtestProgressPercent != null && (
-                <div style={{ width: '100%', marginTop: '0.75rem' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.35rem' }}>
-                    <span className="text-muted text-sm">Progress</span>
-                    <span className="text-muted text-sm">{backtestProgressPercent}%</span>
+                <div className="backtest-progress-bar-container">
+                  <div className="progress-header">
+                    <span className="text-muted text-sm font-bold uppercase">Backtest Progress</span>
+                    <span className="text-accent text-sm font-mono">{backtestProgressPercent}%</span>
                   </div>
-                  <div style={{ height: '8px', background: 'rgba(255,255,255,0.08)', borderRadius: '999px', overflow: 'hidden' }}>
-                    <div style={{ width: `${backtestProgressPercent}%`, height: '100%', background: 'linear-gradient(135deg, var(--accent-primary), var(--accent-secondary))' }} />
+                  <div className="progress-track">
+                    <div className="progress-fill" style={{ width: `${backtestProgressPercent}%` }} />
                   </div>
                 </div>
               )}
-              {backtestJob?.summary?.validation && (
-                <div className="text-muted text-sm">
-                  Validation: {backtestJob.summary.validation.passed ? 'Passed' : 'Failed'} ({backtestJob.summary.validation.windows} windows)
-                </div>
-              )}
+
+              <div className="backtest-results-section">
+                  <div className="backtest-selector-card">
+                    <div className="form-group selector-group" style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: '0.75rem', border: 'none' }}>
+                      <label htmlFor="backtest-select" style={{ color: 'var(--text-muted)' }}>Select Stored Backtest</label>
+                      <CustomSelect
+                        id="backtest-select"
+                        value={selectedBacktestId || backtestOptions[0]?.value}
+                        onChange={setSelectedBacktestId}
+                        options={backtestOptions}
+                        className="backtest-select"
+                      />
+                    </div>
+                  </div>
+
+                {selectedBacktestJob && (
+                  <div className="selected-job-details">
+                    <div className="job-meta-info">
+                      <div className="meta-item">
+                        <span className="meta-label">Job ID</span>
+                        <span className="meta-value">#{selectedBacktestJob.id}</span>
+                      </div>
+                      <div className="meta-item">
+                        <span className="meta-label">Date</span>
+                        <span className="meta-value">{formatBacktestDate(selectedBacktestJob.created_at)}</span>
+                      </div>
+                      <div className="meta-item">
+                        <span className="meta-label">Status</span>
+                        <span className={`meta-value status-${selectedBacktestJob.status}`}>{selectedBacktestJob.status || 'unknown'}</span>
+                      </div>
+                      {selectedBacktestJob.error && (
+                        <div className="meta-item error-item">
+                          <span className="meta-label">Error</span>
+                          <span className="meta-value error-text">{selectedBacktestJob.error}</span>
+                        </div>
+                      )}
+                    </div>
+                    
+                    {selectedBacktestJob.summary?.validation && (
+                      <div className={`validation-banner ${selectedBacktestJob.summary.validation.passed ? 'passed' : 'failed'}`}>
+                        <span className="validation-icon">{selectedBacktestJob.summary.validation.passed ? '✓' : '✗'}</span>
+                        Validation: {selectedBacktestJob.summary.validation.passed ? 'Passed' : 'Failed'} ({selectedBacktestJob.summary.validation.windows} windows)
+                      </div>
+                    )}
+                    
+                    {selectedBacktestHasSummary ? (
+                      <div className="metrics-comparison-grid">
+                        {['baseline', 'vol_sizing'].map(strategyKey => {
+                          const metrics = getBacktestMetrics(selectedBacktestJob, strategyKey)
+                          return (
+                            <div key={strategyKey} className="metric-card">
+                              <h4 className="metric-card-title">
+                                {strategyKey === 'vol_sizing' ? 'Vol Sizing Strategy' : 'Baseline Strategy'}
+                              </h4>
+                              <div className="metric-list">
+                                  {backtestMetricRows.map(metric => {
+                                    const rawVal = metrics?.[metric.key]
+                                    let formattedVal = formatMetricValue(rawVal, metric.digits, metric.suffix || '', metric.multiplier || 1, metric.prefix || '')
+                                    let colorClass = rawVal < 0 ? 'negative' : rawVal > 0 ? 'positive' : ''
+                                    
+                                    if (metric.key === 'ProfitFactor' && Number.isFinite(Number(rawVal))) {
+                                      const num = Number(rawVal)
+                                      const pct = (num - 1) * 100
+                                      const sign = pct > 0 ? '+' : ''
+                                      colorClass = '' // Keep the main number neutral
+                                      const pctColor = pct < 0 ? 'negative' : pct > 0 ? 'positive' : ''
+                                      formattedVal = (
+                                        <>
+                                          {formatMetricValue(rawVal, metric.digits, metric.suffix || '', metric.multiplier || 1, metric.prefix || '')} <span className={pctColor}>({sign}{pct.toFixed(0)}%)</span>
+                                        </>
+                                      )
+                                    } else if (metric.key === 'WinRate') {
+                                      colorClass = rawVal < 0.5 ? 'negative' : rawVal > 0.5 ? 'positive' : ''
+                                    } else if (metric.key === 'TradeCount') {
+                                      colorClass = ''
+                                    }
+
+                                    return (
+                                      <div key={metric.key} className="metric-row">
+                                        <span className="metric-name">{metric.label}</span>
+                                        <span className={`metric-value ${colorClass}`}>
+                                          {formattedVal}
+                                        </span>
+                                      </div>
+                                    )
+                                  })}
+                              </div>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    ) : (
+                      <div className="empty-state">This backtest has no stored summary, so AI optimization is unavailable.</div>
+                    )}
+                  </div>
+                )}
+              </div>
             </div>
           )}
         </div>
@@ -502,7 +882,7 @@ function SettingsPanel({ activeSection }) {
               return (
                 <div key={w.key} className="weight-item glass-panel">
                   <div className="weight-label">
-                     <label>{w.label}</label>
+                     <label htmlFor={`weight-${w.key}`}>{w.label}</label>
                      <p className="weight-multiplier text-muted font-mono">Multiplier: {val}x</p>
                   </div>
                   
@@ -511,6 +891,7 @@ function SettingsPanel({ activeSection }) {
                        <div className="slider-fill-active" style={{ width: `${percentage}%` }}></div>
                     </div>
                     <input
+                      id={`weight-${w.key}`}
                       type="range"
                       min="0"
                       max="2"
@@ -536,6 +917,18 @@ function SettingsPanel({ activeSection }) {
         </div>
       )}
       {modalOpen && createPortal(modalContent, document.body)}
+      <AlertDialog
+        isOpen={optimizeBacktestDialog.isOpen}
+        onClose={optimizeBacktestDialog.closeDialog}
+        title={optimizeBacktestDialog.dialog?.title}
+        message={optimizeBacktestDialog.dialog?.message}
+        description={optimizeBacktestDialog.dialog?.description}
+        tone={optimizeBacktestDialog.dialog?.tone}
+        icon={optimizeBacktestDialog.dialog?.icon}
+        buttons={optimizeBacktestDialog.dialog?.buttons || []}
+      >
+        {optimizeBacktestDialog.dialog?.children}
+      </AlertDialog>
     </div>
   )
 }

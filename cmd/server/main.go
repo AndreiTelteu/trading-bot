@@ -152,6 +152,7 @@ func setupRoutes(app *fiber.App, cfg *config.Config) {
 
 	backtest := api.Group("/backtest")
 	backtest.Post("/start", handlers.StartBacktest)
+	backtest.Get("/jobs", handlers.ListBacktestJobs)
 	backtest.Get("/status/:id", handlers.GetBacktestStatus)
 	backtest.Get("/latest", handlers.GetLatestBacktestStatus)
 
@@ -164,6 +165,7 @@ func setupRoutes(app *fiber.App, cfg *config.Config) {
 	ai := api.Group("/ai")
 	ai.Get("/proposals", handlers.GetAIProposals)
 	ai.Post("/generate-proposals", handlers.GenerateProposals)
+	ai.Post("/optimize-backtest", handlers.OptimizeBacktest)
 	ai.Post("/proposals/:id/approve", handlers.ApproveProposal)
 	ai.Post("/proposals/:id/deny", handlers.DenyProposal)
 }

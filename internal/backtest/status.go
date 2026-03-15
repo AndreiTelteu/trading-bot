@@ -20,6 +20,26 @@ type BacktestJobResponse struct {
 	UpdatedAt   time.Time           `json:"updated_at"`
 }
 
+func ListBacktestJobResponses() ([]BacktestJobResponse, error) {
+	var jobs []database.BacktestJob
+	if err := database.DB.Order("created_at DESC").Find(&jobs).Error; err != nil {
+		return nil, err
+	}
+
+	responses := make([]BacktestJobResponse, 0, len(jobs))
+	for i := range jobs {
+		response, err := BuildBacktestJobResponse(&jobs[i])
+		if err != nil {
+			return nil, err
+		}
+		if response != nil {
+			responses = append(responses, *response)
+		}
+	}
+
+	return responses, nil
+}
+
 func BuildBacktestJobResponse(job *database.BacktestJob) (*BacktestJobResponse, error) {
 	if job == nil {
 		return nil, nil

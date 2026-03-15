@@ -34,6 +34,10 @@ func SetupTestDB(t *testing.T) {
 		&database.Position{},
 		&database.Order{},
 		&database.Setting{},
+		&database.AIProposal{},
+		&database.IndicatorWeight{},
+		&database.ActivityLog{},
+		&database.BacktestJob{},
 		&database.LLMConfig{},
 	)
 
@@ -111,9 +115,15 @@ func setupTestRoutes(app *fiber.App, cfg *config.Config) {
 	llm.Put("/config", handlers.UpdateLLMConfig)
 	llm.Post("/test", handlers.TestLLMConfig)
 
+	backtest := api.Group("/backtest")
+	backtest.Get("/jobs", handlers.ListBacktestJobs)
+	backtest.Get("/latest", handlers.GetLatestBacktestStatus)
+	backtest.Get("/status/:id", handlers.GetBacktestStatus)
+
 	ai := api.Group("/ai")
 	ai.Get("/proposals", handlers.GetAIProposals)
 	ai.Post("/generate-proposals", handlers.GenerateProposals)
+	ai.Post("/optimize-backtest", handlers.OptimizeBacktest)
 	ai.Post("/proposals/:id/approve", handlers.ApproveProposal)
 	ai.Post("/proposals/:id/deny", handlers.DenyProposal)
 }
@@ -230,4 +240,325 @@ func TestSettingsEndpoint(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("Expected status 200, got %d", resp.StatusCode)
 	}
+}
+
+func TestListBacktestJobsEndpoint(t *testing.T) {
+	SetupTestDB(t)
+	app := SetupTestApp()
+
+	summaryJSON := `{"job_id":1,"started_at":"2026-03-14T00:00:00Z","finished_at":"2026-03-14T00:10:00Z","baseline":{"Mode":"baseline","Metrics":{"TradeCount":10}},"vol_sizing":{"Mode":"vol_sizing","Metrics":{"TradeCount":12}},"validation":{"passed":true,"windows":1}}`
+	message := "done"
+	job := database.BacktestJob{
+		Status:      "completed",
+		Progress:    1,
+		Message:     &message,
+		SummaryJSON: &summaryJSON,
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
+	}
+	database.DB.Create(&job)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/backtest/jobs", nil)
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatalf("Failed to test request: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("Expected status 200, got %d", resp.StatusCode)
+	}
+
+	body, _ := io.ReadAll(resp.Body)
+	var result []map[string]interface{}
+	if err := json.Unmarshal(body, &result); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+	if len(result) != 1 {
+		t.Fatalf("Expected 1 job, got %d", len(result))
+	}
+	if result[0]["status"] != "completed" {
+		t.Fatalf("Expected completed status, got %v", result[0]["status"])
+	}
+	if result[0]["summary"] == nil {
+		t.Fatal("Expected parsed summary in response")
+	}
+}
+
+func TestOptimizeBacktestEndpointCreatesProposal(t *testing.T) {
+	SetupTestDB(t)
+	app := SetupTestApp()
+
+	settings := []database.Setting{
+		{Key: "stop_mult", Value: "1.5", Category: strPtr("trading")},
+		{Key: "ai_max_proposals", Value: "5", Category: strPtr("ai")},
+		{Key: "ai_change_budget_pct", Value: "50", Category: strPtr("ai")},
+		{Key: "ai_max_keys_per_category", Value: "2", Category: strPtr("ai")},
+	}
+	for _, setting := range settings {
+		database.DB.Create(&setting)
+	}
+	weight := database.IndicatorWeight{Indicator: "rsi", Weight: 1.0}
+	database.DB.Create(&weight)
+
+	llmServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"[{\"proposal_type\":\"backtest_parameter_adjustment\",\"parameter_key\":\"stop_mult\",\"old_value\":\"1.5\",\"new_value\":\"1.8\",\"reasoning\":\"Improves loss control based on the backtest comparison.\"}]"}}]}`))
+	}))
+	defer llmServer.Close()
+
+	apiKey := "test-key"
+	var config database.LLMConfig
+	database.DB.First(&config)
+	config.BaseURL = llmServer.URL
+	config.APIKey = &apiKey
+	database.DB.Save(&config)
+
+	summaryJSON := `{"job_id":1,"started_at":"2026-03-14T00:00:00Z","finished_at":"2026-03-14T00:10:00Z","baseline":{"Mode":"baseline","Metrics":{"TradeCount":10,"WinRate":40,"ProfitFactor":1.1,"AvgWin":2.4,"AvgLoss":-1.2}},"vol_sizing":{"Mode":"vol_sizing","Metrics":{"TradeCount":8,"WinRate":50,"ProfitFactor":1.4,"AvgWin":2.8,"AvgLoss":-1.0}},"validation":{"passed":true,"windows":1}}`
+	job := database.BacktestJob{
+		Status:      "completed",
+		Progress:    1,
+		SummaryJSON: &summaryJSON,
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
+	}
+	database.DB.Create(&job)
+
+	body, _ := json.Marshal(map[string]uint{"job_id": job.ID})
+	req := httptest.NewRequest(http.MethodPost, "/api/ai/optimize-backtest", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatalf("Failed to test request: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		payload, _ := io.ReadAll(resp.Body)
+		t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, string(payload))
+	}
+
+	var proposals []database.AIProposal
+	if err := database.DB.Find(&proposals).Error; err != nil {
+		t.Fatalf("Failed to load proposals: %v", err)
+	}
+	if len(proposals) != 1 {
+		t.Fatalf("Expected 1 proposal, got %d", len(proposals))
+	}
+	if proposals[0].ProposalType != "backtest_parameter_adjustment" {
+		t.Fatalf("Unexpected proposal type: %s", proposals[0].ProposalType)
+	}
+	if proposals[0].ParameterKey == nil || *proposals[0].ParameterKey != "stop_mult" {
+		t.Fatalf("Unexpected parameter key: %v", proposals[0].ParameterKey)
+	}
+	if proposals[0].Status != "pending" {
+		t.Fatalf("Unexpected proposal status: %s", proposals[0].Status)
+	}
+}
+
+func TestOptimizeBacktestEndpointFallsBackToHypotheses(t *testing.T) {
+	SetupTestDB(t)
+	app := SetupTestApp()
+
+	settings := []database.Setting{
+		{Key: "stop_mult", Value: "1.5", Category: strPtr("trading")},
+		{Key: "ai_max_proposals", Value: "5", Category: strPtr("ai")},
+		{Key: "ai_min_proposals", Value: "1", Category: strPtr("ai")},
+		{Key: "ai_change_budget_pct", Value: "10", Category: strPtr("ai")},
+		{Key: "ai_max_keys_per_category", Value: "2", Category: strPtr("ai")},
+	}
+	for _, setting := range settings {
+		database.DB.Create(&setting)
+	}
+	weight := database.IndicatorWeight{Indicator: "rsi", Weight: 1.0}
+	database.DB.Create(&weight)
+
+	requestCount := 0
+	llmServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		w.Header().Set("Content-Type", "application/json")
+		if requestCount == 1 {
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"[{\"proposal_type\":\"backtest_parameter_adjustment\",\"parameter_key\":\"stop_mult\",\"old_value\":\"1.5\",\"new_value\":\"1.8\",\"reasoning\":\"Too aggressive for the configured budget.\"}]"}}]}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"[{\"proposal_type\":\"backtest_parameter_adjustment\",\"parameter_key\":\"stop_mult\",\"old_value\":\"1.5\",\"new_value\":\"1.6\",\"reasoning\":\"Hypothesis: a slightly wider ATR stop may reduce premature exits while staying within budget.\"}]"}}]}`))
+	}))
+	defer llmServer.Close()
+
+	apiKey := "test-key"
+	var config database.LLMConfig
+	database.DB.First(&config)
+	config.BaseURL = llmServer.URL
+	config.APIKey = &apiKey
+	database.DB.Save(&config)
+
+	summaryJSON := `{"job_id":1,"started_at":"2026-03-14T00:00:00Z","finished_at":"2026-03-14T00:10:00Z","baseline":{"Mode":"baseline","Metrics":{"TradeCount":10,"WinRate":0.40,"ProfitFactor":0.9,"AvgWin":2.4,"AvgLoss":-1.4}},"vol_sizing":{"Mode":"vol_sizing","Metrics":{"TradeCount":8,"WinRate":0.45,"ProfitFactor":0.95,"AvgWin":2.6,"AvgLoss":-1.2}},"validation":{"passed":false,"windows":1}}`
+	job := database.BacktestJob{
+		Status:      "completed",
+		Progress:    1,
+		SummaryJSON: &summaryJSON,
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
+	}
+	database.DB.Create(&job)
+
+	body, _ := json.Marshal(map[string]uint{"job_id": job.ID})
+	req := httptest.NewRequest(http.MethodPost, "/api/ai/optimize-backtest", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatalf("Failed to test request: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		payload, _ := io.ReadAll(resp.Body)
+		t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, string(payload))
+	}
+
+	var result struct {
+		Success      bool   `json:"success"`
+		Count        int    `json:"count"`
+		JobID        uint   `json:"job_id"`
+		UsedFallback bool   `json:"used_fallback"`
+		AttemptMode  string `json:"attempt_mode"`
+		Attempts     []struct {
+			Mode          string `json:"mode"`
+			AcceptedCount int    `json:"accepted_count"`
+		} `json:"attempts"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+	if !result.Success {
+		t.Fatal("Expected success response")
+	}
+	if !result.UsedFallback {
+		t.Fatal("Expected fallback pass to be used")
+	}
+	if result.AttemptMode != "hypothesis_fallback" {
+		t.Fatalf("Expected hypothesis_fallback attempt mode, got %s", result.AttemptMode)
+	}
+	if len(result.Attempts) != 2 {
+		t.Fatalf("Expected 2 attempts, got %d", len(result.Attempts))
+	}
+	if result.Attempts[0].AcceptedCount != 0 {
+		t.Fatalf("Expected strict pass to accept 0 proposals, got %d", result.Attempts[0].AcceptedCount)
+	}
+	if result.Attempts[1].AcceptedCount != 1 {
+		t.Fatalf("Expected fallback pass to accept 1 proposal, got %d", result.Attempts[1].AcceptedCount)
+	}
+
+	var proposals []database.AIProposal
+	if err := database.DB.Find(&proposals).Error; err != nil {
+		t.Fatalf("Failed to load proposals: %v", err)
+	}
+	if len(proposals) != 1 {
+		t.Fatalf("Expected 1 proposal, got %d", len(proposals))
+	}
+	if proposals[0].NewValue == nil || *proposals[0].NewValue != "1.6" {
+		t.Fatalf("Expected fallback proposal value 1.6, got %v", proposals[0].NewValue)
+	}
+}
+
+func TestOptimizeBacktestEndpointReturnsRawResponseForNoJSONArray(t *testing.T) {
+	SetupTestDB(t)
+	app := SetupTestApp()
+
+	settings := []database.Setting{
+		{Key: "stop_mult", Value: "1.5", Category: strPtr("trading")},
+		{Key: "ai_max_proposals", Value: "5", Category: strPtr("ai")},
+		{Key: "ai_min_proposals", Value: "1", Category: strPtr("ai")},
+		{Key: "ai_change_budget_pct", Value: "10", Category: strPtr("ai")},
+		{Key: "ai_max_keys_per_category", Value: "2", Category: strPtr("ai")},
+	}
+	for _, setting := range settings {
+		database.DB.Create(&setting)
+	}
+
+	requestCount := 0
+	strictRaw := "I need more confidence before suggesting changes."
+	fallbackRaw := "No changes recommended for this run."
+	strictFinishReason := "length"
+	fallbackFinishReason := "stop"
+	llmServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		w.Header().Set("Content-Type", "application/json")
+		content := strictRaw
+		finishReason := strictFinishReason
+		if requestCount > 1 {
+			content = fallbackRaw
+			finishReason = fallbackFinishReason
+		}
+		payload, _ := json.Marshal(map[string]interface{}{
+			"choices": []map[string]interface{}{{
+				"message":       map[string]string{"content": content},
+				"finish_reason": finishReason,
+			}},
+		})
+		_, _ = w.Write(payload)
+	}))
+	defer llmServer.Close()
+
+	apiKey := "test-key"
+	var config database.LLMConfig
+	database.DB.First(&config)
+	config.BaseURL = llmServer.URL
+	config.APIKey = &apiKey
+	database.DB.Save(&config)
+
+	summaryJSON := `{"job_id":1,"started_at":"2026-03-14T00:00:00Z","finished_at":"2026-03-14T00:10:00Z","baseline":{"Mode":"baseline","Metrics":{"TradeCount":10,"WinRate":0.40,"ProfitFactor":0.9,"AvgWin":2.4,"AvgLoss":-1.4}},"vol_sizing":{"Mode":"vol_sizing","Metrics":{"TradeCount":8,"WinRate":0.45,"ProfitFactor":0.95,"AvgWin":2.6,"AvgLoss":-1.2}},"validation":{"passed":false,"windows":1}}`
+	job := database.BacktestJob{
+		Status:      "completed",
+		Progress:    1,
+		SummaryJSON: &summaryJSON,
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
+	}
+	database.DB.Create(&job)
+
+	body, _ := json.Marshal(map[string]uint{"job_id": job.ID})
+	req := httptest.NewRequest(http.MethodPost, "/api/ai/optimize-backtest", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatalf("Failed to test request: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		payload, _ := io.ReadAll(resp.Body)
+		t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, string(payload))
+	}
+
+	var result struct {
+		Attempts []struct {
+			Mode         string `json:"mode"`
+			RawResponse  string `json:"raw_response"`
+			FinishReason string `json:"finish_reason"`
+			Diagnostics  struct {
+				RejectedCounts map[string]int `json:"rejected_counts"`
+			} `json:"diagnostics"`
+		} `json:"attempts"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+	if len(result.Attempts) != 2 {
+		t.Fatalf("Expected 2 attempts, got %d", len(result.Attempts))
+	}
+	if result.Attempts[0].Diagnostics.RejectedCounts["no_json_array"] != 1 {
+		t.Fatalf("Expected strict no_json_array rejection, got %v", result.Attempts[0].Diagnostics.RejectedCounts)
+	}
+	if result.Attempts[1].Diagnostics.RejectedCounts["no_json_array"] != 1 {
+		t.Fatalf("Expected fallback no_json_array rejection, got %v", result.Attempts[1].Diagnostics.RejectedCounts)
+	}
+	if result.Attempts[0].RawResponse != strictRaw {
+		t.Fatalf("Expected strict raw response %q, got %q", strictRaw, result.Attempts[0].RawResponse)
+	}
+	if result.Attempts[1].RawResponse != fallbackRaw {
+		t.Fatalf("Expected fallback raw response %q, got %q", fallbackRaw, result.Attempts[1].RawResponse)
+	}
+	if result.Attempts[0].FinishReason != strictFinishReason {
+		t.Fatalf("Expected strict finish reason %q, got %q", strictFinishReason, result.Attempts[0].FinishReason)
+	}
+	if result.Attempts[1].FinishReason != fallbackFinishReason {
+		t.Fatalf("Expected fallback finish reason %q, got %q", fallbackFinishReason, result.Attempts[1].FinishReason)
+	}
+}
+
+func strPtr(v string) *string {
+	return &v
 }

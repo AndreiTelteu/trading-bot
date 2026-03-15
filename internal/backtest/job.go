@@ -15,12 +15,13 @@ import (
 )
 
 type BacktestRunSummary struct {
-	JobID      uint              `json:"job_id"`
-	StartedAt  time.Time         `json:"started_at"`
-	FinishedAt time.Time         `json:"finished_at"`
-	Baseline   BacktestResult    `json:"baseline"`
-	VolSizing  BacktestResult    `json:"vol_sizing"`
-	Validation ValidationSummary `json:"validation"`
+	JobID            uint              `json:"job_id"`
+	StartedAt        time.Time         `json:"started_at"`
+	FinishedAt       time.Time         `json:"finished_at"`
+	SettingsSnapshot map[string]string `json:"settings_snapshot,omitempty"`
+	Baseline         BacktestResult    `json:"baseline"`
+	VolSizing        BacktestResult    `json:"vol_sizing"`
+	Validation       ValidationSummary `json:"validation"`
 }
 
 func StartBacktestJob() (*database.BacktestJob, error) {
@@ -90,13 +91,15 @@ func runBacktestJob(jobID uint) {
 	}
 
 	finishedAt := time.Now()
+	settingsSnapshot := services.GetAllSettings()
 	summary := BacktestRunSummary{
-		JobID:      jobID,
-		StartedAt:  startedAt,
-		FinishedAt: finishedAt,
-		Baseline:   baselineResult,
-		VolSizing:  volResult,
-		Validation: validation,
+		JobID:            jobID,
+		StartedAt:        startedAt,
+		FinishedAt:       finishedAt,
+		SettingsSnapshot: settingsSnapshot,
+		Baseline:         baselineResult,
+		VolSizing:        volResult,
+		Validation:       validation,
 	}
 	outputDir, err := WriteBacktestOutputs(summary, "backtest_results")
 	if err != nil {
@@ -149,12 +152,13 @@ func RunBacktestSyncWithOverrides(overrides map[string]string) (BacktestRunSumma
 
 	now := time.Now()
 	summary := BacktestRunSummary{
-		JobID:      0,
-		StartedAt:  now,
-		FinishedAt: now,
-		Baseline:   baselineResult,
-		VolSizing:  volResult,
-		Validation: validation,
+		JobID:            0,
+		StartedAt:        now,
+		FinishedAt:       now,
+		SettingsSnapshot: settings,
+		Baseline:         baselineResult,
+		VolSizing:        volResult,
+		Validation:       validation,
 	}
 
 	if _, err := WriteBacktestOutputs(summary, "backtest_results"); err != nil {
@@ -359,7 +363,7 @@ func prepareBacktestInputsWithSettings(settings map[string]string) (BacktestConf
 		IndicatorWeights:        services.GetIndicatorWeights(),
 		Timeframe:               timeframe,
 		TimeframeMinutes:        timeframeMinutes,
-		InitialBalance:          wallet.Balance,
+		InitialBalance:          1000.0, // hardcoded starting balance for backtests
 		FeeBps:                  getSettingFloat(settings, "backtest_fee_bps", 10),
 		SlippageBps:             getSettingFloat(settings, "backtest_slippage_bps", 5),
 		MaxPositions:            getSettingInt(settings, "max_positions", 5),

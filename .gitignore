@@ -46,3 +46,4 @@ build/
 *.bak
 *.swp
 .cache/
+backtest_results

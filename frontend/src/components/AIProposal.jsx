@@ -7,6 +7,7 @@ function AIProposal() {
   const [loading, setLoading] = useState(true)
   const [generating, setGenerating] = useState(false)
   const [filter, setFilter] = useState('all')
+  const [typeFilter, setTypeFilter] = useState('all')
 
   useEffect(() => {
     fetchProposals()
@@ -61,9 +62,22 @@ function AIProposal() {
   const pending = proposals.filter(p => p.status === 'pending')
   const approved = proposals.filter(p => p.status === 'approved')
   const denied = proposals.filter(p => p.status === 'denied')
-  const filteredProposals = filter === 'all'
+  const typeCounts = proposals.reduce((acc, proposal) => {
+    const key = proposal.proposal_type || 'unknown'
+    acc[key] = (acc[key] || 0) + 1
+    return acc
+  }, {})
+  const statusFilteredProposals = filter === 'all'
     ? proposals
     : proposals.filter(p => p.status === filter)
+  const filteredProposals = typeFilter === 'all'
+    ? statusFilteredProposals
+    : statusFilteredProposals.filter(p => p.proposal_type === typeFilter)
+  const getProposalTypeLabel = (type) => {
+    if (type === 'backtest_parameter_adjustment') return 'Backtest optimization'
+    if (type === 'parameter_adjustment') return 'Market analysis'
+    return type
+  }
 
   return (
     <div className="ai-proposal">
@@ -105,15 +119,36 @@ function AIProposal() {
         </button>
       </div>
 
+      <div className="filter-tabs">
+        <button
+          className={typeFilter === 'all' ? 'active' : ''}
+          onClick={() => { setTypeFilter('all') }}
+        >
+          All Types ({proposals.length})
+        </button>
+        <button
+          className={typeFilter === 'parameter_adjustment' ? 'active' : ''}
+          onClick={() => { setTypeFilter('parameter_adjustment') }}
+        >
+          Market Analysis ({typeCounts.parameter_adjustment || 0})
+        </button>
+        <button
+          className={typeFilter === 'backtest_parameter_adjustment' ? 'active' : ''}
+          onClick={() => { setTypeFilter('backtest_parameter_adjustment') }}
+        >
+          Backtest Optimization ({typeCounts.backtest_parameter_adjustment || 0})
+        </button>
+      </div>
+
       {filteredProposals.length === 0 ? (
-        <p className="no-data">No proposals yet. Click "Generate Proposals" to create new ones.</p>
+        <p className="no-data">No proposals match the current filters.</p>
       ) : (
         <div className="proposals-list">
           {filteredProposals.map(p => (
             <div key={p.id} className={`proposal-card ${p.status}`}>
               <div className="proposal-header">
                 <span className={`status-badge ${p.status}`}>{p.status}</span>
-                <span className="proposal-type">{p.proposal_type}</span>
+                <span className="proposal-type">{getProposalTypeLabel(p.proposal_type)}</span>
                 <span className="proposal-date">
                   {new Date(p.created_at).toLocaleDateString()}
                 </span>

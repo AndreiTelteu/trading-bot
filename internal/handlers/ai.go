@@ -3,6 +3,7 @@ package handlers
 import (
 	"strconv"
 	"strings"
+	"trading-go/internal/backtest"
 	"trading-go/internal/database"
 	"trading-go/internal/services"
 
@@ -53,6 +54,44 @@ func DenyProposal(c *fiber.Ctx) error {
 
 func GenerateProposals(c *fiber.Ctx) error {
 	result, err := services.GenerateProposals()
+	if err != nil {
+		if fiberErr, ok := err.(*fiber.Error); ok {
+			return c.Status(fiberErr.Code).JSON(fiber.Map{"error": fiberErr.Message})
+		}
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	return c.JSON(result)
+}
+
+func OptimizeBacktest(c *fiber.Ctx) error {
+	type OptimizeBacktestRequest struct {
+		JobID uint `json:"job_id"`
+	}
+
+	var req OptimizeBacktestRequest
+	if err := c.BodyParser(&req); err != nil || req.JobID == 0 {
+		return c.Status(400).JSON(fiber.Map{"error": "Invalid request body"})
+	}
+
+	job, err := backtest.GetBacktestJob(req.JobID)
+	if err != nil {
+		return c.Status(404).JSON(fiber.Map{"error": "Backtest job not found"})
+	}
+
+	summaryJSON := ""
+	if job.SummaryJSON != nil {
+		summaryJSON = *job.SummaryJSON
+	}
+
+	result, err := services.GenerateBacktestOptimizationProposals(services.BacktestOptimizationInput{
+		JobID:       job.ID,
+		Status:      job.Status,
+		CreatedAt:   job.CreatedAt,
+		StartedAt:   job.StartedAt,
+		FinishedAt:  job.FinishedAt,
+		SummaryJSON: summaryJSON,
+	})
 	if err != nil {
 		if fiberErr, ok := err.(*fiber.Error); ok {
 			return c.Status(fiberErr.Code).JSON(fiber.Map{"error": fiberErr.Message})
