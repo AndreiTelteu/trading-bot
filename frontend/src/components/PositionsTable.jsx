@@ -1,4 +1,6 @@
 import React, { useState } from 'react'
+import AlertDialog from './AlertDialog'
+import useAlertDialog from '../hooks/useAlertDialog'
 
 const API_BASE = '/api'
 
@@ -10,6 +12,7 @@ function PositionsTable({ positions, onRefresh }) {
   const [loading, setLoading] = useState(false)
   const [tradeResult, setTradeResult] = useState(null)
   const [error, setError] = useState(null)
+  const closeTradeDialog = useAlertDialog()
 
   const handleOpenTrade = async (e) => {
     e.preventDefault()
@@ -61,8 +64,6 @@ function PositionsTable({ positions, onRefresh }) {
   }
 
   const handleCloseTrade = async (positionId, positionSymbol, positionAmount) => {
-    if (!confirm(`Close position ${positionSymbol} (${positionAmount} units)? This will execute a SELL order on the exchange.`)) return
-    
     setLoading(true)
     setError(null)
     setTradeResult(null)
@@ -105,6 +106,34 @@ function PositionsTable({ positions, onRefresh }) {
       })
     }
     setLoading(false)
+  }
+
+  const openCloseTradeDialog = (position) => {
+    const currentPrice = Number(position.current_price || 0)
+    const pnl = Number(position.pnl || 0)
+    const pnlPercent = Number(position.pnl_percent || 0)
+    const pnlDescriptor = pnl >= 0 ? 'gain' : 'loss'
+
+    closeTradeDialog.openDialog({
+      tone: pnl >= 0 ? 'warning' : 'danger',
+      title: `Close ${position.symbol}?`,
+      message: `This will execute a market sell for ${position.amount} ${position.symbol} and immediately realize the current ${pnlDescriptor}.`,
+      description: `Current price: $${currentPrice.toFixed(4)}. Estimated P&L: ${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)} USDT (${pnl >= 0 ? '+' : ''}${pnlPercent.toFixed(2)}%). This action closes the live trade and moves it to history.`,
+      buttons: [
+        {
+          label: 'Keep Position Open',
+          variant: 'ghost',
+          closeOnClick: true,
+        },
+        {
+          label: 'Close Trade',
+          variant: 'danger',
+          autoFocus: true,
+          closeOnClick: true,
+          onClick: () => handleCloseTrade(position.id, position.symbol, position.amount),
+        },
+      ],
+    })
   }
 
   const openPositions = positions.filter(p => p.status === 'open')
@@ -230,13 +259,13 @@ function PositionsTable({ positions, onRefresh }) {
                       </span>
                     </td>
                     <td>
-                      <button 
-                        type="button"
-                        className="btn-danger"
-                        onClick={() => handleCloseTrade(p.id, p.symbol, p.amount)}
-                        disabled={loading}
-                      >
-                        Close Trade
+                        <button 
+                          type="button"
+                          className="btn-danger"
+                          onClick={() => openCloseTradeDialog(p)}
+                          disabled={loading}
+                        >
+                          Close Trade
                       </button>
                     </td>
                   </tr>
@@ -286,6 +315,17 @@ function PositionsTable({ positions, onRefresh }) {
           </div>
         </div>
       )}
+
+      <AlertDialog
+        isOpen={closeTradeDialog.isOpen}
+        onClose={closeTradeDialog.closeDialog}
+        title={closeTradeDialog.dialog?.title}
+        message={closeTradeDialog.dialog?.message}
+        description={closeTradeDialog.dialog?.description}
+        tone={closeTradeDialog.dialog?.tone}
+        icon={closeTradeDialog.dialog?.icon}
+        buttons={closeTradeDialog.dialog?.buttons || []}
+      />
     </div>
   )
 }

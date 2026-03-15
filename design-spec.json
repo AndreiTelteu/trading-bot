@@ -1,0 +1,486 @@
+{
+  "meta": {
+    "name": "Trading Bot UI Design Spec",
+    "version": "1.0.0",
+    "generated_on": "2026-03-15",
+    "source": {
+      "screenshots_reviewed": 3,
+      "code_files_reviewed": [
+        "frontend/src/styles/theme.css",
+        "frontend/src/styles/activityLog.css",
+        "frontend/src/App.jsx",
+        "frontend/src/components/Dashboard.jsx",
+        "frontend/src/components/PositionsTable.jsx",
+        "frontend/src/components/AIProposal.jsx",
+        "frontend/src/components/ActivityLog.jsx",
+        "frontend/src/components/SettingsPanel.jsx",
+        "frontend/src/components/LLMConfig.jsx",
+        "frontend/src/components/CustomSelect.jsx",
+        "frontend/src/components/Modal.jsx"
+      ],
+      "basis": "Visual inspection plus current frontend implementation"
+    },
+    "intent": "Document the existing app's look, feel, UI system, interaction patterns, and notable inconsistencies so the current design can be preserved or evolved deliberately."
+  },
+  "design_direction": {
+    "style_name": "Neon glass trading terminal",
+    "summary": "A dark crypto-dashboard aesthetic built around frosted panels, electric cyan accents, mono numeric readouts, and live-data terminal cues.",
+    "keywords": [
+      "dark",
+      "glassy",
+      "futuristic",
+      "technical",
+      "real-time",
+      "neon",
+      "dashboard",
+      "crypto terminal"
+    ],
+    "personality": {
+      "tone": "Confident, technical, high-signal, slightly cinematic",
+      "energy": "Calm at rest, vivid on interaction",
+      "trust_signal": "Dense data presentation with clear semantic color coding",
+      "emotional_read": "Feels like an operator console rather than a consumer finance app"
+    },
+    "memorability": "The most distinctive element is the bright cyan glow language against a near-black background, especially in pill tabs, status badges, live indicators, and the persistent activity timeline."
+  },
+  "brand": {
+    "app_name": "Trading Bot",
+    "logo_treatment": {
+      "type": "Wordmark",
+      "style": "Bold gradient text",
+      "gradient": [
+        "#00f2fe",
+        "#4facfe"
+      ],
+      "weight": 800,
+      "letter_spacing": "slightly tightened"
+    },
+    "brand_impression": "Automation-first, data-driven, modern, machine-assisted trading tool"
+  },
+  "color_system": {
+    "core_tokens": {
+      "bg_dark": "#070714",
+      "bg_panel": "rgba(18, 18, 38, 0.6)",
+      "bg_panel_hover": "rgba(25, 25, 50, 0.8)",
+      "border_glass": "rgba(255, 255, 255, 0.08)",
+      "border_focus": "rgba(0, 242, 254, 0.5)",
+      "text_main": "#ffffff",
+      "text_muted": "#8b8baf",
+      "accent_primary": "#00f2fe",
+      "accent_secondary": "#4facfe",
+      "success": "#00e676",
+      "danger": "#ff3366",
+      "warning": "#ffab00"
+    },
+    "palette_roles": {
+      "page_background": "Very deep blue-black",
+      "surface_background": "Transparent indigo glass",
+      "primary_action": "Cyan to blue gradient or cyan outline/glow",
+      "positive_state": "Neon green",
+      "negative_state": "Hot pink-red",
+      "warning_state": "Amber",
+      "system_state": "Bright blue",
+      "secondary_state": "Muted gray-lavender text"
+    },
+    "usage_notes": [
+      "Cyan is the dominant accent and carries navigation, active state, live state, and primary action meaning.",
+      "Green and red are reserved mostly for market semantics and status feedback.",
+      "The background never becomes flat black because of subtle radial glow and layered translucent panels.",
+      "Small colored timeline dots and type badges add semantic scanning in the activity log."
+    ],
+    "glow_language": {
+      "accent_glow": "0 0 20px rgba(0, 242, 254, 0.4)",
+      "positive_glow": "0 0 15px rgba(0, 230, 118, 0.4)",
+      "negative_glow": "0 0 15px rgba(255, 51, 102, 0.4)",
+      "purpose": "Used to create a live-terminal feeling without filling the interface with heavy gradients"
+    }
+  },
+  "typography": {
+    "primary_font": {
+      "family": "Outfit",
+      "role": "UI, headings, labels, navigation, buttons",
+      "impression": "Rounded geometric sans that keeps the dashboard modern and readable"
+    },
+    "data_font": {
+      "family": "JetBrains Mono",
+      "role": "Numeric values, times, technical readouts, parameter deltas, activity details",
+      "impression": "Engineering precision and terminal credibility"
+    },
+    "hierarchy": {
+      "page_titles": "Large gradient or bright white headers with strong weight",
+      "panel_titles": "Medium-large bold white",
+      "labels": "Muted uppercase or small explanatory text",
+      "metrics": "Large mono numerals with tight spacing",
+      "meta_text": "Small muted mono or muted sans"
+    },
+    "notable_patterns": [
+      "Titles often use gradient text from white to muted gray or cyan-blue for brand emphasis.",
+      "Numbers are intentionally oversized versus labels, reinforcing portfolio and PnL importance.",
+      "Uppercase micro-labels are used for categories, status, and analytical context."
+    ]
+  },
+  "spacing_and_shape": {
+    "radius_tokens": {
+      "sm": 8,
+      "md": 16,
+      "lg": 24,
+      "pill": 100
+    },
+    "layout_density": "Comfortably dense",
+    "content_width": "Centered, max-width ~1600px",
+    "page_padding": "Large desktop horizontal gutters (~3rem)",
+    "component_spacing": "Panels usually use 1.5rem to 2.5rem internal padding",
+    "shape_language": [
+      "Pill navigation",
+      "Rounded glass cards",
+      "Soft rectangular tables",
+      "Thin borders with translucency",
+      "Occasional left-edge status bars on cards"
+    ]
+  },
+  "materials_and_depth": {
+    "surface_model": "Glassmorphism-lite",
+    "surface_recipe": {
+      "background": "Semi-transparent deep indigo",
+      "border": "1px solid translucent white",
+      "blur": "10px to 20px backdrop blur",
+      "shadow": "Soft black elevation shadow"
+    },
+    "background_treatment": {
+      "base": "Solid deep navy-black",
+      "overlay": "Large radial cyan-blue ambient glow",
+      "motion": "Slow pulsing scale animation on the background glow"
+    },
+    "depth_strategy": "Depth is communicated through blur, translucency, glows, and border contrast more than through large drop shadows."
+  },
+  "layout_system": {
+    "global_structure": {
+      "header": "Sticky top bar with brand left and utility actions right",
+      "nav": "Second-row pill navigation below header",
+      "main": "Wide content canvas with optional right sidebar",
+      "sidebar": "Persistent activity log, fixed width around 400px"
+    },
+    "behavior": {
+      "activity_log_toggle": "Sidebar can be shown or hidden from the header",
+      "sticky_elements": [
+        "Header",
+        "Activity log panel"
+      ],
+      "dashboard_split": "Primary data left, real-time feed right"
+    },
+    "page_patterns": {
+      "dashboard": "Hero KPI row, large chart, lower data modules",
+      "positions": "Action form first, then live table, then historical table",
+      "ai_proposals": "Filter bands followed by stacked review cards",
+      "settings": "Tabbed configuration workspace with dense controls"
+    }
+  },
+  "navigation": {
+    "primary_tabs": [
+      "Dashboard",
+      "Positions",
+      "Settings",
+      "AI Proposals",
+      "LLM Config"
+    ],
+    "tab_style": {
+      "shape": "Pill",
+      "default": "Muted text on translucent dark surface",
+      "hover": "Lifts slightly and brightens",
+      "active": "Cyan border, cyan text, soft glow, tinted fill"
+    },
+    "utility_actions": [
+      "Activity Log toggle",
+      "Connection status pill"
+    ],
+    "navigation_impression": "Feels like mode switching inside a control room rather than browsing between pages"
+  },
+  "components": {
+    "header": {
+      "look": "Minimal, premium, sticky, slightly frosted",
+      "elements": [
+        "Gradient wordmark",
+        "Activity toggle pill",
+        "Connection state pill with glowing status dot"
+      ]
+    },
+    "glass_panel": {
+      "description": "Core container used across almost every screen",
+      "features": [
+        "Translucent background",
+        "Thin border",
+        "16px radius",
+        "Backdrop blur",
+        "Soft shadow",
+        "Hover brightening"
+      ]
+    },
+    "stat_cards": {
+      "description": "KPI cards for balance, position value, and PnL",
+      "features": [
+        "Horizontal alignment",
+        "Large mono value",
+        "Muted label",
+        "Optional left highlight strip",
+        "Special highlighted card for more important metric"
+      ]
+    },
+    "hero_badges": {
+      "description": "Large glowing count/value boxes used for total assets and active trades",
+      "features": [
+        "Larger radius",
+        "Cyan border",
+        "Glow shadow",
+        "Right-aligned numeral"
+      ]
+    },
+    "buttons": {
+      "primary": "Cyan-blue gradient fill, dark text, bold weight, hover lift",
+      "outline_live": "Transparent fill with cyan border and cyan text",
+      "success": "Green outline/fill states for approval",
+      "danger": "Pink-red outline/fill states for destructive actions",
+      "status_pill": "Used heavily for filters, toggles, and live states"
+    },
+    "tables": {
+      "style": "Soft-card rows instead of strict grid lines",
+      "features": [
+        "Uppercase muted headers",
+        "Mono body values",
+        "Row spacing via separate border collapse",
+        "Rounded row ends",
+        "Color-coded gains and losses"
+      ]
+    },
+    "activity_log": {
+      "description": "The strongest bespoke component in the app",
+      "features": [
+        "Sticky sidebar panel",
+        "Timeline rail with colored dots",
+        "Filter chips",
+        "Scrolling marquee for long event titles",
+        "Mono details subpanel",
+        "Category-coded badges for trade, analysis, system, error"
+      ],
+      "impression": "Feels like a mission feed or event console"
+    },
+    "chart": {
+      "type": "Area chart",
+      "style": "Cyan line with soft cyan-to-blue gradient fill",
+      "surrounding_ui": [
+        "LIVE badge",
+        "Compact custom select",
+        "Muted grid lines",
+        "Dark tooltip card"
+      ]
+    },
+    "proposal_cards": {
+      "description": "Review cards for AI-generated suggestions",
+      "features": [
+        "Status badge",
+        "Left-edge color strip by state",
+        "Mono parameter diff block",
+        "Approve and deny action row",
+        "Muted reasoning paragraph"
+      ]
+    },
+    "custom_select": {
+      "style": "Dark trigger with subtle border and cyan hover state",
+      "dropdown": "Dark floating list with selected option highlighted by cyan border-left",
+      "motion": "Quick fade/slide dropdown animation and rotating arrow"
+    },
+    "modal": {
+      "style": "Dim overlay with glass panel content",
+      "usage": "Drill-down analysis details from the market scanner"
+    },
+    "forms": {
+      "style": "Dark inset fields with faint borders and cyan focus ring",
+      "tone": "Functional and technical, not decorative"
+    }
+  },
+  "motion": {
+    "overall": "Subtle but frequent",
+    "patterns": [
+      "Slow background pulse",
+      "Fade-in on page sections",
+      "Slide-in on activity items",
+      "Blinking live badges",
+      "Hover lift on pills and buttons",
+      "Small horizontal hover shift on list items",
+      "Pulse on strong signal badges",
+      "Spinner for analysis execution"
+    ],
+    "timing_tokens": {
+      "fast": "0.2s cubic-bezier(0.4, 0, 0.2, 1)",
+      "smooth": "0.4s cubic-bezier(0.16, 1, 0.3, 1)"
+    },
+    "motion_feel": "The interface feels alive, but not playful; animations support real-time system awareness."
+  },
+  "data_visualization": {
+    "approach": "UI treats market data as premium information and gives metrics room to breathe",
+    "patterns": [
+      "Oversized totals at top of pages",
+      "Mono formatting for trust and readability",
+      "Color-coded PnL and signal states",
+      "Live chart as central proof-of-activity",
+      "Ticker chips for scanner activity",
+      "Dense activity feed as narrative layer"
+    ],
+    "signal_color_map": {
+      "STRONG_BUY": "#52b788",
+      "BUY": "#95d5b2",
+      "NEUTRAL": "#888888",
+      "SELL": "#f4978e",
+      "STRONG_SELL": "#e63946"
+    }
+  },
+  "page_specific_notes": {
+    "dashboard": {
+      "role": "Command center",
+      "feel": "Balanced and premium, with the strongest overview storytelling",
+      "signature_sections": [
+        "Portfolio Overview hero",
+        "Total asset badge",
+        "Total Value Evolution chart",
+        "Active Positions summary table",
+        "AI Market Scanner chip wall"
+      ]
+    },
+    "positions": {
+      "role": "Execution and monitoring workspace",
+      "feel": "More operational and tabular",
+      "signature_sections": [
+        "Open New Position form",
+        "Open Positions live table",
+        "Trade History table"
+      ]
+    },
+    "ai_proposals": {
+      "role": "Human-in-the-loop review surface",
+      "feel": "Structured, editorial, decision-oriented",
+      "signature_sections": [
+        "Status filter row",
+        "Type filter row",
+        "Proposal diff cards",
+        "Approve/Deny decision controls"
+      ]
+    },
+    "settings": {
+      "role": "System tuning console",
+      "feel": "Dense control panel",
+      "signature_sections": [
+        "Section tabs",
+        "Label-input rows",
+        "Weight sliders",
+        "Backtest control card",
+        "Metric comparison modules"
+      ]
+    },
+    "llm_config": {
+      "role": "Provider setup page",
+      "feel": "Simple, functional, aligned with the global glass system"
+    }
+  },
+  "responsive_behavior": {
+    "desktop": "Designed primarily for wide dashboards",
+    "tablet": "Bottom-grid collapses to one column at narrower widths",
+    "mobile_risk": [
+      "Wide tables likely require horizontal scrolling",
+      "Persistent sidebar model may become cramped",
+      "Some inline styles in scanner and modal suggest desktop-first composition"
+    ],
+    "overall_assessment": "The visual system itself is adaptable, but the information architecture is clearly optimized for desktop monitoring."
+  },
+  "ux_patterns": {
+    "realtime_feedback": [
+      "Connection pill communicates websocket state",
+      "Activity log updates live",
+      "Chart refreshes from snapshot events",
+      "Scanner updates from analysis activity logs",
+      "Run Analysis button exposes active/running state"
+    ],
+    "decision_support": [
+      "AI proposals framed as parameter diffs",
+      "Badges and colors reduce parsing time",
+      "Activity log creates narrative context around automated behavior"
+    ],
+    "workflow_bias": "The app favors monitoring and validating bot behavior rather than manual chart analysis"
+  },
+  "accessibility_observations": {
+    "strengths": [
+      "Strong contrast between background and primary text",
+      "Large numerals for key metrics",
+      "Multiple state cues beyond text alone in some areas, such as color plus border plus glow"
+    ],
+    "risks": [
+      "Muted secondary text may be too dim in smaller sizes",
+      "Heavy reliance on color for some financial states",
+      "Some buttons and controls use div-like custom behavior without obvious keyboard affordances",
+      "Marquee-style moving text in activity feed may impact readability for some users"
+    ]
+  },
+  "visual_strengths": [
+    "Very cohesive color and material system across pages",
+    "Strong differentiation between UI text and machine/data text through font pairing",
+    "Activity log is visually distinctive and gives the product a live operations identity",
+    "Metric hierarchy is clear and effective",
+    "The app looks purpose-built for trading rather than like a generic admin template"
+  ],
+  "visual_weaknesses": [
+    "A lot of inline styling exists beside the tokenized CSS system, which can fragment consistency over time",
+    "Settings styles appear to have grown incrementally and include duplicated or overlapping CSS blocks",
+    "Some sections are polished at a higher level than others, especially dashboard versus utility forms",
+    "The cyan accent is strong and effective but sometimes overused, reducing hierarchy between primary and secondary emphasis"
+  ],
+  "consistency_gaps": {
+    "code_level": [
+      "Design tokens exist, but some component styling is hard-coded inline instead of token-driven.",
+      "There are repeated or appended style blocks in `frontend/src/styles/theme.css`, especially around backtest UI.",
+      "Some utility classes are improvised within the main stylesheet rather than organized into a clear system."
+    ],
+    "visual_level": [
+      "Dashboard feels the most refined; settings and modal detail views feel more utilitarian.",
+      "Some chips use full glow while others use flatter bordered pills, creating small variations in emphasis logic.",
+      "Data-dense pages remain coherent, but spacing rhythm is less consistent in longer configuration screens."
+    ]
+  },
+  "recommended_guardrails": {
+    "keep": [
+      "Deep dark background with cyan-led accent language",
+      "Outfit plus JetBrains Mono pairing",
+      "Glass panel treatment",
+      "Pill-shaped navigation and status controls",
+      "Activity timeline concept",
+      "Mono diff blocks for technical changes",
+      "Live-state badges and subtle system motion"
+    ],
+    "avoid": [
+      "Switching to a flat generic admin dashboard look",
+      "Replacing mono numerics with standard sans everywhere",
+      "Removing the sidebar activity feed without an equally strong live event metaphor",
+      "Adding many unrelated accent colors that dilute the terminal-like identity"
+    ],
+    "evolve_next": [
+      "Normalize all visual values around tokens and reusable component variants",
+      "Unify settings, modal, and dashboard patterns under a tighter component spec",
+      "Refine mobile behavior for tables, sidebar collapse, and dense controls",
+      "Introduce a clearer emphasis ladder between primary action cyan, informational blue, and decorative glow"
+    ]
+  },
+  "component_inventory": [
+    "Sticky header",
+    "Primary pill nav",
+    "Connection status pill",
+    "Activity sidebar timeline",
+    "Glass statistic cards",
+    "Hero KPI badge",
+    "Area chart panel",
+    "Positions data table",
+    "Scanner ticker chips",
+    "AI proposal review cards",
+    "Filter chip rows",
+    "Custom dropdown",
+    "Modal analysis panel",
+    "Form fields and alert banners",
+    "Weight sliders and backtest progress bars"
+  ]
+}
