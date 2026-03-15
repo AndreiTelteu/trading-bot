@@ -1,4 +1,4 @@
-import React from 'react'
+import React, { useEffect } from 'react'
 import { createPortal } from 'react-dom'
 
 function Modal({
@@ -9,8 +9,27 @@ function Modal({
   panelStyle,
   overlayClassName = '',
   panelClassName = '',
-  closeOnOverlayClick = true
+  closeOnOverlayClick = true,
+  hideCloseButton = false,
 }) {
+  useEffect(() => {
+    if (!isOpen) {
+      return undefined
+    }
+
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape' && onClose) {
+        onClose()
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [isOpen, onClose])
+
   if (!isOpen) return null
 
   const handleOverlayClick = () => {
@@ -21,15 +40,31 @@ function Modal({
 
   return createPortal(
     <div
-      className={`modal-overlay glass-panel ${overlayClassName}`.trim()}
-      onClick={handleOverlayClick}
+      className={`modal-overlay ${overlayClassName}`.trim()}
       style={overlayStyle}
     >
+      <button
+        type="button"
+        className="modal-backdrop"
+        onClick={handleOverlayClick}
+        aria-label="Close modal"
+      />
       <div
         className={`modal-panel ${panelClassName}`.trim()}
-        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
         style={panelStyle}
       >
+        {!hideCloseButton && onClose && (
+          <button
+            type="button"
+            className="modal-close"
+            onClick={onClose}
+            aria-label="Close modal"
+          >
+            ×
+          </button>
+        )}
         {children}
       </div>
     </div>,

@@ -829,30 +829,43 @@ input:focus, select:focus, button:focus {
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.6);
   display: flex;
   align-items: center;
   justify-content: center;
+  padding: 1.5rem;
   z-index: 200;
+}
+
+.modal-backdrop {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  background: rgba(3, 4, 12, 0.72);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  cursor: default;
 }
 
 .modal-panel {
   width: min(900px, 95vw);
-  background: var(--bg-panel);
+  position: relative;
+  z-index: 1;
+  background: linear-gradient(180deg, rgba(20, 20, 42, 0.92), rgba(12, 13, 28, 0.95));
   border: 1px solid var(--border-glass);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg);
   padding: 1.5rem;
   backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  overflow: hidden;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
 }
 
-.modal-panel.glass-panel {
-  background: var(--bg-panel-hover);
-  border-color: rgba(255, 255, 255, 0.15);
-}
-
-.modal-panel.glass-panel:hover {
-  background: var(--bg-panel-hover);
-  border-color: rgba(255, 255, 255, 0.15);
+.modal-panel::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto;
+  height: 3px;
+  background: linear-gradient(90deg, var(--accent-primary), transparent);
 }
 
 .modal-header {
@@ -864,19 +877,25 @@ input:focus, select:focus, button:focus {
 }
 
 .modal-close {
+  position: absolute;
+  top: 1rem;
+  right: 1rem;
   width: 36px;
   height: 36px;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border-glass);
-  background: transparent;
+  background: rgba(255, 255, 255, 0.03);
   color: var(--text-muted);
   cursor: pointer;
   transition: var(--transition-fast);
+  z-index: 1;
 }
 
 .modal-close:hover {
   border-color: var(--accent-primary);
   color: var(--accent-primary);
+  background: rgba(0, 242, 254, 0.12);
+  box-shadow: var(--accent-glow);
 }
 
 .modal-body {
@@ -941,8 +960,14 @@ input:focus, select:focus, button:focus {
   z-index: 1;
   overflow: hidden;
   border-radius: var(--radius-lg);
-  background: linear-gradient(180deg, rgba(20, 20, 42, 0.92), rgba(12, 13, 28, 0.95));
+  background: linear-gradient(180deg, rgba(25, 25, 50, 0.92), rgba(18, 18, 38, 0.96));
+  border-color: rgba(255, 255, 255, 0.15);
   box-shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
+}
+
+.alert-dialog-panel:hover {
+  background: linear-gradient(180deg, rgba(25, 25, 50, 0.92), rgba(18, 18, 38, 0.96));
+  border-color: rgba(255, 255, 255, 0.15);
 }
 
 .alert-dialog-panel::before {
@@ -973,16 +998,18 @@ input:focus, select:focus, button:focus {
   height: 36px;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border-glass);
-  background: rgba(255, 255, 255, 0.03);
+  background: transparent;
   color: var(--text-muted);
   cursor: pointer;
   transition: var(--transition-fast);
+  box-shadow: none;
   z-index: 1;
 }
 
 .alert-dialog-close:hover {
   border-color: var(--accent-primary);
   color: var(--accent-primary);
+  background: rgba(0, 242, 254, 0.12);
   box-shadow: var(--accent-glow);
 }
 

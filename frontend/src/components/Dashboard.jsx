@@ -451,11 +451,9 @@ function Dashboard({ wallet: propWallet, positions: propPositions }) {
       <Modal
         isOpen={Boolean(selectedSymbol)}
         onClose={() => setSelectedSymbol(null)}
-        overlayStyle={{ display: 'flex', alignItems: 'center', justifyContent: 'center', position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.7)', zIndex: 1000 }}
+        overlayStyle={{ zIndex: 1000 }}
         panelStyle={{ width: '90%', maxWidth: '600px', maxHeight: '90vh', overflowY: 'auto', padding: '2rem', position: 'relative' }}
       >
-        <button className="modal-close" onClick={() => setSelectedSymbol(null)} style={{ position: 'absolute', top: '1rem', right: '1rem', background: 'none', border: 'none', color: '#fff', fontSize: '1.5rem', cursor: 'pointer' }}>×</button>
-        
         <h2 className="title-gradient mb-4">{selectedSymbol} Analysis</h2>
         
         {loadingModal ? (
@@ -509,7 +507,7 @@ function Dashboard({ wallet: propWallet, positions: propPositions }) {
             <h4 className="text-muted mb-3 uppercase text-xs mt-6" style={{ marginTop: '1.5rem', marginBottom: '0.75rem', textTransform: 'uppercase', fontSize: '0.75rem' }}>Technical Indicators</h4>
             <div className="indicators-grid grid grid-cols-2 gap-3" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
               {modalData.indicators?.map((ind, i) => (
-                <div key={i} className="indicator-card p-3 rounded bg-white-5" style={{ background: 'rgba(255,255,255,0.05)', padding: '0.75rem', borderRadius: '8px' }}>
+                <div key={`${ind.name}-${ind.signal}-${i}`} className="indicator-card p-3 rounded bg-white-5" style={{ background: 'rgba(255,255,255,0.05)', padding: '0.75rem', borderRadius: '8px' }}>
                   <div className="flex-between mb-1" style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.25rem' }}>
                     <span className="font-bold text-sm">{ind.name}</span>
                     <span className={`text-xs signal-${ind.signal?.toLowerCase()}`} style={{ fontSize: '0.75rem' }}>{ind.signal}</span>
