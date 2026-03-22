@@ -870,7 +870,8 @@ function SettingsPanel({ activeSection }) {
   )
 
   return (
-    <div className="settings-panel">
+    <>
+      <div className="settings-panel">
       <div className="settings-header">
         <h2>Settings</h2>
         <div className="settings-actions">
@@ -1192,7 +1193,7 @@ function SettingsPanel({ activeSection }) {
       >
         {optimizeBacktestDialog.dialog?.children}
       </AlertDialog>
-    </div>
+    </>
   )
 }
 
