@@ -44,6 +44,16 @@ type UpdatePricesRequest struct {
 	Prices map[string]float64 `json:"prices"`
 }
 
+type TradeDecisionContext struct {
+	ModelVersion        string
+	PolicyVersion       string
+	UniverseMode        string
+	RolloutState        string
+	ExperimentID        string
+	PredictionLogID     *uint
+	DecisionContextJSON string
+}
+
 func newClientPositionID(symbol string, now time.Time) *string {
 	value := fmt.Sprintf("%s-%d", strings.ToLower(strings.TrimSpace(symbol)), now.UnixMilli())
 	return &value
@@ -361,6 +371,11 @@ func ExecuteSell(req SellRequest) (interface{}, error) {
 		}
 		if err := tx.Save(&position).Error; err != nil {
 			return err
+		}
+		if position.Status == "closed" {
+			if err := RecordTradeOutcome(tx, position); err != nil {
+				return err
+			}
 		}
 
 		order := database.Order{

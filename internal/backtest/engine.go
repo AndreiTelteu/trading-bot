@@ -12,6 +12,8 @@ type positionState struct {
 	EntryPrice    float64
 	Size          float64
 	EntryRank     int
+	RegimeState   string
+	BreadthRatio  float64
 	ModelVersion  string
 	PredictedProb *float64
 	PredictedEV   *float64
@@ -95,6 +97,7 @@ func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (Bac
 	var equity []EquityPoint
 	equityBySymbol := map[string][]EquityPoint{}
 	var trades []Trade
+	var concurrentPositionCounts []int
 	for _, symbol := range symbols {
 		equityBySymbol[symbol] = []EquityPoint{}
 	}
@@ -193,7 +196,14 @@ func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (Bac
 				Pnl:                  pnl,
 				PnlPercent:           pnl / (pos.EntryPrice * pos.Size) * 100,
 				Reason:               decision.Reason,
+				HoldBars:             pos.BarsHeld,
 				EntryRank:            pos.EntryRank,
+				RegimeState:          pos.RegimeState,
+				BreadthRatio:         pos.BreadthRatio,
+				UniverseMode:         config.UniverseMode,
+				PolicyVersion:        config.Governance.PolicyVersions.CompositeVersion,
+				RolloutState:         config.Governance.RolloutState,
+				ExperimentID:         config.Governance.ExperimentID,
 				ModelVersion:         pos.ModelVersion,
 				PredictedProbability: cloneFloat64Ptr(pos.PredictedProb),
 				PredictedEV:          cloneFloat64Ptr(pos.PredictedEV),
@@ -264,6 +274,8 @@ func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (Bac
 				LastAtr:       ctx.Atr,
 				EntryFee:      entryFee,
 				EntryRank:     candidate.Rank,
+				RegimeState:   currentUniverse.RegimeState,
+				BreadthRatio:  currentUniverse.BreadthRatio,
 				ModelVersion:  modelVersionForCandidate(candidate),
 				PredictedProb: predictionProbability(candidate.Prediction),
 				PredictedEV:   predictionExpectedValue(candidate.Prediction),
@@ -276,6 +288,7 @@ func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (Bac
 
 		totalValue := cash + currentPositionsValue(positions, states)
 		equity = append(equity, EquityPoint{Time: currentTime, Value: totalValue})
+		concurrentPositionCounts = append(concurrentPositionCounts, len(positions))
 		for _, symbol := range symbols {
 			value := 0.0
 			if pos := positions[symbol]; pos != nil {
@@ -290,10 +303,16 @@ func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (Bac
 	}
 
 	metrics := ComputeMetrics(equity, trades, config.TimeframeMinutes, config.AtrAnnualizationDays)
+	rankingMetrics := buildRankingMetrics(trades, config)
+	diagnostics := buildStrategyDiagnostics(trades, rankingMetrics, config, concurrentPositionCounts)
 	return BacktestResult{
 		Mode:           config.StrategyMode,
 		Metrics:        metrics,
-		RankingMetrics: buildRankingMetrics(trades, config),
+		ModelVersion:   config.Governance.ModelVersion,
+		PolicyVersion:  config.Governance.PolicyVersions.CompositeVersion,
+		RolloutState:   config.Governance.RolloutState,
+		RankingMetrics: rankingMetrics,
+		Diagnostics:    diagnostics,
 		Equity:         equity,
 		EquityBySymbol: equityBySymbol,
 		Trades:         trades,
@@ -569,11 +588,31 @@ func buildRankingMetrics(trades []Trade, config BacktestConfig) *RankingMetrics 
 		bucket := buckets[rank]
 		wins := 0
 		totalPnl := 0.0
+		totalProb := 0.0
+		probCount := 0
+		totalEV := 0.0
+		evCount := 0
 		for _, trade := range bucket {
 			totalPnl += trade.Pnl
 			if trade.Pnl > 0 {
 				wins++
 			}
+			if trade.PredictedProbability != nil {
+				totalProb += *trade.PredictedProbability
+				probCount++
+			}
+			if trade.PredictedEV != nil {
+				totalEV += *trade.PredictedEV
+				evCount++
+			}
+		}
+		avgProb := 0.0
+		if probCount > 0 {
+			avgProb = totalProb / float64(probCount)
+		}
+		avgEV := 0.0
+		if evCount > 0 {
+			avgEV = totalEV / float64(evCount)
 		}
 		byRank = append(byRank, RankBucketMetric{
 			Rank:     rank,
@@ -581,6 +620,8 @@ func buildRankingMetrics(trades []Trade, config BacktestConfig) *RankingMetrics 
 			WinRate:  float64(wins) / float64(len(bucket)),
 			AvgPnl:   totalPnl / float64(len(bucket)),
 			TotalPnl: totalPnl,
+			AvgProb:  avgProb,
+			AvgEV:    avgEV,
 		})
 	}
 	return &RankingMetrics{
@@ -588,6 +629,7 @@ func buildRankingMetrics(trades []Trade, config BacktestConfig) *RankingMetrics 
 		TopK:         config.ModelPolicy.TopK,
 		Selected:     selected,
 		ByRank:       byRank,
+		Diagnostics:  buildRankingDiagnostics(byRank),
 	}
 }
 

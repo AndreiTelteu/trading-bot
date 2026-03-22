@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 	"trading-go/internal/database"
+	"trading-go/internal/services"
 )
 
 func TestCompareCIRequiresExclusion(t *testing.T) {
@@ -28,9 +29,19 @@ func TestCompareCIRequiresExclusion(t *testing.T) {
 func TestBuildBacktestJobResponseParsesSummary(t *testing.T) {
 	now := time.Now().UTC()
 	summary := BacktestRunSummary{
-		JobID:            7,
-		StartedAt:        now,
-		FinishedAt:       now,
+		JobID:         7,
+		StartedAt:     now,
+		FinishedAt:    now,
+		BacktestMode:  BacktestModeDynamicModel,
+		ModelVersion:  services.DefaultActiveModelVersion,
+		PolicyVersion: "policy_bundle_test",
+		PolicyContext: services.GovernanceContext{
+			ModelVersion:       services.DefaultActiveModelVersion,
+			RolloutState:       services.ModelRolloutShadow,
+			EffectiveEntryMode: "rule_rank",
+			PolicyVersions:     services.PolicyVersionSet{CompositeVersion: "policy_bundle_test"},
+		},
+		ExperimentID:     "exp_test_1",
 		SettingsSnapshot: map[string]string{"backtest_symbols": "BTCUSDT,ETHUSDT"},
 		Baseline: BacktestResult{
 			Mode:    StrategyBaseline,
@@ -66,6 +77,12 @@ func TestBuildBacktestJobResponseParsesSummary(t *testing.T) {
 	}
 	if !response.Summary.Validation.Passed {
 		t.Fatal("parsed summary should preserve validation result")
+	}
+	if response.Summary.ModelVersion != services.DefaultActiveModelVersion {
+		t.Fatalf("expected model version preserved, got %s", response.Summary.ModelVersion)
+	}
+	if response.Summary.PolicyVersion != "policy_bundle_test" {
+		t.Fatalf("expected policy version preserved, got %s", response.Summary.PolicyVersion)
 	}
 	if response.Summary.Baseline.Metrics.TradeCount != 10 {
 		t.Fatalf("expected baseline trade count 10, got %d", response.Summary.Baseline.Metrics.TradeCount)

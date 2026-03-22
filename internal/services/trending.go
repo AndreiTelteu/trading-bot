@@ -44,6 +44,10 @@ type AnalyzedCoin struct {
 	Timeframe         string             `json:"timeframe"`
 	CreatedAt         time.Time          `json:"created_at"`
 	ModelVersion      string             `json:"model_version,omitempty"`
+	PolicyVersion     string             `json:"policy_version,omitempty"`
+	UniverseMode      string             `json:"universe_mode,omitempty"`
+	RolloutState      string             `json:"rollout_state,omitempty"`
+	ExperimentID      string             `json:"experiment_id,omitempty"`
 	ModelScore        *float64           `json:"model_score,omitempty"`
 	ModelRank         *int               `json:"model_rank,omitempty"`
 	PolicySelected    *bool              `json:"policy_selected,omitempty"`
@@ -55,6 +59,7 @@ type AnalyzedCoin struct {
 	Decision          string             `json:"decision,omitempty"`
 	DecisionReason    string             `json:"decision_reason,omitempty"`
 	FeatureSnapshotID *uint              `json:"-"`
+	PredictionLogID   *uint              `json:"-"`
 }
 
 // IndicatorResult stores a single indicator's analysis
@@ -690,6 +695,12 @@ func AnalyzeShortlist(selection *UniverseSelectionResult, settings map[string]st
 
 	results := make([]AnalyzedCoin, 0, len(selection.Shortlist))
 	modelPolicy := GetModelSelectionPolicy(settings)
+	governance, governanceErr := ResolveGovernanceContext(settings, getSettingString(settings, "universe_mode", "dynamic"))
+	if governanceErr != nil {
+		logActivity("error", "Failed to resolve governance context", governanceErr.Error())
+	}
+	modelPolicy.PolicyVersion = governance.PolicyVersions.ModelSelectionPolicyVersion
+	modelPolicy.ExperimentID = governance.ExperimentID
 	modelArtifact, modelErr := LoadConfiguredModel(settings)
 	if modelErr != nil {
 		logActivity("error", "Failed to load learned model artifact", modelErr.Error())
@@ -748,6 +759,10 @@ func AnalyzeShortlist(selection *UniverseSelectionResult, settings map[string]st
 		analysis.Change24h = candidate.Change24h
 		analysis.RankScore = candidate.RankScore
 		analysis.RankComponents = candidate.RankComponents
+		analysis.PolicyVersion = governance.PolicyVersions.CompositeVersion
+		analysis.UniverseMode = governance.UniverseMode
+		analysis.RolloutState = governance.RolloutState
+		analysis.ExperimentID = governance.ExperimentID
 
 		if modelArtifact != nil {
 			_, alreadyOpen := openSymbols[strings.ToUpper(candidate.Symbol)]
@@ -772,7 +787,7 @@ func AnalyzeShortlist(selection *UniverseSelectionResult, settings map[string]st
 					analysis.ProbUp = float64Ptr(prediction.Probability)
 					analysis.ExpectedValue = float64Ptr(prediction.ExpectedValue)
 					analysis.ModelScore = float64Ptr(prediction.RawScore)
-					if snapshotID, snapshotErr := persistFeatureSnapshot(featureRow, candidate, prediction.ModelVersion, selection); snapshotErr == nil {
+					if snapshotID, snapshotErr := persistFeatureSnapshot(featureRow, candidate, prediction.ModelVersion, selection, governance); snapshotErr == nil {
 						analysis.FeatureSnapshotID = snapshotID
 					}
 					rankingInputs = append(rankingInputs, ModelRankedCandidate{
@@ -841,8 +856,15 @@ func AnalyzeShortlist(selection *UniverseSelectionResult, settings map[string]st
 			return leftRank < rightRank
 		})
 
-		if err := persistPredictionLogs(observations, selection, modelPolicy.rolloutLabel()); err != nil {
+		if idsBySymbol, err := persistPredictionLogs(observations, selection, governance); err != nil {
 			logActivity("error", "Failed to persist model prediction logs", err.Error())
+		} else {
+			for symbol, id := range idsBySymbol {
+				if resultIndex, ok := resultIndexBySymbol[symbol]; ok {
+					logID := id
+					results[resultIndex].PredictionLogID = &logID
+				}
+			}
 		}
 	}
 
@@ -942,7 +964,7 @@ func ExecuteShortlistTrades(analyses []AnalyzedCoin, universe *UniverseSelection
 			hasExisting := database.DB.Where("symbol = ? AND status = ?", cleanSymbol, "open").First(&existingPosition).Error == nil
 
 			if !hasExisting {
-				success, buyErr := executeBuyFromTrending(analysis.Symbol)
+				success, buyErr := executeBuyFromTrendingWithContext(analysis.Symbol, buildTradeDecisionContext(*analysis))
 				if success {
 					tradesOpened++
 					trueVal := true
@@ -973,9 +995,16 @@ func ExecuteShortlistTrades(analyses []AnalyzedCoin, universe *UniverseSelection
 		analysis.DecisionReason = decisionReason
 
 		indicatorsJSON, _ := json.Marshal(analysis.Indicators)
+		decisionContext := buildTradeDecisionContext(*analysis)
 		history := database.TrendAnalysisHistory{
 			Symbol:              analysis.Symbol,
 			Timeframe:           "15m",
+			ModelVersion:        analysis.ModelVersion,
+			PolicyVersion:       analysis.PolicyVersion,
+			UniverseMode:        analysis.UniverseMode,
+			RolloutState:        analysis.RolloutState,
+			ExperimentID:        stringPtr(analysis.ExperimentID),
+			PredictionLogID:     analysis.PredictionLogID,
 			CurrentPrice:        &analysis.Price,
 			Change24h:           &analysis.Change24h,
 			FinalSignal:         &analysis.Signal,
@@ -991,6 +1020,7 @@ func ExecuteShortlistTrades(analyses []AnalyzedCoin, universe *UniverseSelection
 			Decision:            &decision,
 			DecisionReason:      &decisionReason,
 			IndicatorsJSON:      string(indicatorsJSON),
+			DecisionContextJSON: defaultDecisionContextJSON(decisionContext),
 			AnalyzedAt:          time.Now(),
 		}
 		database.DB.Create(&history)
@@ -1001,6 +1031,10 @@ func ExecuteShortlistTrades(analyses []AnalyzedCoin, universe *UniverseSelection
 
 // executeBuyFromTrending performs a buy based on trending analysis (matching Python execute_buy logic)
 func executeBuyFromTrending(symbol string) (bool, error) {
+	return executeBuyFromTrendingWithContext(symbol, TradeDecisionContext{})
+}
+
+func executeBuyFromTrendingWithContext(symbol string, decisionContext TradeDecisionContext) (bool, error) {
 	settings := GetAllSettings()
 
 	var wallet database.Wallet
@@ -1102,6 +1136,13 @@ func executeBuyFromTrending(symbol string) (bool, error) {
 			existingPosition.LastMarkPrice = &currentPrice
 			existingPosition.LastMarkAt = &now
 			existingPosition.DecisionTimeframe = DecisionTimeframeDefault
+			existingPosition.ModelVersion = decisionContext.ModelVersion
+			existingPosition.PolicyVersion = decisionContext.PolicyVersion
+			existingPosition.UniverseMode = decisionContext.UniverseMode
+			existingPosition.RolloutState = decisionContext.RolloutState
+			existingPosition.ExperimentID = stringPtr(decisionContext.ExperimentID)
+			existingPosition.PredictionLogID = decisionContext.PredictionLogID
+			existingPosition.DecisionContextJSON = defaultDecisionContextJSON(decisionContext)
 			if volSizingEnabled {
 				stopMult := getSettingFloat(settings, "stop_mult", 1.5)
 				tpMult := getSettingFloat(settings, "tp_mult", 3.0)
@@ -1151,6 +1192,13 @@ func executeBuyFromTrending(symbol string) (bool, error) {
 				existingPosition.LastMarkAt = &now
 				existingPosition.ClientPositionID = newClientPositionID(cleanSymbol, now)
 				existingPosition.DecisionTimeframe = DecisionTimeframeDefault
+				existingPosition.ModelVersion = decisionContext.ModelVersion
+				existingPosition.PolicyVersion = decisionContext.PolicyVersion
+				existingPosition.UniverseMode = decisionContext.UniverseMode
+				existingPosition.RolloutState = decisionContext.RolloutState
+				existingPosition.ExperimentID = stringPtr(decisionContext.ExperimentID)
+				existingPosition.PredictionLogID = decisionContext.PredictionLogID
+				existingPosition.DecisionContextJSON = defaultDecisionContextJSON(decisionContext)
 				existingPosition.StopPrice = stopPrice
 				existingPosition.TakeProfitPrice = takeProfitPrice
 				existingPosition.TrailingStopPrice = trailingStopPrice
@@ -1167,24 +1215,31 @@ func executeBuyFromTrending(symbol string) (bool, error) {
 				}
 			} else {
 				position := database.Position{
-					Symbol:            cleanSymbol,
-					Amount:            cryptoAmount,
-					AvgPrice:          currentPrice,
-					EntryPrice:        &currentPrice,
-					CurrentPrice:      &currentPrice,
-					ExecutionMode:     ExecutionModePaper,
-					EntrySource:       EntrySourceAutoTrend,
-					LastMarkPrice:     &currentPrice,
-					LastMarkAt:        &now,
-					ClientPositionID:  newClientPositionID(cleanSymbol, now),
-					DecisionTimeframe: DecisionTimeframeDefault,
-					StopPrice:         stopPrice,
-					TakeProfitPrice:   takeProfitPrice,
-					TrailingStopPrice: trailingStopPrice,
-					LastAtrValue:      lastAtrValue,
-					MaxBarsHeld:       maxBarsHeld,
-					Status:            "open",
-					OpenedAt:          now,
+					Symbol:              cleanSymbol,
+					Amount:              cryptoAmount,
+					AvgPrice:            currentPrice,
+					EntryPrice:          &currentPrice,
+					CurrentPrice:        &currentPrice,
+					ExecutionMode:       ExecutionModePaper,
+					EntrySource:         EntrySourceAutoTrend,
+					LastMarkPrice:       &currentPrice,
+					LastMarkAt:          &now,
+					ClientPositionID:    newClientPositionID(cleanSymbol, now),
+					DecisionTimeframe:   DecisionTimeframeDefault,
+					ModelVersion:        decisionContext.ModelVersion,
+					PolicyVersion:       decisionContext.PolicyVersion,
+					UniverseMode:        decisionContext.UniverseMode,
+					RolloutState:        decisionContext.RolloutState,
+					ExperimentID:        stringPtr(decisionContext.ExperimentID),
+					PredictionLogID:     decisionContext.PredictionLogID,
+					DecisionContextJSON: defaultDecisionContextJSON(decisionContext),
+					StopPrice:           stopPrice,
+					TakeProfitPrice:     takeProfitPrice,
+					TrailingStopPrice:   trailingStopPrice,
+					LastAtrValue:        lastAtrValue,
+					MaxBarsHeld:         maxBarsHeld,
+					Status:              "open",
+					OpenedAt:            now,
 				}
 				if err := tx.Create(&position).Error; err != nil {
 					return fmt.Errorf("failed to create position for %s: %w", cleanSymbol, err)
@@ -1193,19 +1248,26 @@ func executeBuyFromTrending(symbol string) (bool, error) {
 		}
 
 		order := database.Order{
-			OrderType:      "buy",
-			Symbol:         cleanSymbol,
-			AmountCrypto:   cryptoAmount,
-			AmountUsdt:     amountUsdt,
-			Price:          currentPrice,
-			Status:         OrderStatusFilled,
-			ExecutionMode:  ExecutionModePaper,
-			RequestedPrice: &currentPrice,
-			FillPrice:      &currentPrice,
-			ExecutedQty:    &cryptoAmount,
-			SubmittedAt:    &now,
-			FilledAt:       &now,
-			ExecutedAt:     now,
+			OrderType:           "buy",
+			Symbol:              cleanSymbol,
+			AmountCrypto:        cryptoAmount,
+			AmountUsdt:          amountUsdt,
+			Price:               currentPrice,
+			Status:              OrderStatusFilled,
+			ExecutionMode:       ExecutionModePaper,
+			ModelVersion:        decisionContext.ModelVersion,
+			PolicyVersion:       decisionContext.PolicyVersion,
+			UniverseMode:        decisionContext.UniverseMode,
+			RolloutState:        decisionContext.RolloutState,
+			ExperimentID:        stringPtr(decisionContext.ExperimentID),
+			PredictionLogID:     decisionContext.PredictionLogID,
+			DecisionContextJSON: defaultDecisionContextJSON(decisionContext),
+			RequestedPrice:      &currentPrice,
+			FillPrice:           &currentPrice,
+			ExecutedQty:         &cryptoAmount,
+			SubmittedAt:         &now,
+			FilledAt:            &now,
+			ExecutedAt:          now,
 		}
 		if err := tx.Create(&order).Error; err != nil {
 			return err
@@ -1220,6 +1282,37 @@ func executeBuyFromTrending(symbol string) (bool, error) {
 	NotifyPositionChanged()
 
 	return true, nil
+}
+
+func buildTradeDecisionContext(analysis AnalyzedCoin) TradeDecisionContext {
+	payload, _ := json.Marshal(map[string]interface{}{
+		"model_version":     analysis.ModelVersion,
+		"policy_version":    analysis.PolicyVersion,
+		"universe_mode":     analysis.UniverseMode,
+		"rollout_state":     analysis.RolloutState,
+		"experiment_id":     analysis.ExperimentID,
+		"prediction_log_id": analysis.PredictionLogID,
+		"model_rank":        analysis.ModelRank,
+		"policy_selected":   analysis.PolicySelected,
+		"decision_reason":   analysis.DecisionReason,
+	})
+	return TradeDecisionContext{
+		ModelVersion:        analysis.ModelVersion,
+		PolicyVersion:       analysis.PolicyVersion,
+		UniverseMode:        analysis.UniverseMode,
+		RolloutState:        analysis.RolloutState,
+		ExperimentID:        analysis.ExperimentID,
+		PredictionLogID:     analysis.PredictionLogID,
+		DecisionContextJSON: string(payload),
+	}
+}
+
+func defaultDecisionContextJSON(context TradeDecisionContext) string {
+	if strings.TrimSpace(context.DecisionContextJSON) != "" {
+		return context.DecisionContextJSON
+	}
+	payload, _ := json.Marshal(context)
+	return string(payload)
 }
 
 // AnalyzeTrendingCoins is the main function that mirrors the Python analyze_trending_coins
@@ -1243,6 +1336,9 @@ func AnalyzeTrendingCoins() (*TrendingAnalysisResult, error) {
 		return nil, err
 	}
 	results, tradesOpened := ExecuteShortlistTrades(results, selection, settings)
+	if err := RefreshMonitoringSnapshot(settings); err != nil {
+		logActivity("error", "Failed to refresh monitoring snapshot", err.Error())
+	}
 
 	logActivity("system", "Trending analysis complete",
 		fmt.Sprintf("Analyzed %d coins, opened %d trades, regime %s", len(results), tradesOpened, selection.RegimeState))
@@ -1316,6 +1412,11 @@ func GetRecentAnalyzedCoins() ([]AnalyzedCoin, error) {
 			Rating:        rating,
 			Timeframe:     row.Timeframe,
 			CreatedAt:     row.AnalyzedAt,
+			ModelVersion:  row.ModelVersion,
+			PolicyVersion: row.PolicyVersion,
+			UniverseMode:  row.UniverseMode,
+			RolloutState:  row.RolloutState,
+			ExperimentID:  valueFromStringPtr(row.ExperimentID),
 			ProbUp:        probUp,
 			ExpectedValue: expectedValue,
 			Indicators:    indicators,
@@ -1384,6 +1485,11 @@ func GetLatestAnalysisForSymbol(symbol string) (*AnalyzedCoin, error) {
 		Rating:         rating,
 		Timeframe:      history.Timeframe,
 		CreatedAt:      history.AnalyzedAt,
+		ModelVersion:   history.ModelVersion,
+		PolicyVersion:  history.PolicyVersion,
+		UniverseMode:   history.UniverseMode,
+		RolloutState:   history.RolloutState,
+		ExperimentID:   valueFromStringPtr(history.ExperimentID),
 		ProbUp:         probUp,
 		ExpectedValue:  expectedValue,
 		Indicators:     indicators,
@@ -1425,6 +1531,13 @@ func defaultString(value string, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func valueFromStringPtr(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
 }
 
 // broadcastTradeUpdates broadcasts wallet, positions, and orders updates via WebSocket

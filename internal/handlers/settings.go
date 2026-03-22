@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"trading-go/internal/database"
+	"trading-go/internal/services"
 
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
@@ -47,7 +48,19 @@ func UpdateSettings(c *fiber.Ctx) error {
 
 	var settings []database.Setting
 	database.DB.Find(&settings)
+	settingsMap := services.GetAllSettings()
+	if _, err := services.SyncGovernanceState(settingsMap, "settings_update"); err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "Failed to sync governance state"})
+	}
 	return c.JSON(settings)
+}
+
+func GetGovernanceOverview(c *fiber.Ctx) error {
+	overview, err := services.GetGovernanceOverview()
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "Failed to fetch governance overview"})
+	}
+	return c.JSON(overview)
 }
 
 func GetSetting(c *fiber.Ctx) error {

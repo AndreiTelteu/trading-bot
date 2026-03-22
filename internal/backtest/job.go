@@ -15,15 +15,20 @@ import (
 )
 
 type BacktestRunSummary struct {
-	JobID            uint              `json:"job_id"`
-	StartedAt        time.Time         `json:"started_at"`
-	FinishedAt       time.Time         `json:"finished_at"`
-	UniverseMode     UniverseMode      `json:"universe_mode"`
-	CandidateSymbols []string          `json:"candidate_symbols,omitempty"`
-	SettingsSnapshot map[string]string `json:"settings_snapshot,omitempty"`
-	Baseline         BacktestResult    `json:"baseline"`
-	VolSizing        BacktestResult    `json:"vol_sizing"`
-	Validation       ValidationSummary `json:"validation"`
+	JobID            uint                       `json:"job_id"`
+	StartedAt        time.Time                  `json:"started_at"`
+	FinishedAt       time.Time                  `json:"finished_at"`
+	BacktestMode     BacktestMode               `json:"backtest_mode"`
+	ModelVersion     string                     `json:"model_version,omitempty"`
+	PolicyVersion    string                     `json:"policy_version,omitempty"`
+	UniverseMode     UniverseMode               `json:"universe_mode"`
+	PolicyContext    services.GovernanceContext `json:"policy_context"`
+	ExperimentID     string                     `json:"experiment_id,omitempty"`
+	CandidateSymbols []string                   `json:"candidate_symbols,omitempty"`
+	SettingsSnapshot map[string]string          `json:"settings_snapshot,omitempty"`
+	Baseline         BacktestResult             `json:"baseline"`
+	VolSizing        BacktestResult             `json:"vol_sizing"`
+	Validation       ValidationSummary          `json:"validation"`
 }
 
 func StartBacktestJob() (*database.BacktestJob, error) {
@@ -61,7 +66,8 @@ func runBacktestJob(jobID uint) {
 	startedAt := time.Now()
 	updateBacktestJob(jobID, "running", 0.02, "Loading settings")
 
-	config, series, err := prepareBacktestInputs()
+	settingsSnapshot := services.GetAllSettings()
+	config, series, err := prepareBacktestInputsWithSettings(settingsSnapshot)
 	if err != nil {
 		failBacktestJob(jobID, err)
 		return
@@ -86,24 +92,38 @@ func runBacktestJob(jobID uint) {
 	}
 
 	updateBacktestJob(jobID, "running", 0.8, "Running validation")
-	validation, err := RunValidation(config, series, 12, 3, 500)
+	validation, err := RunValidation(config, series,
+		getSettingInt(settingsSnapshot, "validation_train_months", 12),
+		getSettingInt(settingsSnapshot, "validation_test_months", 3),
+		getSettingInt(settingsSnapshot, "validation_bootstrap_iterations", 500),
+	)
 	if err != nil {
 		failBacktestJob(jobID, err)
 		return
 	}
 
 	finishedAt := time.Now()
-	settingsSnapshot := services.GetAllSettings()
 	summary := BacktestRunSummary{
 		JobID:            jobID,
 		StartedAt:        startedAt,
 		FinishedAt:       finishedAt,
+		BacktestMode:     config.BacktestMode,
+		ModelVersion:     config.Governance.ModelVersion,
+		PolicyVersion:    config.Governance.PolicyVersions.CompositeVersion,
 		UniverseMode:     config.UniverseMode,
+		PolicyContext:    config.Governance,
 		CandidateSymbols: append([]string(nil), config.Symbols...),
 		SettingsSnapshot: settingsSnapshot,
 		Baseline:         baselineResult,
 		VolSizing:        volResult,
 		Validation:       validation,
+	}
+	if experimentID, err := RegisterExperimentRun(jobID, &summary); err == nil {
+		summary.ExperimentID = experimentID
+		summary.PolicyContext.ExperimentID = experimentID
+	} else {
+		failBacktestJob(jobID, err)
+		return
 	}
 	outputDir, err := WriteBacktestOutputs(summary, "backtest_results")
 	if err != nil {
@@ -154,7 +174,11 @@ func RunBacktestSyncWithOverrides(overrides map[string]string) (BacktestRunSumma
 		return BacktestRunSummary{}, err
 	}
 
-	validation, err := RunValidation(config, series, 12, 3, 500)
+	validation, err := RunValidation(config, series,
+		getSettingInt(settings, "validation_train_months", 12),
+		getSettingInt(settings, "validation_test_months", 3),
+		getSettingInt(settings, "validation_bootstrap_iterations", 500),
+	)
 	if err != nil {
 		return BacktestRunSummary{}, err
 	}
@@ -164,12 +188,23 @@ func RunBacktestSyncWithOverrides(overrides map[string]string) (BacktestRunSumma
 		JobID:            0,
 		StartedAt:        now,
 		FinishedAt:       now,
+		BacktestMode:     config.BacktestMode,
+		ModelVersion:     config.Governance.ModelVersion,
+		PolicyVersion:    config.Governance.PolicyVersions.CompositeVersion,
 		UniverseMode:     config.UniverseMode,
+		PolicyContext:    config.Governance,
 		CandidateSymbols: append([]string(nil), config.Symbols...),
 		SettingsSnapshot: settings,
 		Baseline:         baselineResult,
 		VolSizing:        volResult,
 		Validation:       validation,
+	}
+
+	if experimentID, err := RegisterExperimentRun(0, &summary); err == nil {
+		summary.ExperimentID = experimentID
+		summary.PolicyContext.ExperimentID = experimentID
+	} else {
+		return BacktestRunSummary{}, err
 	}
 
 	if _, err := WriteBacktestOutputs(summary, "backtest_results"); err != nil {
@@ -201,15 +236,58 @@ func WriteBacktestOutputs(summary BacktestRunSummary, outputBase string) (string
 	}
 
 	metricsSummary := map[string]interface{}{
-		"baseline":   summary.Baseline.Metrics,
-		"vol_sizing": summary.VolSizing.Metrics,
-		"validation": summary.Validation,
+		"backtest_mode":  summary.BacktestMode,
+		"model_version":  summary.ModelVersion,
+		"policy_version": summary.PolicyVersion,
+		"policy_context": summary.PolicyContext,
+		"baseline":       summary.Baseline.Metrics,
+		"vol_sizing":     summary.VolSizing.Metrics,
+		"validation":     summary.Validation,
 	}
 	metricsBytes, err := json.MarshalIndent(metricsSummary, "", "  ")
 	if err != nil {
 		return "", err
 	}
 	if err := os.WriteFile(filepath.Join(outputDir, "metrics_summary.json"), metricsBytes, 0o644); err != nil {
+		return "", err
+	}
+
+	governanceBytes, err := json.MarshalIndent(map[string]interface{}{
+		"backtest_mode":  summary.BacktestMode,
+		"model_version":  summary.ModelVersion,
+		"policy_version": summary.PolicyVersion,
+		"policy_context": summary.PolicyContext,
+		"experiment_id":  summary.ExperimentID,
+	}, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(filepath.Join(outputDir, "governance_summary.json"), governanceBytes, 0o644); err != nil {
+		return "", err
+	}
+
+	diagnosticsBytes, err := json.MarshalIndent(map[string]interface{}{
+		"baseline": map[string]interface{}{
+			"ranking_metrics": summary.Baseline.RankingMetrics,
+			"diagnostics":     summary.Baseline.Diagnostics,
+		},
+		"vol_sizing": map[string]interface{}{
+			"ranking_metrics": summary.VolSizing.RankingMetrics,
+			"diagnostics":     summary.VolSizing.Diagnostics,
+		},
+		"validation": map[string]interface{}{
+			"window_summaries":        summary.Validation.WindowSummaries,
+			"promotion_readiness":     summary.Validation.PromotionReadiness,
+			"baseline_regime_slices":  summary.Validation.BaselineRegimeSlices,
+			"vol_regime_slices":       summary.Validation.VolSizingRegimeSlices,
+			"baseline_symbol_cohorts": summary.Validation.BaselineSymbolCohorts,
+			"vol_symbol_cohorts":      summary.Validation.VolSizingSymbolCohorts,
+		},
+	}, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(filepath.Join(outputDir, "strategy_diagnostics.json"), diagnosticsBytes, 0o644); err != nil {
 		return "", err
 	}
 
@@ -379,15 +457,21 @@ func prepareBacktestInputsWithSettings(settings map[string]string) (BacktestConf
 	}
 
 	modelPolicy := services.GetModelSelectionPolicy(settings)
+	governance, err := services.ResolveGovernanceContext(settings, string(universeMode))
+	if err != nil {
+		return BacktestConfig{}, nil, err
+	}
 	modelArtifact, err := services.LoadConfiguredModel(settings)
 	if err != nil {
 		return BacktestConfig{}, nil, err
 	}
 
 	config := BacktestConfig{
+		BacktestMode:            resolveBacktestMode(universeMode, modelArtifact != nil),
 		Symbols:                 symbols,
 		UniverseMode:            universeMode,
 		UniversePolicy:          policy,
+		Governance:              governance,
 		Start:                   start,
 		End:                     end,
 		IndicatorConfig:         services.GetIndicatorSettings(),
@@ -502,6 +586,19 @@ func getSettingFloat(settings map[string]string, key string, defaultVal float64)
 		return defaultVal
 	}
 	return v
+}
+
+func resolveBacktestMode(universeMode UniverseMode, hasModel bool) BacktestMode {
+	if hasModel {
+		if universeMode == UniverseDynamicRecompute {
+			return BacktestModeDynamicModel
+		}
+		return BacktestModePaperReplay
+	}
+	if universeMode == UniverseDynamicRecompute {
+		return BacktestModeDynamicRule
+	}
+	return BacktestModeLegacyStatic
 }
 
 func logActivity(logType, message string, details string) {

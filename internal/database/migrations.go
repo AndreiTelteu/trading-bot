@@ -21,9 +21,13 @@ func schemaModels() []interface{} {
 		&UniverseSnapshot{},
 		&UniverseMember{},
 		&ModelArtifact{},
+		&PolicyConfig{},
+		&ExperimentRun{},
+		&RolloutEvent{},
 		&FeatureSnapshot{},
 		&PredictionLog{},
 		&TradeLabel{},
+		&MonitoringSnapshot{},
 		&PortfolioSnapshot{},
 	}
 }
@@ -125,6 +129,22 @@ func RunMigrations(db *gorm.DB) error {
 			},
 			Rollback: func(tx *gorm.DB) error {
 				for _, model := range []interface{}{&TradeLabel{}, &PredictionLog{}, &FeatureSnapshot{}, &ModelArtifact{}} {
+					if tx.Migrator().HasTable(model) {
+						if err := tx.Migrator().DropTable(model); err != nil {
+							return err
+						}
+					}
+				}
+				return nil
+			},
+		},
+		{
+			ID: "202603231200_governance_tracking_entities",
+			Migrate: func(tx *gorm.DB) error {
+				return migrateSchema(tx)
+			},
+			Rollback: func(tx *gorm.DB) error {
+				for _, model := range []interface{}{&MonitoringSnapshot{}, &RolloutEvent{}, &ExperimentRun{}, &PolicyConfig{}} {
 					if tx.Migrator().HasTable(model) {
 						if err := tx.Migrator().DropTable(model); err != nil {
 							return err

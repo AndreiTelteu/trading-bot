@@ -71,6 +71,164 @@ const formatOptimizationReason = (reason) => {
     .join(' ')
 }
 
+const parseJSONField = (value, fallback) => {
+  if (!value || typeof value !== 'string') return fallback
+  try {
+    return JSON.parse(value)
+  } catch {
+    return fallback
+  }
+}
+
+const formatRatioPercent = (value, digits = 1) => {
+  const num = Number(value)
+  if (!Number.isFinite(num)) return '—'
+  return `${(num * 100).toFixed(digits)}%`
+}
+
+const getBacktestStrategy = (job, strategyKey) => {
+  const summary = getBacktestSummary(job)
+  return summary?.[strategyKey] || null
+}
+
+const getBacktestValidation = (job) => getBacktestSummary(job)?.validation || null
+
+function GovernanceOverviewPanel({ overview, activeSection }) {
+  const primarySections = new Set(['trading', 'universe', 'probabilistic', 'backtest', 'ai'])
+  if (!primarySections.has(activeSection)) return null
+
+  const context = overview?.context || {}
+  const latestMonitoring = overview?.latest_monitoring || null
+  const rankBuckets = parseJSONField(latestMonitoring?.rank_bucket_json, [])
+  const calibration = parseJSONField(latestMonitoring?.calibration_json, [])
+  const featureDrift = parseJSONField(latestMonitoring?.feature_drift_json, [])
+  const regimeSummary = parseJSONField(latestMonitoring?.regime_summary_json, null)
+  const activePolicies = Array.isArray(overview?.active_policies) ? overview.active_policies : []
+  const rolloutEvents = Array.isArray(overview?.recent_rollout_events) ? overview.recent_rollout_events.slice(0, 3) : []
+
+  return (
+    <div className="glass-panel" style={{ padding: '1rem', marginBottom: '1rem', display: 'grid', gap: '1rem' }}>
+      <div>
+        <div className="text-muted text-sm" style={{ marginBottom: '0.35rem' }}>Governance snapshot</div>
+        <div className="job-meta-info">
+          <div className="meta-item">
+            <span className="meta-label">Model</span>
+            <span className="meta-value">{context.model_version || 'Rule-ranked / none'}</span>
+          </div>
+          <div className="meta-item">
+            <span className="meta-label">Rollout</span>
+            <span className="meta-value">{context.rollout_state || '—'}</span>
+          </div>
+          <div className="meta-item">
+            <span className="meta-label">Entry mode</span>
+            <span className="meta-value">{context.effective_entry_mode || '—'}</span>
+          </div>
+          <div className="meta-item">
+            <span className="meta-label">Policy bundle</span>
+            <span className="meta-value">{context.policy_versions?.composite_version || '—'}</span>
+          </div>
+          <div className="meta-item">
+            <span className="meta-label">Experiment</span>
+            <span className="meta-value">{context.experiment_id || '—'}</span>
+          </div>
+          <div className="meta-item">
+            <span className="meta-label">Fallback</span>
+            <span className="meta-value">{context.fallback_mode || '—'}</span>
+          </div>
+        </div>
+      </div>
+
+      {activePolicies.length > 0 && (
+        <div>
+          <div className="text-muted text-sm" style={{ marginBottom: '0.35rem' }}>Active policy versions</div>
+          <div style={{ display: 'grid', gap: '0.4rem' }}>
+            {activePolicies.map(policy => (
+              <div key={`${policy.policy_type}-${policy.version}`} className="metric-row">
+                <span className="metric-name">{formatOptimizationReason(policy.policy_type)}</span>
+                <span className="metric-value">{policy.version}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {latestMonitoring && (
+        <div>
+          <div className="text-muted text-sm" style={{ marginBottom: '0.35rem' }}>Latest monitoring snapshot</div>
+          <div className="job-meta-info" style={{ marginBottom: '0.65rem' }}>
+            <div className="meta-item">
+              <span className="meta-label">Snapshot</span>
+              <span className="meta-value">{formatBacktestDate(latestMonitoring.snapshot_time)}</span>
+            </div>
+            <div className="meta-item">
+              <span className="meta-label">Predictions</span>
+              <span className="meta-value">{latestMonitoring.prediction_count ?? 0}</span>
+            </div>
+            <div className="meta-item">
+              <span className="meta-label">Selection rate</span>
+              <span className="meta-value">{formatRatioPercent(latestMonitoring.selection_rate)}</span>
+            </div>
+          </div>
+
+          {rankBuckets.length > 0 && (
+            <div style={{ display: 'grid', gap: '0.35rem', marginBottom: '0.65rem' }}>
+              {rankBuckets.slice(0, 3).map(bucket => (
+                <div key={bucket.bucket} className="metric-row">
+                  <span className="metric-name">{bucket.bucket}</span>
+                  <span className="metric-value">
+                    {bucket.predictions} predictions • {formatRatioPercent(bucket.selection_rate)} selected
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {calibration.length > 0 && (
+            <p className="text-muted text-sm" style={{ margin: 0 }}>
+              Top calibration bucket: <span className="metric-value">{calibration[calibration.length - 1]?.bucket || '—'}</span>
+            </p>
+          )}
+          {featureDrift.length > 0 && (
+            <p className="text-muted text-sm" style={{ margin: '0.25rem 0 0' }}>
+              Largest recent drift: <span className="metric-value">{featureDrift[0]?.feature || '—'}</span>
+            </p>
+          )}
+          {regimeSummary && (
+            <p className="text-muted text-sm" style={{ margin: '0.25rem 0 0' }}>
+              Latest regime: <span className="metric-value">{regimeSummary.latest_regime || '—'}</span>
+            </p>
+          )}
+        </div>
+      )}
+
+      {rolloutEvents.length > 0 && (
+        <div>
+          <div className="text-muted text-sm" style={{ marginBottom: '0.35rem' }}>Recent rollout events</div>
+          <div style={{ display: 'grid', gap: '0.4rem' }}>
+            {rolloutEvents.map(event => (
+              <div key={event.id || `${event.model_version}-${event.created_at}`} className="metric-row">
+                <span className="metric-name">{event.from_state || '—'} → {event.to_state || '—'}</span>
+                <span className="metric-value">{formatBacktestDate(event.created_at)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function LegacySettingsNotice({ activeSection }) {
+  if (!['indicators', 'atr', 'weights'].includes(activeSection)) return null
+  return (
+    <div className="glass-panel" style={{ padding: '1rem', marginBottom: '1rem' }}>
+      <div className="text-muted text-sm">
+        This section is retained for compatibility and debugging. Day-to-day operation should prefer the Execution & Risk, Universe Selection, Model & Policy, Backtest & Validation, and AI Governance surfaces.
+      </div>
+    </div>
+  )
+}
+
 function BacktestOptimizationDialogContent({ result }) {
   const proposals = Array.isArray(result?.proposals) ? result.proposals : []
   const attempts = Array.isArray(result?.attempts) ? result.attempts : []
@@ -170,14 +328,11 @@ function BacktestOptimizationDialogContent({ result }) {
 }
 
 const SETTINGS_SECTIONS = [
-  { key: 'trading', label: 'Trading', to: '/settings/trading' },
-  { key: 'indicators', label: 'Indicators', to: '/settings/indicators' },
-  { key: 'universe', label: 'Universe', to: '/settings/universe' },
+  { key: 'trading', label: 'Execution & Risk', to: '/settings/trading' },
+  { key: 'universe', label: 'Universe Selection', to: '/settings/universe' },
   { key: 'probabilistic', label: 'Model & Policy', to: '/settings/probabilistic' },
-  { key: 'ai', label: 'AI Settings', to: '/settings/ai' },
-  { key: 'atr', label: 'ATR', to: '/settings/atr' },
-  { key: 'backtest', label: 'Backtest', to: '/settings/backtest' },
-  { key: 'weights', label: 'Legacy Weights', to: '/settings/weights' },
+  { key: 'backtest', label: 'Backtest & Validation', to: '/settings/backtest' },
+  { key: 'ai', label: 'AI Governance', to: '/settings/ai' },
 ]
 
 function SettingsPanel({ activeSection }) {
@@ -194,6 +349,7 @@ function SettingsPanel({ activeSection }) {
   const [selectedBacktestId, setSelectedBacktestId] = useState('')
   const [startingBacktest, setStartingBacktest] = useState(false)
   const [optimizingBacktest, setOptimizingBacktest] = useState(false)
+  const [governanceOverview, setGovernanceOverview] = useState(null)
   const optimizeBacktestDialog = useAlertDialog()
 
   useEffect(() => {
@@ -201,6 +357,7 @@ function SettingsPanel({ activeSection }) {
     fetchWeights()
     fetchLatestBacktest()
     fetchBacktestJobs()
+    fetchGovernanceOverview()
   }, [])
 
   const fetchSettings = async () => {
@@ -239,6 +396,17 @@ function SettingsPanel({ activeSection }) {
       setWeights(weightsMap)
     } catch (err) {
       console.error('Failed to fetch weights:', err)
+    }
+  }
+
+  const fetchGovernanceOverview = async () => {
+    try {
+      const res = await apiFetch(`${API_BASE}/settings/governance`)
+      if (!res.ok) return
+      const data = await res.json()
+      setGovernanceOverview(data)
+    } catch (err) {
+      console.error('Failed to fetch governance overview:', err)
     }
   }
 
@@ -307,6 +475,7 @@ function SettingsPanel({ activeSection }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       })
+      await fetchGovernanceOverview()
       alert('Settings saved!')
     } catch (err) {
       console.error('Failed to save settings:', err)
@@ -393,6 +562,7 @@ function SettingsPanel({ activeSection }) {
       }
       return prev
     })
+    fetchGovernanceOverview()
   })
 
   const handleOptimizeBacktest = async () => {
@@ -603,9 +773,13 @@ function SettingsPanel({ activeSection }) {
   const probabilisticSettings = [
     { key: 'active_model_version', label: 'Active Model Version', type: 'text' },
     { key: 'model_rollout_state', label: 'Model Rollout State', type: 'text' },
+    { key: 'model_fallback_mode', label: 'Rollback Fallback Mode', type: 'text' },
+    { key: 'model_rollback_target', label: 'Rollback Target Model', type: 'text' },
     { key: 'selection_policy_top_k', label: 'Selection Policy Top K', type: 'number', step: 1 },
     { key: 'selection_policy_min_prob', label: 'Selection Policy Min Prob', type: 'number', step: 0.0001 },
     { key: 'selection_policy_min_ev', label: 'Selection Policy Min EV', type: 'number', step: 0.0001 },
+    { key: 'monitoring_window_days', label: 'Monitoring Window (days)', type: 'number', step: 1 },
+    { key: 'monitoring_min_outcomes', label: 'Min Outcomes For Monitoring', type: 'number', step: 1 },
   ]
 
   const atrSettings = [
@@ -623,6 +797,9 @@ function SettingsPanel({ activeSection }) {
     { key: 'backtest_end', label: 'Backtest End (YYYY-MM-DD or RFC3339)', type: 'text' },
     { key: 'backtest_fee_bps', label: 'Backtest Fee (bps)', type: 'number', step: 1 },
     { key: 'backtest_slippage_bps', label: 'Backtest Slippage (bps)', type: 'number', step: 1 },
+    { key: 'validation_train_months', label: 'Validation Train Months', type: 'number', step: 1 },
+    { key: 'validation_test_months', label: 'Validation Test Months', type: 'number', step: 1 },
+    { key: 'validation_bootstrap_iterations', label: 'Bootstrap Iterations', type: 'number', step: 50 },
   ]
 
   const aiSettings = [
@@ -631,6 +808,7 @@ function SettingsPanel({ activeSection }) {
     { key: 'ai_min_proposals', label: 'Min Proposals', type: 'number' },
     { key: 'ai_change_budget_pct', label: 'Max Numeric Change (%)', type: 'number', step: 0.1 },
     { key: 'ai_auto_apply_days', label: 'Auto Apply Days', type: 'number' },
+    { key: 'ai_goal', label: 'Governance Goal', type: 'text' },
   ]
 
   const indicatorWeights = [
@@ -718,6 +896,9 @@ function SettingsPanel({ activeSection }) {
           </Link>
         ))}
       </div>
+
+      <LegacySettingsNotice activeSection={activeSection} />
+      <GovernanceOverviewPanel overview={governanceOverview} activeSection={activeSection} />
 
       {activeSection !== 'weights' ? (
         <div className="settings-form">
@@ -811,6 +992,30 @@ function SettingsPanel({ activeSection }) {
                         <span className="meta-label">Status</span>
                         <span className={`meta-value status-${selectedBacktestJob.status}`}>{selectedBacktestJob.status || 'unknown'}</span>
                       </div>
+                      {selectedBacktestJob.summary?.backtest_mode && (
+                        <div className="meta-item">
+                          <span className="meta-label">Mode</span>
+                          <span className="meta-value">{selectedBacktestJob.summary.backtest_mode}</span>
+                        </div>
+                      )}
+                      {selectedBacktestJob.summary?.model_version && (
+                        <div className="meta-item">
+                          <span className="meta-label">Model</span>
+                          <span className="meta-value">{selectedBacktestJob.summary.model_version}</span>
+                        </div>
+                      )}
+                      {selectedBacktestJob.summary?.policy_version && (
+                        <div className="meta-item">
+                          <span className="meta-label">Policy</span>
+                          <span className="meta-value">{selectedBacktestJob.summary.policy_version}</span>
+                        </div>
+                      )}
+                      {selectedBacktestJob.summary?.experiment_id && (
+                        <div className="meta-item">
+                          <span className="meta-label">Experiment</span>
+                          <span className="meta-value">{selectedBacktestJob.summary.experiment_id}</span>
+                        </div>
+                      )}
                       {selectedBacktestJob.error && (
                         <div className="meta-item error-item">
                           <span className="meta-label">Error</span>
@@ -823,6 +1028,7 @@ function SettingsPanel({ activeSection }) {
                       <div className={`validation-banner ${selectedBacktestJob.summary.validation.passed ? 'passed' : 'failed'}`}>
                         <span className="validation-icon">{selectedBacktestJob.summary.validation.passed ? '✓' : '✗'}</span>
                         Validation: {selectedBacktestJob.summary.validation.passed ? 'Passed' : 'Failed'} ({selectedBacktestJob.summary.validation.windows} windows)
+                        {selectedBacktestJob.summary.validation.recommended_stage ? ` • recommended rollout: ${selectedBacktestJob.summary.validation.recommended_stage}` : ''}
                       </div>
                     )}
                     

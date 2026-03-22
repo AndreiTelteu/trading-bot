@@ -3,6 +3,7 @@ package backtest
 import (
 	"fmt"
 	"math/rand"
+	"strings"
 	"time"
 	"trading-go/internal/services"
 )
@@ -14,29 +15,64 @@ type MetricCI struct {
 }
 
 type ValidationSummary struct {
-	Windows                         int       `json:"windows"`
-	TrainWindows                    int       `json:"train_windows"`
-	TestWindows                     int       `json:"test_windows"`
-	TrainingBaselineMetrics         []Metrics `json:"training_baseline_metrics"`
-	TrainingVolSizingMetrics        []Metrics `json:"training_vol_sizing_metrics"`
-	BaselineMetrics                 []Metrics `json:"baseline_metrics"`
-	VolSizingMetrics                []Metrics `json:"vol_sizing_metrics"`
-	TrainingSharpeBaselineCI        MetricCI  `json:"training_sharpe_baseline_ci"`
-	TrainingSharpeVolSizingCI       MetricCI  `json:"training_sharpe_vol_sizing_ci"`
-	SharpeBaselineCI                MetricCI  `json:"sharpe_baseline_ci"`
-	SharpeVolSizingCI               MetricCI  `json:"sharpe_vol_sizing_ci"`
-	TrainingMaxDrawdownBaselineCI   MetricCI  `json:"training_max_drawdown_baseline_ci"`
-	TrainingMaxDrawdownVolSizingCI  MetricCI  `json:"training_max_drawdown_vol_sizing_ci"`
-	MaxDrawdownBaselineCI           MetricCI  `json:"max_drawdown_baseline_ci"`
-	MaxDrawdownVolSizingCI          MetricCI  `json:"max_drawdown_vol_sizing_ci"`
-	TrainingProfitFactorBaselineCI  MetricCI  `json:"training_profit_factor_baseline_ci"`
-	TrainingProfitFactorVolSizingCI MetricCI  `json:"training_profit_factor_vol_sizing_ci"`
-	ProfitFactorBaselineCI          MetricCI  `json:"profit_factor_baseline_ci"`
-	ProfitFactorVolSizingCI         MetricCI  `json:"profit_factor_vol_sizing_ci"`
-	TrainingAcceptedMetrics         []string  `json:"training_accepted_metrics"`
-	AcceptedMetrics                 []string  `json:"accepted_metrics"`
-	TrainingPassed                  bool      `json:"training_passed"`
-	Passed                          bool      `json:"passed"`
+	BacktestMode                    BacktestMode              `json:"backtest_mode"`
+	ModelVersion                    string                    `json:"model_version,omitempty"`
+	UniverseMode                    UniverseMode              `json:"universe_mode"`
+	PolicyVersion                   string                    `json:"policy_version,omitempty"`
+	RolloutState                    string                    `json:"rollout_state,omitempty"`
+	Windows                         int                       `json:"windows"`
+	TrainWindows                    int                       `json:"train_windows"`
+	TestWindows                     int                       `json:"test_windows"`
+	TrainingBaselineMetrics         []Metrics                 `json:"training_baseline_metrics"`
+	TrainingVolSizingMetrics        []Metrics                 `json:"training_vol_sizing_metrics"`
+	BaselineMetrics                 []Metrics                 `json:"baseline_metrics"`
+	VolSizingMetrics                []Metrics                 `json:"vol_sizing_metrics"`
+	TrainingSharpeBaselineCI        MetricCI                  `json:"training_sharpe_baseline_ci"`
+	TrainingSharpeVolSizingCI       MetricCI                  `json:"training_sharpe_vol_sizing_ci"`
+	SharpeBaselineCI                MetricCI                  `json:"sharpe_baseline_ci"`
+	SharpeVolSizingCI               MetricCI                  `json:"sharpe_vol_sizing_ci"`
+	TrainingMaxDrawdownBaselineCI   MetricCI                  `json:"training_max_drawdown_baseline_ci"`
+	TrainingMaxDrawdownVolSizingCI  MetricCI                  `json:"training_max_drawdown_vol_sizing_ci"`
+	MaxDrawdownBaselineCI           MetricCI                  `json:"max_drawdown_baseline_ci"`
+	MaxDrawdownVolSizingCI          MetricCI                  `json:"max_drawdown_vol_sizing_ci"`
+	TrainingProfitFactorBaselineCI  MetricCI                  `json:"training_profit_factor_baseline_ci"`
+	TrainingProfitFactorVolSizingCI MetricCI                  `json:"training_profit_factor_vol_sizing_ci"`
+	ProfitFactorBaselineCI          MetricCI                  `json:"profit_factor_baseline_ci"`
+	ProfitFactorVolSizingCI         MetricCI                  `json:"profit_factor_vol_sizing_ci"`
+	TrainingAcceptedMetrics         []string                  `json:"training_accepted_metrics"`
+	AcceptedMetrics                 []string                  `json:"accepted_metrics"`
+	BaselineRankingDiagnostics      *RankingDiagnostics       `json:"baseline_ranking_diagnostics,omitempty"`
+	VolSizingRankingDiagnostics     *RankingDiagnostics       `json:"vol_sizing_ranking_diagnostics,omitempty"`
+	BaselineRegimeSlices            []RegimeSliceMetric       `json:"baseline_regime_slices,omitempty"`
+	VolSizingRegimeSlices           []RegimeSliceMetric       `json:"vol_sizing_regime_slices,omitempty"`
+	BaselineSymbolCohorts           []SymbolCohortMetric      `json:"baseline_symbol_cohorts,omitempty"`
+	VolSizingSymbolCohorts          []SymbolCohortMetric      `json:"vol_sizing_symbol_cohorts,omitempty"`
+	WindowSummaries                 []ValidationWindowSummary `json:"window_summaries,omitempty"`
+	PromotionReadiness              PromotionReadiness        `json:"promotion_readiness"`
+	TrainingPassed                  bool                      `json:"training_passed"`
+	Passed                          bool                      `json:"passed"`
+}
+
+type ValidationWindowSummary struct {
+	Window            WalkForwardWindow   `json:"window"`
+	TrainingBaseline  Metrics             `json:"training_baseline"`
+	TrainingVolSizing Metrics             `json:"training_vol_sizing"`
+	Baseline          Metrics             `json:"baseline"`
+	VolSizing         Metrics             `json:"vol_sizing"`
+	BaselineRanking   *RankingDiagnostics `json:"baseline_ranking,omitempty"`
+	VolSizingRanking  *RankingDiagnostics `json:"vol_sizing_ranking,omitempty"`
+}
+
+type PromotionGateResult struct {
+	Name    string `json:"name"`
+	Passed  bool   `json:"passed"`
+	Details string `json:"details,omitempty"`
+}
+
+type PromotionReadiness struct {
+	RecommendedStage string                `json:"recommended_stage"`
+	Passed           bool                  `json:"passed"`
+	Gates            []PromotionGateResult `json:"gates"`
 }
 
 type WalkForwardWindow struct {
@@ -66,6 +102,9 @@ func RunValidation(config BacktestConfig, series map[string][]services.OHLCV, tr
 	var trainVolMetrics []Metrics
 	var testBaselineMetrics []Metrics
 	var testVolMetrics []Metrics
+	var baselineTrades []Trade
+	var volTrades []Trade
+	windowSummaries := make([]ValidationWindowSummary, 0, len(windows))
 
 	for _, window := range windows {
 		trainSeries := filterSeriesByTime(series, window.TrainStart, window.TrainEnd)
@@ -87,6 +126,17 @@ func RunValidation(config BacktestConfig, series map[string][]services.OHLCV, tr
 		trainVolMetrics = append(trainVolMetrics, trainVol.Metrics)
 		testBaselineMetrics = append(testBaselineMetrics, testBaseline.Metrics)
 		testVolMetrics = append(testVolMetrics, testVol.Metrics)
+		baselineTrades = append(baselineTrades, testBaseline.Trades...)
+		volTrades = append(volTrades, testVol.Trades...)
+		windowSummaries = append(windowSummaries, ValidationWindowSummary{
+			Window:            window,
+			TrainingBaseline:  trainBaseline.Metrics,
+			TrainingVolSizing: trainVol.Metrics,
+			Baseline:          testBaseline.Metrics,
+			VolSizing:         testVol.Metrics,
+			BaselineRanking:   rankingDiagnostics(testBaseline.RankingMetrics),
+			VolSizingRanking:  rankingDiagnostics(testVol.RankingMetrics),
+		})
 	}
 
 	if len(testBaselineMetrics) == 0 || len(testVolMetrics) == 0 {
@@ -97,8 +147,20 @@ func RunValidation(config BacktestConfig, series map[string][]services.OHLCV, tr
 	testSummary := summarizeValidationMetrics(testBaselineMetrics, testVolMetrics, iterations)
 	trainingPassed := len(trainingSummary.AcceptedMetrics) >= 2
 	testPassed := len(testSummary.AcceptedMetrics) >= 2
+	baselineRanking := buildRankingDiagnosticsFromTrades(baselineTrades, config)
+	volRanking := buildRankingDiagnosticsFromTrades(volTrades, config)
+	baselineRegime := buildRegimeSliceMetrics(baselineTrades)
+	volRegime := buildRegimeSliceMetrics(volTrades)
+	baselineSymbols := buildSymbolCohortMetrics(baselineTrades)
+	volSymbols := buildSymbolCohortMetrics(volTrades)
+	readiness := evaluatePromotionReadiness(config, testSummary, volRanking, volRegime)
 
 	return ValidationSummary{
+		BacktestMode:                    config.BacktestMode,
+		ModelVersion:                    config.Governance.ModelVersion,
+		UniverseMode:                    config.UniverseMode,
+		PolicyVersion:                   config.Governance.PolicyVersions.CompositeVersion,
+		RolloutState:                    config.Governance.RolloutState,
 		Windows:                         len(windows),
 		TrainWindows:                    len(trainBaselineMetrics),
 		TestWindows:                     len(testBaselineMetrics),
@@ -120,9 +182,83 @@ func RunValidation(config BacktestConfig, series map[string][]services.OHLCV, tr
 		ProfitFactorVolSizingCI:         testSummary.ProfitFactorCandidate,
 		TrainingAcceptedMetrics:         trainingSummary.AcceptedMetrics,
 		AcceptedMetrics:                 testSummary.AcceptedMetrics,
+		BaselineRankingDiagnostics:      baselineRanking,
+		VolSizingRankingDiagnostics:     volRanking,
+		BaselineRegimeSlices:            baselineRegime,
+		VolSizingRegimeSlices:           volRegime,
+		BaselineSymbolCohorts:           baselineSymbols,
+		VolSizingSymbolCohorts:          volSymbols,
+		WindowSummaries:                 windowSummaries,
+		PromotionReadiness:              readiness,
 		TrainingPassed:                  trainingPassed,
 		Passed:                          trainingPassed && testPassed,
 	}, nil
+}
+
+func buildRankingDiagnosticsFromTrades(trades []Trade, config BacktestConfig) *RankingDiagnostics {
+	ranking := buildRankingMetrics(trades, config)
+	if ranking == nil {
+		return nil
+	}
+	return ranking.Diagnostics
+}
+
+func evaluatePromotionReadiness(config BacktestConfig, summary validationCISet, ranking *RankingDiagnostics, regimeSlices []RegimeSliceMetric) PromotionReadiness {
+	gates := []PromotionGateResult{
+		{
+			Name:    "walk_forward_complete",
+			Passed:  len(summary.AcceptedMetrics) >= 2,
+			Details: fmt.Sprintf("accepted metrics: %s", strings.Join(summary.AcceptedMetrics, ",")),
+		},
+		{
+			Name:    "dynamic_universe_included",
+			Passed:  config.UniverseMode == UniverseDynamicRecompute,
+			Details: fmt.Sprintf("universe mode: %s", config.UniverseMode),
+		},
+		{
+			Name:    "profit_factor_after_costs",
+			Passed:  summary.ProfitFactorCandidate.Mean > 1,
+			Details: fmt.Sprintf("mean profit factor: %.3f", summary.ProfitFactorCandidate.Mean),
+		},
+		{
+			Name:    "ranking_spread_positive",
+			Passed:  ranking != nil && ranking.PositiveSpread > 0,
+			Details: formatRankingReadiness(ranking),
+		},
+		{
+			Name:    "regime_slice_coverage",
+			Passed:  len(regimeSlices) >= 2,
+			Details: fmt.Sprintf("regime slices: %d", len(regimeSlices)),
+		},
+	}
+	passed := true
+	passedCount := 0
+	for _, gate := range gates {
+		if gate.Passed {
+			passedCount++
+		} else {
+			passed = false
+		}
+	}
+	recommendedStage := services.ModelRolloutResearchOnly
+	switch {
+	case passed:
+		recommendedStage = services.ModelRolloutPaper
+	case passedCount >= 3:
+		recommendedStage = services.ModelRolloutShadow
+	}
+	return PromotionReadiness{
+		RecommendedStage: recommendedStage,
+		Passed:           passed,
+		Gates:            gates,
+	}
+}
+
+func formatRankingReadiness(ranking *RankingDiagnostics) string {
+	if ranking == nil {
+		return "no ranking diagnostics"
+	}
+	return fmt.Sprintf("spread %.4f, monotonic_win_rate=%t", ranking.PositiveSpread, ranking.MonotonicWinRate)
 }
 
 func runValidationPair(config BacktestConfig, series map[string][]services.OHLCV, start time.Time, end time.Time) (BacktestResult, BacktestResult, error) {

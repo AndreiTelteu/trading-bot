@@ -13,52 +13,66 @@ type Wallet struct {
 }
 
 type Position struct {
-	ID                uint       `json:"id" gorm:"primaryKey;autoIncrement"`
-	Symbol            string     `json:"symbol" gorm:"size:20;uniqueIndex;index:idx_positions_symbol_status,priority:1"`
-	Amount            float64    `json:"amount"`
-	AvgPrice          float64    `json:"avg_price"`
-	EntryPrice        *float64   `json:"entry_price"`
-	CurrentPrice      *float64   `json:"current_price"`
-	ExecutionMode     string     `json:"execution_mode" gorm:"size:20;default:paper;index"`
-	EntrySource       string     `json:"entry_source" gorm:"size:30;default:manual"`
-	ExitPending       bool       `json:"exit_pending" gorm:"default:false;index"`
-	LastMarkPrice     *float64   `json:"last_mark_price"`
-	LastMarkAt        *time.Time `json:"last_mark_at"`
-	ClientPositionID  *string    `json:"client_position_id" gorm:"size:100;index"`
-	DecisionTimeframe string     `json:"decision_timeframe" gorm:"size:10;default:15m"`
-	StopPrice         *float64   `json:"stop_price"`
-	TakeProfitPrice   *float64   `json:"take_profit_price"`
-	TrailingStopPrice *float64   `json:"trailing_stop_price"`
-	LastAtrValue      *float64   `json:"last_atr_value"`
-	MaxBarsHeld       *int       `json:"max_bars_held"`
-	Pnl               float64    `json:"pnl" gorm:"default:0"`
-	PnlPercent        float64    `json:"pnl_percent" gorm:"default:0"`
-	Status            string     `json:"status" gorm:"size:20;default:open;index:idx_positions_symbol_status,priority:2;index:idx_positions_status_opened,priority:1;index:idx_positions_status_closed,priority:1"`
-	OpenedAt          time.Time  `json:"opened_at" gorm:"index:idx_positions_status_opened,priority:2;index:idx_positions_status_closed,priority:3"`
-	ClosedAt          *time.Time `json:"closed_at" gorm:"index:idx_positions_status_closed,priority:2"`
-	CloseReason       *string    `json:"close_reason" gorm:"size:50"`
+	ID                  uint       `json:"id" gorm:"primaryKey;autoIncrement"`
+	Symbol              string     `json:"symbol" gorm:"size:20;uniqueIndex;index:idx_positions_symbol_status,priority:1"`
+	Amount              float64    `json:"amount"`
+	AvgPrice            float64    `json:"avg_price"`
+	EntryPrice          *float64   `json:"entry_price"`
+	CurrentPrice        *float64   `json:"current_price"`
+	ExecutionMode       string     `json:"execution_mode" gorm:"size:20;default:paper;index"`
+	EntrySource         string     `json:"entry_source" gorm:"size:30;default:manual"`
+	ExitPending         bool       `json:"exit_pending" gorm:"default:false;index"`
+	LastMarkPrice       *float64   `json:"last_mark_price"`
+	LastMarkAt          *time.Time `json:"last_mark_at"`
+	ClientPositionID    *string    `json:"client_position_id" gorm:"size:100;index"`
+	DecisionTimeframe   string     `json:"decision_timeframe" gorm:"size:10;default:15m"`
+	ModelVersion        string     `json:"model_version" gorm:"size:100;index"`
+	PolicyVersion       string     `json:"policy_version" gorm:"size:100;index"`
+	UniverseMode        string     `json:"universe_mode" gorm:"size:40;index"`
+	RolloutState        string     `json:"rollout_state" gorm:"size:20;index"`
+	ExperimentID        *string    `json:"experiment_id" gorm:"size:100;index"`
+	PredictionLogID     *uint      `json:"prediction_log_id" gorm:"index"`
+	DecisionContextJSON string     `json:"decision_context_json" gorm:"type:text"`
+	StopPrice           *float64   `json:"stop_price"`
+	TakeProfitPrice     *float64   `json:"take_profit_price"`
+	TrailingStopPrice   *float64   `json:"trailing_stop_price"`
+	LastAtrValue        *float64   `json:"last_atr_value"`
+	MaxBarsHeld         *int       `json:"max_bars_held"`
+	Pnl                 float64    `json:"pnl" gorm:"default:0"`
+	PnlPercent          float64    `json:"pnl_percent" gorm:"default:0"`
+	Status              string     `json:"status" gorm:"size:20;default:open;index:idx_positions_symbol_status,priority:2;index:idx_positions_status_opened,priority:1;index:idx_positions_status_closed,priority:1"`
+	OpenedAt            time.Time  `json:"opened_at" gorm:"index:idx_positions_status_opened,priority:2;index:idx_positions_status_closed,priority:3"`
+	ClosedAt            *time.Time `json:"closed_at" gorm:"index:idx_positions_status_closed,priority:2"`
+	CloseReason         *string    `json:"close_reason" gorm:"size:50"`
 }
 
 type Order struct {
-	ID              uint       `json:"id" gorm:"primaryKey;autoIncrement"`
-	OrderType       string     `json:"order_type" gorm:"size:10;not null"`
-	Symbol          string     `json:"symbol" gorm:"size:20;not null"`
-	AmountCrypto    float64    `json:"amount_crypto"`
-	AmountUsdt      float64    `json:"amount_usdt"`
-	Price           float64    `json:"price"`
-	Fee             float64    `json:"fee" gorm:"default:0"`
-	ExchangeOrderID *string    `json:"exchange_order_id" gorm:"size:100;index"`
-	ClientOrderID   *string    `json:"client_order_id" gorm:"size:100;index"`
-	Status          string     `json:"status" gorm:"size:20;default:filled;index"`
-	ExecutionMode   string     `json:"execution_mode" gorm:"size:20;default:paper;index"`
-	TriggerReason   *string    `json:"trigger_reason" gorm:"size:50;index"`
-	RequestedPrice  *float64   `json:"requested_price"`
-	FillPrice       *float64   `json:"fill_price"`
-	ExecutedQty     *float64   `json:"executed_qty"`
-	ExchangeFee     *float64   `json:"exchange_fee"`
-	SubmittedAt     *time.Time `json:"submitted_at"`
-	FilledAt        *time.Time `json:"filled_at"`
-	ExecutedAt      time.Time  `json:"executed_at" gorm:"index"`
+	ID                  uint       `json:"id" gorm:"primaryKey;autoIncrement"`
+	OrderType           string     `json:"order_type" gorm:"size:10;not null"`
+	Symbol              string     `json:"symbol" gorm:"size:20;not null"`
+	AmountCrypto        float64    `json:"amount_crypto"`
+	AmountUsdt          float64    `json:"amount_usdt"`
+	Price               float64    `json:"price"`
+	Fee                 float64    `json:"fee" gorm:"default:0"`
+	ExchangeOrderID     *string    `json:"exchange_order_id" gorm:"size:100;index"`
+	ClientOrderID       *string    `json:"client_order_id" gorm:"size:100;index"`
+	Status              string     `json:"status" gorm:"size:20;default:filled;index"`
+	ExecutionMode       string     `json:"execution_mode" gorm:"size:20;default:paper;index"`
+	ModelVersion        string     `json:"model_version" gorm:"size:100;index"`
+	PolicyVersion       string     `json:"policy_version" gorm:"size:100;index"`
+	UniverseMode        string     `json:"universe_mode" gorm:"size:40;index"`
+	RolloutState        string     `json:"rollout_state" gorm:"size:20;index"`
+	ExperimentID        *string    `json:"experiment_id" gorm:"size:100;index"`
+	PredictionLogID     *uint      `json:"prediction_log_id" gorm:"index"`
+	DecisionContextJSON string     `json:"decision_context_json" gorm:"type:text"`
+	TriggerReason       *string    `json:"trigger_reason" gorm:"size:50;index"`
+	RequestedPrice      *float64   `json:"requested_price"`
+	FillPrice           *float64   `json:"fill_price"`
+	ExecutedQty         *float64   `json:"executed_qty"`
+	ExchangeFee         *float64   `json:"exchange_fee"`
+	SubmittedAt         *time.Time `json:"submitted_at"`
+	FilledAt            *time.Time `json:"filled_at"`
+	ExecutedAt          time.Time  `json:"executed_at" gorm:"index"`
 }
 
 type Setting struct {
@@ -121,6 +135,12 @@ type TrendAnalysisHistory struct {
 	ID                  uint      `json:"id" gorm:"primaryKey;autoIncrement"`
 	Symbol              string    `json:"symbol" gorm:"size:20;index;index:idx_trend_symbol_analyzed_at,priority:1"`
 	Timeframe           string    `json:"timeframe" gorm:"size:10;default:15m"`
+	ModelVersion        string    `json:"model_version" gorm:"size:100;index"`
+	PolicyVersion       string    `json:"policy_version" gorm:"size:100;index"`
+	UniverseMode        string    `json:"universe_mode" gorm:"size:40;index"`
+	RolloutState        string    `json:"rollout_state" gorm:"size:20;index"`
+	ExperimentID        *string   `json:"experiment_id" gorm:"size:100;index"`
+	PredictionLogID     *uint     `json:"prediction_log_id" gorm:"index"`
 	CurrentPrice        *float64  `json:"current_price"`
 	Change24h           *float64  `json:"change_24h" gorm:"column:change_24h"`
 	FinalSignal         *string   `json:"final_signal" gorm:"size:20"`
@@ -136,6 +156,7 @@ type TrendAnalysisHistory struct {
 	Decision            *string   `json:"decision" gorm:"size:20"`
 	DecisionReason      *string   `json:"decision_reason" gorm:"type:text"`
 	IndicatorsJSON      string    `json:"indicators_json" gorm:"type:text;not null"`
+	DecisionContextJSON string    `json:"decision_context_json" gorm:"type:text"`
 	AnalyzedAt          time.Time `json:"analyzed_at" gorm:"index;index:idx_trend_symbol_analyzed_at,priority:2,sort:desc"`
 }
 
@@ -201,21 +222,24 @@ type UniverseMember struct {
 }
 
 type ModelArtifact struct {
-	ID                 uint      `json:"id" gorm:"primaryKey;autoIncrement"`
-	Version            string    `json:"version" gorm:"size:100;uniqueIndex"`
-	ModelFamily        string    `json:"model_family" gorm:"size:30;index"`
-	FeatureSpecVersion string    `json:"feature_spec_version" gorm:"size:50;index"`
-	LabelSpecVersion   string    `json:"label_spec_version" gorm:"size:50"`
-	CalibrationMethod  string    `json:"calibration_method" gorm:"size:30"`
-	TrainWindow        string    `json:"train_window" gorm:"size:120"`
-	ValidationWindow   string    `json:"validation_window" gorm:"size:120"`
-	TestWindow         string    `json:"test_window" gorm:"size:120"`
-	MetricsSummaryJSON string    `json:"metrics_summary_json" gorm:"type:text"`
-	ArtifactPath       string    `json:"artifact_path" gorm:"size:500"`
-	ArtifactChecksum   string    `json:"artifact_checksum" gorm:"size:128"`
-	RolloutState       string    `json:"rollout_state" gorm:"size:20;index"`
-	CreatedAt          time.Time `json:"created_at"`
-	UpdatedAt          time.Time `json:"updated_at"`
+	ID                    uint      `json:"id" gorm:"primaryKey;autoIncrement"`
+	Version               string    `json:"version" gorm:"size:100;uniqueIndex"`
+	ModelFamily           string    `json:"model_family" gorm:"size:30;index"`
+	FeatureSpecVersion    string    `json:"feature_spec_version" gorm:"size:50;index"`
+	LabelSpecVersion      string    `json:"label_spec_version" gorm:"size:50"`
+	CalibrationMethod     string    `json:"calibration_method" gorm:"size:30"`
+	TrainWindow           string    `json:"train_window" gorm:"size:120"`
+	ValidationWindow      string    `json:"validation_window" gorm:"size:120"`
+	TestWindow            string    `json:"test_window" gorm:"size:120"`
+	MetricsSummaryJSON    string    `json:"metrics_summary_json" gorm:"type:text"`
+	ArtifactPath          string    `json:"artifact_path" gorm:"size:500"`
+	ArtifactChecksum      string    `json:"artifact_checksum" gorm:"size:128"`
+	RolloutState          string    `json:"rollout_state" gorm:"size:20;index"`
+	ActiveExperimentID    *string   `json:"active_experiment_id" gorm:"size:100;index"`
+	RollbackTarget        *string   `json:"rollback_target" gorm:"size:100"`
+	PromotionMetadataJSON string    `json:"promotion_metadata_json" gorm:"type:text"`
+	CreatedAt             time.Time `json:"created_at"`
+	UpdatedAt             time.Time `json:"updated_at"`
 }
 
 type FeatureSnapshot struct {
@@ -224,6 +248,9 @@ type FeatureSnapshot struct {
 	Symbol             string    `json:"symbol" gorm:"size:20;index;index:idx_feature_symbol_time,priority:1"`
 	UniverseSnapshotID *uint     `json:"universe_snapshot_id" gorm:"index"`
 	ModelVersion       string    `json:"model_version" gorm:"size:100;index"`
+	PolicyVersion      string    `json:"policy_version" gorm:"size:100;index"`
+	UniverseMode       string    `json:"universe_mode" gorm:"size:40;index"`
+	ExperimentID       *string   `json:"experiment_id" gorm:"size:100;index"`
 	FeatureSpecVersion string    `json:"feature_spec_version" gorm:"size:50;index"`
 	LastPrice          float64   `json:"last_price"`
 	RegimeState        string    `json:"regime_state" gorm:"size:20;index"`
@@ -236,21 +263,30 @@ type FeatureSnapshot struct {
 }
 
 type PredictionLog struct {
-	ID                   uint      `json:"id" gorm:"primaryKey;autoIncrement"`
-	PredictionTime       time.Time `json:"prediction_time" gorm:"index;index:idx_prediction_symbol_time,priority:2,sort:desc;index:idx_prediction_model_time,priority:2,sort:desc"`
-	Symbol               string    `json:"symbol" gorm:"size:20;index;index:idx_prediction_symbol_time,priority:1"`
-	ModelVersion         string    `json:"model_version" gorm:"size:100;index;index:idx_prediction_model_time,priority:1"`
-	FeatureSnapshotID    *uint     `json:"feature_snapshot_id" gorm:"index"`
-	UniverseSnapshotID   *uint     `json:"universe_snapshot_id" gorm:"index"`
-	PredictedProbability float64   `json:"predicted_probability"`
-	PredictedEV          float64   `json:"predicted_ev"`
-	RawScore             float64   `json:"raw_score"`
-	Rank                 int       `json:"rank"`
-	Selected             bool      `json:"selected" gorm:"index"`
-	DecisionResult       string    `json:"decision_result" gorm:"size:30;index"`
-	RolloutState         string    `json:"rollout_state" gorm:"size:20;index"`
-	CreatedAt            time.Time `json:"created_at"`
-	UpdatedAt            time.Time `json:"updated_at"`
+	ID                   uint       `json:"id" gorm:"primaryKey;autoIncrement"`
+	PredictionTime       time.Time  `json:"prediction_time" gorm:"index;index:idx_prediction_symbol_time,priority:2,sort:desc;index:idx_prediction_model_time,priority:2,sort:desc"`
+	Symbol               string     `json:"symbol" gorm:"size:20;index;index:idx_prediction_symbol_time,priority:1"`
+	ModelVersion         string     `json:"model_version" gorm:"size:100;index;index:idx_prediction_model_time,priority:1"`
+	PolicyVersion        string     `json:"policy_version" gorm:"size:100;index"`
+	UniverseMode         string     `json:"universe_mode" gorm:"size:40;index"`
+	ExperimentID         *string    `json:"experiment_id" gorm:"size:100;index"`
+	FeatureSnapshotID    *uint      `json:"feature_snapshot_id" gorm:"index"`
+	UniverseSnapshotID   *uint      `json:"universe_snapshot_id" gorm:"index"`
+	PredictedProbability float64    `json:"predicted_probability"`
+	PredictedEV          float64    `json:"predicted_ev"`
+	RawScore             float64    `json:"raw_score"`
+	Rank                 int        `json:"rank"`
+	RankBucket           string     `json:"rank_bucket" gorm:"size:20;index"`
+	ProbabilityBucket    string     `json:"probability_bucket" gorm:"size:20;index"`
+	Selected             bool       `json:"selected" gorm:"index"`
+	DecisionResult       string     `json:"decision_result" gorm:"size:30;index"`
+	RolloutState         string     `json:"rollout_state" gorm:"size:20;index"`
+	OutcomeReturn        *float64   `json:"outcome_return"`
+	OutcomeProfitable    *bool      `json:"outcome_profitable" gorm:"index"`
+	OutcomeRecordedAt    *time.Time `json:"outcome_recorded_at"`
+	PolicyContextJSON    string     `json:"policy_context_json" gorm:"type:text"`
+	CreatedAt            time.Time  `json:"created_at"`
+	UpdatedAt            time.Time  `json:"updated_at"`
 }
 
 type TradeLabel struct {
@@ -259,10 +295,86 @@ type TradeLabel struct {
 	PredictionLogID   *uint     `json:"prediction_log_id" gorm:"index"`
 	Symbol            string    `json:"symbol" gorm:"size:20;index"`
 	ModelVersion      string    `json:"model_version" gorm:"size:100;index"`
+	PolicyVersion     string    `json:"policy_version" gorm:"size:100;index"`
+	UniverseMode      string    `json:"universe_mode" gorm:"size:40;index"`
+	RolloutState      string    `json:"rollout_state" gorm:"size:20;index"`
+	ExperimentID      *string   `json:"experiment_id" gorm:"size:100;index"`
+	PolicyContextJSON string    `json:"policy_context_json" gorm:"type:text"`
 	RealizedReturn    float64   `json:"realized_return"`
 	Profitable        bool      `json:"profitable" gorm:"index"`
 	ExitReason        *string   `json:"exit_reason" gorm:"size:50"`
 	HoldBars          int       `json:"hold_bars"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
+}
+
+type PolicyConfig struct {
+	ID          uint      `json:"id" gorm:"primaryKey;autoIncrement"`
+	PolicyType  string    `json:"policy_type" gorm:"size:40;index;uniqueIndex:idx_policy_type_version,priority:1"`
+	Version     string    `json:"version" gorm:"size:100;uniqueIndex:idx_policy_type_version,priority:2;index"`
+	IsActive    bool      `json:"is_active" gorm:"default:false;index"`
+	Source      string    `json:"source" gorm:"size:30"`
+	PayloadJSON string    `json:"payload_json" gorm:"type:text"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+type ExperimentRun struct {
+	ID                          uint      `json:"id" gorm:"primaryKey;autoIncrement"`
+	ExperimentID                string    `json:"experiment_id" gorm:"size:100;uniqueIndex"`
+	BacktestJobID               *uint     `json:"backtest_job_id" gorm:"index"`
+	BacktestMode                string    `json:"backtest_mode" gorm:"size:50;index"`
+	ModelVersion                string    `json:"model_version" gorm:"size:100;index"`
+	FeatureSpecVersion          string    `json:"feature_spec_version" gorm:"size:50;index"`
+	LabelSpecVersion            string    `json:"label_spec_version" gorm:"size:50"`
+	UniverseMode                string    `json:"universe_mode" gorm:"size:40;index"`
+	PolicyVersion               string    `json:"policy_version" gorm:"size:100;index"`
+	ExecutionPolicyVersion      string    `json:"execution_policy_version" gorm:"size:100"`
+	UniversePolicyVersion       string    `json:"universe_policy_version" gorm:"size:100"`
+	ModelSelectionPolicyVersion string    `json:"model_selection_policy_version" gorm:"size:100"`
+	EntrySelectionPolicyVersion string    `json:"entry_selection_policy_version" gorm:"size:100"`
+	PortfolioRiskPolicyVersion  string    `json:"portfolio_risk_policy_version" gorm:"size:100"`
+	RolloutPolicyVersion        string    `json:"rollout_policy_version" gorm:"size:100"`
+	RolloutState                string    `json:"rollout_state" gorm:"size:20;index"`
+	ValidationPassed            bool      `json:"validation_passed" gorm:"default:false;index"`
+	ValidationSummaryJSON       string    `json:"validation_summary_json" gorm:"type:text"`
+	RankingSummaryJSON          string    `json:"ranking_summary_json" gorm:"type:text"`
+	PromotionDecision           string    `json:"promotion_decision" gorm:"size:30;index"`
+	ReviewerNotes               *string   `json:"reviewer_notes" gorm:"type:text"`
+	CreatedAt                   time.Time `json:"created_at"`
+	UpdatedAt                   time.Time `json:"updated_at"`
+}
+
+type RolloutEvent struct {
+	ID              uint      `json:"id" gorm:"primaryKey;autoIncrement"`
+	ModelVersion    string    `json:"model_version" gorm:"size:100;index"`
+	ExperimentID    *string   `json:"experiment_id" gorm:"size:100;index"`
+	PolicyVersion   string    `json:"policy_version" gorm:"size:100;index"`
+	FromState       string    `json:"from_state" gorm:"size:20;index"`
+	ToState         string    `json:"to_state" gorm:"size:20;index"`
+	FallbackMode    string    `json:"fallback_mode" gorm:"size:30"`
+	RollbackTarget  *string   `json:"rollback_target" gorm:"size:100"`
+	Source          string    `json:"source" gorm:"size:30"`
+	GateSummaryJSON string    `json:"gate_summary_json" gorm:"type:text"`
+	MetadataJSON    string    `json:"metadata_json" gorm:"type:text"`
+	CreatedAt       time.Time `json:"created_at" gorm:"index"`
+	UpdatedAt       time.Time `json:"updated_at"`
+}
+
+type MonitoringSnapshot struct {
+	ID                uint      `json:"id" gorm:"primaryKey;autoIncrement"`
+	SnapshotTime      time.Time `json:"snapshot_time" gorm:"index"`
+	ModelVersion      string    `json:"model_version" gorm:"size:100;index"`
+	PolicyVersion     string    `json:"policy_version" gorm:"size:100;index"`
+	RolloutState      string    `json:"rollout_state" gorm:"size:20;index"`
+	UniverseMode      string    `json:"universe_mode" gorm:"size:40;index"`
+	ExperimentID      *string   `json:"experiment_id" gorm:"size:100;index"`
+	PredictionCount   int       `json:"prediction_count"`
+	SelectionRate     float64   `json:"selection_rate"`
+	CalibrationJSON   string    `json:"calibration_json" gorm:"type:text"`
+	RankBucketJSON    string    `json:"rank_bucket_json" gorm:"type:text"`
+	FeatureDriftJSON  string    `json:"feature_drift_json" gorm:"type:text"`
+	RegimeSummaryJSON string    `json:"regime_summary_json" gorm:"type:text"`
 	CreatedAt         time.Time `json:"created_at"`
 	UpdatedAt         time.Time `json:"updated_at"`
 }

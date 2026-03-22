@@ -44,7 +44,7 @@ func GenerateProposals() (interface{}, error) {
 		return nil, fiber.NewError(500, "Failed to get positions: "+err.Error())
 	}
 
-	settings, settingCategories, err := getSettingsByCategory([]string{"trading", "indicators", "probabilistic", "model", "ai"})
+	settings, settingCategories, err := getSettingsByCategory([]string{"trading", "universe", "model", "backtest", "ai"})
 	if err != nil {
 		return nil, fiber.NewError(500, "Failed to get settings: "+err.Error())
 	}
@@ -57,8 +57,9 @@ func GenerateProposals() (interface{}, error) {
 	gateMetrics, _ := getGateMetrics(gateLimit)
 	decisionLimit := getSettingIntFromMap(settings, "ai_recent_decisions_limit", 10)
 	recentDecisions, _ := getRecentDecisionSummaries(decisionLimit)
+	governanceOverview, _ := GetGovernanceOverview()
 
-	prompt := buildProposalPrompt(analysisData, wallet, positions, settings, weights, gateMetrics, recentDecisions, lockedKeys)
+	prompt := buildProposalPrompt(analysisData, wallet, positions, settings, weights, gateMetrics, recentDecisions, lockedKeys, governanceOverview)
 
 	llmResult, err := callLLM(&llmConfig, prompt)
 	if err != nil {
@@ -152,7 +153,7 @@ func GenerateBacktestOptimizationProposals(input BacktestOptimizationInput) (int
 		return nil, fiber.NewError(400, "Selected backtest has no stored summary")
 	}
 
-	settings, settingCategories, err := getSettingsByCategory([]string{"trading", "indicators", "probabilistic", "model", "ai", "atr"})
+	settings, settingCategories, err := getSettingsByCategory([]string{"trading", "universe", "model", "backtest", "ai"})
 	if err != nil {
 		return nil, fiber.NewError(500, "Failed to get optimization settings: "+err.Error())
 	}
@@ -560,25 +561,26 @@ func isAIAdjustableSettingKey(key string) bool {
 	if trimmed == "" {
 		return false
 	}
-	if strings.HasPrefix(trimmed, "prob_model_beta") {
+	if strings.HasPrefix(trimmed, "prob_") || strings.HasPrefix(trimmed, "rsi_") || strings.HasPrefix(trimmed, "macd_") || strings.HasPrefix(trimmed, "bb_") || strings.HasPrefix(trimmed, "volume_ma_") || strings.HasPrefix(trimmed, "momentum_") {
 		return false
 	}
 	switch trimmed {
-	case "prob_model_enabled", "prob_p_min", "prob_ev_min", "prob_avg_gain", "prob_avg_loss", "buy_only_strong", "min_confidence_to_buy", "active_model_version", "model_rollout_state":
+	case "prob_model_enabled", "buy_only_strong", "min_confidence_to_buy", "backtest_symbols", "backtest_start", "backtest_end":
 		return false
 	default:
 		return true
 	}
 }
 
-func buildProposalPrompt(analysisData []AnalysisSummary, wallet map[string]interface{}, positions []map[string]interface{}, settings map[string]string, weights map[string]float64, gateMetrics GateMetrics, recentDecisions []DecisionSummary, lockedKeys map[string]bool) string {
+func buildProposalPrompt(analysisData []AnalysisSummary, wallet map[string]interface{}, positions []map[string]interface{}, settings map[string]string, weights map[string]float64, gateMetrics GateMetrics, recentDecisions []DecisionSummary, lockedKeys map[string]bool, governanceOverview GovernanceOverview) string {
 	analysisJSON, _ := json.Marshal(analysisData)
 	positionsJSON, _ := json.Marshal(positions)
 	gateMetricsJSON, _ := json.Marshal(gateMetrics)
 	recentDecisionsJSON, _ := json.Marshal(recentDecisions)
+	governanceJSON, _ := json.Marshal(governanceOverview)
 
 	var sb strings.Builder
-	sb.WriteString("You are a trading AI assistant. Analyze the data and suggest parameter adjustments only.\n\n")
+	sb.WriteString("You are a trading governance assistant. Analyze the data and suggest safe policy adjustments only.\n\n")
 	sb.WriteString("Current Market Analysis:\n")
 	sb.WriteString(string(analysisJSON))
 	sb.WriteString("\n\nWallet: ")
@@ -591,13 +593,16 @@ func buildProposalPrompt(analysisData []AnalysisSummary, wallet map[string]inter
 	}
 	sb.WriteString("\n\nRecent Decisions:\n")
 	sb.WriteString(string(recentDecisionsJSON))
+	sb.WriteString("\n\nGovernance Overview:\n")
+	sb.WriteString(string(governanceJSON))
 	sb.WriteString("\n\nGate Pass Rates:\n")
 	sb.WriteString(string(gateMetricsJSON))
 	sb.WriteString("\n\nHow the trading logic uses settings:\n")
 	sb.WriteString("- Auto-trade runs only if auto_trade_enabled is true and max_positions is not exceeded.\n")
 	sb.WriteString("- The learned signal model loads one immutable artifact by active_model_version and computes calibrated probability plus expected value on each shortlisted candidate.\n")
 	sb.WriteString("- selection_policy_top_k, selection_policy_min_prob, and selection_policy_min_ev define the ranked entry policy.\n")
-	sb.WriteString("- model_rollout_state=shadow logs predictions only; paper/live uses the ranked model policy for entries.\n")
+	sb.WriteString("- model_rollout_state governs whether the model is research_only, shadow, paper, limited_live, full_live, or rollback.\n")
+	sb.WriteString("- model_fallback_mode and model_rollback_target define how rollback behaves while preserving prediction logging.\n")
 	sb.WriteString("- min_confidence_to_sell still uses the legacy 1 to 5 confidence scale for discretionary sell signals and must stay within that range.\n")
 	sb.WriteString("- Regime gate: if regime_gate_enabled=true, requires EMA(fast) > EMA(slow) on regime_timeframe.\n")
 	sb.WriteString("- Vol gate: ATR/price on 15m must be between vol_ratio_min and vol_ratio_max.\n")
@@ -608,7 +613,8 @@ func buildProposalPrompt(analysisData []AnalysisSummary, wallet map[string]inter
 	sb.WriteString("\nImportant interactions and failure modes:\n")
 	sb.WriteString("- Tight selection_policy_min_prob or selection_policy_min_ev can suppress all entries even with a healthy shortlist.\n")
 	sb.WriteString("- Tight vol_ratio_min/max can block trades in low or high volatility regimes.\n")
-	sb.WriteString("- model_rollout_state should stay shadow until validation supports promotion.\n")
+	sb.WriteString("- Rollout changes must follow the latest validation and monitoring evidence, not one attractive backtest number.\n")
+	sb.WriteString("- Prefer governance, validation, and risk-policy changes over legacy indicator tuning.\n")
 	sb.WriteString("\nConstraints:\n")
 	sb.WriteString(fmt.Sprintf("- Max proposals per run: %d\n", getSettingIntFromMap(settings, "ai_max_proposals", 5)))
 	sb.WriteString(fmt.Sprintf("- Max numeric change per proposal: %.2f%%\n", getSettingFloatFromMap(settings, "ai_change_budget_pct", 10)))
@@ -627,12 +633,12 @@ func buildProposalPrompt(analysisData []AnalysisSummary, wallet map[string]inter
 	for k, v := range settings {
 		sb.WriteString(fmt.Sprintf("%s: %s\n", k, v))
 	}
-	sb.WriteString("\n\nCurrent Indicator Weights (legacy context only):\n")
+	sb.WriteString("\n\nCurrent Indicator Weights (legacy context only; do not optimize these):\n")
 	for k, v := range weights {
 		sb.WriteString(fmt.Sprintf("weight:%s: %g\n", k, v))
 	}
-	sb.WriteString("\n\nOnly return proposals of type parameter_adjustment. Each proposal must change exactly one allowed key.\n")
-	sb.WriteString("Allowed keys are only the adjustable settings listed above in Current Settings. Indicator weights and retired probability-beta controls are context only.\n")
+	sb.WriteString("\n\nOnly return proposals of type parameter_adjustment. Each proposal must change exactly one allowed governance or policy key.\n")
+	sb.WriteString("Allowed keys are only the adjustable settings listed above in Current Settings. Indicator weights, indicator periods, and retired probability-beta controls are context only.\n")
 	sb.WriteString("Do not return buy/sell/risk proposals. Do not return null values.\n\n")
 	sb.WriteString("Return a JSON array of proposals with these fields:\n")
 	sb.WriteString("- proposal_type: must be parameter_adjustment\n")
@@ -708,17 +714,18 @@ func buildBacktestOptimizationPrompt(input BacktestOptimizationInput, settings m
 	sb.WriteString("- baseline represents the fixed-size baseline strategy.\n")
 	sb.WriteString("- vol_sizing represents volatility-adjusted sizing and exits.\n")
 	sb.WriteString("- When active_model_version is set, both strategies use the learned model ranking policy for entries while differing on sizing/exits.\n")
-	sb.WriteString("- validation contains walk-forward and bootstrap confidence checks.\n")
+	sb.WriteString("- validation contains walk-forward confidence checks plus ranking, regime-slice, symbol-cohort, and promotion-readiness diagnostics.\n")
+	sb.WriteString("- Use model_rollout_state, model_fallback_mode, and model_rollback_target only when the evidence clearly supports promotion or rollback.\n")
 	sb.WriteString("- min_confidence_to_sell still uses a 1 to 5 scale and must never exceed 5.\n")
 	sb.WriteString("- Optimize for stronger risk-adjusted performance, better profit factor, better win/loss profile, and lower drawdown when possible.\n")
-	sb.WriteString("- Prefer settings that are already part of the system and avoid inventing new parameters.\n")
+	sb.WriteString("- Prefer settings that are already part of the governance surface and avoid inventing new parameters.\n")
 	sb.WriteString("\nConstraints:\n")
 	sb.WriteString(fmt.Sprintf("- Max proposals per run: %d\n", getSettingIntFromMap(settings, "ai_max_proposals", 5)))
 	sb.WriteString(fmt.Sprintf("- Max numeric change per proposal: %.2f%%\n", getSettingFloatFromMap(settings, "ai_change_budget_pct", 10)))
 	sb.WriteString(fmt.Sprintf("- Max keys per category: %d\n", getSettingIntFromMap(settings, "ai_max_keys_per_category", 2)))
 	sb.WriteString("- Only propose changes to allowed setting keys or indicator weights.\n")
 	sb.WriteString("- Do not propose backtest_* keys; they are context only.\n")
-	sb.WriteString("- Prefer trading, model, universe, and ATR adjustments over ai_* operational settings.\n")
+	sb.WriteString("- Prefer trading, universe, model selection, rollout, and validation adjustments over ai_* operational settings.\n")
 	sb.WriteString("- Do not propose manual trades or portfolio actions.\n")
 	sb.WriteString("- Use the backtest evidence to justify each change.\n")
 	if options.Mode == "hypothesis_fallback" {
@@ -908,6 +915,11 @@ func buildCompactBacktestSummaryJSON(summary map[string]interface{}) (string, er
 		"job_id":            summary["job_id"],
 		"started_at":        summary["started_at"],
 		"finished_at":       summary["finished_at"],
+		"backtest_mode":     summary["backtest_mode"],
+		"model_version":     summary["model_version"],
+		"policy_version":    summary["policy_version"],
+		"policy_context":    summary["policy_context"],
+		"experiment_id":     summary["experiment_id"],
 		"settings_snapshot": getNestedMap(summary, "settings_snapshot"),
 		"baseline":          summarizeBacktestStrategyForLLM(getNestedMap(summary, "baseline")),
 		"vol_sizing":        summarizeBacktestStrategyForLLM(getNestedMap(summary, "vol_sizing")),
@@ -928,8 +940,18 @@ func summarizeBacktestStrategyForLLM(strategy map[string]interface{}) map[string
 	}
 
 	summary := map[string]interface{}{
-		"mode":    valueFromMap(strategy, "Mode", "mode"),
-		"metrics": getNestedMap(strategy, "Metrics", "metrics"),
+		"mode":           valueFromMap(strategy, "Mode", "mode"),
+		"model_version":  valueFromMap(strategy, "ModelVersion", "model_version"),
+		"policy_version": valueFromMap(strategy, "PolicyVersion", "policy_version"),
+		"rollout_state":  valueFromMap(strategy, "RolloutState", "rollout_state"),
+		"metrics":        getNestedMap(strategy, "Metrics", "metrics"),
+	}
+
+	if rankingMetrics := valueFromMap(strategy, "RankingMetrics", "ranking_metrics"); rankingMetrics != nil {
+		summary["ranking_metrics"] = rankingMetrics
+	}
+	if diagnostics := valueFromMap(strategy, "Diagnostics", "diagnostics"); diagnostics != nil {
+		summary["diagnostics"] = diagnostics
 	}
 
 	if tradeSummary := buildTradeSummaryForLLM(strategy); tradeSummary != nil {
@@ -1199,6 +1221,11 @@ func buildValidationSummaryForLLM(validation map[string]interface{}) map[string]
 	}
 
 	summary := map[string]interface{}{
+		"backtest_mode":                        valueFromMap(validation, "backtest_mode"),
+		"model_version":                        valueFromMap(validation, "model_version"),
+		"universe_mode":                        valueFromMap(validation, "universe_mode"),
+		"policy_version":                       valueFromMap(validation, "policy_version"),
+		"rollout_state":                        valueFromMap(validation, "rollout_state"),
 		"windows":                              valueFromMap(validation, "windows"),
 		"train_windows":                        valueFromMap(validation, "train_windows"),
 		"test_windows":                         valueFromMap(validation, "test_windows"),
@@ -1218,6 +1245,14 @@ func buildValidationSummaryForLLM(validation map[string]interface{}) map[string]
 		"training_profit_factor_vol_sizing_ci": valueFromMap(validation, "training_profit_factor_vol_sizing_ci"),
 		"profit_factor_baseline_ci":            valueFromMap(validation, "profit_factor_baseline_ci"),
 		"profit_factor_vol_sizing_ci":          valueFromMap(validation, "profit_factor_vol_sizing_ci"),
+		"baseline_ranking_diagnostics":         valueFromMap(validation, "baseline_ranking_diagnostics"),
+		"vol_sizing_ranking_diagnostics":       valueFromMap(validation, "vol_sizing_ranking_diagnostics"),
+		"baseline_regime_slices":               valueFromMap(validation, "baseline_regime_slices"),
+		"vol_sizing_regime_slices":             valueFromMap(validation, "vol_sizing_regime_slices"),
+		"baseline_symbol_cohorts":              valueFromMap(validation, "baseline_symbol_cohorts"),
+		"vol_sizing_symbol_cohorts":            valueFromMap(validation, "vol_sizing_symbol_cohorts"),
+		"window_summaries":                     valueFromMap(validation, "window_summaries"),
+		"promotion_readiness":                  valueFromMap(validation, "promotion_readiness"),
 	}
 
 	if metricsSummary := summarizeMetricsSeries(getArrayValue(validation, "training_baseline_metrics")); metricsSummary != nil {

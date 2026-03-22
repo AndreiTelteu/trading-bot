@@ -130,6 +130,7 @@ func setupRoutes(app *fiber.App, cfg *config.Config, authManager *middleware.Aut
 	settings := api.Group("/settings")
 	settings.Get("", handlers.GetSettings)
 	settings.Put("", handlers.UpdateSettings)
+	settings.Get("/governance", handlers.GetGovernanceOverview)
 	settings.Get("/:key", handlers.GetSetting)
 
 	indicatorWeights := api.Group("/indicator-weights")

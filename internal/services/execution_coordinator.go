@@ -244,6 +244,9 @@ func (c *ExecutionCoordinator) completeClose(position database.Position, order d
 		if err := tx.Save(&lockedOrder).Error; err != nil {
 			return err
 		}
+		if err := RecordTradeOutcome(tx, lockedPosition); err != nil {
+			return err
+		}
 
 		result = CloseResult{
 			Closed:   true,

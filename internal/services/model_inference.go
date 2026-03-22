@@ -9,9 +9,13 @@ import (
 
 const (
 	DefaultActiveModelVersion = "logistic_baseline_v1"
+	ModelRolloutResearchOnly  = "research_only"
 	ModelRolloutShadow        = "shadow"
 	ModelRolloutPaper         = "paper"
-	ModelRolloutLive          = "live"
+	ModelRolloutLimitedLive   = "limited_live"
+	ModelRolloutFullLive      = "full_live"
+	ModelRolloutRollback      = "rollback"
+	ModelFallbackRuleBased    = "rule_based"
 )
 
 type ModelArtifactFeature struct {
@@ -56,6 +60,10 @@ type ModelPrediction struct {
 type ModelSelectionPolicy struct {
 	ActiveModelVersion string  `json:"active_model_version"`
 	RolloutState       string  `json:"rollout_state"`
+	FallbackMode       string  `json:"fallback_mode"`
+	RollbackTarget     string  `json:"rollback_target,omitempty"`
+	PolicyVersion      string  `json:"policy_version,omitempty"`
+	ExperimentID       string  `json:"experiment_id,omitempty"`
 	TopK               int     `json:"top_k"`
 	MinProbability     float64 `json:"min_probability"`
 	MinExpectedValue   float64 `json:"min_expected_value"`
@@ -75,6 +83,8 @@ func GetModelSelectionPolicy(settings map[string]string) ModelSelectionPolicy {
 	policy := ModelSelectionPolicy{
 		ActiveModelVersion: strings.TrimSpace(getSettingString(settings, "active_model_version", DefaultActiveModelVersion)),
 		RolloutState:       strings.ToLower(strings.TrimSpace(getSettingString(settings, "model_rollout_state", ModelRolloutShadow))),
+		FallbackMode:       strings.ToLower(strings.TrimSpace(getSettingString(settings, "model_fallback_mode", ModelFallbackRuleBased))),
+		RollbackTarget:     strings.TrimSpace(getSettingString(settings, "model_rollback_target", "")),
 		TopK:               getSettingInt(settings, "selection_policy_top_k", 3),
 		MinProbability:     getSettingFloat(settings, "selection_policy_min_prob", 0.53),
 		MinExpectedValue:   getSettingFloat(settings, "selection_policy_min_ev", 0.001),
@@ -85,6 +95,9 @@ func GetModelSelectionPolicy(settings map[string]string) ModelSelectionPolicy {
 	}
 	if policy.RolloutState == "" {
 		policy.RolloutState = ModelRolloutShadow
+	}
+	if policy.FallbackMode == "" {
+		policy.FallbackMode = ModelFallbackRuleBased
 	}
 	return policy
 }
@@ -98,11 +111,22 @@ func (policy ModelSelectionPolicy) UseForLiveEntries() bool {
 		return false
 	}
 	switch policy.RolloutState {
-	case ModelRolloutPaper, ModelRolloutLive:
+	case ModelRolloutPaper, ModelRolloutLimitedLive, ModelRolloutFullLive:
 		return true
 	default:
 		return false
 	}
+}
+
+func (policy ModelSelectionPolicy) IsRollback() bool {
+	return policy.RolloutState == ModelRolloutRollback
+}
+
+func (policy ModelSelectionPolicy) EffectiveEntryMode() string {
+	if policy.UseForLiveEntries() {
+		return "model_rank"
+	}
+	return "rule_rank"
 }
 
 func (policy ModelSelectionPolicy) rolloutLabel() string {

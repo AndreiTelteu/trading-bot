@@ -67,6 +67,34 @@ func TestRankModelPredictions(t *testing.T) {
 	}
 }
 
+func TestModelSelectionPolicyRolloutModes(t *testing.T) {
+	tests := []struct {
+		name          string
+		rolloutState  string
+		wantLiveEntry bool
+		wantMode      string
+	}{
+		{name: "research only", rolloutState: ModelRolloutResearchOnly, wantLiveEntry: false, wantMode: "rule_rank"},
+		{name: "shadow", rolloutState: ModelRolloutShadow, wantLiveEntry: false, wantMode: "rule_rank"},
+		{name: "paper", rolloutState: ModelRolloutPaper, wantLiveEntry: true, wantMode: "model_rank"},
+		{name: "limited live", rolloutState: ModelRolloutLimitedLive, wantLiveEntry: true, wantMode: "model_rank"},
+		{name: "full live", rolloutState: ModelRolloutFullLive, wantLiveEntry: true, wantMode: "model_rank"},
+		{name: "rollback", rolloutState: ModelRolloutRollback, wantLiveEntry: false, wantMode: "rule_rank"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			policy := ModelSelectionPolicy{ActiveModelVersion: DefaultActiveModelVersion, RolloutState: tt.rolloutState}
+			if policy.UseForLiveEntries() != tt.wantLiveEntry {
+				t.Fatalf("UseForLiveEntries() = %v, want %v", policy.UseForLiveEntries(), tt.wantLiveEntry)
+			}
+			if policy.EffectiveEntryMode() != tt.wantMode {
+				t.Fatalf("EffectiveEntryMode() = %s, want %s", policy.EffectiveEntryMode(), tt.wantMode)
+			}
+		})
+	}
+}
+
 func featureValuesAtMean(artifact *LogisticModelArtifact) map[string]float64 {
 	values := make(map[string]float64, len(artifact.Features))
 	for _, feature := range artifact.Features {

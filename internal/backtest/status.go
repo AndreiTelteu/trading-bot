@@ -5,24 +5,35 @@ import (
 	"sort"
 	"time"
 	"trading-go/internal/database"
+	"trading-go/internal/services"
 )
 
 type BacktestJobStrategySummary struct {
-	Mode    StrategyMode `json:"mode"`
-	Metrics Metrics      `json:"metrics"`
+	Mode           StrategyMode        `json:"mode"`
+	Metrics        Metrics             `json:"metrics"`
+	RankingMetrics *RankingMetrics     `json:"ranking_metrics,omitempty"`
+	Diagnostics    StrategyDiagnostics `json:"diagnostics"`
 }
 
 type BacktestJobValidationSummary struct {
-	Passed  bool `json:"passed"`
-	Windows int  `json:"windows"`
+	Passed           bool     `json:"passed"`
+	Windows          int      `json:"windows"`
+	AcceptedMetrics  []string `json:"accepted_metrics,omitempty"`
+	RecommendedStage string   `json:"recommended_stage,omitempty"`
 }
 
 type BacktestJobSummary struct {
-	Symbols      []string                     `json:"symbols,omitempty"`
-	UniverseMode UniverseMode                 `json:"universe_mode,omitempty"`
-	Baseline     BacktestJobStrategySummary   `json:"baseline"`
-	VolSizing    BacktestJobStrategySummary   `json:"vol_sizing"`
-	Validation   BacktestJobValidationSummary `json:"validation"`
+	Symbols       []string                     `json:"symbols,omitempty"`
+	BacktestMode  BacktestMode                 `json:"backtest_mode,omitempty"`
+	ModelVersion  string                       `json:"model_version,omitempty"`
+	PolicyVersion string                       `json:"policy_version,omitempty"`
+	RolloutState  string                       `json:"rollout_state,omitempty"`
+	ExperimentID  string                       `json:"experiment_id,omitempty"`
+	UniverseMode  UniverseMode                 `json:"universe_mode,omitempty"`
+	PolicyContext services.GovernanceContext   `json:"policy_context"`
+	Baseline      BacktestJobStrategySummary   `json:"baseline"`
+	VolSizing     BacktestJobStrategySummary   `json:"vol_sizing"`
+	Validation    BacktestJobValidationSummary `json:"validation"`
 }
 
 type BacktestJobResponse struct {
@@ -132,19 +143,31 @@ func BuildBacktestJobSummary(summary BacktestRunSummary) BacktestJobSummary {
 	sort.Strings(symbols)
 
 	return BacktestJobSummary{
-		Symbols:      symbols,
-		UniverseMode: summary.UniverseMode,
+		Symbols:       symbols,
+		BacktestMode:  summary.BacktestMode,
+		ModelVersion:  summary.ModelVersion,
+		PolicyVersion: summary.PolicyVersion,
+		RolloutState:  summary.PolicyContext.RolloutState,
+		ExperimentID:  summary.ExperimentID,
+		UniverseMode:  summary.UniverseMode,
+		PolicyContext: summary.PolicyContext,
 		Baseline: BacktestJobStrategySummary{
-			Mode:    summary.Baseline.Mode,
-			Metrics: summary.Baseline.Metrics,
+			Mode:           summary.Baseline.Mode,
+			Metrics:        summary.Baseline.Metrics,
+			RankingMetrics: summary.Baseline.RankingMetrics,
+			Diagnostics:    summary.Baseline.Diagnostics,
 		},
 		VolSizing: BacktestJobStrategySummary{
-			Mode:    summary.VolSizing.Mode,
-			Metrics: summary.VolSizing.Metrics,
+			Mode:           summary.VolSizing.Mode,
+			Metrics:        summary.VolSizing.Metrics,
+			RankingMetrics: summary.VolSizing.RankingMetrics,
+			Diagnostics:    summary.VolSizing.Diagnostics,
 		},
 		Validation: BacktestJobValidationSummary{
-			Passed:  summary.Validation.Passed,
-			Windows: summary.Validation.Windows,
+			Passed:           summary.Validation.Passed,
+			Windows:          summary.Validation.Windows,
+			AcceptedMetrics:  summary.Validation.AcceptedMetrics,
+			RecommendedStage: summary.Validation.PromotionReadiness.RecommendedStage,
 		},
 	}
 }
