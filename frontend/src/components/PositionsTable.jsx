@@ -138,7 +138,13 @@ function PositionsTable({ positions, onRefresh }) {
   }
 
   const openPositions = positions.filter(p => p.status === 'open')
-  const closedPositions = positions.filter(p => p.status === 'closed')
+  const closedPositions = positions
+    .filter(p => p.status === 'closed')
+    .sort((a, b) => {
+      const aClosedAt = a.closed_at ? new Date(a.closed_at).getTime() : 0
+      const bClosedAt = b.closed_at ? new Date(b.closed_at).getTime() : 0
+      return bClosedAt - aClosedAt
+    })
 
   return (
     <div className="positions-container fade-in">

@@ -71,8 +71,7 @@ func sendFullSyncToClient(client *ws.Client) {
 	}
 
 	// Send positions
-	var allPositions []database.Position
-	if err := database.DB.Order("opened_at DESC").Find(&allPositions).Error; err == nil {
+	if allPositions, err := database.ListPositionsForDisplay(); err == nil {
 		ws.SendToClient(client, "positions_update", allPositions)
 	}
 
@@ -125,8 +124,7 @@ func BroadcastWalletUpdate(balance float64, currency string) {
 
 // BroadcastPositionsUpdate broadcasts all positions to all clients
 func BroadcastPositionsUpdate() {
-	var positions []database.Position
-	if err := database.DB.Order("opened_at DESC").Find(&positions).Error; err == nil {
+	if positions, err := database.ListPositionsForDisplay(); err == nil {
 		ws.BroadcastPositionsUpdate(positions)
 	}
 }

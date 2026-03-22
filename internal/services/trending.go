@@ -1228,9 +1228,9 @@ func broadcastTradeUpdates() {
 	websocket.BroadcastWalletUpdate(wallet.Balance, wallet.Currency, totalValue)
 
 	// Broadcast all positions
-	var allPositions []database.Position
-	database.DB.Order("opened_at DESC").Find(&allPositions)
-	websocket.BroadcastPositionsUpdate(allPositions)
+	if allPositions, err := database.ListPositionsForDisplay(); err == nil {
+		websocket.BroadcastPositionsUpdate(allPositions)
+	}
 
 	// Broadcast recent orders
 	var orders []database.Order

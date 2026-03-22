@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 	"trading-go/internal/config"
@@ -248,6 +249,86 @@ func TestGetPositions(t *testing.T) {
 
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("Expected status 200, got %d", resp.StatusCode)
+	}
+}
+
+func TestGetPositionsReturnsLatest50ClosedFirst(t *testing.T) {
+	SetupTestDB(t)
+	app := SetupTestApp()
+	cookie := loginCookie(t, app)
+
+	baseTime := time.Now().UTC()
+
+	openPosition := database.Position{
+		Symbol:   "OPENUSDT",
+		Amount:   1.0,
+		AvgPrice: 100.0,
+		Status:   "open",
+		OpenedAt: baseTime,
+	}
+	if err := database.DB.Create(&openPosition).Error; err != nil {
+		t.Fatalf("Failed to create open position: %v", err)
+	}
+
+	for i := 0; i < 55; i++ {
+		closedAt := baseTime.Add(time.Duration(i) * time.Minute)
+		position := database.Position{
+			Symbol:   "CLOSED" + strconv.Itoa(i) + "USDT",
+			Amount:   1.0,
+			AvgPrice: 100.0,
+			Status:   "closed",
+			OpenedAt: closedAt.Add(-time.Hour),
+			ClosedAt: &closedAt,
+		}
+		if err := database.DB.Create(&position).Error; err != nil {
+			t.Fatalf("Failed to create closed position %d: %v", i, err)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/positions", nil)
+	req.Header.Set("Cookie", cookie)
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatalf("Failed to test request: %v", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, string(body))
+	}
+
+	var positions []database.Position
+	if err := json.NewDecoder(resp.Body).Decode(&positions); err != nil {
+		t.Fatalf("Failed to decode positions response: %v", err)
+	}
+
+	if len(positions) != 51 {
+		t.Fatalf("Expected 51 positions (1 open + 50 closed), got %d", len(positions))
+	}
+
+	if positions[0].Status != "open" || positions[0].Symbol != "OPENUSDT" {
+		t.Fatalf("Expected open position first, got %+v", positions[0])
+	}
+
+	for i := 1; i < len(positions)-1; i++ {
+		current := positions[i]
+		next := positions[i+1]
+
+		if current.Status != "closed" || next.Status != "closed" {
+			t.Fatalf("Expected closed positions after the first open position, got %s then %s", current.Status, next.Status)
+		}
+
+		if current.ClosedAt == nil || next.ClosedAt == nil {
+			t.Fatalf("Expected closed positions to have closed_at timestamps")
+		}
+
+		if current.ClosedAt.Before(*next.ClosedAt) {
+			t.Fatalf("Expected closed positions ordered descending by closed_at, got %v before %v", current.ClosedAt, next.ClosedAt)
+		}
+	}
+
+	if positions[len(positions)-1].Symbol != "CLOSED5USDT" {
+		t.Fatalf("Expected oldest retained closed position to be CLOSED5USDT, got %s", positions[len(positions)-1].Symbol)
 	}
 }
 
