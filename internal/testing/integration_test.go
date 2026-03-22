@@ -515,6 +515,9 @@ func TestListBacktestJobsEndpoint(t *testing.T) {
 	if result[0]["summary"] == nil {
 		t.Fatal("Expected parsed summary in response")
 	}
+	if _, ok := result[0]["summary_json"]; ok {
+		t.Fatal("Expected raw summary_json to be omitted from response")
+	}
 }
 
 func TestOptimizeBacktestEndpointCreatesProposal(t *testing.T) {

@@ -108,9 +108,14 @@ func runBacktestJob(jobID uint) {
 	}
 
 	summaryJSON, _ := json.Marshal(summary)
+	compactSummaryJSON, err := MarshalBacktestJobSummary(summary)
+	if err != nil {
+		failBacktestJob(jobID, err)
+		return
+	}
 	finalMessage := fmt.Sprintf("Backtest completed (%s)", outputDir)
-	updateBacktestJobWithSummary(jobID, "completed", 1.0, finalMessage, string(summaryJSON))
-	websocket.BroadcastBacktestComplete(jobID, "completed", summary)
+	updateBacktestJobWithSummary(jobID, "completed", 1.0, finalMessage, string(summaryJSON), compactSummaryJSON)
+	websocket.BroadcastBacktestComplete(jobID, "completed", BuildBacktestJobSummary(summary))
 	logActivity("system", "Backtest completed", fmt.Sprintf("Job %d completed", jobID))
 }
 
@@ -273,7 +278,7 @@ func updateBacktestJob(jobID uint, status string, progress float64, message stri
 	websocket.BroadcastBacktestProgress(jobID, status, progress, message)
 }
 
-func updateBacktestJobWithSummary(jobID uint, status string, progress float64, message string, summaryJSON string) {
+func updateBacktestJobWithSummary(jobID uint, status string, progress float64, message string, summaryJSON string, summaryCompactJSON string) {
 	now := time.Now()
 	job := database.BacktestJob{
 		ID:         jobID,
@@ -287,6 +292,9 @@ func updateBacktestJobWithSummary(jobID uint, status string, progress float64, m
 	}
 	if summaryJSON != "" {
 		job.SummaryJSON = &summaryJSON
+	}
+	if summaryCompactJSON != "" {
+		job.SummaryCompactJSON = &summaryCompactJSON
 	}
 	database.DB.Model(&database.BacktestJob{}).Where("id = ?", jobID).Updates(&job)
 	websocket.BroadcastBacktestProgress(jobID, status, progress, message)

@@ -2,27 +2,44 @@ package backtest
 
 import (
 	"encoding/json"
+	"sort"
 	"time"
 	"trading-go/internal/database"
 )
 
+type BacktestJobStrategySummary struct {
+	Mode    StrategyMode `json:"mode"`
+	Metrics Metrics      `json:"metrics"`
+}
+
+type BacktestJobValidationSummary struct {
+	Passed  bool `json:"passed"`
+	Windows int  `json:"windows"`
+}
+
+type BacktestJobSummary struct {
+	Symbols    []string                     `json:"symbols,omitempty"`
+	Baseline   BacktestJobStrategySummary   `json:"baseline"`
+	VolSizing  BacktestJobStrategySummary   `json:"vol_sizing"`
+	Validation BacktestJobValidationSummary `json:"validation"`
+}
+
 type BacktestJobResponse struct {
-	ID          uint                `json:"id"`
-	Status      string              `json:"status"`
-	Progress    float64             `json:"progress"`
-	Message     *string             `json:"message,omitempty"`
-	SummaryJSON *string             `json:"summary_json,omitempty"`
-	Summary     *BacktestRunSummary `json:"summary,omitempty"`
-	Error       *string             `json:"error,omitempty"`
-	StartedAt   *time.Time          `json:"started_at,omitempty"`
-	FinishedAt  *time.Time          `json:"finished_at,omitempty"`
-	CreatedAt   time.Time           `json:"created_at"`
-	UpdatedAt   time.Time           `json:"updated_at"`
+	ID         uint                `json:"id"`
+	Status     string              `json:"status"`
+	Progress   float64             `json:"progress"`
+	Message    *string             `json:"message,omitempty"`
+	Summary    *BacktestJobSummary `json:"summary,omitempty"`
+	Error      *string             `json:"error,omitempty"`
+	StartedAt  *time.Time          `json:"started_at,omitempty"`
+	FinishedAt *time.Time          `json:"finished_at,omitempty"`
+	CreatedAt  time.Time           `json:"created_at"`
+	UpdatedAt  time.Time           `json:"updated_at"`
 }
 
 func ListBacktestJobResponses() ([]BacktestJobResponse, error) {
 	var jobs []database.BacktestJob
-	if err := database.DB.Order("created_at DESC").Find(&jobs).Error; err != nil {
+	if err := database.DB.Select(backtestJobResponseColumns()).Order("created_at DESC").Find(&jobs).Error; err != nil {
 		return nil, err
 	}
 
@@ -40,31 +57,124 @@ func ListBacktestJobResponses() ([]BacktestJobResponse, error) {
 	return responses, nil
 }
 
+func GetBacktestJobResponse(id uint) (*BacktestJobResponse, error) {
+	var job database.BacktestJob
+	if err := database.DB.Select(backtestJobResponseColumns()).First(&job, id).Error; err != nil {
+		return nil, err
+	}
+	return BuildBacktestJobResponse(&job)
+}
+
+func GetLatestBacktestJobResponse() (*BacktestJobResponse, error) {
+	var job database.BacktestJob
+	if err := database.DB.Select(backtestJobResponseColumns()).Order("created_at DESC").First(&job).Error; err != nil {
+		return nil, err
+	}
+	return BuildBacktestJobResponse(&job)
+}
+
 func BuildBacktestJobResponse(job *database.BacktestJob) (*BacktestJobResponse, error) {
 	if job == nil {
 		return nil, nil
 	}
 
 	response := &BacktestJobResponse{
-		ID:          job.ID,
-		Status:      job.Status,
-		Progress:    job.Progress,
-		Message:     job.Message,
-		SummaryJSON: job.SummaryJSON,
-		Error:       job.Error,
-		StartedAt:   job.StartedAt,
-		FinishedAt:  job.FinishedAt,
-		CreatedAt:   job.CreatedAt,
-		UpdatedAt:   job.UpdatedAt,
+		ID:         job.ID,
+		Status:     job.Status,
+		Progress:   job.Progress,
+		Message:    job.Message,
+		Error:      job.Error,
+		StartedAt:  job.StartedAt,
+		FinishedAt: job.FinishedAt,
+		CreatedAt:  job.CreatedAt,
+		UpdatedAt:  job.UpdatedAt,
 	}
 
-	if job.SummaryJSON != nil && *job.SummaryJSON != "" {
-		var summary BacktestRunSummary
-		if err := json.Unmarshal([]byte(*job.SummaryJSON), &summary); err != nil {
+	compactJSON, err := compactSummaryJSON(job)
+	if err != nil {
+		return nil, err
+	}
+	if compactJSON != "" {
+		var summary BacktestJobSummary
+		if err := json.Unmarshal([]byte(compactJSON), &summary); err != nil {
 			return nil, err
 		}
 		response.Summary = &summary
 	}
 
 	return response, nil
+}
+
+func BuildBacktestJobSummary(summary BacktestRunSummary) BacktestJobSummary {
+	symbolSet := make(map[string]struct{})
+	for symbol := range summary.Baseline.EquityBySymbol {
+		symbolSet[symbol] = struct{}{}
+	}
+	for symbol := range summary.VolSizing.EquityBySymbol {
+		symbolSet[symbol] = struct{}{}
+	}
+	if len(symbolSet) == 0 {
+		for _, symbol := range parseSymbols(summary.SettingsSnapshot["backtest_symbols"]) {
+			symbolSet[symbol] = struct{}{}
+		}
+	}
+
+	symbols := make([]string, 0, len(symbolSet))
+	for symbol := range symbolSet {
+		symbols = append(symbols, symbol)
+	}
+	sort.Strings(symbols)
+
+	return BacktestJobSummary{
+		Symbols: symbols,
+		Baseline: BacktestJobStrategySummary{
+			Mode:    summary.Baseline.Mode,
+			Metrics: summary.Baseline.Metrics,
+		},
+		VolSizing: BacktestJobStrategySummary{
+			Mode:    summary.VolSizing.Mode,
+			Metrics: summary.VolSizing.Metrics,
+		},
+		Validation: BacktestJobValidationSummary{
+			Passed:  summary.Validation.Passed,
+			Windows: summary.Validation.Windows,
+		},
+	}
+}
+
+func MarshalBacktestJobSummary(summary BacktestRunSummary) (string, error) {
+	compact, err := json.Marshal(BuildBacktestJobSummary(summary))
+	if err != nil {
+		return "", err
+	}
+	return string(compact), nil
+}
+
+func compactSummaryJSON(job *database.BacktestJob) (string, error) {
+	if job == nil {
+		return "", nil
+	}
+	if job.SummaryCompactJSON != nil && *job.SummaryCompactJSON != "" {
+		return *job.SummaryCompactJSON, nil
+	}
+	if job.SummaryJSON == nil || *job.SummaryJSON == "" {
+		return "", nil
+	}
+
+	var summary BacktestRunSummary
+	if err := json.Unmarshal([]byte(*job.SummaryJSON), &summary); err != nil {
+		return "", err
+	}
+
+	compact, err := MarshalBacktestJobSummary(summary)
+	if err != nil {
+		return "", err
+	}
+	return compact, nil
+}
+
+func backtestJobResponseColumns() string {
+	return `id, status, progress, message, summary_compact_json,
+		CASE WHEN COALESCE(summary_compact_json, '') = '' THEN summary_json ELSE NULL END AS summary_json,
+		error, started_at, finished_at, created_at, updated_at`
 }

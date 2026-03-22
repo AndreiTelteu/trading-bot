@@ -39,6 +39,21 @@ func RunMigrations(db *gorm.DB) error {
 				return tx.Migrator().DropTable(schemaModels()...)
 			},
 		},
+		{
+			ID: "202603221830_backtest_job_summary_compact_json",
+			Migrate: func(tx *gorm.DB) error {
+				if tx.Migrator().HasColumn(&BacktestJob{}, "SummaryCompactJSON") {
+					return nil
+				}
+				return tx.Migrator().AddColumn(&BacktestJob{}, "SummaryCompactJSON")
+			},
+			Rollback: func(tx *gorm.DB) error {
+				if !tx.Migrator().HasColumn(&BacktestJob{}, "SummaryCompactJSON") {
+					return nil
+				}
+				return tx.Migrator().DropColumn(&BacktestJob{}, "SummaryCompactJSON")
+			},
+		},
 	})
 
 	return m.Migrate()

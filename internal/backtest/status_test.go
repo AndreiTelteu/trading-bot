@@ -28,9 +28,18 @@ func TestCompareCIRequiresExclusion(t *testing.T) {
 func TestBuildBacktestJobResponseParsesSummary(t *testing.T) {
 	now := time.Now().UTC()
 	summary := BacktestRunSummary{
-		JobID:      7,
-		StartedAt:  now,
-		FinishedAt: now,
+		JobID:            7,
+		StartedAt:        now,
+		FinishedAt:       now,
+		SettingsSnapshot: map[string]string{"backtest_symbols": "BTCUSDT,ETHUSDT"},
+		Baseline: BacktestResult{
+			Mode:    StrategyBaseline,
+			Metrics: Metrics{TradeCount: 10},
+		},
+		VolSizing: BacktestResult{
+			Mode:    StrategyVolSizing,
+			Metrics: Metrics{TradeCount: 12},
+		},
 		Validation: ValidationSummary{Passed: true, AcceptedMetrics: []string{"sharpe", "profit_factor"}},
 	}
 	payload, err := json.Marshal(summary)
@@ -57,6 +66,12 @@ func TestBuildBacktestJobResponseParsesSummary(t *testing.T) {
 	}
 	if !response.Summary.Validation.Passed {
 		t.Fatal("parsed summary should preserve validation result")
+	}
+	if response.Summary.Baseline.Metrics.TradeCount != 10 {
+		t.Fatalf("expected baseline trade count 10, got %d", response.Summary.Baseline.Metrics.TradeCount)
+	}
+	if len(response.Summary.Symbols) != 2 {
+		t.Fatalf("expected compact symbol list, got %v", response.Summary.Symbols)
 	}
 }
 

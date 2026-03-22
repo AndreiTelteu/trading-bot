@@ -33,25 +33,17 @@ func GetBacktestStatus(c *fiber.Ctx) error {
 	if err != nil || id <= 0 {
 		return c.Status(400).JSON(fiber.Map{"error": "Invalid job id"})
 	}
-	job, err := backtest.GetBacktestJob(uint(id))
+	response, err := backtest.GetBacktestJobResponse(uint(id))
 	if err != nil {
 		return c.Status(404).JSON(fiber.Map{"error": "Backtest job not found"})
-	}
-	response, err := backtest.BuildBacktestJobResponse(job)
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "Failed to decode backtest summary"})
 	}
 	return c.JSON(response)
 }
 
 func GetLatestBacktestStatus(c *fiber.Ctx) error {
-	job, err := backtest.GetLatestBacktestJob()
+	response, err := backtest.GetLatestBacktestJobResponse()
 	if err != nil {
 		return c.Status(404).JSON(fiber.Map{"error": "Backtest job not found"})
-	}
-	response, err := backtest.BuildBacktestJobResponse(job)
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "Failed to decode backtest summary"})
 	}
 	return c.JSON(response)
 }

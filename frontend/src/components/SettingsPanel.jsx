@@ -42,6 +42,9 @@ const getBacktestMetrics = (job, strategyKey) => {
 
 const getBacktestSymbols = (job) => {
   const summary = getBacktestSummary(job)
+  if (Array.isArray(summary?.symbols) && summary.symbols.length > 0) {
+    return summary.symbols
+  }
   const equityBySymbol = summary?.baseline?.EquityBySymbol || summary?.baseline?.equityBySymbol || {}
   return Object.keys(equityBySymbol)
 }

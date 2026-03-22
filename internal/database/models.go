@@ -86,16 +86,17 @@ type ActivityLog struct {
 }
 
 type BacktestJob struct {
-	ID          uint       `json:"id" gorm:"primaryKey;autoIncrement"`
-	Status      string     `json:"status" gorm:"size:20;default:pending"`
-	Progress    float64    `json:"progress"`
-	Message     *string    `json:"message" gorm:"size:500"`
-	SummaryJSON *string    `json:"summary_json" gorm:"type:text"`
-	Error       *string    `json:"error" gorm:"type:text"`
-	StartedAt   *time.Time `json:"started_at"`
-	FinishedAt  *time.Time `json:"finished_at"`
-	CreatedAt   time.Time  `json:"created_at" gorm:"index"`
-	UpdatedAt   time.Time  `json:"updated_at"`
+	ID                 uint       `json:"id" gorm:"primaryKey;autoIncrement"`
+	Status             string     `json:"status" gorm:"size:20;default:pending"`
+	Progress           float64    `json:"progress"`
+	Message            *string    `json:"message" gorm:"size:500"`
+	SummaryJSON        *string    `json:"summary_json" gorm:"type:text"`
+	SummaryCompactJSON *string    `json:"summary_compact_json" gorm:"type:text"`
+	Error              *string    `json:"error" gorm:"type:text"`
+	StartedAt          *time.Time `json:"started_at"`
+	FinishedAt         *time.Time `json:"finished_at"`
+	CreatedAt          time.Time  `json:"created_at" gorm:"index"`
+	UpdatedAt          time.Time  `json:"updated_at"`
 }
 
 type TrendAnalysisHistory struct {
