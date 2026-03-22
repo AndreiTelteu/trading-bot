@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react'
 import { XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, AreaChart, Area } from 'recharts'
 import { useWebSocketEvent } from '../hooks/useWebSocket'
+import { apiFetch } from '../services/api'
 import CustomSelect from './CustomSelect'
 import Modal from './Modal'
 
@@ -146,7 +147,7 @@ function Dashboard({ wallet: propWallet, positions: propPositions }) {
   // Define fetch functions
   const fetchRecentCoins = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE}/trending/recent`)
+      const res = await apiFetch(`${API_BASE}/trending/recent`)
       if (res.ok) {
         const data = await res.json()
         const coins = data.coins || []
@@ -157,7 +158,7 @@ function Dashboard({ wallet: propWallet, positions: propPositions }) {
 
   const fetchSnapshots = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE}/wallet/snapshots?period=${selectedPeriod}`)
+      const res = await apiFetch(`${API_BASE}/wallet/snapshots?period=${selectedPeriod}`)
       if (res.ok) {
         const data = await res.json()
         setSnapshots(data)
@@ -167,7 +168,7 @@ function Dashboard({ wallet: propWallet, positions: propPositions }) {
 
   const fetchOrders = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE}/orders?limit=10`)
+      const res = await apiFetch(`${API_BASE}/orders?limit=10`)
       if (res.ok) setOrders(await res.json())
     } catch (err) {}
   }, [])
@@ -183,7 +184,7 @@ function Dashboard({ wallet: propWallet, positions: propPositions }) {
     const fetchDetails = async () => {
       setLoadingModal(true)
       try {
-        const res = await fetch(`${API_BASE}/analysis/history/${selectedSymbol}`)
+        const res = await apiFetch(`${API_BASE}/analysis/history/${selectedSymbol}`)
         if (res.ok) {
           const data = await res.json()
           setModalData(data)

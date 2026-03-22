@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react'
 import { useWebSocketEvent } from '../hooks/useWebSocket'
+import { apiFetch } from '../services/api'
 
 const API_BASE = '/api'
 
@@ -9,7 +10,7 @@ function ActivityLog({ onRunAnalysis, isRunning }) {
 
   const fetchLogs = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE}/activity-logs?limit=50`)
+      const res = await apiFetch(`${API_BASE}/activity-logs?limit=50`)
       if (res.ok) setLogs(await res.json())
     } catch (err) {}
   }, [])

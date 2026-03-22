@@ -1,7 +1,9 @@
 import React, { useState, useEffect, useCallback, useMemo, useContext } from 'react'
 import { Link, Outlet } from '@tanstack/react-router'
 import ActivityLog from './components/ActivityLog'
+import { useAuth } from './components/AuthProvider'
 import { useWebSocket, useWebSocketEvent } from './hooks/useWebSocket'
+import { apiFetch } from './services/api'
 import { getWebSocketManager } from './services/websocketManager'
 
 const API_BASE = '/api'
@@ -44,12 +46,13 @@ function App() {
   const [positions, setPositions] = useState([])
   const [showActivity, setShowActivity] = useState(true)
   const [isRunning, setIsRunning] = useState(false)
+  const { username, logout } = useAuth()
 
   const { isConnected } = useWebSocket()
 
   const fetchWallet = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE}/wallet`)
+      const res = await apiFetch(`${API_BASE}/wallet`)
       if (!res.ok) {
         throw new Error(`HTTP ${res.status}`)
       }
@@ -62,7 +65,7 @@ function App() {
 
   const fetchPositions = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE}/positions`)
+      const res = await apiFetch(`${API_BASE}/positions`)
       if (!res.ok) {
         throw new Error(`HTTP ${res.status}`)
       }
@@ -122,7 +125,7 @@ function App() {
   const handleRunAnalysis = async () => {
     setIsRunning(true)
     try {
-      const res = await fetch(`${API_BASE}/trending/analyze`, { method: 'POST' })
+      const res = await apiFetch(`${API_BASE}/trending/analyze`, { method: 'POST' })
       const data = await res.json()
       console.log('Analysis result:', data)
     } catch (err) {
@@ -130,6 +133,10 @@ function App() {
     } finally {
       setIsRunning(false)
     }
+  }
+
+  const handleLogout = async () => {
+    await logout()
   }
 
   const appData = useMemo(() => ({
@@ -144,6 +151,7 @@ function App() {
         <header className="header">
           <h1>Trading Bot</h1>
           <div className="header-actions">
+            <div className="header-user">{username || 'Authenticated'}</div>
             <button
               type="button"
               className={`activity-toggle ${showActivity ? 'active' : ''}`}
@@ -154,6 +162,9 @@ function App() {
             <div className={`connection-status ${isConnected ? 'connected' : 'disconnected'}`}>
               {isConnected ? 'Connected' : 'Disconnected'}
             </div>
+            <button type="button" className="header-logout" onClick={handleLogout}>
+              Logout
+            </button>
           </div>
         </header>
 

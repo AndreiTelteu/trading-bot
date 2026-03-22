@@ -1,6 +1,7 @@
 import React, { useState } from 'react'
 import AlertDialog from './AlertDialog'
 import useAlertDialog from '../hooks/useAlertDialog'
+import { apiFetch } from '../services/api'
 
 const API_BASE = '/api'
 
@@ -23,7 +24,7 @@ function PositionsTable({ positions, onRefresh }) {
     setTradeResult(null)
     
     try {
-      const response = await fetch(`${API_BASE}/positions-trade/open`, {
+      const response = await apiFetch(`${API_BASE}/positions-trade/open`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -69,7 +70,7 @@ function PositionsTable({ positions, onRefresh }) {
     setTradeResult(null)
     
     try {
-      const response = await fetch(`${API_BASE}/positions-trade/${positionId}/close`, {
+      const response = await apiFetch(`${API_BASE}/positions-trade/${positionId}/close`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

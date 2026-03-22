@@ -11,6 +11,7 @@ import (
 	"trading-go/internal/config"
 	"trading-go/internal/database"
 	"trading-go/internal/handlers"
+	"trading-go/internal/middleware"
 	"trading-go/internal/services"
 
 	"github.com/glebarez/sqlite"
@@ -56,6 +57,9 @@ func SetupTestApp() *fiber.App {
 	app = fiber.New()
 
 	cfg := config.Load()
+	cfg.AuthUsername = "admin"
+	cfg.AuthPassword = "qwe321"
+	cfg.SessionCookie = "trading_bot_test_session"
 	setupTestRoutes(app, cfg)
 
 	return app
@@ -63,12 +67,19 @@ func SetupTestApp() *fiber.App {
 
 func setupTestRoutes(app *fiber.App, cfg *config.Config) {
 	services.InitTradingService(cfg.BinanceAPIKey, cfg.BinanceSecret)
+	authManager := middleware.NewAuthManager(cfg)
 
 	app.Get("/ws", func(c *fiber.Ctx) error {
 		return c.SendString("ws")
 	})
 
 	api := app.Group("/api")
+	auth := api.Group("/auth")
+	auth.Post("/login", authManager.HandleLogin)
+	auth.Post("/logout", authManager.HandleLogout)
+	auth.Get("/session", authManager.HandleSession)
+
+	api.Use(authManager.RequireAuth)
 
 	api.Get("/health", func(c *fiber.Ctx) error {
 		return c.JSON(fiber.Map{
@@ -128,11 +139,41 @@ func setupTestRoutes(app *fiber.App, cfg *config.Config) {
 	ai.Post("/proposals/:id/deny", handlers.DenyProposal)
 }
 
+func loginCookie(t *testing.T, app *fiber.App) string {
+	t.Helper()
+
+	body, _ := json.Marshal(map[string]string{
+		"username": "admin",
+		"password": "qwe321",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/login", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatalf("Failed to login test user: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		payload, _ := io.ReadAll(resp.Body)
+		t.Fatalf("Expected login status 200, got %d: %s", resp.StatusCode, string(payload))
+	}
+
+	for _, cookie := range resp.Cookies() {
+		if cookie.Name == "trading_bot_test_session" {
+			return cookie.Name + "=" + cookie.Value
+		}
+	}
+
+	t.Fatal("Expected auth cookie in login response")
+	return ""
+}
+
 func TestWalletEndpoint(t *testing.T) {
 	SetupTestDB(t)
 	app := SetupTestApp()
+	cookie := loginCookie(t, app)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/wallet", nil)
+	req.Header.Set("Cookie", cookie)
 	resp, err := app.Test(req)
 	if err != nil {
 		t.Fatalf("Failed to test request: %v", err)
@@ -154,6 +195,7 @@ func TestWalletEndpoint(t *testing.T) {
 func TestCreateOrderIntegration(t *testing.T) {
 	SetupTestDB(t)
 	app := SetupTestApp()
+	cookie := loginCookie(t, app)
 
 	services.InitTradingService("", "")
 
@@ -171,6 +213,7 @@ func TestCreateOrderIntegration(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/api/trading/buy", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Cookie", cookie)
 	resp, err := app.Test(req)
 
 	if err != nil {
@@ -185,6 +228,7 @@ func TestCreateOrderIntegration(t *testing.T) {
 func TestGetPositions(t *testing.T) {
 	SetupTestDB(t)
 	app := SetupTestApp()
+	cookie := loginCookie(t, app)
 
 	position := database.Position{
 		Symbol:   "BNBUSDT",
@@ -196,6 +240,7 @@ func TestGetPositions(t *testing.T) {
 	database.DB.Create(&position)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/positions", nil)
+	req.Header.Set("Cookie", cookie)
 	resp, err := app.Test(req)
 	if err != nil {
 		t.Fatalf("Failed to test request: %v", err)
@@ -209,8 +254,10 @@ func TestGetPositions(t *testing.T) {
 func TestHealthEndpoint(t *testing.T) {
 	SetupTestDB(t)
 	app := SetupTestApp()
+	cookie := loginCookie(t, app)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/health", nil)
+	req.Header.Set("Cookie", cookie)
 	resp, err := app.Test(req)
 	if err != nil {
 		t.Fatalf("Failed to test request: %v", err)
@@ -221,9 +268,26 @@ func TestHealthEndpoint(t *testing.T) {
 	}
 }
 
+func TestProtectedEndpointRequiresAuth(t *testing.T) {
+	SetupTestDB(t)
+	app := SetupTestApp()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/wallet", nil)
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatalf("Failed to test request: %v", err)
+	}
+
+	if resp.StatusCode != http.StatusUnauthorized {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("Expected status 401, got %d: %s", resp.StatusCode, string(body))
+	}
+}
+
 func TestSettingsEndpoint(t *testing.T) {
 	SetupTestDB(t)
 	app := SetupTestApp()
+	cookie := loginCookie(t, app)
 
 	setting := database.Setting{
 		Key:   "test_key",
@@ -232,6 +296,7 @@ func TestSettingsEndpoint(t *testing.T) {
 	database.DB.Create(&setting)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/settings", nil)
+	req.Header.Set("Cookie", cookie)
 	resp, err := app.Test(req)
 	if err != nil {
 		t.Fatalf("Failed to test request: %v", err)
@@ -245,6 +310,7 @@ func TestSettingsEndpoint(t *testing.T) {
 func TestListBacktestJobsEndpoint(t *testing.T) {
 	SetupTestDB(t)
 	app := SetupTestApp()
+	cookie := loginCookie(t, app)
 
 	summaryJSON := `{"job_id":1,"started_at":"2026-03-14T00:00:00Z","finished_at":"2026-03-14T00:10:00Z","baseline":{"Mode":"baseline","Metrics":{"TradeCount":10}},"vol_sizing":{"Mode":"vol_sizing","Metrics":{"TradeCount":12}},"validation":{"passed":true,"windows":1}}`
 	message := "done"
@@ -259,6 +325,7 @@ func TestListBacktestJobsEndpoint(t *testing.T) {
 	database.DB.Create(&job)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/backtest/jobs", nil)
+	req.Header.Set("Cookie", cookie)
 	resp, err := app.Test(req)
 	if err != nil {
 		t.Fatalf("Failed to test request: %v", err)
@@ -286,6 +353,7 @@ func TestListBacktestJobsEndpoint(t *testing.T) {
 func TestOptimizeBacktestEndpointCreatesProposal(t *testing.T) {
 	SetupTestDB(t)
 	app := SetupTestApp()
+	cookie := loginCookie(t, app)
 
 	settings := []database.Setting{
 		{Key: "stop_mult", Value: "1.5", Category: strPtr("trading")},
@@ -325,6 +393,7 @@ func TestOptimizeBacktestEndpointCreatesProposal(t *testing.T) {
 	body, _ := json.Marshal(map[string]uint{"job_id": job.ID})
 	req := httptest.NewRequest(http.MethodPost, "/api/ai/optimize-backtest", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Cookie", cookie)
 	resp, err := app.Test(req)
 	if err != nil {
 		t.Fatalf("Failed to test request: %v", err)
@@ -355,6 +424,7 @@ func TestOptimizeBacktestEndpointCreatesProposal(t *testing.T) {
 func TestOptimizeBacktestEndpointFallsBackToHypotheses(t *testing.T) {
 	SetupTestDB(t)
 	app := SetupTestApp()
+	cookie := loginCookie(t, app)
 
 	settings := []database.Setting{
 		{Key: "stop_mult", Value: "1.5", Category: strPtr("trading")},
@@ -401,6 +471,7 @@ func TestOptimizeBacktestEndpointFallsBackToHypotheses(t *testing.T) {
 	body, _ := json.Marshal(map[string]uint{"job_id": job.ID})
 	req := httptest.NewRequest(http.MethodPost, "/api/ai/optimize-backtest", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Cookie", cookie)
 	resp, err := app.Test(req)
 	if err != nil {
 		t.Fatalf("Failed to test request: %v", err)
@@ -458,6 +529,7 @@ func TestOptimizeBacktestEndpointFallsBackToHypotheses(t *testing.T) {
 func TestOptimizeBacktestEndpointReturnsRawResponseForNoJSONArray(t *testing.T) {
 	SetupTestDB(t)
 	app := SetupTestApp()
+	cookie := loginCookie(t, app)
 
 	settings := []database.Setting{
 		{Key: "stop_mult", Value: "1.5", Category: strPtr("trading")},
@@ -514,6 +586,7 @@ func TestOptimizeBacktestEndpointReturnsRawResponseForNoJSONArray(t *testing.T) 
 	body, _ := json.Marshal(map[string]uint{"job_id": job.ID})
 	req := httptest.NewRequest(http.MethodPost, "/api/ai/optimize-backtest", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Cookie", cookie)
 	resp, err := app.Test(req)
 	if err != nil {
 		t.Fatalf("Failed to test request: %v", err)

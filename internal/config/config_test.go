@@ -10,6 +10,8 @@ func TestLoad(t *testing.T) {
 	os.Setenv("PORT", "8080")
 	os.Setenv("DATABASE_PATH", "/tmp/test.db")
 	os.Setenv("SECRET_KEY", "test-secret")
+	os.Setenv("AUTH_USERNAME", "admin")
+	os.Setenv("AUTH_PASSWORD", "qwe321")
 	os.Setenv("BINANCE_API_KEY", "test-key")
 	os.Setenv("BINANCE_SECRET", "test-secret")
 
@@ -24,6 +26,12 @@ func TestLoad(t *testing.T) {
 	if cfg.SecretKey != "test-secret" {
 		t.Errorf("Load() SecretKey = %v, want test-secret", cfg.SecretKey)
 	}
+	if cfg.AuthUsername != "admin" {
+		t.Errorf("Load() AuthUsername = %v, want admin", cfg.AuthUsername)
+	}
+	if cfg.AuthPassword != "qwe321" {
+		t.Errorf("Load() AuthPassword = %v, want qwe321", cfg.AuthPassword)
+	}
 	if cfg.BinanceAPIKey != "test-key" {
 		t.Errorf("Load() BinanceAPIKey = %v, want test-key", cfg.BinanceAPIKey)
 	}
@@ -37,6 +45,8 @@ func TestLoad(t *testing.T) {
 	os.Unsetenv("PORT")
 	os.Unsetenv("DATABASE_PATH")
 	os.Unsetenv("SECRET_KEY")
+	os.Unsetenv("AUTH_USERNAME")
+	os.Unsetenv("AUTH_PASSWORD")
 	os.Unsetenv("BINANCE_API_KEY")
 	os.Unsetenv("BINANCE_SECRET")
 }
@@ -45,6 +55,8 @@ func TestLoadDefaults(t *testing.T) {
 	os.Unsetenv("PORT")
 	os.Unsetenv("DATABASE_PATH")
 	os.Unsetenv("SECRET_KEY")
+	os.Unsetenv("AUTH_USERNAME")
+	os.Unsetenv("AUTH_PASSWORD")
 	os.Unsetenv("BINANCE_API_KEY")
 	os.Unsetenv("BINANCE_SECRET")
 
@@ -58,6 +70,12 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if cfg.DefaultBalance != 400.0 {
 		t.Errorf("Load() default DefaultBalance = %v, want 400.0", cfg.DefaultBalance)
+	}
+	if cfg.AuthUsername != "" {
+		t.Errorf("Load() default AuthUsername = %v, want empty string", cfg.AuthUsername)
+	}
+	if cfg.AuthPassword != "" {
+		t.Errorf("Load() default AuthPassword = %v, want empty string", cfg.AuthPassword)
 	}
 }
 

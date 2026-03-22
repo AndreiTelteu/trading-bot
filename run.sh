@@ -14,6 +14,8 @@ cd ..
 
 echo "Building Go backend..."
 export CGO_ENABLED=0
+export AUTH_USERNAME=admin
+export AUTH_PASSWORD=qwe321
 go build -ldflags="-s -w" -o build/trading-go cmd/server/main.go
 
 echo "Starting trading server..."

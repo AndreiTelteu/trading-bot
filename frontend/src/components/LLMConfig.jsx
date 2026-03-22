@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import CustomSelect from './CustomSelect'
+import { apiFetch } from '../services/api'
 
 const API_BASE = '/api'
 
@@ -21,7 +22,7 @@ function LLMConfig() {
 
   const fetchConfig = async () => {
     try {
-      const res = await fetch(`${API_BASE}/llm/config`)
+      const res = await apiFetch(`${API_BASE}/llm/config`)
       const data = await res.json()
       setConfig(data)
     } catch (err) {
@@ -38,7 +39,7 @@ function LLMConfig() {
     setSaving(true)
     setMessage(null)
     try {
-      await fetch(`${API_BASE}/llm/config`, {
+      await apiFetch(`${API_BASE}/llm/config`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(config)
@@ -54,7 +55,7 @@ function LLMConfig() {
     setTesting(true)
     setMessage(null)
     try {
-      const res = await fetch(`${API_BASE}/llm/test`, {
+      const res = await apiFetch(`${API_BASE}/llm/test`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(config)

@@ -5,6 +5,7 @@ import AlertDialog from './AlertDialog'
 import CustomSelect from './CustomSelect'
 import useAlertDialog from '../hooks/useAlertDialog'
 import { useWebSocketEvent } from '../hooks/useWebSocket'
+import { apiFetch } from '../services/api'
 
 const API_BASE = '/api'
 
@@ -200,7 +201,7 @@ function SettingsPanel({ activeSection }) {
 
   const fetchSettings = async () => {
     try {
-      const res = await fetch(`${API_BASE}/settings`)
+      const res = await apiFetch(`${API_BASE}/settings`)
       const data = await res.json()
       // API returns an array of {key, value, ...} objects — convert to a key->value map
       const normalized = {}
@@ -224,7 +225,7 @@ function SettingsPanel({ activeSection }) {
 
   const fetchWeights = async () => {
     try {
-      const res = await fetch(`${API_BASE}/indicator-weights`)
+      const res = await apiFetch(`${API_BASE}/indicator-weights`)
       const data = await res.json()
       // API returns an array of {indicator, weight} objects — convert to indicator->weight map
       const weightsMap = {}
@@ -239,7 +240,7 @@ function SettingsPanel({ activeSection }) {
 
   const fetchLatestBacktest = async () => {
     try {
-      const res = await fetch(`${API_BASE}/backtest/latest`)
+      const res = await apiFetch(`${API_BASE}/backtest/latest`)
       if (!res.ok) {
         return
       }
@@ -254,7 +255,7 @@ function SettingsPanel({ activeSection }) {
 
   const fetchBacktestJobs = async () => {
     try {
-      const res = await fetch(`${API_BASE}/backtest/jobs`)
+      const res = await apiFetch(`${API_BASE}/backtest/jobs`)
       if (!res.ok) {
         return
       }
@@ -297,7 +298,7 @@ function SettingsPanel({ activeSection }) {
         key,
         value: String(value)
       }))
-      await fetch(`${API_BASE}/settings`, {
+      await apiFetch(`${API_BASE}/settings`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
@@ -318,7 +319,7 @@ function SettingsPanel({ activeSection }) {
         indicator,
         weight: parseFloat(weight)
       }))
-      await fetch(`${API_BASE}/indicator-weights`, {
+      await apiFetch(`${API_BASE}/indicator-weights`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
@@ -334,7 +335,7 @@ function SettingsPanel({ activeSection }) {
   const handleStartBacktest = async () => {
     setStartingBacktest(true)
     try {
-      const res = await fetch(`${API_BASE}/backtest/start`, { method: 'POST' })
+      const res = await apiFetch(`${API_BASE}/backtest/start`, { method: 'POST' })
       if (!res.ok) {
         throw new Error(`HTTP ${res.status}`)
       }
@@ -395,7 +396,7 @@ function SettingsPanel({ activeSection }) {
 
     setOptimizingBacktest(true)
     try {
-      const res = await fetch(`${API_BASE}/ai/optimize-backtest`, {
+      const res = await apiFetch(`${API_BASE}/ai/optimize-backtest`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ job_id: Number(selectedBacktestId) })
@@ -511,7 +512,7 @@ function SettingsPanel({ activeSection }) {
         key,
         value: String(value)
       }))
-      await fetch(`${API_BASE}/settings`, {
+      await apiFetch(`${API_BASE}/settings`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(settingsPayload)
@@ -521,7 +522,7 @@ function SettingsPanel({ activeSection }) {
         indicator,
         weight: parseFloat(weight)
       }))
-      await fetch(`${API_BASE}/indicator-weights`, {
+      await apiFetch(`${API_BASE}/indicator-weights`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(weightsPayload)

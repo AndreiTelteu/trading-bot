@@ -14,6 +14,9 @@ type Config struct {
 	ServerPort      string
 	DatabasePath    string
 	SecretKey       string
+	AuthUsername    string
+	AuthPassword    string
+	SessionCookie   string
 	DefaultBalance  float64
 	DefaultCurrency string
 	BinanceAPIKey   string
@@ -36,6 +39,9 @@ func Load() *Config {
 		ServerPort:      getEnv("PORT", "5001"),
 		DatabasePath:    getEnv("DATABASE_PATH", "./trading.db"),
 		SecretKey:       getEnv("SECRET_KEY", "default-secret-key"),
+		AuthUsername:    getEnv("AUTH_USERNAME", ""),
+		AuthPassword:    getEnv("AUTH_PASSWORD", ""),
+		SessionCookie:   getEnv("SESSION_COOKIE_NAME", "trading_bot_session"),
 		DefaultBalance:  400.0,
 		DefaultCurrency: "USDT",
 		BinanceAPIKey:   getEnv("BINANCE_API_KEY", ""),

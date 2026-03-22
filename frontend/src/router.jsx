@@ -7,12 +7,43 @@ import {
   createRoute,
   createRouter,
 } from '@tanstack/react-router'
+import { AuthProvider, useAuth } from './components/AuthProvider'
 import App, { useAppData } from './App.jsx'
 import Dashboard from './components/Dashboard'
 import PositionsTable from './components/PositionsTable'
 import SettingsPanel from './components/SettingsPanel'
 import AIProposal from './components/AIProposal'
 import LLMConfig from './components/LLMConfig'
+import LoginPage from './components/LoginPage'
+
+function RootLayout() {
+  return (
+    <AuthProvider>
+      <Outlet />
+    </AuthProvider>
+  )
+}
+
+function ProtectedLayout() {
+  const { isAuthenticated, isLoading } = useAuth()
+
+  if (isLoading) {
+    return (
+      <div className="auth-loading-screen">
+        <div className="glass-panel auth-loading-panel">
+          <p className="login-kicker">Checking session</p>
+          <h1 className="login-title">Trading Bot</h1>
+        </div>
+      </div>
+    )
+  }
+
+  if (!isAuthenticated) {
+    return <Navigate to="/login" replace />
+  }
+
+  return <App />
+}
 
 function DashboardPage() {
   const { wallet, positions } = useAppData()
@@ -35,23 +66,35 @@ function SettingsSectionPage({ section }) {
 }
 
 const rootRoute = createRootRoute({
-  component: App,
+  component: RootLayout,
+})
+
+const protectedRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  id: 'protected',
+  component: ProtectedLayout,
+})
+
+const loginRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: 'login',
+  component: LoginPage,
 })
 
 const dashboardRoute = createRoute({
-  getParentRoute: () => rootRoute,
+  getParentRoute: () => protectedRoute,
   path: '/',
   component: DashboardPage,
 })
 
 const positionsRoute = createRoute({
-  getParentRoute: () => rootRoute,
+  getParentRoute: () => protectedRoute,
   path: 'positions',
   component: PositionsPage,
 })
 
 const settingsRoute = createRoute({
-  getParentRoute: () => rootRoute,
+  getParentRoute: () => protectedRoute,
   path: 'settings',
   component: SettingsLayout,
 })
@@ -105,13 +148,13 @@ const settingsWeightsRoute = createRoute({
 })
 
 const aiRoute = createRoute({
-  getParentRoute: () => rootRoute,
+  getParentRoute: () => protectedRoute,
   path: 'ai',
   component: AIProposal,
 })
 
 const llmRoute = createRoute({
-  getParentRoute: () => rootRoute,
+  getParentRoute: () => protectedRoute,
   path: 'llm',
   component: LLMConfig,
 })
@@ -127,12 +170,17 @@ settingsRoute.addChildren([
   settingsWeightsRoute,
 ])
 
-const routeTree = rootRoute.addChildren([
+protectedRoute.addChildren([
   dashboardRoute,
   positionsRoute,
   settingsRoute,
   aiRoute,
   llmRoute,
+])
+
+const routeTree = rootRoute.addChildren([
+  loginRoute,
+  protectedRoute,
 ])
 
 const router = createRouter({

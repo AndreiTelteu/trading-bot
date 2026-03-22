@@ -21,6 +21,9 @@ import (
 
 func main() {
 	cfg := config.Load()
+	if cfg.AuthUsername == "" || cfg.AuthPassword == "" {
+		log.Fatal("AUTH_USERNAME and AUTH_PASSWORD must be set")
+	}
 
 	if err := database.Initialize(cfg); err != nil {
 		log.Fatalf("Failed to initialize database: %v", err)
@@ -37,9 +40,11 @@ func main() {
 
 	middleware.SetupCORS(app)
 	middleware.SetupLogger(app)
+	authManager := middleware.NewAuthManager(cfg)
+	app.Use(authManager.FrontendRouteGuard)
 
 	// Setup API routes FIRST - before static files
-	setupRoutes(app, cfg)
+	setupRoutes(app, cfg, authManager)
 
 	// Then setup static files (fallback for non-API routes)
 	frontendPath := filepath.Join(".", "frontend", "dist")
@@ -49,8 +54,8 @@ func main() {
 		app.Use(func(c *fiber.Ctx) error {
 			// Only serve index.html for GET requests that didn't match any route
 			if c.Method() == "GET" {
-				path := c.Route().Path
-				if path == "" || (!strings.HasPrefix(path, "/api") && !strings.HasPrefix(path, "/ws") && !strings.HasPrefix(path, "/assets")) {
+				path := c.Path()
+				if !strings.HasPrefix(path, "/api") && !strings.HasPrefix(path, "/ws") && !strings.HasPrefix(path, "/assets") {
 					return c.SendFile(filepath.Join(frontendPath, "index.html"))
 				}
 			}
@@ -63,11 +68,11 @@ func main() {
 	log.Fatal(app.Listen(addr))
 }
 
-func setupRoutes(app *fiber.App, cfg *config.Config) {
+func setupRoutes(app *fiber.App, cfg *config.Config, authManager *middleware.AuthManager) {
 	hub := ws.NewHub()
 	handlers.InitWebSocket(hub)
 
-	app.Use("/ws", func(c *fiber.Ctx) error {
+	app.Use("/ws", authManager.RequireAuth, func(c *fiber.Ctx) error {
 		if websocket.IsWebSocketUpgrade(c) {
 			c.Locals("allowed", true)
 			return c.Next()
@@ -83,6 +88,12 @@ func setupRoutes(app *fiber.App, cfg *config.Config) {
 	}))
 
 	api := app.Group("/api")
+	auth := api.Group("/auth")
+	auth.Post("/login", authManager.HandleLogin)
+	auth.Post("/logout", authManager.HandleLogout)
+	auth.Get("/session", authManager.HandleSession)
+
+	api.Use(authManager.RequireAuth)
 
 	api.Get("/health", func(c *fiber.Ctx) error {
 		return c.JSON(fiber.Map{

@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react'
+import { apiFetch } from '../services/api'
 
 const API_BASE = '/api'
 
@@ -16,7 +17,7 @@ function AIProposal() {
   const fetchProposals = async () => {
     setLoading(true)
     try {
-      const res = await fetch(`${API_BASE}/ai/proposals`)
+      const res = await apiFetch(`${API_BASE}/ai/proposals`)
       const data = await res.json()
       setProposals(data)
     } catch (err) {
@@ -28,7 +29,7 @@ function AIProposal() {
   const handleGenerate = async () => {
     setGenerating(true)
     try {
-      const res = await fetch(`${API_BASE}/ai/generate-proposals`, { method: 'POST' })
+      const res = await apiFetch(`${API_BASE}/ai/generate-proposals`, { method: 'POST' })
       const data = await res.json()
       if (data.proposals) {
         fetchProposals()
@@ -41,7 +42,7 @@ function AIProposal() {
 
   const handleApprove = async (id) => {
     try {
-      await fetch(`${API_BASE}/ai/proposals/${id}/approve`, { method: 'POST' })
+      await apiFetch(`${API_BASE}/ai/proposals/${id}/approve`, { method: 'POST' })
       fetchProposals()
     } catch (err) {
       console.error('Failed to approve proposal:', err)
@@ -50,7 +51,7 @@ function AIProposal() {
 
   const handleDeny = async (id) => {
     try {
-      await fetch(`${API_BASE}/ai/proposals/${id}/deny`, { method: 'POST' })
+      await apiFetch(`${API_BASE}/ai/proposals/${id}/deny`, { method: 'POST' })
       fetchProposals()
     } catch (err) {
       console.error('Failed to deny proposal:', err)
