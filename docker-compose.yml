@@ -25,17 +25,18 @@ services:
         condition: service_healthy
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.trading-backend.rule=Host(`trading.ryzen.cloud`)"
+      - "traefik.http.routers.trading-backend.rule=Host(`trading.local`)"
       - "traefik.http.routers.trading-backend.entrypoints=websecure,web"
       - "traefik.http.routers.trading-backend.tls=true"
-      - "traefik.http.routers.trading-backend.tls.certresolver=letsencrypt"
       - "traefik.http.services.trading-backend.loadbalancer.server.port=5001"
+    volumes:
+      - ./:/app
     environment:
       PORT: 5001
       DATABASE_URL: postgres://postgres:postgres@postgres:5432/trading_bot?sslmode=disable
     networks:
       - default
-      - proxy
+      - pub
 
   postgres-test:
     image: postgres:16-alpine
@@ -61,5 +62,5 @@ volumes:
   postgres_test_data:
 
 networks:
-  proxy:
+  pub:
     external: true
