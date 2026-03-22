@@ -620,6 +620,7 @@ function SettingsPanel({ activeSection }) {
     { key: 'ai_analysis_interval', label: 'Analysis Interval (hours)', type: 'number' },
     { key: 'ai_lookback_days', label: 'Lookback Days', type: 'number' },
     { key: 'ai_min_proposals', label: 'Min Proposals', type: 'number' },
+    { key: 'ai_change_budget_pct', label: 'Max Numeric Change (%)', type: 'number', step: 0.1 },
     { key: 'ai_auto_apply_days', label: 'Auto Apply Days', type: 'number' },
   ]
 
