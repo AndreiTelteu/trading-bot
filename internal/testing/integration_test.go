@@ -100,6 +100,10 @@ func setupTestRoutes(app *fiber.App, cfg *config.Config) {
 	trading.Post("/sell", handlers.ExecuteSell)
 	trading.Post("/update-prices", handlers.UpdatePrices)
 
+	positionsTrade := api.Group("/positions-trade")
+	positionsTrade.Post("/open", handlers.ExecuteOpenTrade)
+	positionsTrade.Post("/:id/close", handlers.ExecuteCloseTrade)
+
 	analysis := api.Group("/analysis")
 	analysis.Get("/:symbol", handlers.GetAnalysis)
 	analysis.Get("", handlers.GetAnalysisDefault)
@@ -312,6 +316,105 @@ func TestGetPositionsReturnsLatest50ClosedFirst(t *testing.T) {
 
 	if positions[len(positions)-1].Symbol != "CLOSED5USDT" {
 		t.Fatalf("Expected oldest retained closed position to be CLOSED5USDT, got %s", positions[len(positions)-1].Symbol)
+	}
+}
+
+func TestExecuteCloseTradeRejectsAlreadyClosedPosition(t *testing.T) {
+	SetupTestDB(t)
+	app := SetupTestApp()
+	cookie := loginCookie(t, app)
+
+	tickerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v3/ticker/24hr" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"symbol":"BANKUSDT","lastPrice":"7","priceChange":"0","priceChangePercent":"0","highPrice":"7","lowPrice":"7","volume":"0","quoteVolume":"0"}`))
+	}))
+	defer tickerServer.Close()
+
+	services.InitTradingService("", "")
+	exchange := services.GetExchange()
+	exchange.BaseURL = tickerServer.URL
+	exchange.HTTPClient = tickerServer.Client()
+
+	var wallet database.Wallet
+	if err := database.DB.First(&wallet).Error; err != nil {
+		t.Fatalf("Failed to fetch wallet: %v", err)
+	}
+	wallet.Balance = 100
+	if err := database.DB.Save(&wallet).Error; err != nil {
+		t.Fatalf("Failed to seed wallet: %v", err)
+	}
+
+	entryPrice := 6.5
+	currentPrice := 6.8
+	position := database.Position{
+		Symbol:       "BANK",
+		Amount:       2,
+		AvgPrice:     entryPrice,
+		EntryPrice:   &entryPrice,
+		CurrentPrice: &currentPrice,
+		Status:       "open",
+		OpenedAt:     time.Now().UTC(),
+	}
+	if err := database.DB.Create(&position).Error; err != nil {
+		t.Fatalf("Failed to create position: %v", err)
+	}
+
+	body, _ := json.Marshal(map[string]interface{}{
+		"close_reason": "manual",
+		"price":        0,
+		"order_type":   "market",
+	})
+
+	firstReq := httptest.NewRequest(http.MethodPost, "/api/positions-trade/"+strconv.Itoa(int(position.ID))+"/close", bytes.NewReader(body))
+	firstReq.Header.Set("Content-Type", "application/json")
+	firstReq.Header.Set("Cookie", cookie)
+	firstResp, err := app.Test(firstReq)
+	if err != nil {
+		t.Fatalf("Failed first close request: %v", err)
+	}
+	if firstResp.StatusCode != http.StatusOK {
+		payload, _ := io.ReadAll(firstResp.Body)
+		t.Fatalf("Expected first close status 200, got %d: %s", firstResp.StatusCode, string(payload))
+	}
+
+	secondReq := httptest.NewRequest(http.MethodPost, "/api/positions-trade/"+strconv.Itoa(int(position.ID))+"/close", bytes.NewReader(body))
+	secondReq.Header.Set("Content-Type", "application/json")
+	secondReq.Header.Set("Cookie", cookie)
+	secondResp, err := app.Test(secondReq)
+	if err != nil {
+		t.Fatalf("Failed second close request: %v", err)
+	}
+	if secondResp.StatusCode != http.StatusBadRequest {
+		payload, _ := io.ReadAll(secondResp.Body)
+		t.Fatalf("Expected second close status 400, got %d: %s", secondResp.StatusCode, string(payload))
+	}
+
+	var refreshedWallet database.Wallet
+	if err := database.DB.First(&refreshedWallet).Error; err != nil {
+		t.Fatalf("Failed to reload wallet: %v", err)
+	}
+	if refreshedWallet.Balance != 114 {
+		t.Fatalf("Expected wallet balance 114 after one close, got %.2f", refreshedWallet.Balance)
+	}
+
+	var refreshedPosition database.Position
+	if err := database.DB.First(&refreshedPosition, position.ID).Error; err != nil {
+		t.Fatalf("Failed to reload position: %v", err)
+	}
+	if refreshedPosition.Status != "closed" {
+		t.Fatalf("Expected position status closed, got %s", refreshedPosition.Status)
+	}
+
+	var sellOrders []database.Order
+	if err := database.DB.Where("symbol = ? AND order_type = ?", position.Symbol, "sell").Find(&sellOrders).Error; err != nil {
+		t.Fatalf("Failed to query sell orders: %v", err)
+	}
+	if len(sellOrders) != 1 {
+		t.Fatalf("Expected exactly 1 sell order, got %d", len(sellOrders))
 	}
 }
 

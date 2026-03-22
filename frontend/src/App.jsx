@@ -8,25 +8,33 @@ import { getWebSocketManager } from './services/websocketManager'
 
 const API_BASE = '/api'
 
-const mergePositions = (prevPositions, incomingPositions) => {
-  const closedPositions = prevPositions.filter(position => position.status === 'closed')
-  const mergedOpenPositions = incomingPositions.map((incomingPosition) => {
-    const existingPosition = prevPositions.find(position => position.id === incomingPosition.id || position.symbol === incomingPosition.symbol)
-    return existingPosition ? { ...existingPosition, ...incomingPosition } : incomingPosition
+const dedupePositions = (positions) => {
+  const deduped = []
+  const indexesById = new Map()
+
+  positions.forEach((position) => {
+    const existingIndex = indexesById.get(position.id)
+    if (existingIndex === undefined) {
+      indexesById.set(position.id, deduped.length)
+      deduped.push(position)
+      return
+    }
+
+    deduped[existingIndex] = { ...deduped[existingIndex], ...position }
   })
 
-  return [...mergedOpenPositions, ...closedPositions]
+  return deduped
 }
 
 const upsertPosition = (prevPositions, nextPosition) => {
-  const index = prevPositions.findIndex(position => position.id === nextPosition.id || position.symbol === nextPosition.symbol)
+  const index = prevPositions.findIndex(position => position.id === nextPosition.id)
   if (index === -1) {
-    return [nextPosition, ...prevPositions]
+    return dedupePositions([nextPosition, ...prevPositions])
   }
 
   const updatedPositions = [...prevPositions]
   updatedPositions[index] = { ...updatedPositions[index], ...nextPosition }
-  return updatedPositions
+  return dedupePositions(updatedPositions)
 }
 
 const AppDataContext = React.createContext(null)
@@ -70,7 +78,7 @@ function App() {
         throw new Error(`HTTP ${res.status}`)
       }
       const data = await res.json()
-      setPositions(data)
+      setPositions(dedupePositions(data))
     } catch (err) {
       console.error('Failed to fetch positions:', err)
     }
@@ -96,9 +104,9 @@ function App() {
 
   useWebSocketEvent('positions_update', useCallback((data) => {
     if (Array.isArray(data)) {
-      setPositions(prev => mergePositions(prev, data))
+      setPositions(dedupePositions(data))
     } else if (data.positions) {
-      setPositions(prev => mergePositions(prev, data.positions))
+      setPositions(dedupePositions(data.positions))
     }
   }, []))
 
@@ -108,7 +116,7 @@ function App() {
 
   useWebSocketEvent('position_closed', useCallback((data) => {
     setPositions(prev => prev.map(p =>
-      p.id === data.position_id || p.symbol === data.symbol
+      p.id === data.position_id
         ? { ...p, status: 'closed', close_reason: data.reason, pnl: data.pnl }
         : p
     ))

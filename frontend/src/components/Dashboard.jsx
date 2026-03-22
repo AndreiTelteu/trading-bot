@@ -52,6 +52,35 @@ const periodToMs = (period) => {
   }
 }
 
+const dedupePositions = (positions) => {
+  const deduped = []
+  const indexesById = new Map()
+
+  positions.forEach((position) => {
+    const existingIndex = indexesById.get(position.id)
+    if (existingIndex === undefined) {
+      indexesById.set(position.id, deduped.length)
+      deduped.push(position)
+      return
+    }
+
+    deduped[existingIndex] = { ...deduped[existingIndex], ...position }
+  })
+
+  return deduped
+}
+
+const upsertPosition = (positions, nextPosition) => {
+  const index = positions.findIndex((position) => position.id === nextPosition.id)
+  if (index === -1) {
+    return dedupePositions([nextPosition, ...positions])
+  }
+
+  const updated = [...positions]
+  updated[index] = { ...updated[index], ...nextPosition }
+  return dedupePositions(updated)
+}
+
 const backfillMissingHours = (data, periodMs) => {
   if (!Array.isArray(data)) {
     return []
@@ -141,7 +170,7 @@ function Dashboard({ wallet: propWallet, positions: propPositions }) {
   }, [propWallet])
 
   useEffect(() => {
-    if (propPositions) setPositions(propPositions)
+    if (propPositions) setPositions(dedupePositions(propPositions))
   }, [propPositions])
 
   // Define fetch functions
@@ -238,16 +267,12 @@ function Dashboard({ wallet: propWallet, positions: propPositions }) {
 
   useWebSocketEvent('positions_update', useCallback((data) => {
     if (Array.isArray(data)) {
-      setPositions(data)
+      setPositions(dedupePositions(data))
     }
   }, []))
 
   useWebSocketEvent('position_update', useCallback((data) => {
-    setPositions(prev => prev.map(p => 
-      p.symbol === data.symbol 
-        ? { ...p, ...data }
-        : p
-    ))
+    setPositions(prev => upsertPosition(prev, data))
   }, []))
 
   useWebSocketEvent('snapshot_update', useCallback(() => {
@@ -486,8 +511,8 @@ function Dashboard({ wallet: propWallet, positions: propPositions }) {
               <div className="flex-between" style={{ display: 'flex', justifyContent: 'space-between' }}>
                 <span className="text-muted">Confidence Rating</span>
                 <div className="rating-bar">
-                  <span style={{ fontWeight: 'bold', color: modalData.rating >= 7 ? '#52b788' : modalData.rating >= 4 ? '#e9c46a' : '#e76f51' }}>
-                    {modalData.rating}/10
+                  <span style={{ fontWeight: 'bold', color: modalData.rating >= 4 ? '#52b788' : modalData.rating >= 2.5 ? '#e9c46a' : '#e76f51' }}>
+                    {modalData.rating}/5
                   </span>
                 </div>
               </div>

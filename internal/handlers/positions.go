@@ -12,6 +12,7 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 func GetPositions(c *fiber.Ctx) error {
@@ -107,18 +108,30 @@ func ClosePosition(c *fiber.Ctx) error {
 	}
 
 	var position database.Position
-	if err := database.DB.First(&position, id).Error; err != nil {
-		return c.Status(404).JSON(fiber.Map{"error": "Position not found"})
-	}
+	if err := database.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&position, id).Error; err != nil {
+			return err
+		}
 
-	now := time.Now()
-	position.Status = "closed"
-	position.ClosedAt = &now
-	if req.CloseReason != nil {
-		position.CloseReason = req.CloseReason
-	}
+		if position.Status != "open" {
+			return fiber.NewError(fiber.StatusBadRequest, "Position is already closed")
+		}
 
-	if err := database.DB.Save(&position).Error; err != nil {
+		now := time.Now()
+		position.Status = "closed"
+		position.ClosedAt = &now
+		if req.CloseReason != nil {
+			position.CloseReason = req.CloseReason
+		}
+
+		return tx.Save(&position).Error
+	}); err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return c.Status(404).JSON(fiber.Map{"error": "Position not found"})
+		}
+		if fiberErr, ok := err.(*fiber.Error); ok {
+			return c.Status(fiberErr.Code).JSON(fiber.Map{"error": fiberErr.Message})
+		}
 		return c.Status(500).JSON(fiber.Map{"error": "Failed to close position"})
 	}
 
@@ -380,8 +393,14 @@ func ExecuteCloseTrade(c *fiber.Ctx) error {
 	}
 	now := time.Now()
 	if err := database.DB.Transaction(func(tx *gorm.DB) error {
-		if err := tx.First(&wallet).Error; err != nil {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&wallet).Error; err != nil {
 			return err
+		}
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&position, id).Error; err != nil {
+			return err
+		}
+		if position.Status != "open" {
+			return fiber.NewError(fiber.StatusBadRequest, "Position is already closed")
 		}
 		wallet.Balance += totalValue
 		if err := tx.Save(&wallet).Error; err != nil {
@@ -408,6 +427,9 @@ func ExecuteCloseTrade(c *fiber.Ctx) error {
 		}
 		return tx.Create(&order).Error
 	}); err != nil {
+		if fiberErr, ok := err.(*fiber.Error); ok {
+			return c.Status(fiberErr.Code).JSON(fiber.Map{"error": fiberErr.Message})
+		}
 		return c.Status(500).JSON(fiber.Map{"error": "Failed to execute paper sell trade"})
 	}
 

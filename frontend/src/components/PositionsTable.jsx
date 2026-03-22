@@ -1,9 +1,27 @@
-import React, { useState } from 'react'
+import React, { useMemo, useState } from 'react'
 import AlertDialog from './AlertDialog'
 import useAlertDialog from '../hooks/useAlertDialog'
 import { apiFetch } from '../services/api'
 
 const API_BASE = '/api'
+
+const dedupePositions = (positions) => {
+  const deduped = []
+  const indexesById = new Map()
+
+  positions.forEach((position) => {
+    const existingIndex = indexesById.get(position.id)
+    if (existingIndex === undefined) {
+      indexesById.set(position.id, deduped.length)
+      deduped.push(position)
+      return
+    }
+
+    deduped[existingIndex] = { ...deduped[existingIndex], ...position }
+  })
+
+  return deduped
+}
 
 function PositionsTable({ positions, onRefresh }) {
   const [symbol, setSymbol] = useState('')
@@ -137,8 +155,10 @@ function PositionsTable({ positions, onRefresh }) {
     })
   }
 
-  const openPositions = positions.filter(p => p.status === 'open')
-  const closedPositions = positions
+  const displayPositions = useMemo(() => dedupePositions(positions), [positions])
+
+  const openPositions = displayPositions.filter(p => p.status === 'open')
+  const closedPositions = displayPositions
     .filter(p => p.status === 'closed')
     .sort((a, b) => {
       const aClosedAt = a.closed_at ? new Date(a.closed_at).getTime() : 0

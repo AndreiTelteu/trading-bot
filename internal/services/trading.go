@@ -488,9 +488,14 @@ func UpdatePositionsPrices() (interface{}, error) {
 		return nil, err
 	}
 
+	allPositions, err := database.ListPositionsForDisplay()
+	if err != nil {
+		return nil, err
+	}
+
 	// Broadcast updates via WebSocket
 	websocket.BroadcastSnapshotUpdate(snapshot.Timestamp, snapshot.TotalValue)
-	websocket.BroadcastPositionsUpdate(positions)
+	websocket.BroadcastPositionsUpdate(allPositions)
 
 	websocket.BroadcastWalletUpdate(latestWallet.Balance, latestWallet.Currency, snapshot.TotalValue)
 
