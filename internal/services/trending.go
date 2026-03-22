@@ -34,22 +34,27 @@ type TrendingData struct {
 
 // AnalyzedCoin represents the result of analyzing a single coin
 type AnalyzedCoin struct {
-	Symbol         string             `json:"symbol"`
-	Price          float64            `json:"price"`
-	Change24h      float64            `json:"change_24h"`
-	RankScore      float64            `json:"rank_score,omitempty"`
-	RankComponents map[string]float64 `json:"rank_components,omitempty"`
-	Signal         string             `json:"signal"`
-	Rating         float64            `json:"rating"`
-	Timeframe      string             `json:"timeframe"`
-	CreatedAt      time.Time          `json:"created_at"`
-	ProbUp         *float64           `json:"prob_up,omitempty"`
-	ExpectedValue  *float64           `json:"expected_value,omitempty"`
-	Indicators     []IndicatorResult  `json:"indicators"`
-	TradeExecuted  *bool              `json:"trade_executed,omitempty"`
-	Error          string             `json:"error,omitempty"`
-	Decision       string             `json:"decision,omitempty"`
-	DecisionReason string             `json:"decision_reason,omitempty"`
+	Symbol            string             `json:"symbol"`
+	Price             float64            `json:"price"`
+	Change24h         float64            `json:"change_24h"`
+	RankScore         float64            `json:"rank_score,omitempty"`
+	RankComponents    map[string]float64 `json:"rank_components,omitempty"`
+	Signal            string             `json:"signal"`
+	Rating            float64            `json:"rating"`
+	Timeframe         string             `json:"timeframe"`
+	CreatedAt         time.Time          `json:"created_at"`
+	ModelVersion      string             `json:"model_version,omitempty"`
+	ModelScore        *float64           `json:"model_score,omitempty"`
+	ModelRank         *int               `json:"model_rank,omitempty"`
+	PolicySelected    *bool              `json:"policy_selected,omitempty"`
+	ProbUp            *float64           `json:"prob_up,omitempty"`
+	ExpectedValue     *float64           `json:"expected_value,omitempty"`
+	Indicators        []IndicatorResult  `json:"indicators"`
+	TradeExecuted     *bool              `json:"trade_executed,omitempty"`
+	Error             string             `json:"error,omitempty"`
+	Decision          string             `json:"decision,omitempty"`
+	DecisionReason    string             `json:"decision_reason,omitempty"`
+	FeatureSnapshotID *uint              `json:"-"`
 }
 
 // IndicatorResult stores a single indicator's analysis
@@ -678,11 +683,53 @@ func analyzeSymbolForTrending(symbol string, timeframe string) (*AnalyzedCoin, e
 	return analyzeSymbolFromCandles(symbol, timeframe, candles), nil
 }
 
-func AnalyzeShortlist(shortlist []UniverseCandidateMetrics, settings map[string]string) ([]AnalyzedCoin, error) {
-	probModelEnabled := getSettingBool(settings, "prob_model_enabled", false)
-	results := make([]AnalyzedCoin, 0, len(shortlist))
+func AnalyzeShortlist(selection *UniverseSelectionResult, settings map[string]string) ([]AnalyzedCoin, error) {
+	if selection == nil {
+		return nil, nil
+	}
 
-	for _, candidate := range shortlist {
+	results := make([]AnalyzedCoin, 0, len(selection.Shortlist))
+	modelPolicy := GetModelSelectionPolicy(settings)
+	modelArtifact, modelErr := LoadConfiguredModel(settings)
+	if modelErr != nil {
+		logActivity("error", "Failed to load learned model artifact", modelErr.Error())
+		modelArtifact = nil
+	}
+
+	btcCandles, err := fetchCandles("BTCUSDT", "15m", 200)
+	if err != nil {
+		btcCandles = nil
+	}
+
+	portfolioExposure := 0.0
+	openPositionCount := 0
+	openSymbols := make(map[string]struct{})
+	if database.DB != nil {
+		var wallet database.Wallet
+		if err := database.DB.First(&wallet).Error; err == nil {
+			portfolioValue := computePortfolioValue(wallet)
+			if portfolioValue > 0 {
+				portfolioExposure = math.Max(0, (portfolioValue-wallet.Balance)/portfolioValue)
+			}
+		}
+		var positions []database.Position
+		database.DB.Where("status = ?", "open").Find(&positions)
+		openPositionCount = len(positions)
+		for _, position := range positions {
+			openSymbols[strings.ToUpper(position.Symbol)+"USDT"] = struct{}{}
+		}
+	}
+
+	rankingInputs := make([]ModelRankedCandidate, 0, len(selection.Shortlist))
+	observations := make([]modelObservation, 0, len(selection.Shortlist))
+	observationIndexBySymbol := make(map[string]int, len(selection.Shortlist))
+	resultIndexBySymbol := make(map[string]int, len(selection.Shortlist))
+	activeUniverse := selection.ActiveUniverse
+	if len(activeUniverse) == 0 {
+		activeUniverse = selection.Shortlist
+	}
+
+	for _, candidate := range selection.Shortlist {
 		candles15m, err := fetchCandles(candidate.Symbol, "15m", 200)
 		if err != nil {
 			logActivity("error", fmt.Sprintf("Error analyzing %s", candidate.Symbol), err.Error())
@@ -702,12 +749,49 @@ func AnalyzeShortlist(shortlist []UniverseCandidateMetrics, settings map[string]
 		analysis.RankScore = candidate.RankScore
 		analysis.RankComponents = candidate.RankComponents
 
-		if probModelEnabled {
-			features := CalculateFeatureVector(candles15m, GetIndicatorSettings())
-			pUp, ev, ok := computeProbGate(features, settings)
-			if ok || features.Valid {
-				analysis.ProbUp = &pUp
-				analysis.ExpectedValue = &ev
+		if modelArtifact != nil {
+			_, alreadyOpen := openSymbols[strings.ToUpper(candidate.Symbol)]
+			featureRow := BuildModelFeatureRow(ModelFeatureInput{
+				Timestamp:         analysis.CreatedAt,
+				Symbol:            candidate.Symbol,
+				Candles15m:        candles15m,
+				Candidate:         candidate,
+				ActiveUniverse:    activeUniverse,
+				RegimeState:       selection.RegimeState,
+				BreadthRatio:      selection.BreadthRatio,
+				BTCCandles15m:     btcCandles,
+				OpenPositionCount: openPositionCount,
+				ExposureRatio:     portfolioExposure,
+				AlreadyOpen:       alreadyOpen,
+			})
+
+			if featureRow.Valid {
+				prediction, predictionErr := modelArtifact.PredictRow(featureRow)
+				if predictionErr == nil {
+					analysis.ModelVersion = prediction.ModelVersion
+					analysis.ProbUp = float64Ptr(prediction.Probability)
+					analysis.ExpectedValue = float64Ptr(prediction.ExpectedValue)
+					analysis.ModelScore = float64Ptr(prediction.RawScore)
+					if snapshotID, snapshotErr := persistFeatureSnapshot(featureRow, candidate, prediction.ModelVersion, selection); snapshotErr == nil {
+						analysis.FeatureSnapshotID = snapshotID
+					}
+					rankingInputs = append(rankingInputs, ModelRankedCandidate{
+						Symbol:        candidate.Symbol,
+						Probability:   prediction.Probability,
+						ExpectedValue: prediction.ExpectedValue,
+						RawScore:      prediction.RawScore,
+					})
+					observations = append(observations, modelObservation{
+						Symbol:            candidate.Symbol,
+						FeatureSnapshotID: analysis.FeatureSnapshotID,
+						Prediction:        prediction,
+					})
+					observationIndexBySymbol[candidate.Symbol] = len(observations) - 1
+				} else {
+					analysis.DecisionReason = predictionErr.Error()
+				}
+			} else if len(featureRow.QualityFlags) > 0 {
+				analysis.DecisionReason = strings.Join(featureRow.QualityFlags, ",")
 			}
 		}
 
@@ -715,6 +799,51 @@ func AnalyzeShortlist(shortlist []UniverseCandidateMetrics, settings map[string]
 			fmt.Sprintf("Signal: %s, Rating: %.2f, Rank: %.2f", analysis.Signal, analysis.Rating, analysis.RankScore))
 
 		results = append(results, *analysis)
+		resultIndexBySymbol[candidate.Symbol] = len(results) - 1
+	}
+
+	if len(rankingInputs) > 0 {
+		ranked := RankModelPredictions(rankingInputs, modelPolicy)
+		for _, rankedCandidate := range ranked {
+			resultIndex, ok := resultIndexBySymbol[rankedCandidate.Symbol]
+			if !ok {
+				continue
+			}
+			analysis := &results[resultIndex]
+			analysis.ModelRank = intValuePtr(rankedCandidate.Rank)
+			analysis.PolicySelected = boolValuePtr(rankedCandidate.Selected)
+			analysis.DecisionReason = rankedCandidate.SelectionReason
+
+			if observationIndex, ok := observationIndexBySymbol[rankedCandidate.Symbol]; ok {
+				decisionResult := "shadow_only"
+				if modelPolicy.UseForLiveEntries() {
+					if rankedCandidate.Selected {
+						decisionResult = "selected"
+					} else {
+						decisionResult = "rejected"
+					}
+				}
+				observations[observationIndex].Rank = rankedCandidate.Rank
+				observations[observationIndex].Selected = rankedCandidate.Selected
+				observations[observationIndex].DecisionResult = decisionResult
+			}
+		}
+
+		sort.SliceStable(results, func(i, j int) bool {
+			leftRank := modelRankValue(results[i].ModelRank)
+			rightRank := modelRankValue(results[j].ModelRank)
+			if leftRank == rightRank {
+				if results[i].RankScore == results[j].RankScore {
+					return results[i].Symbol < results[j].Symbol
+				}
+				return results[i].RankScore > results[j].RankScore
+			}
+			return leftRank < rightRank
+		})
+
+		if err := persistPredictionLogs(observations, selection, modelPolicy.rolloutLabel()); err != nil {
+			logActivity("error", "Failed to persist model prediction logs", err.Error())
+		}
 	}
 
 	return results, nil
@@ -725,7 +854,8 @@ func ExecuteShortlistTrades(analyses []AnalyzedCoin, universe *UniverseSelection
 	maxPositions := getSettingInt(settings, "max_positions", 5)
 	buyOnlyStrong := getSettingBool(settings, "buy_only_strong", true)
 	minConfidenceToBuy := getSettingFloat(settings, "min_confidence_to_buy", 4.0)
-	probModelEnabled := getSettingBool(settings, "prob_model_enabled", false)
+	modelPolicy := GetModelSelectionPolicy(settings)
+	useModelEntries := modelPolicy.UseForLiveEntries() && hasModelRankings(analyses)
 	regimeGateEnabled := getSettingBool(settings, "regime_gate_enabled", true)
 	regimeTimeframe := getSettingString(settings, "regime_timeframe", "1h")
 	regimeEmaFast := getSettingInt(settings, "regime_ema_fast", 50)
@@ -733,8 +863,6 @@ func ExecuteShortlistTrades(analyses []AnalyzedCoin, universe *UniverseSelection
 	volAtrPeriod := getSettingInt(settings, "vol_atr_period", 14)
 	volRatioMin := getSettingFloat(settings, "vol_ratio_min", 0.002)
 	volRatioMax := getSettingFloat(settings, "vol_ratio_max", 0.02)
-	pMin := getSettingFloat(settings, "prob_p_min", 0)
-	evMin := getSettingFloat(settings, "prob_ev_min", 0)
 
 	var currentOpenCount int64
 	database.DB.Model(&database.Position{}).Where("status = ?", "open").Count(&currentOpenCount)
@@ -742,19 +870,19 @@ func ExecuteShortlistTrades(analyses []AnalyzedCoin, universe *UniverseSelection
 
 	for i := range analyses {
 		analysis := &analyses[i]
-		signalQualifies := false
+		legacySignalQualifies := false
 		if buyOnlyStrong {
-			signalQualifies = analysis.Signal == "STRONG_BUY"
+			legacySignalQualifies = analysis.Signal == "STRONG_BUY"
 		} else {
-			signalQualifies = analysis.Signal == "BUY" || analysis.Signal == "STRONG_BUY"
+			legacySignalQualifies = analysis.Signal == "BUY" || analysis.Signal == "STRONG_BUY"
 		}
 
-		probOk := true
-		if probModelEnabled {
-			probOk = analysis.ProbUp != nil && analysis.ExpectedValue != nil && *analysis.ProbUp > pMin && *analysis.ExpectedValue > evMin
-		}
+		probOk := analysis.ProbUp != nil && analysis.ExpectedValue != nil && *analysis.ProbUp >= modelPolicy.MinProbability && *analysis.ExpectedValue >= modelPolicy.MinExpectedValue
+		modelSelected := analysis.PolicySelected != nil && *analysis.PolicySelected
+		signalQualifies := legacySignalQualifies
 		confidenceQualifies := analysis.Rating >= minConfidenceToBuy
-		if probModelEnabled {
+		if useModelEntries {
+			signalQualifies = modelSelected
 			confidenceQualifies = probOk
 		}
 
@@ -784,10 +912,16 @@ func ExecuteShortlistTrades(analyses []AnalyzedCoin, universe *UniverseSelection
 			decisionReason = "auto_trade_disabled"
 		} else if universe != nil && universe.RegimeState == UniverseRegimeRiskOff {
 			decisionReason = "universe_regime_risk_off"
+		} else if useModelEntries && !modelSelected {
+			decisionReason = defaultString(analysis.DecisionReason, "model_policy_not_selected")
 		} else if !signalQualifies {
 			decisionReason = "signal_not_qualified"
 		} else if !confidenceQualifies {
-			decisionReason = "confidence_not_qualified"
+			if useModelEntries {
+				decisionReason = "model_policy_floor_failed"
+			} else {
+				decisionReason = "confidence_not_qualified"
+			}
 		} else if !regimeOk {
 			decisionReason = "regime_gate_failed"
 		} else if !volOk {
@@ -1103,7 +1237,7 @@ func AnalyzeTrendingCoins() (*TrendingAnalysisResult, error) {
 		return nil, fmt.Errorf("failed to build universe snapshot: %w", err)
 	}
 
-	results, err := AnalyzeShortlist(selection.Shortlist, settings)
+	results, err := AnalyzeShortlist(selection, settings)
 	if err != nil {
 		logActivity("error", "Failed to analyze shortlist", err.Error())
 		return nil, err
@@ -1256,6 +1390,41 @@ func GetLatestAnalysisForSymbol(symbol string) (*AnalyzedCoin, error) {
 		Decision:       decision,
 		DecisionReason: decisionReason,
 	}, nil
+}
+
+func float64Ptr(value float64) *float64 {
+	return &value
+}
+
+func intValuePtr(value int) *int {
+	return &value
+}
+
+func boolValuePtr(value bool) *bool {
+	return &value
+}
+
+func modelRankValue(rank *int) int {
+	if rank == nil || *rank <= 0 {
+		return int(^uint(0) >> 1)
+	}
+	return *rank
+}
+
+func hasModelRankings(analyses []AnalyzedCoin) bool {
+	for _, analysis := range analyses {
+		if analysis.ModelRank != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func defaultString(value string, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	return value
 }
 
 // broadcastTradeUpdates broadcasts wallet, positions, and orders updates via WebSocket

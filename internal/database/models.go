@@ -200,6 +200,73 @@ type UniverseMember struct {
 	UpdatedAt                 time.Time `json:"updated_at"`
 }
 
+type ModelArtifact struct {
+	ID                 uint      `json:"id" gorm:"primaryKey;autoIncrement"`
+	Version            string    `json:"version" gorm:"size:100;uniqueIndex"`
+	ModelFamily        string    `json:"model_family" gorm:"size:30;index"`
+	FeatureSpecVersion string    `json:"feature_spec_version" gorm:"size:50;index"`
+	LabelSpecVersion   string    `json:"label_spec_version" gorm:"size:50"`
+	CalibrationMethod  string    `json:"calibration_method" gorm:"size:30"`
+	TrainWindow        string    `json:"train_window" gorm:"size:120"`
+	ValidationWindow   string    `json:"validation_window" gorm:"size:120"`
+	TestWindow         string    `json:"test_window" gorm:"size:120"`
+	MetricsSummaryJSON string    `json:"metrics_summary_json" gorm:"type:text"`
+	ArtifactPath       string    `json:"artifact_path" gorm:"size:500"`
+	ArtifactChecksum   string    `json:"artifact_checksum" gorm:"size:128"`
+	RolloutState       string    `json:"rollout_state" gorm:"size:20;index"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
+}
+
+type FeatureSnapshot struct {
+	ID                 uint      `json:"id" gorm:"primaryKey;autoIncrement"`
+	SnapshotTime       time.Time `json:"snapshot_time" gorm:"index;index:idx_feature_symbol_time,priority:2,sort:desc"`
+	Symbol             string    `json:"symbol" gorm:"size:20;index;index:idx_feature_symbol_time,priority:1"`
+	UniverseSnapshotID *uint     `json:"universe_snapshot_id" gorm:"index"`
+	ModelVersion       string    `json:"model_version" gorm:"size:100;index"`
+	FeatureSpecVersion string    `json:"feature_spec_version" gorm:"size:50;index"`
+	LastPrice          float64   `json:"last_price"`
+	RegimeState        string    `json:"regime_state" gorm:"size:20;index"`
+	BreadthRatio       float64   `json:"breadth_ratio"`
+	RankScore          float64   `json:"rank_score"`
+	FeaturesJSON       string    `json:"features_json" gorm:"type:text"`
+	QualityFlagsJSON   string    `json:"quality_flags_json" gorm:"type:text"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
+}
+
+type PredictionLog struct {
+	ID                   uint      `json:"id" gorm:"primaryKey;autoIncrement"`
+	PredictionTime       time.Time `json:"prediction_time" gorm:"index;index:idx_prediction_symbol_time,priority:2,sort:desc;index:idx_prediction_model_time,priority:2,sort:desc"`
+	Symbol               string    `json:"symbol" gorm:"size:20;index;index:idx_prediction_symbol_time,priority:1"`
+	ModelVersion         string    `json:"model_version" gorm:"size:100;index;index:idx_prediction_model_time,priority:1"`
+	FeatureSnapshotID    *uint     `json:"feature_snapshot_id" gorm:"index"`
+	UniverseSnapshotID   *uint     `json:"universe_snapshot_id" gorm:"index"`
+	PredictedProbability float64   `json:"predicted_probability"`
+	PredictedEV          float64   `json:"predicted_ev"`
+	RawScore             float64   `json:"raw_score"`
+	Rank                 int       `json:"rank"`
+	Selected             bool      `json:"selected" gorm:"index"`
+	DecisionResult       string    `json:"decision_result" gorm:"size:30;index"`
+	RolloutState         string    `json:"rollout_state" gorm:"size:20;index"`
+	CreatedAt            time.Time `json:"created_at"`
+	UpdatedAt            time.Time `json:"updated_at"`
+}
+
+type TradeLabel struct {
+	ID                uint      `json:"id" gorm:"primaryKey;autoIncrement"`
+	FeatureSnapshotID *uint     `json:"feature_snapshot_id" gorm:"index"`
+	PredictionLogID   *uint     `json:"prediction_log_id" gorm:"index"`
+	Symbol            string    `json:"symbol" gorm:"size:20;index"`
+	ModelVersion      string    `json:"model_version" gorm:"size:100;index"`
+	RealizedReturn    float64   `json:"realized_return"`
+	Profitable        bool      `json:"profitable" gorm:"index"`
+	ExitReason        *string   `json:"exit_reason" gorm:"size:50"`
+	HoldBars          int       `json:"hold_bars"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
+}
+
 type PortfolioSnapshot struct {
 	ID                   uint      `json:"id" gorm:"primaryKey;autoIncrement"`
 	TotalValue           float64   `json:"total_value"`

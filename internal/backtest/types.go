@@ -28,6 +28,8 @@ type BacktestConfig struct {
 	InitialBalance          float64
 	FeeBps                  float64
 	SlippageBps             float64
+	ModelArtifact           *services.LogisticModelArtifact
+	ModelPolicy             services.ModelSelectionPolicy
 	MaxPositions            int
 	TimeStopBars            int
 	StrategyMode            StrategyMode
@@ -53,15 +55,19 @@ type BacktestConfig struct {
 }
 
 type Trade struct {
-	Symbol     string
-	EntryTime  time.Time
-	ExitTime   time.Time
-	EntryPrice float64
-	ExitPrice  float64
-	Size       float64
-	Pnl        float64
-	PnlPercent float64
-	Reason     string
+	Symbol               string
+	EntryTime            time.Time
+	ExitTime             time.Time
+	EntryPrice           float64
+	ExitPrice            float64
+	Size                 float64
+	Pnl                  float64
+	PnlPercent           float64
+	Reason               string
+	EntryRank            int
+	ModelVersion         string
+	PredictedProbability *float64
+	PredictedEV          *float64
 }
 
 type EquityPoint struct {
@@ -80,9 +86,25 @@ type Metrics struct {
 	TradeCount       int
 }
 
+type RankBucketMetric struct {
+	Rank     int     `json:"rank"`
+	Trades   int     `json:"trades"`
+	WinRate  float64 `json:"win_rate"`
+	AvgPnl   float64 `json:"avg_pnl"`
+	TotalPnl float64 `json:"total_pnl"`
+}
+
+type RankingMetrics struct {
+	ModelVersion string             `json:"model_version"`
+	TopK         int                `json:"top_k"`
+	Selected     int                `json:"selected"`
+	ByRank       []RankBucketMetric `json:"by_rank,omitempty"`
+}
+
 type BacktestResult struct {
 	Mode           StrategyMode
 	Metrics        Metrics
+	RankingMetrics *RankingMetrics
 	Equity         []EquityPoint
 	EquityBySymbol map[string][]EquityPoint
 	Trades         []Trade

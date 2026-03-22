@@ -44,7 +44,7 @@ func GenerateProposals() (interface{}, error) {
 		return nil, fiber.NewError(500, "Failed to get positions: "+err.Error())
 	}
 
-	settings, settingCategories, err := getSettingsByCategory([]string{"trading", "indicators", "probabilistic", "ai"})
+	settings, settingCategories, err := getSettingsByCategory([]string{"trading", "indicators", "probabilistic", "model", "ai"})
 	if err != nil {
 		return nil, fiber.NewError(500, "Failed to get settings: "+err.Error())
 	}
@@ -152,7 +152,7 @@ func GenerateBacktestOptimizationProposals(input BacktestOptimizationInput) (int
 		return nil, fiber.NewError(400, "Selected backtest has no stored summary")
 	}
 
-	settings, settingCategories, err := getSettingsByCategory([]string{"trading", "indicators", "probabilistic", "ai", "atr"})
+	settings, settingCategories, err := getSettingsByCategory([]string{"trading", "indicators", "probabilistic", "model", "ai", "atr"})
 	if err != nil {
 		return nil, fiber.NewError(500, "Failed to get optimization settings: "+err.Error())
 	}
@@ -547,17 +547,28 @@ func parseLockedKeys(settings map[string]string) map[string]bool {
 func buildAllowedParameterKeys(settings map[string]string, weights map[string]float64, lockedKeys map[string]bool) map[string]bool {
 	allowed := make(map[string]bool)
 	for key := range settings {
-		if !lockedKeys[key] {
+		if !lockedKeys[key] && isAIAdjustableSettingKey(key) {
 			allowed[key] = true
 		}
 	}
-	for indicator := range weights {
-		key := "weight:" + indicator
-		if !lockedKeys[key] {
-			allowed[key] = true
-		}
-	}
+	_ = weights
 	return allowed
+}
+
+func isAIAdjustableSettingKey(key string) bool {
+	trimmed := strings.TrimSpace(key)
+	if trimmed == "" {
+		return false
+	}
+	if strings.HasPrefix(trimmed, "prob_model_beta") {
+		return false
+	}
+	switch trimmed {
+	case "prob_model_enabled", "prob_p_min", "prob_ev_min", "prob_avg_gain", "prob_avg_loss", "buy_only_strong", "min_confidence_to_buy", "active_model_version", "model_rollout_state":
+		return false
+	default:
+		return true
+	}
 }
 
 func buildProposalPrompt(analysisData []AnalysisSummary, wallet map[string]interface{}, positions []map[string]interface{}, settings map[string]string, weights map[string]float64, gateMetrics GateMetrics, recentDecisions []DecisionSummary, lockedKeys map[string]bool) string {
@@ -584,10 +595,10 @@ func buildProposalPrompt(analysisData []AnalysisSummary, wallet map[string]inter
 	sb.WriteString(string(gateMetricsJSON))
 	sb.WriteString("\n\nHow the trading logic uses settings:\n")
 	sb.WriteString("- Auto-trade runs only if auto_trade_enabled is true and max_positions is not exceeded.\n")
-	sb.WriteString("- Signal gate: buy_only_strong=true requires STRONG_BUY; false allows BUY or STRONG_BUY.\n")
-	sb.WriteString("- Confidence gate: if prob_model_enabled=true, the model gate overrides min_confidence_to_buy.\n")
-	sb.WriteString("- Confidence ratings use a 1 to 5 scale, so min_confidence_to_buy and min_confidence_to_sell must stay within that range and must never exceed 5.\n")
-	sb.WriteString("- Prob gate uses prob_model_beta0..beta6 with features (RSI, MACD hist, BB %B, momentum %, volume ratio, volatility ratio) to compute p_up via sigmoid, then EV = p_up*prob_avg_gain - (1-p_up)*prob_avg_loss; buy only if p_up>prob_p_min and EV>prob_ev_min.\n")
+	sb.WriteString("- The learned signal model loads one immutable artifact by active_model_version and computes calibrated probability plus expected value on each shortlisted candidate.\n")
+	sb.WriteString("- selection_policy_top_k, selection_policy_min_prob, and selection_policy_min_ev define the ranked entry policy.\n")
+	sb.WriteString("- model_rollout_state=shadow logs predictions only; paper/live uses the ranked model policy for entries.\n")
+	sb.WriteString("- min_confidence_to_sell still uses the legacy 1 to 5 confidence scale for discretionary sell signals and must stay within that range.\n")
 	sb.WriteString("- Regime gate: if regime_gate_enabled=true, requires EMA(fast) > EMA(slow) on regime_timeframe.\n")
 	sb.WriteString("- Vol gate: ATR/price on 15m must be between vol_ratio_min and vol_ratio_max.\n")
 	sb.WriteString("- Vol sizing: if vol_sizing_enabled=true, risk_per_trade and stop_mult define position size via ATR stop distance; max_position_value caps order size.\n")
@@ -595,9 +606,9 @@ func buildProposalPrompt(analysisData []AnalysisSummary, wallet map[string]inter
 	sb.WriteString("- Trailing stop uses trailing_stop_enabled and trailing_stop_percent.\n")
 	sb.WriteString("- Time stop uses time_stop_bars if > 0 and exits only when PnL <= 0.\n")
 	sb.WriteString("\nImportant interactions and failure modes:\n")
-	sb.WriteString("- If prob_model_enabled=true and betas are all 0, p_up defaults to 0.5 and may fail prob_p_min.\n")
+	sb.WriteString("- Tight selection_policy_min_prob or selection_policy_min_ev can suppress all entries even with a healthy shortlist.\n")
 	sb.WriteString("- Tight vol_ratio_min/max can block trades in low or high volatility regimes.\n")
-	sb.WriteString("- High min_confidence_to_buy combined with buy_only_strong can suppress trades.\n")
+	sb.WriteString("- model_rollout_state should stay shadow until validation supports promotion.\n")
 	sb.WriteString("\nConstraints:\n")
 	sb.WriteString(fmt.Sprintf("- Max proposals per run: %d\n", getSettingIntFromMap(settings, "ai_max_proposals", 5)))
 	sb.WriteString(fmt.Sprintf("- Max numeric change per proposal: %.2f%%\n", getSettingFloatFromMap(settings, "ai_change_budget_pct", 10)))
@@ -616,12 +627,12 @@ func buildProposalPrompt(analysisData []AnalysisSummary, wallet map[string]inter
 	for k, v := range settings {
 		sb.WriteString(fmt.Sprintf("%s: %s\n", k, v))
 	}
-	sb.WriteString("\n\nCurrent Indicator Weights (allowed keys use prefix weight:):\n")
+	sb.WriteString("\n\nCurrent Indicator Weights (legacy context only):\n")
 	for k, v := range weights {
 		sb.WriteString(fmt.Sprintf("weight:%s: %g\n", k, v))
 	}
 	sb.WriteString("\n\nOnly return proposals of type parameter_adjustment. Each proposal must change exactly one allowed key.\n")
-	sb.WriteString("Allowed keys are the keys listed above in Current Settings plus the weight:* keys listed above.\n")
+	sb.WriteString("Allowed keys are only the adjustable settings listed above in Current Settings. Indicator weights and retired probability-beta controls are context only.\n")
 	sb.WriteString("Do not return buy/sell/risk proposals. Do not return null values.\n\n")
 	sb.WriteString("Return a JSON array of proposals with these fields:\n")
 	sb.WriteString("- proposal_type: must be parameter_adjustment\n")
@@ -696,8 +707,9 @@ func buildBacktestOptimizationPrompt(input BacktestOptimizationInput, settings m
 	sb.WriteString("\n\nHow to interpret the backtest:\n")
 	sb.WriteString("- baseline represents the fixed-size baseline strategy.\n")
 	sb.WriteString("- vol_sizing represents volatility-adjusted sizing and exits.\n")
+	sb.WriteString("- When active_model_version is set, both strategies use the learned model ranking policy for entries while differing on sizing/exits.\n")
 	sb.WriteString("- validation contains walk-forward and bootstrap confidence checks.\n")
-	sb.WriteString("- Strategy confidence ratings use a 1 to 5 scale, so min_confidence_to_buy and min_confidence_to_sell must stay within that range and must never exceed 5.\n")
+	sb.WriteString("- min_confidence_to_sell still uses a 1 to 5 scale and must never exceed 5.\n")
 	sb.WriteString("- Optimize for stronger risk-adjusted performance, better profit factor, better win/loss profile, and lower drawdown when possible.\n")
 	sb.WriteString("- Prefer settings that are already part of the system and avoid inventing new parameters.\n")
 	sb.WriteString("\nConstraints:\n")
@@ -706,7 +718,7 @@ func buildBacktestOptimizationPrompt(input BacktestOptimizationInput, settings m
 	sb.WriteString(fmt.Sprintf("- Max keys per category: %d\n", getSettingIntFromMap(settings, "ai_max_keys_per_category", 2)))
 	sb.WriteString("- Only propose changes to allowed setting keys or indicator weights.\n")
 	sb.WriteString("- Do not propose backtest_* keys; they are context only.\n")
-	sb.WriteString("- Prefer trading, indicator, probabilistic, ATR, and weight:* adjustments over ai_* operational settings.\n")
+	sb.WriteString("- Prefer trading, model, universe, and ATR adjustments over ai_* operational settings.\n")
 	sb.WriteString("- Do not propose manual trades or portfolio actions.\n")
 	sb.WriteString("- Use the backtest evidence to justify each change.\n")
 	if options.Mode == "hypothesis_fallback" {
@@ -749,11 +761,11 @@ func buildBacktestOptimizationPrompt(input BacktestOptimizationInput, settings m
 	sb.WriteString(compactSummaryJSON)
 	sb.WriteString("\n\nReturn a JSON array only. Each item must contain:\n")
 	sb.WriteString("- proposal_type: backtest_parameter_adjustment\n")
-	sb.WriteString("- parameter_key: one allowed adjustable setting key or weight:key\n")
+	sb.WriteString("- parameter_key: one allowed adjustable setting key\n")
 	sb.WriteString("- old_value: current value\n")
 	sb.WriteString("- new_value: proposed value\n")
 	sb.WriteString("- reasoning: concise explanation grounded in the backtest evidence\n\n")
-	sb.WriteString("Example: [{\"proposal_type\":\"backtest_parameter_adjustment\",\"parameter_key\":\"weight:rsi\",\"old_value\":\"1\",\"new_value\":\"1.01\",\"reasoning\":\"Hypothesis: a slightly higher RSI weight may reduce low-quality entries while staying inside the configured change budget.\"}]\n\n")
+	sb.WriteString("Example: [{\"proposal_type\":\"backtest_parameter_adjustment\",\"parameter_key\":\"selection_policy_min_prob\",\"old_value\":\"0.53\",\"new_value\":\"0.55\",\"reasoning\":\"Hypothesis: the selected backtest shows weak lower-ranked trades, so a slightly higher probability floor may improve quality while staying inside the configured change budget.\"}]\n\n")
 	sb.WriteString("Respond with only valid JSON array, no markdown or extra text:")
 
 	return sb.String(), nil

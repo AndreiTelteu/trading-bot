@@ -20,6 +20,10 @@ func schemaModels() []interface{} {
 		&UniverseSymbol{},
 		&UniverseSnapshot{},
 		&UniverseMember{},
+		&ModelArtifact{},
+		&FeatureSnapshot{},
+		&PredictionLog{},
+		&TradeLabel{},
 		&PortfolioSnapshot{},
 	}
 }
@@ -105,6 +109,22 @@ func RunMigrations(db *gorm.DB) error {
 			},
 			Rollback: func(tx *gorm.DB) error {
 				for _, model := range []interface{}{&UniverseMember{}, &UniverseSnapshot{}, &UniverseSymbol{}} {
+					if tx.Migrator().HasTable(model) {
+						if err := tx.Migrator().DropTable(model); err != nil {
+							return err
+						}
+					}
+				}
+				return nil
+			},
+		},
+		{
+			ID: "202603230400_learned_model_entities",
+			Migrate: func(tx *gorm.DB) error {
+				return migrateSchema(tx)
+			},
+			Rollback: func(tx *gorm.DB) error {
+				for _, model := range []interface{}{&TradeLabel{}, &PredictionLog{}, &FeatureSnapshot{}, &ModelArtifact{}} {
 					if tx.Migrator().HasTable(model) {
 						if err := tx.Migrator().DropTable(model); err != nil {
 							return err

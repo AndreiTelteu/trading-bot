@@ -378,6 +378,12 @@ func prepareBacktestInputsWithSettings(settings map[string]string) (BacktestConf
 		}
 	}
 
+	modelPolicy := services.GetModelSelectionPolicy(settings)
+	modelArtifact, err := services.LoadConfiguredModel(settings)
+	if err != nil {
+		return BacktestConfig{}, nil, err
+	}
+
 	config := BacktestConfig{
 		Symbols:                 symbols,
 		UniverseMode:            universeMode,
@@ -391,6 +397,8 @@ func prepareBacktestInputsWithSettings(settings map[string]string) (BacktestConf
 		InitialBalance:          1000.0, // hardcoded starting balance for backtests
 		FeeBps:                  getSettingFloat(settings, "backtest_fee_bps", 10),
 		SlippageBps:             getSettingFloat(settings, "backtest_slippage_bps", 5),
+		ModelArtifact:           modelArtifact,
+		ModelPolicy:             modelPolicy,
 		MaxPositions:            getSettingInt(settings, "max_positions", 5),
 		TimeStopBars:            getSettingInt(settings, "time_stop_bars", 0),
 		EntryPercent:            getSettingFloat(settings, "entry_percent", 5.0),

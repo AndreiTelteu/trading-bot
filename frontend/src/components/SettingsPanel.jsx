@@ -173,11 +173,11 @@ const SETTINGS_SECTIONS = [
   { key: 'trading', label: 'Trading', to: '/settings/trading' },
   { key: 'indicators', label: 'Indicators', to: '/settings/indicators' },
   { key: 'universe', label: 'Universe', to: '/settings/universe' },
-  { key: 'probabilistic', label: 'Probabilistic', to: '/settings/probabilistic' },
+  { key: 'probabilistic', label: 'Model & Policy', to: '/settings/probabilistic' },
   { key: 'ai', label: 'AI Settings', to: '/settings/ai' },
   { key: 'atr', label: 'ATR', to: '/settings/atr' },
   { key: 'backtest', label: 'Backtest', to: '/settings/backtest' },
-  { key: 'weights', label: 'Weights', to: '/settings/weights' },
+  { key: 'weights', label: 'Legacy Weights', to: '/settings/weights' },
 ]
 
 function SettingsPanel({ activeSection }) {
@@ -563,9 +563,7 @@ function SettingsPanel({ activeSection }) {
     { key: 'vol_atr_period', label: 'Vol ATR Period', type: 'number' },
     { key: 'vol_ratio_min', label: 'Vol Ratio Min', type: 'number', step: 0.0001 },
     { key: 'vol_ratio_max', label: 'Vol Ratio Max', type: 'number', step: 0.0001 },
-    { key: 'buy_only_strong', label: 'Buy Only Strong', type: 'boolean' },
     { key: 'sell_on_signal', label: 'Sell On Signal', type: 'boolean' },
-    { key: 'min_confidence_to_buy', label: 'Min Confidence Buy', type: 'number', step: 0.1 },
     { key: 'min_confidence_to_sell', label: 'Min Confidence Sell', type: 'number', step: 0.1 },
     { key: 'allow_sell_at_loss', label: 'Allow Sell At Loss', type: 'boolean' },
     { key: 'trailing_stop_enabled', label: 'Trailing Stop', type: 'boolean' },
@@ -603,18 +601,11 @@ function SettingsPanel({ activeSection }) {
   ]
 
   const probabilisticSettings = [
-    { key: 'prob_model_enabled', label: 'Prob Model Enabled', type: 'boolean' },
-    { key: 'prob_model_beta0', label: 'Prob Beta 0', type: 'number', step: 0.0001 },
-    { key: 'prob_model_beta1', label: 'Prob Beta 1', type: 'number', step: 0.0001 },
-    { key: 'prob_model_beta2', label: 'Prob Beta 2', type: 'number', step: 0.0001 },
-    { key: 'prob_model_beta3', label: 'Prob Beta 3', type: 'number', step: 0.0001 },
-    { key: 'prob_model_beta4', label: 'Prob Beta 4', type: 'number', step: 0.0001 },
-    { key: 'prob_model_beta5', label: 'Prob Beta 5', type: 'number', step: 0.0001 },
-    { key: 'prob_model_beta6', label: 'Prob Beta 6', type: 'number', step: 0.0001 },
-    { key: 'prob_p_min', label: 'Prob P Min', type: 'number', step: 0.0001 },
-    { key: 'prob_ev_min', label: 'Prob EV Min', type: 'number', step: 0.0001 },
-    { key: 'prob_avg_gain', label: 'Prob Avg Gain', type: 'number', step: 0.0001 },
-    { key: 'prob_avg_loss', label: 'Prob Avg Loss', type: 'number', step: 0.0001 },
+    { key: 'active_model_version', label: 'Active Model Version', type: 'text' },
+    { key: 'model_rollout_state', label: 'Model Rollout State', type: 'text' },
+    { key: 'selection_policy_top_k', label: 'Selection Policy Top K', type: 'number', step: 1 },
+    { key: 'selection_policy_min_prob', label: 'Selection Policy Min Prob', type: 'number', step: 0.0001 },
+    { key: 'selection_policy_min_ev', label: 'Selection Policy Min EV', type: 'number', step: 0.0001 },
   ]
 
   const atrSettings = [

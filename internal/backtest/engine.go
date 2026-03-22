@@ -8,23 +8,40 @@ import (
 )
 
 type positionState struct {
-	Symbol       string
-	EntryPrice   float64
-	Size         float64
-	StopPrice    *float64
-	TakeProfit   *float64
-	TrailingStop *float64
-	HighestPrice float64
-	BarsHeld     int
-	EntryTime    time.Time
-	LastAtr      float64
-	EntryFee     float64
+	Symbol        string
+	EntryPrice    float64
+	Size          float64
+	EntryRank     int
+	ModelVersion  string
+	PredictedProb *float64
+	PredictedEV   *float64
+	StopPrice     *float64
+	TakeProfit    *float64
+	TrailingStop  *float64
+	HighestPrice  float64
+	BarsHeld      int
+	EntryTime     time.Time
+	LastAtr       float64
+	EntryFee      float64
 }
 
 type barContext struct {
 	Rating float64
 	Signal string
 	Atr    float64
+}
+
+type entryCandidate struct {
+	Symbol     string
+	Rank       int
+	Prediction *services.ModelPrediction
+}
+
+type backtestUniverseSelection struct {
+	RegimeState    string
+	BreadthRatio   float64
+	ActiveUniverse []services.UniverseCandidateMetrics
+	Shortlist      []services.UniverseCandidateMetrics
 }
 
 type symbolState struct {
@@ -82,7 +99,7 @@ func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (Bac
 		equityBySymbol[symbol] = []EquityPoint{}
 	}
 
-	var entryUniverse []string
+	currentUniverse := backtestUniverseSelection{}
 	lastRebalance := time.Time{}
 
 	for _, ts := range timeline {
@@ -111,16 +128,11 @@ func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (Bac
 
 		if config.UniverseMode == UniverseDynamicRecompute {
 			if lastRebalance.IsZero() || currentTime.Sub(lastRebalance) >= config.UniversePolicy.RebalanceInterval {
-				entryUniverse = recomputeDynamicUniverse(config, states, currentBars, currentTime, lookback)
+				currentUniverse = buildBacktestUniverseSelection(config, states, currentBars, lookback, true)
 				lastRebalance = currentTime
 			}
 		} else {
-			entryUniverse = entryUniverse[:0]
-			for _, symbol := range symbols {
-				if _, ok := contexts[symbol]; ok {
-					entryUniverse = append(entryUniverse, symbol)
-				}
-			}
+			currentUniverse = buildBacktestUniverseSelection(config, states, currentBars, lookback, false)
 		}
 
 		for _, symbol := range symbols {
@@ -172,23 +184,29 @@ func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (Bac
 			cash += proceeds - exitFee
 			pnl := (exitPrice-pos.EntryPrice)*pos.Size - pos.EntryFee - exitFee
 			trades = append(trades, Trade{
-				Symbol:     symbol,
-				EntryTime:  pos.EntryTime,
-				ExitTime:   time.UnixMilli(bar.CloseTime),
-				EntryPrice: pos.EntryPrice,
-				ExitPrice:  exitPrice,
-				Size:       pos.Size,
-				Pnl:        pnl,
-				PnlPercent: pnl / (pos.EntryPrice * pos.Size) * 100,
-				Reason:     decision.Reason,
+				Symbol:               symbol,
+				EntryTime:            pos.EntryTime,
+				ExitTime:             time.UnixMilli(bar.CloseTime),
+				EntryPrice:           pos.EntryPrice,
+				ExitPrice:            exitPrice,
+				Size:                 pos.Size,
+				Pnl:                  pnl,
+				PnlPercent:           pnl / (pos.EntryPrice * pos.Size) * 100,
+				Reason:               decision.Reason,
+				EntryRank:            pos.EntryRank,
+				ModelVersion:         pos.ModelVersion,
+				PredictedProbability: cloneFloat64Ptr(pos.PredictedProb),
+				PredictedEV:          cloneFloat64Ptr(pos.PredictedEV),
 			})
 			delete(positions, symbol)
 		}
 
-		for _, symbol := range entryUniverse {
+		entryCandidates := buildEntryCandidates(config, currentUniverse, states, positions, cash, currentTime, lookback)
+		for _, candidate := range entryCandidates {
 			if len(positions) >= config.MaxPositions {
 				break
 			}
+			symbol := candidate.Symbol
 			if positions[symbol] != nil {
 				continue
 			}
@@ -200,14 +218,16 @@ func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (Bac
 			if !ok {
 				continue
 			}
-			if config.BuyOnlyStrong && ctx.Signal != "STRONG_BUY" {
-				continue
-			}
-			if ctx.Signal != "BUY" && ctx.Signal != "STRONG_BUY" {
-				continue
-			}
-			if ctx.Rating < config.MinConfidenceToBuy {
-				continue
+			if config.ModelArtifact == nil {
+				if config.BuyOnlyStrong && ctx.Signal != "STRONG_BUY" {
+					continue
+				}
+				if ctx.Signal != "BUY" && ctx.Signal != "STRONG_BUY" {
+					continue
+				}
+				if ctx.Rating < config.MinConfidenceToBuy {
+					continue
+				}
 			}
 
 			portfolioValue := cash + currentPositionsValue(positions, states)
@@ -232,17 +252,21 @@ func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (Bac
 			}
 
 			positions[symbol] = &positionState{
-				Symbol:       symbol,
-				EntryPrice:   entryPrice,
-				Size:         size,
-				StopPrice:    stopPrice,
-				TakeProfit:   takeProfitPrice,
-				TrailingStop: trailingStop,
-				HighestPrice: entryPrice,
-				BarsHeld:     0,
-				EntryTime:    currentTime,
-				LastAtr:      ctx.Atr,
-				EntryFee:     entryFee,
+				Symbol:        symbol,
+				EntryPrice:    entryPrice,
+				Size:          size,
+				StopPrice:     stopPrice,
+				TakeProfit:    takeProfitPrice,
+				TrailingStop:  trailingStop,
+				HighestPrice:  entryPrice,
+				BarsHeld:      0,
+				EntryTime:     currentTime,
+				LastAtr:       ctx.Atr,
+				EntryFee:      entryFee,
+				EntryRank:     candidate.Rank,
+				ModelVersion:  modelVersionForCandidate(candidate),
+				PredictedProb: predictionProbability(candidate.Prediction),
+				PredictedEV:   predictionExpectedValue(candidate.Prediction),
 			}
 
 			if amountUsdt <= 0 {
@@ -266,10 +290,17 @@ func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (Bac
 	}
 
 	metrics := ComputeMetrics(equity, trades, config.TimeframeMinutes, config.AtrAnnualizationDays)
-	return BacktestResult{Mode: config.StrategyMode, Metrics: metrics, Equity: equity, EquityBySymbol: equityBySymbol, Trades: trades}, nil
+	return BacktestResult{
+		Mode:           config.StrategyMode,
+		Metrics:        metrics,
+		RankingMetrics: buildRankingMetrics(trades, config),
+		Equity:         equity,
+		EquityBySymbol: equityBySymbol,
+		Trades:         trades,
+	}, nil
 }
 
-func recomputeDynamicUniverse(config BacktestConfig, states map[string]*symbolState, currentBars map[string]services.OHLCV, currentTime time.Time, lookback int) []string {
+func buildBacktestUniverseSelection(config BacktestConfig, states map[string]*symbolState, currentBars map[string]services.OHLCV, lookback int, applyPolicy bool) backtestUniverseSelection {
 	barsPerDay := maxInt(1, (24*60)/maxInt(1, config.TimeframeMinutes))
 	barsPerHour := maxInt(1, 60/maxInt(1, config.TimeframeMinutes))
 	windowSize := maxInt(lookback, barsPerDay*14)
@@ -302,8 +333,10 @@ func recomputeDynamicUniverse(config BacktestConfig, states map[string]*symbolSt
 		change24h := services.CalculateReturn(closesFromOHLCV(window), minInt(barsPerDay, len(window)-1))
 		candidate := services.BuildUniverseCandidateMetrics(symbol, "", "USDT", currentBars[symbol].Close, change24h, quoteVolume24h, daily, hourly, btcReturn7D)
 		candidate.ListingAgeDays = (state.lastIndex + 1) / barsPerDay
-		if rejection := services.UniverseHardFilterReason(candidate, config.UniversePolicy); rejection != "" {
-			continue
+		if applyPolicy {
+			if rejection := services.UniverseHardFilterReason(candidate, config.UniversePolicy); rejection != "" {
+				continue
+			}
 		}
 		accepted = append(accepted, candidate)
 	}
@@ -311,19 +344,106 @@ func recomputeDynamicUniverse(config BacktestConfig, states map[string]*symbolSt
 	breadth := services.ComputeUniverseBreadth(accepted)
 	regime := services.DetermineUniverseRegime(btcHigherTrend, btcDailyTrend, breadth)
 	ranked := services.RankUniverseCandidates(accepted, config.UniversePolicy)
-	_, shortlist := services.SelectUniverseCandidates(ranked, config.UniversePolicy, regime)
-	entryUniverse := make([]string, 0, len(shortlist))
-	for _, candidate := range shortlist {
-		entryUniverse = append(entryUniverse, candidate.Symbol)
+	if len(ranked) == 0 {
+		return backtestUniverseSelection{RegimeState: regime, BreadthRatio: breadth}
 	}
-	if len(entryUniverse) == 0 {
-		for symbol := range currentBars {
-			entryUniverse = append(entryUniverse, symbol)
+
+	active := append([]services.UniverseCandidateMetrics(nil), ranked...)
+	shortlist := append([]services.UniverseCandidateMetrics(nil), ranked...)
+	if applyPolicy {
+		active, shortlist = services.SelectUniverseCandidates(ranked, config.UniversePolicy, regime)
+		if len(shortlist) == 0 {
+			shortlist = append([]services.UniverseCandidateMetrics(nil), active...)
 		}
-		sort.Strings(entryUniverse)
+		if len(active) == 0 {
+			active = append([]services.UniverseCandidateMetrics(nil), ranked...)
+		}
 	}
-	_ = currentTime
-	return entryUniverse
+
+	return backtestUniverseSelection{
+		RegimeState:    regime,
+		BreadthRatio:   breadth,
+		ActiveUniverse: active,
+		Shortlist:      shortlist,
+	}
+}
+
+func buildEntryCandidates(config BacktestConfig, selection backtestUniverseSelection, states map[string]*symbolState, positions map[string]*positionState, cash float64, currentTime time.Time, lookback int) []entryCandidate {
+	candidateUniverse := selection.Shortlist
+	if len(candidateUniverse) == 0 {
+		candidateUniverse = selection.ActiveUniverse
+	}
+	if len(candidateUniverse) == 0 {
+		return nil
+	}
+
+	if config.ModelArtifact == nil {
+		entries := make([]entryCandidate, 0, len(candidateUniverse))
+		for _, candidate := range candidateUniverse {
+			entries = append(entries, entryCandidate{Symbol: candidate.Symbol})
+		}
+		return entries
+	}
+
+	portfolioValue := cash + currentPositionsValue(positions, states)
+	exposureRatio := 0.0
+	if portfolioValue > 0 {
+		exposureRatio = currentPositionsValue(positions, states) / portfolioValue
+	}
+	btcCandles := recentBacktestCandles(states["BTCUSDT"], 200)
+	scored := make([]services.ModelRankedCandidate, 0, len(candidateUniverse))
+	predictions := make(map[string]services.ModelPrediction, len(candidateUniverse))
+
+	for _, candidate := range candidateUniverse {
+		state := states[candidate.Symbol]
+		if state == nil || state.lastIndex < lookback {
+			continue
+		}
+		candles := buildCandles(state.series, state.lastIndex, maxInt(lookback, 200))
+		featureRow := services.BuildModelFeatureRow(services.ModelFeatureInput{
+			Timestamp:         currentTime,
+			Symbol:            candidate.Symbol,
+			Candles15m:        candles,
+			Candidate:         candidate,
+			ActiveUniverse:    selection.ActiveUniverse,
+			RegimeState:       selection.RegimeState,
+			BreadthRatio:      selection.BreadthRatio,
+			BTCCandles15m:     btcCandles,
+			OpenPositionCount: len(positions),
+			ExposureRatio:     exposureRatio,
+			AlreadyOpen:       positions[candidate.Symbol] != nil,
+		})
+		if !featureRow.Valid {
+			continue
+		}
+		prediction, err := config.ModelArtifact.PredictRow(featureRow)
+		if err != nil {
+			continue
+		}
+		predictions[candidate.Symbol] = prediction
+		scored = append(scored, services.ModelRankedCandidate{
+			Symbol:        candidate.Symbol,
+			Probability:   prediction.Probability,
+			ExpectedValue: prediction.ExpectedValue,
+			RawScore:      prediction.RawScore,
+		})
+	}
+
+	ranked := services.RankModelPredictions(scored, config.ModelPolicy)
+	entries := make([]entryCandidate, 0, len(ranked))
+	for _, candidate := range ranked {
+		if !candidate.Selected {
+			continue
+		}
+		prediction := predictions[candidate.Symbol]
+		predictionCopy := prediction
+		entries = append(entries, entryCandidate{
+			Symbol:     candidate.Symbol,
+			Rank:       candidate.Rank,
+			Prediction: &predictionCopy,
+		})
+	}
+	return entries
 }
 
 func determinePositionSize(config BacktestConfig, atr float64, price float64, cash float64, portfolioValue float64) (float64, float64, *float64, *float64, error) {
@@ -383,6 +503,92 @@ func currentPositionsValue(positions map[string]*positionState, states map[strin
 		total += pos.Size * markPrice
 	}
 	return total
+}
+
+func recentBacktestCandles(state *symbolState, size int) []services.Candle {
+	if state == nil || state.lastIndex < 0 {
+		return nil
+	}
+	return candlesFromOHLCV(recentWindow(state.series, state.lastIndex, size))
+}
+
+func cloneFloat64Ptr(value *float64) *float64 {
+	if value == nil {
+		return nil
+	}
+	copyValue := *value
+	return &copyValue
+}
+
+func modelVersionForCandidate(candidate entryCandidate) string {
+	if candidate.Prediction == nil {
+		return ""
+	}
+	return candidate.Prediction.ModelVersion
+}
+
+func predictionProbability(prediction *services.ModelPrediction) *float64 {
+	if prediction == nil {
+		return nil
+	}
+	value := prediction.Probability
+	return &value
+}
+
+func predictionExpectedValue(prediction *services.ModelPrediction) *float64 {
+	if prediction == nil {
+		return nil
+	}
+	value := prediction.ExpectedValue
+	return &value
+}
+
+func buildRankingMetrics(trades []Trade, config BacktestConfig) *RankingMetrics {
+	if config.ModelArtifact == nil || len(trades) == 0 {
+		return nil
+	}
+	buckets := make(map[int][]Trade)
+	selected := 0
+	for _, trade := range trades {
+		if trade.EntryRank <= 0 {
+			continue
+		}
+		selected++
+		buckets[trade.EntryRank] = append(buckets[trade.EntryRank], trade)
+	}
+	if selected == 0 {
+		return nil
+	}
+	ranks := make([]int, 0, len(buckets))
+	for rank := range buckets {
+		ranks = append(ranks, rank)
+	}
+	sort.Ints(ranks)
+	byRank := make([]RankBucketMetric, 0, len(ranks))
+	for _, rank := range ranks {
+		bucket := buckets[rank]
+		wins := 0
+		totalPnl := 0.0
+		for _, trade := range bucket {
+			totalPnl += trade.Pnl
+			if trade.Pnl > 0 {
+				wins++
+			}
+		}
+		byRank = append(byRank, RankBucketMetric{
+			Rank:     rank,
+			Trades:   len(bucket),
+			WinRate:  float64(wins) / float64(len(bucket)),
+			AvgPnl:   totalPnl / float64(len(bucket)),
+			TotalPnl: totalPnl,
+		})
+	}
+	return &RankingMetrics{
+		ModelVersion: config.ModelArtifact.Version,
+		TopK:         config.ModelPolicy.TopK,
+		Selected:     selected,
+		ByRank:       byRank,
+	}
 }
 
 func determineExitPrice(bar services.OHLCV, decision services.ExitDecision, config BacktestConfig) float64 {
