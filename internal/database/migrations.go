@@ -54,6 +54,47 @@ func RunMigrations(db *gorm.DB) error {
 				return tx.Migrator().DropColumn(&BacktestJob{}, "SummaryCompactJSON")
 			},
 		},
+		{
+			ID: "202603222100_execution_parity_fields",
+			Migrate: func(tx *gorm.DB) error {
+				for _, column := range []string{"ExecutionMode", "EntrySource", "ExitPending", "LastMarkPrice", "LastMarkAt", "ClientPositionID", "DecisionTimeframe"} {
+					if !tx.Migrator().HasColumn(&Position{}, column) {
+						if err := tx.Migrator().AddColumn(&Position{}, column); err != nil {
+							return err
+						}
+					}
+				}
+
+				for _, column := range []string{"ExchangeOrderID", "ClientOrderID", "Status", "ExecutionMode", "TriggerReason", "RequestedPrice", "FillPrice", "ExecutedQty", "ExchangeFee", "SubmittedAt", "FilledAt"} {
+					if !tx.Migrator().HasColumn(&Order{}, column) {
+						if err := tx.Migrator().AddColumn(&Order{}, column); err != nil {
+							return err
+						}
+					}
+				}
+
+				return migrateSchema(tx)
+			},
+			Rollback: func(tx *gorm.DB) error {
+				for _, column := range []string{"FilledAt", "SubmittedAt", "ExchangeFee", "ExecutedQty", "FillPrice", "RequestedPrice", "TriggerReason", "ExecutionMode", "Status", "ClientOrderID", "ExchangeOrderID"} {
+					if tx.Migrator().HasColumn(&Order{}, column) {
+						if err := tx.Migrator().DropColumn(&Order{}, column); err != nil {
+							return err
+						}
+					}
+				}
+
+				for _, column := range []string{"DecisionTimeframe", "ClientPositionID", "LastMarkAt", "LastMarkPrice", "ExitPending", "EntrySource", "ExecutionMode"} {
+					if tx.Migrator().HasColumn(&Position{}, column) {
+						if err := tx.Migrator().DropColumn(&Position{}, column); err != nil {
+							return err
+						}
+					}
+				}
+
+				return nil
+			},
+		},
 	})
 
 	return m.Migrate()

@@ -21,7 +21,7 @@ var (
 func Start() {
 	scheduler = cron.New()
 
-	// Price update every 1 minute
+	// Reconcile open position marks every 1 minute (fallback only for protective exits)
 	var err error
 	priceJobID, err = scheduler.AddFunc("@every 1m", func() {
 		if err := runPriceUpdate(); err != nil {
@@ -63,6 +63,12 @@ func runPriceUpdate() error {
 }
 
 func runTrendingAnalysis() error {
+	closedCount, err := services.EvaluateOpenPositionsOnBarClose()
+	if err != nil {
+		return err
+	}
+	log.Printf("Bar-close exit evaluation completed: closed %d positions", closedCount)
+
 	result, err := services.AnalyzeTrendingCoins()
 	if err != nil {
 		return err

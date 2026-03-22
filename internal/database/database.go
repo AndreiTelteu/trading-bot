@@ -70,6 +70,7 @@ func SeedData() error {
 		{Key: "sell_on_signal", Value: "true", Category: strPtr("trading")},
 		{Key: "min_confidence_to_buy", Value: "4.0", Category: strPtr("trading")},
 		{Key: "min_confidence_to_sell", Value: "3.5", Category: strPtr("trading")},
+		{Key: "stream_exit_enabled", Value: "true", Category: strPtr("trading")},
 		{Key: "allow_sell_at_loss", Value: "false", Category: strPtr("trading")},
 		{Key: "trailing_stop_enabled", Value: "false", Category: strPtr("trading")},
 		{Key: "trailing_stop_percent", Value: "10.0", Category: strPtr("trading")},

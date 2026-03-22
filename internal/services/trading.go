@@ -44,6 +44,48 @@ type UpdatePricesRequest struct {
 	Prices map[string]float64 `json:"prices"`
 }
 
+func newClientPositionID(symbol string, now time.Time) *string {
+	value := fmt.Sprintf("%s-%d", strings.ToLower(strings.TrimSpace(symbol)), now.UnixMilli())
+	return &value
+}
+
+func markPositionPrice(position *database.Position, price float64, at time.Time) {
+	position.CurrentPrice = floatPtr(price)
+	position.LastMarkPrice = floatPtr(price)
+	position.LastMarkAt = &at
+	position.Pnl = (price - position.AvgPrice) * position.Amount
+	if position.AvgPrice > 0 {
+		position.PnlPercent = ((price - position.AvgPrice) / position.AvgPrice) * 100
+	}
+}
+
+func resolveCloseReason(currentPrice float64, pnlPercent float64, stopPrice *float64, takeProfitPrice *float64, atrTrailingEnabled bool, trailingStopPrice *float64, trailingStopEnabled bool, entryPrice *float64, trailingStopPercent float64, stopLossPercent float64, takeProfitPercent float64) string {
+	entry := 0.0
+	if entryPrice != nil {
+		entry = *entryPrice
+	}
+	legacyTrailingStop := trailingStopPrice
+	if legacyTrailingStop == nil && trailingStopEnabled && entry > 0 {
+		legacyTrailingStop = floatPtr(entry * (1 - (trailingStopPercent / 100)))
+	}
+	decision := EvaluateProtectiveExit(ExitEvaluationInput{
+		CurrentPrice:      currentPrice,
+		HighPrice:         currentPrice,
+		LowPrice:          currentPrice,
+		EntryPrice:        entry,
+		StopPrice:         stopPrice,
+		TakeProfitPrice:   takeProfitPrice,
+		TrailingStopPrice: legacyTrailingStop,
+	}, ExitPolicy{
+		StopLossPercent:     stopLossPercent,
+		TakeProfitPercent:   takeProfitPercent,
+		TrailingStopEnabled: trailingStopEnabled,
+		TrailingStopPercent: trailingStopPercent,
+		ATRTrailingEnabled:  atrTrailingEnabled,
+	})
+	return decision.Reason
+}
+
 func createPortfolioSnapshot() (database.PortfolioSnapshot, database.Wallet, []database.Position, error) {
 	var wallet database.Wallet
 	if err := database.DB.First(&wallet).Error; err != nil {
@@ -166,7 +208,14 @@ func ExecuteBuy(req BuyRequest) (interface{}, error) {
 			position.Amount = amount
 			position.AvgPrice = price
 			position.EntryPrice = &price
+			position.ExecutionMode = ExecutionModeExchange
+			position.EntrySource = EntrySourceManual
+			position.ExitPending = false
 			position.CurrentPrice = &price
+			position.LastMarkPrice = &price
+			position.LastMarkAt = &now
+			position.ClientPositionID = newClientPositionID(symbol, now)
+			position.DecisionTimeframe = DecisionTimeframeDefault
 			position.StopPrice = nil
 			position.TakeProfitPrice = nil
 			position.TrailingStopPrice = nil
@@ -184,13 +233,19 @@ func ExecuteBuy(req BuyRequest) (interface{}, error) {
 			}
 		case errors.Is(lookupErr, gorm.ErrRecordNotFound):
 			position = database.Position{
-				Symbol:       symbol,
-				Amount:       amount,
-				AvgPrice:     price,
-				EntryPrice:   &price,
-				CurrentPrice: &price,
-				Status:       "open",
-				OpenedAt:     now,
+				Symbol:            symbol,
+				Amount:            amount,
+				AvgPrice:          price,
+				EntryPrice:        &price,
+				CurrentPrice:      &price,
+				ExecutionMode:     ExecutionModeExchange,
+				EntrySource:       EntrySourceManual,
+				LastMarkPrice:     &price,
+				LastMarkAt:        &now,
+				ClientPositionID:  newClientPositionID(symbol, now),
+				DecisionTimeframe: DecisionTimeframeDefault,
+				Status:            "open",
+				OpenedAt:          now,
 			}
 			if err := tx.Create(&position).Error; err != nil {
 				return err
@@ -200,12 +255,23 @@ func ExecuteBuy(req BuyRequest) (interface{}, error) {
 		}
 
 		order := database.Order{
-			OrderType:    "buy",
-			Symbol:       symbol,
-			AmountCrypto: amount,
-			AmountUsdt:   totalCost,
-			Price:        price,
-			ExecutedAt:   time.Now(),
+			OrderType:      "buy",
+			Symbol:         symbol,
+			AmountCrypto:   amount,
+			AmountUsdt:     totalCost,
+			Price:          price,
+			Status:         normalizeOrderStatus(orderResp.Status),
+			ExecutionMode:  ExecutionModeExchange,
+			RequestedPrice: &price,
+			FillPrice:      &price,
+			ExecutedQty:    floatPtr(amount),
+			SubmittedAt:    &now,
+			FilledAt:       &now,
+			ExecutedAt:     now,
+		}
+		if orderResp.OrderID > 0 {
+			value := strconv.FormatInt(orderResp.OrderID, 10)
+			order.ExchangeOrderID = &value
 		}
 		return tx.Create(&order).Error
 	}); err != nil {
@@ -231,6 +297,7 @@ func ExecuteBuy(req BuyRequest) (interface{}, error) {
 	websocket.BroadcastTradeExecuted("buy", symbol, amount, price, wallet.Balance)
 	websocket.BroadcastWalletUpdate(wallet.Balance, wallet.Currency, totalValue)
 	websocket.BroadcastPositionUpdate(position)
+	NotifyPositionChanged()
 
 	return fiber.Map{
 		"success":     true,
@@ -272,6 +339,7 @@ func ExecuteSell(req SellRequest) (interface{}, error) {
 
 	var wallet database.Wallet
 	if err := database.DB.Transaction(func(tx *gorm.DB) error {
+		now := time.Now()
 		if err := tx.First(&wallet).Error; err != nil {
 			return err
 		}
@@ -282,6 +350,8 @@ func ExecuteSell(req SellRequest) (interface{}, error) {
 		}
 
 		position.Amount -= amount
+		markPositionPrice(&position, price, time.Now())
+		position.ExitPending = false
 		if position.Amount <= 0 {
 			position.Status = "closed"
 			now := time.Now()
@@ -294,12 +364,24 @@ func ExecuteSell(req SellRequest) (interface{}, error) {
 		}
 
 		order := database.Order{
-			OrderType:    "sell",
-			Symbol:       symbol,
-			AmountCrypto: amount,
-			AmountUsdt:   totalValue,
-			Price:        price,
-			ExecutedAt:   time.Now(),
+			OrderType:      "sell",
+			Symbol:         symbol,
+			AmountCrypto:   amount,
+			AmountUsdt:     totalValue,
+			Price:          price,
+			Status:         normalizeOrderStatus(orderResp.Status),
+			ExecutionMode:  ExecutionModeExchange,
+			RequestedPrice: &price,
+			FillPrice:      &price,
+			ExecutedQty:    floatPtr(amount),
+			TriggerReason:  stringPtr("manual_sell"),
+			SubmittedAt:    &now,
+			FilledAt:       &now,
+			ExecutedAt:     now,
+		}
+		if orderResp.OrderID > 0 {
+			value := strconv.FormatInt(orderResp.OrderID, 10)
+			order.ExchangeOrderID = &value
 		}
 		return tx.Create(&order).Error
 	}); err != nil {
@@ -322,6 +404,7 @@ func ExecuteSell(req SellRequest) (interface{}, error) {
 	websocket.BroadcastTradeExecuted("sell", symbol, amount, price, wallet.Balance)
 	websocket.BroadcastWalletUpdate(wallet.Balance, wallet.Currency, portfolioTotalValue)
 	websocket.BroadcastPositionUpdate(position)
+	NotifyPositionChanged()
 
 	return fiber.Map{
 		"success":     true,
@@ -333,19 +416,7 @@ func ExecuteSell(req SellRequest) (interface{}, error) {
 
 func UpdatePositionsPrices() (interface{}, error) {
 	settings := GetAllSettings()
-	stopLossPercent := getSettingFloat(settings, "stop_loss_percent", 5.0)
-	takeProfitPercent := getSettingFloat(settings, "take_profit_percent", 30.0)
-	trailingStopEnabled := getSettingBool(settings, "trailing_stop_enabled", false)
-	trailingStopPercent := getSettingFloat(settings, "trailing_stop_percent", 10.0)
-	atrTrailingEnabled := getSettingBool(settings, "atr_trailing_enabled", false)
-	atrTrailingMult := getSettingFloat(settings, "atr_trailing_mult", 1.0)
-	atrTrailingPeriod := getSettingInt(settings, "atr_trailing_period", 14)
-	atrAnnualizationEnabled := getSettingBool(settings, "atr_annualization_enabled", false)
-	atrAnnualizationDays := getSettingInt(settings, "atr_annualization_days", 365)
-	allowSellAtLoss := getSettingBool(settings, "allow_sell_at_loss", false)
-	sellOnSignal := getSettingBool(settings, "sell_on_signal", true)
-	minConfidenceToSell := getSettingFloat(settings, "min_confidence_to_sell", 3.5)
-	timeStopBars := getSettingInt(settings, "time_stop_bars", 0)
+	policy := BuildExitPolicy(settings)
 
 	var positions []database.Position
 	if err := database.DB.Where("status = ?", "open").Find(&positions).Error; err != nil {
@@ -363,9 +434,6 @@ func UpdatePositionsPrices() (interface{}, error) {
 		return fiber.Map{"success": true, "updated": 0}, nil
 	}
 
-	var wallet database.Wallet
-	database.DB.First(&wallet)
-
 	symbols := make([]string, len(positions))
 	for i, pos := range positions {
 		symbol := pos.Symbol
@@ -381,6 +449,8 @@ func UpdatePositionsPrices() (interface{}, error) {
 	}
 
 	updatedCount := 0
+	coordinator := GetExecutionCoordinator()
+	supervisor := GetStreamSupervisor()
 	for i := range positions {
 		tickerKey := positions[i].Symbol
 		if !strings.HasSuffix(tickerKey, "USDT") {
@@ -389,97 +459,56 @@ func UpdatePositionsPrices() (interface{}, error) {
 
 		if ticker, ok := tickers[tickerKey]; ok {
 			currentPrice, _ := strconv.ParseFloat(ticker.LastPrice, 64)
-			positions[i].CurrentPrice = &currentPrice
+			now := time.Now()
+			markPositionPrice(&positions[i], currentPrice, now)
 
-			pnl := (currentPrice - positions[i].AvgPrice) * positions[i].Amount
-			pnlPercent := 0.0
-			if positions[i].AvgPrice > 0 {
-				pnlPercent = ((currentPrice - positions[i].AvgPrice) / positions[i].AvgPrice) * 100
+			entryPrice := positions[i].AvgPrice
+			if positions[i].EntryPrice != nil && *positions[i].EntryPrice > 0 {
+				entryPrice = *positions[i].EntryPrice
 			}
 
-			positions[i].Pnl = pnl
-			positions[i].PnlPercent = pnlPercent
-
-			if atrTrailingEnabled && atrTrailingMult > 0 {
-				candles, err := fetchCandles(tickerKey, "15m", 200)
-				if err == nil {
-					atr := getAtrValue(candles, atrTrailingPeriod, atrAnnualizationEnabled, 15, atrAnnualizationDays)
-					if atr > 0 {
-						positions[i].LastAtrValue = &atr
-						if positions[i].TrailingStopPrice == nil {
-							entryBase := positions[i].AvgPrice
-							if positions[i].EntryPrice != nil {
-								entryBase = *positions[i].EntryPrice
-							}
-							entryStop := entryBase - (atr * atrTrailingMult)
-							if entryStop > 0 {
-								positions[i].TrailingStopPrice = &entryStop
-							}
-						}
-						candidateStop := currentPrice - (atr * atrTrailingMult)
-						if candidateStop > 0 {
-							if positions[i].TrailingStopPrice == nil || candidateStop > *positions[i].TrailingStopPrice {
-								positions[i].TrailingStopPrice = &candidateStop
-							}
-						}
-					}
-				}
+			if policy.ATRTrailingEnabled && positions[i].LastAtrValue != nil {
+				positions[i].TrailingStopPrice = RatchetATRTrailingStop(positions[i].TrailingStopPrice, currentPrice, entryPrice, *positions[i].LastAtrValue, policy.ATRTrailingMult)
+			} else if policy.TrailingStopEnabled {
+				positions[i].TrailingStopPrice = RatchetPercentTrailingStop(positions[i].TrailingStopPrice, currentPrice, entryPrice, policy.TrailingStopPercent)
 			}
 
-			// Update trailing peak
-			if trailingStopEnabled {
-				if positions[i].EntryPrice == nil {
-					positions[i].EntryPrice = &positions[i].AvgPrice
-				}
-				if currentPrice > *positions[i].EntryPrice {
-					*positions[i].EntryPrice = currentPrice
-				}
+			if err := database.DB.Save(&positions[i]).Error; err != nil {
+				return nil, fiber.NewError(500, "Failed to update position price")
 			}
-
-			closeReason := resolveCloseReason(currentPrice, pnlPercent, positions[i].StopPrice, positions[i].TakeProfitPrice, atrTrailingEnabled, positions[i].TrailingStopPrice, trailingStopEnabled, positions[i].EntryPrice, trailingStopPercent, stopLossPercent, takeProfitPercent)
-
-			if closeReason == "" {
-				maxBars := timeStopBars
-				if positions[i].MaxBarsHeld != nil {
-					maxBars = *positions[i].MaxBarsHeld
-				}
-				if maxBars > 0 {
-					barsHeld := int(time.Since(positions[i].OpenedAt) / (15 * time.Minute))
-					if barsHeld >= maxBars && pnlPercent <= 0 {
-						closeReason = "time_stop"
-					}
-				}
-			}
-
-			if closeReason == "" && sellOnSignal {
-				analysis, aimErr := analyzeSymbolForTrending(tickerKey, "15m")
-				if aimErr == nil {
-					if analysis.Signal == "SELL" || analysis.Signal == "STRONG_SELL" {
-						if analysis.Rating <= minConfidenceToSell {
-							closeReason = "sell_signal"
-						}
-					}
-				}
-			}
-
-			if closeReason != "" {
-				if closeReason == "stop_loss" && !allowSellAtLoss {
-					// Skip loss
-				} else {
-					positions[i].Status = "closed"
-					now := time.Now()
-					positions[i].ClosedAt = &now
-					positions[i].CloseReason = &closeReason
-
-					wallet.Balance += positions[i].Amount * currentPrice
-					database.DB.Save(&wallet)
-
-					logActivity("trade", fmt.Sprintf("Auto-closed %s", positions[i].Symbol), fmt.Sprintf("Reason: %s, PnL: %.2f%%", closeReason, pnlPercent))
-				}
-			}
-
-			database.DB.Save(&positions[i])
 			updatedCount++
+
+			if positions[i].ExitPending {
+				continue
+			}
+			if supervisor != nil && !supervisor.ShouldFallback(positions[i].Symbol) {
+				continue
+			}
+
+			decision := EvaluateProtectiveExit(ExitEvaluationInput{
+				CurrentPrice:      currentPrice,
+				HighPrice:         currentPrice,
+				LowPrice:          currentPrice,
+				EntryPrice:        entryPrice,
+				StopPrice:         positions[i].StopPrice,
+				TakeProfitPrice:   positions[i].TakeProfitPrice,
+				TrailingStopPrice: positions[i].TrailingStopPrice,
+				ObservedAt:        now,
+				ExecutionMode:     positions[i].ExecutionMode,
+			}, policy)
+			if decision.Reason == "" {
+				continue
+			}
+
+			if _, err := coordinator.RequestClose(CloseRequest{
+				PositionID:     positions[i].ID,
+				Reason:         decision.Reason,
+				RequestedPrice: decision.TriggerPrice,
+				TriggeredAt:    now,
+				Source:         "cron_reconcile",
+			}); err != nil {
+				return nil, fiber.NewError(500, "Failed to reconcile protective exit")
+			}
 		}
 	}
 
@@ -501,34 +530,6 @@ func UpdatePositionsPrices() (interface{}, error) {
 
 	return fiber.Map{"success": true, "updated": updatedCount}, nil
 }
-
-func resolveCloseReason(currentPrice float64, pnlPercent float64, stopPrice *float64, takeProfitPrice *float64, atrTrailingEnabled bool, trailingStopPrice *float64, trailingStopEnabled bool, entryPrice *float64, trailingStopPercent float64, stopLossPercent float64, takeProfitPercent float64) string {
-	if stopPrice != nil && currentPrice <= *stopPrice {
-		return "stop_loss"
-	}
-	if takeProfitPrice != nil && currentPrice >= *takeProfitPrice {
-		return "take_profit"
-	}
-	if atrTrailingEnabled && trailingStopPrice != nil && currentPrice <= *trailingStopPrice {
-		return "atr_trailing_stop"
-	}
-	if trailingStopEnabled && entryPrice != nil {
-		dropFromHigh := ((currentPrice - *entryPrice) / *entryPrice) * 100
-		if dropFromHigh <= -trailingStopPercent {
-			return "trailing_stop"
-		}
-	}
-	if stopPrice == nil && takeProfitPrice == nil {
-		if pnlPercent <= -stopLossPercent {
-			return "stop_loss"
-		}
-		if pnlPercent >= takeProfitPercent {
-			return "take_profit"
-		}
-	}
-	return ""
-}
-
 func CheckStopLoss(symbol string, stopLossPercent float64) (bool, string, error) {
 	var position database.Position
 	if err := database.DB.Where("symbol = ? AND status = ?", symbol, "open").First(&position).Error; err != nil {

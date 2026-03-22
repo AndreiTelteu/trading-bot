@@ -750,6 +750,7 @@ func executeBuyFromTrending(symbol string) (bool, error) {
 	}
 
 	if err := database.DB.Transaction(func(tx *gorm.DB) error {
+		now := time.Now()
 		if err := tx.First(&wallet).Error; err != nil {
 			return err
 		}
@@ -770,6 +771,13 @@ func executeBuyFromTrending(symbol string) (bool, error) {
 			newAvg := ((oldAmount * oldAvg) + (cryptoAmount * currentPrice)) / (oldAmount + cryptoAmount)
 			existingPosition.Amount += cryptoAmount
 			existingPosition.AvgPrice = newAvg
+			existingPosition.ExecutionMode = ExecutionModePaper
+			existingPosition.EntrySource = EntrySourceAutoTrend
+			existingPosition.ExitPending = false
+			existingPosition.CurrentPrice = &currentPrice
+			existingPosition.LastMarkPrice = &currentPrice
+			existingPosition.LastMarkAt = &now
+			existingPosition.DecisionTimeframe = DecisionTimeframeDefault
 			if volSizingEnabled {
 				stopMult := getSettingFloat(settings, "stop_mult", 1.5)
 				tpMult := getSettingFloat(settings, "tp_mult", 3.0)
@@ -807,12 +815,18 @@ func executeBuyFromTrending(symbol string) (bool, error) {
 				}
 				lastAtrValue = &atr
 			}
-			now := time.Now()
 			if hasExisting {
 				existingPosition.Amount = cryptoAmount
 				existingPosition.AvgPrice = currentPrice
 				existingPosition.EntryPrice = &currentPrice
 				existingPosition.CurrentPrice = &currentPrice
+				existingPosition.ExecutionMode = ExecutionModePaper
+				existingPosition.EntrySource = EntrySourceAutoTrend
+				existingPosition.ExitPending = false
+				existingPosition.LastMarkPrice = &currentPrice
+				existingPosition.LastMarkAt = &now
+				existingPosition.ClientPositionID = newClientPositionID(cleanSymbol, now)
+				existingPosition.DecisionTimeframe = DecisionTimeframeDefault
 				existingPosition.StopPrice = stopPrice
 				existingPosition.TakeProfitPrice = takeProfitPrice
 				existingPosition.TrailingStopPrice = trailingStopPrice
@@ -834,6 +848,12 @@ func executeBuyFromTrending(symbol string) (bool, error) {
 					AvgPrice:          currentPrice,
 					EntryPrice:        &currentPrice,
 					CurrentPrice:      &currentPrice,
+					ExecutionMode:     ExecutionModePaper,
+					EntrySource:       EntrySourceAutoTrend,
+					LastMarkPrice:     &currentPrice,
+					LastMarkAt:        &now,
+					ClientPositionID:  newClientPositionID(cleanSymbol, now),
+					DecisionTimeframe: DecisionTimeframeDefault,
 					StopPrice:         stopPrice,
 					TakeProfitPrice:   takeProfitPrice,
 					TrailingStopPrice: trailingStopPrice,
@@ -849,12 +869,19 @@ func executeBuyFromTrending(symbol string) (bool, error) {
 		}
 
 		order := database.Order{
-			OrderType:    "buy",
-			Symbol:       cleanSymbol,
-			AmountCrypto: cryptoAmount,
-			AmountUsdt:   amountUsdt,
-			Price:        currentPrice,
-			ExecutedAt:   time.Now(),
+			OrderType:      "buy",
+			Symbol:         cleanSymbol,
+			AmountCrypto:   cryptoAmount,
+			AmountUsdt:     amountUsdt,
+			Price:          currentPrice,
+			Status:         OrderStatusFilled,
+			ExecutionMode:  ExecutionModePaper,
+			RequestedPrice: &currentPrice,
+			FillPrice:      &currentPrice,
+			ExecutedQty:    &cryptoAmount,
+			SubmittedAt:    &now,
+			FilledAt:       &now,
+			ExecutedAt:     now,
 		}
 		if err := tx.Create(&order).Error; err != nil {
 			return err
@@ -865,6 +892,8 @@ func executeBuyFromTrending(symbol string) (bool, error) {
 	}); err != nil {
 		return false, err
 	}
+
+	NotifyPositionChanged()
 
 	return true, nil
 }

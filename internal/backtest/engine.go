@@ -67,6 +67,19 @@ func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (Bac
 		}
 	}
 
+	policy := services.ExitPolicy{
+		StopLossPercent:     config.StopLossPercent,
+		TakeProfitPercent:   config.TakeProfitPercent,
+		TrailingStopEnabled: config.TrailingStopEnabled,
+		TrailingStopPercent: config.TrailingStopPercent,
+		ATRTrailingEnabled:  config.AtrTrailingEnabled,
+		ATRTrailingMult:     config.AtrTrailingMult,
+		AllowSellAtLoss:     config.AllowSellAtLoss,
+		TimeStopBars:        config.TimeStopBars,
+		SellOnSignal:        config.SellOnSignal,
+		MinConfidenceToSell: config.MinConfidenceToSell,
+	}
+
 	lookback := 200
 	if config.AtrPeriod+1 > lookback {
 		lookback = config.AtrPeriod + 1
@@ -108,65 +121,35 @@ func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (Bac
 			bar := aligned[symbol][idx]
 			price := bar.Close
 			pos.BarsHeld++
-			if price > pos.HighestPrice {
-				pos.HighestPrice = price
+			if bar.High > pos.HighestPrice {
+				pos.HighestPrice = bar.High
 			}
 
 			if config.AtrTrailingEnabled && config.AtrTrailingMult > 0 {
 				atr := contexts[symbol].Atr
 				if atr > 0 {
 					pos.LastAtr = atr
-					candidate := price - (atr * config.AtrTrailingMult)
-					if candidate > 0 {
-						if pos.TrailingStop == nil || candidate > *pos.TrailingStop {
-							pos.TrailingStop = &candidate
-						}
-					}
+					pos.TrailingStop = services.RatchetATRTrailingStop(pos.TrailingStop, bar.High, pos.EntryPrice, atr, config.AtrTrailingMult)
 				}
+			} else if config.TrailingStopEnabled {
+				pos.TrailingStop = services.RatchetPercentTrailingStop(pos.TrailingStop, bar.High, pos.EntryPrice, config.TrailingStopPercent)
 			}
 
-			closeReason := ""
-			if pos.StopPrice != nil && price <= *pos.StopPrice {
-				closeReason = "stop_loss"
-			} else if pos.TakeProfit != nil && price >= *pos.TakeProfit {
-				closeReason = "take_profit"
-			}
+			decision := services.EvaluateBarCloseExit(services.ExitEvaluationInput{
+				CurrentPrice:      price,
+				HighPrice:         bar.High,
+				LowPrice:          bar.Low,
+				EntryPrice:        pos.EntryPrice,
+				StopPrice:         pos.StopPrice,
+				TakeProfitPrice:   pos.TakeProfit,
+				TrailingStopPrice: pos.TrailingStop,
+				BarsHeld:          pos.BarsHeld,
+				Signal:            contexts[symbol].Signal,
+				SignalRating:      contexts[symbol].Rating,
+			}, policy)
 
-			if closeReason == "" && config.AtrTrailingEnabled && pos.TrailingStop != nil {
-				if price <= *pos.TrailingStop {
-					closeReason = "atr_trailing_stop"
-				}
-			}
-
-			if closeReason == "" && config.TrailingStopEnabled && pos.HighestPrice > 0 {
-				dropFromHigh := ((price - pos.HighestPrice) / pos.HighestPrice) * 100
-				if dropFromHigh <= -config.TrailingStopPercent {
-					closeReason = "trailing_stop"
-				}
-			}
-
-			pnlPercent := ((price - pos.EntryPrice) / pos.EntryPrice) * 100
-			if closeReason == "" && pos.StopPrice == nil && pos.TakeProfit == nil {
-				if pnlPercent <= -config.StopLossPercent {
-					closeReason = "stop_loss"
-				} else if pnlPercent >= config.TakeProfitPercent {
-					closeReason = "take_profit"
-				}
-			}
-
-			if closeReason == "" && config.TimeStopBars > 0 && pos.BarsHeld >= config.TimeStopBars && pnlPercent <= 0 {
-				closeReason = "time_stop"
-			}
-
-			if closeReason == "" && config.SellOnSignal {
-				ctx := contexts[symbol]
-				if (ctx.Signal == "SELL" || ctx.Signal == "STRONG_SELL") && ctx.Rating <= config.MinConfidenceToSell {
-					closeReason = "sell_signal"
-				}
-			}
-
-			if closeReason != "" {
-				exitPrice := applySlippage(price, config.SlippageBps, false)
+			if decision.Reason != "" {
+				exitPrice := determineExitPrice(bar, decision, config)
 				proceeds := pos.Size * exitPrice
 				exitFee := proceeds * (config.FeeBps / 10000)
 				cash += proceeds - exitFee
@@ -174,13 +157,13 @@ func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (Bac
 				trades = append(trades, Trade{
 					Symbol:     symbol,
 					EntryTime:  pos.EntryTime,
-					ExitTime:   currentTime,
+					ExitTime:   time.UnixMilli(bar.CloseTime),
 					EntryPrice: pos.EntryPrice,
 					ExitPrice:  exitPrice,
 					Size:       pos.Size,
 					Pnl:        pnl,
 					PnlPercent: pnl / (pos.EntryPrice * pos.Size) * 100,
-					Reason:     closeReason,
+					Reason:     decision.Reason,
 				})
 				delete(positions, symbol)
 			}
@@ -329,6 +312,25 @@ func currentPositionsValue(positions map[string]*positionState, series map[strin
 		}
 	}
 	return total
+}
+
+func determineExitPrice(bar services.OHLCV, decision services.ExitDecision, config BacktestConfig) float64 {
+	price := bar.Close
+	switch decision.Reason {
+	case services.CloseReasonStopLoss, services.CloseReasonATRTrailing, services.CloseReasonTrailingStop:
+		price = decision.TriggerPrice
+		if bar.Open > 0 && (decision.TriggerPrice <= 0 || bar.Open <= decision.TriggerPrice) {
+			price = bar.Open
+		}
+	case services.CloseReasonTakeProfit:
+		price = decision.TriggerPrice
+		if bar.Open > 0 && (decision.TriggerPrice <= 0 || bar.Open >= decision.TriggerPrice) {
+			price = bar.Open
+		}
+	case services.CloseReasonSellSignal, services.CloseReasonTimeStop:
+		price = bar.Close
+	}
+	return applySlippage(price, config.SlippageBps, false)
 }
 
 func applySlippage(price float64, slippageBps float64, isBuy bool) float64 {

@@ -28,6 +28,11 @@ func main() {
 	if err := database.Initialize(cfg); err != nil {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
+	services.InitTradingService(cfg.BinanceAPIKey, cfg.BinanceSecret)
+	if err := services.StartExecutionRuntime(); err != nil {
+		log.Fatalf("Failed to start execution runtime: %v", err)
+	}
+	defer services.StopExecutionRuntime()
 
 	// Start Cron Jobs
 	cron.Start()
@@ -79,9 +84,6 @@ func setupRoutes(app *fiber.App, cfg *config.Config, authManager *middleware.Aut
 		}
 		return fiber.ErrUpgradeRequired
 	})
-
-	// Initialize trading service
-	services.InitTradingService(cfg.BinanceAPIKey, cfg.BinanceSecret)
 
 	app.Get("/ws", websocket.New(func(c *websocket.Conn) {
 		handlers.HandleWebSocketConn(c, hub)

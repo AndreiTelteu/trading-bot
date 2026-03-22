@@ -19,6 +19,13 @@ type Position struct {
 	AvgPrice          float64    `json:"avg_price"`
 	EntryPrice        *float64   `json:"entry_price"`
 	CurrentPrice      *float64   `json:"current_price"`
+	ExecutionMode     string     `json:"execution_mode" gorm:"size:20;default:paper;index"`
+	EntrySource       string     `json:"entry_source" gorm:"size:30;default:manual"`
+	ExitPending       bool       `json:"exit_pending" gorm:"default:false;index"`
+	LastMarkPrice     *float64   `json:"last_mark_price"`
+	LastMarkAt        *time.Time `json:"last_mark_at"`
+	ClientPositionID  *string    `json:"client_position_id" gorm:"size:100;index"`
+	DecisionTimeframe string     `json:"decision_timeframe" gorm:"size:10;default:15m"`
 	StopPrice         *float64   `json:"stop_price"`
 	TakeProfitPrice   *float64   `json:"take_profit_price"`
 	TrailingStopPrice *float64   `json:"trailing_stop_price"`
@@ -33,14 +40,25 @@ type Position struct {
 }
 
 type Order struct {
-	ID           uint      `json:"id" gorm:"primaryKey;autoIncrement"`
-	OrderType    string    `json:"order_type" gorm:"size:10;not null"`
-	Symbol       string    `json:"symbol" gorm:"size:20;not null"`
-	AmountCrypto float64   `json:"amount_crypto"`
-	AmountUsdt   float64   `json:"amount_usdt"`
-	Price        float64   `json:"price"`
-	Fee          float64   `json:"fee" gorm:"default:0"`
-	ExecutedAt   time.Time `json:"executed_at" gorm:"index"`
+	ID              uint       `json:"id" gorm:"primaryKey;autoIncrement"`
+	OrderType       string     `json:"order_type" gorm:"size:10;not null"`
+	Symbol          string     `json:"symbol" gorm:"size:20;not null"`
+	AmountCrypto    float64    `json:"amount_crypto"`
+	AmountUsdt      float64    `json:"amount_usdt"`
+	Price           float64    `json:"price"`
+	Fee             float64    `json:"fee" gorm:"default:0"`
+	ExchangeOrderID *string    `json:"exchange_order_id" gorm:"size:100;index"`
+	ClientOrderID   *string    `json:"client_order_id" gorm:"size:100;index"`
+	Status          string     `json:"status" gorm:"size:20;default:filled;index"`
+	ExecutionMode   string     `json:"execution_mode" gorm:"size:20;default:paper;index"`
+	TriggerReason   *string    `json:"trigger_reason" gorm:"size:50;index"`
+	RequestedPrice  *float64   `json:"requested_price"`
+	FillPrice       *float64   `json:"fill_price"`
+	ExecutedQty     *float64   `json:"executed_qty"`
+	ExchangeFee     *float64   `json:"exchange_fee"`
+	SubmittedAt     *time.Time `json:"submitted_at"`
+	FilledAt        *time.Time `json:"filled_at"`
+	ExecutedAt      time.Time  `json:"executed_at" gorm:"index"`
 }
 
 type Setting struct {

@@ -54,7 +54,14 @@ func CreatePosition(c *fiber.Ctx) error {
 		position.Amount = req.Amount
 		position.AvgPrice = req.AvgPrice
 		position.EntryPrice = req.EntryPrice
+		position.ExecutionMode = services.ExecutionModePaper
+		position.EntrySource = services.EntrySourcePaperTest
+		position.ExitPending = false
 		position.CurrentPrice = nil
+		position.LastMarkPrice = nil
+		position.LastMarkAt = nil
+		position.ClientPositionID = nil
+		position.DecisionTimeframe = services.DecisionTimeframeDefault
 		position.StopPrice = nil
 		position.TakeProfitPrice = nil
 		position.TrailingStopPrice = nil
@@ -72,12 +79,15 @@ func CreatePosition(c *fiber.Ctx) error {
 		}
 	} else {
 		position = database.Position{
-			Symbol:     req.Symbol,
-			Amount:     req.Amount,
-			AvgPrice:   req.AvgPrice,
-			EntryPrice: req.EntryPrice,
-			Status:     "open",
-			OpenedAt:   now,
+			Symbol:            req.Symbol,
+			Amount:            req.Amount,
+			AvgPrice:          req.AvgPrice,
+			EntryPrice:        req.EntryPrice,
+			ExecutionMode:     services.ExecutionModePaper,
+			EntrySource:       services.EntrySourcePaperTest,
+			DecisionTimeframe: services.DecisionTimeframeDefault,
+			Status:            "open",
+			OpenedAt:          now,
 		}
 
 		if err := database.DB.Create(&position).Error; err != nil {
@@ -91,6 +101,7 @@ func CreatePosition(c *fiber.Ctx) error {
 			Payload: position,
 		})
 	}
+	services.NotifyPositionChanged()
 
 	return c.Status(201).JSON(position)
 }
@@ -119,6 +130,7 @@ func ClosePosition(c *fiber.Ctx) error {
 
 		now := time.Now()
 		position.Status = "closed"
+		position.ExitPending = false
 		position.ClosedAt = &now
 		if req.CloseReason != nil {
 			position.CloseReason = req.CloseReason
@@ -141,6 +153,7 @@ func ClosePosition(c *fiber.Ctx) error {
 			Payload: position,
 		})
 	}
+	services.NotifyPositionChanged()
 
 	return c.JSON(position)
 }
@@ -163,6 +176,7 @@ func DeletePosition(c *fiber.Ctx) error {
 			Payload: symbol,
 		})
 	}
+	services.NotifyPositionChanged()
 
 	return c.JSON(fiber.Map{"message": "Position deleted successfully"})
 }
@@ -244,6 +258,13 @@ func ExecuteOpenTrade(c *fiber.Ctx) error {
 			position.AvgPrice = price
 			position.EntryPrice = &price
 			position.CurrentPrice = &price
+			position.ExecutionMode = services.ExecutionModePaper
+			position.EntrySource = services.EntrySourcePaperTest
+			position.ExitPending = false
+			position.LastMarkPrice = &price
+			position.LastMarkAt = &now
+			position.ClientPositionID = nil
+			position.DecisionTimeframe = services.DecisionTimeframeDefault
 			position.StopPrice = nil
 			position.TakeProfitPrice = nil
 			position.TrailingStopPrice = nil
@@ -261,13 +282,18 @@ func ExecuteOpenTrade(c *fiber.Ctx) error {
 			}
 		case errors.Is(lookupErr, gorm.ErrRecordNotFound):
 			position = database.Position{
-				Symbol:       req.Symbol,
-				Amount:       req.Amount,
-				AvgPrice:     price,
-				EntryPrice:   &price,
-				CurrentPrice: &price,
-				Status:       "open",
-				OpenedAt:     now,
+				Symbol:            req.Symbol,
+				Amount:            req.Amount,
+				AvgPrice:          price,
+				EntryPrice:        &price,
+				CurrentPrice:      &price,
+				ExecutionMode:     services.ExecutionModePaper,
+				EntrySource:       services.EntrySourcePaperTest,
+				LastMarkPrice:     &price,
+				LastMarkAt:        &now,
+				DecisionTimeframe: services.DecisionTimeframeDefault,
+				Status:            "open",
+				OpenedAt:          now,
 			}
 
 			if err := tx.Create(&position).Error; err != nil {
@@ -278,12 +304,19 @@ func ExecuteOpenTrade(c *fiber.Ctx) error {
 		}
 
 		order := database.Order{
-			OrderType:    "buy",
-			Symbol:       req.Symbol,
-			AmountCrypto: req.Amount,
-			AmountUsdt:   totalCost,
-			Price:        price,
-			ExecutedAt:   time.Now(),
+			OrderType:      "buy",
+			Symbol:         req.Symbol,
+			AmountCrypto:   req.Amount,
+			AmountUsdt:     totalCost,
+			Price:          price,
+			Status:         services.OrderStatusFilled,
+			ExecutionMode:  services.ExecutionModePaper,
+			RequestedPrice: &price,
+			FillPrice:      &price,
+			ExecutedQty:    &req.Amount,
+			SubmittedAt:    &now,
+			FilledAt:       &now,
+			ExecutedAt:     now,
 		}
 		return tx.Create(&order).Error
 	}); err != nil {
@@ -315,6 +348,7 @@ func ExecuteOpenTrade(c *fiber.Ctx) error {
 			Payload: fiber.Map{"balance": wallet.Balance, "currency": wallet.Currency},
 		})
 	}
+	services.NotifyPositionChanged()
 
 	return c.JSON(fiber.Map{
 		"success":     true,
@@ -408,9 +442,12 @@ func ExecuteCloseTrade(c *fiber.Ctx) error {
 		}
 
 		position.Status = "closed"
+		position.ExitPending = false
 		position.ClosedAt = &now
 		position.CloseReason = &req.CloseReason
 		position.CurrentPrice = &price
+		position.LastMarkPrice = &price
+		position.LastMarkAt = &now
 		position.Pnl = pnl
 		position.PnlPercent = pnlPercent
 		if err := tx.Save(&position).Error; err != nil {
@@ -418,12 +455,20 @@ func ExecuteCloseTrade(c *fiber.Ctx) error {
 		}
 
 		order := database.Order{
-			OrderType:    "sell",
-			Symbol:       position.Symbol,
-			AmountCrypto: position.Amount,
-			AmountUsdt:   totalValue,
-			Price:        price,
-			ExecutedAt:   time.Now(),
+			OrderType:      "sell",
+			Symbol:         position.Symbol,
+			AmountCrypto:   position.Amount,
+			AmountUsdt:     totalValue,
+			Price:          price,
+			Status:         services.OrderStatusFilled,
+			ExecutionMode:  services.ExecutionModePaper,
+			TriggerReason:  &req.CloseReason,
+			RequestedPrice: &price,
+			FillPrice:      &price,
+			ExecutedQty:    &position.Amount,
+			SubmittedAt:    &now,
+			FilledAt:       &now,
+			ExecutedAt:     now,
 		}
 		return tx.Create(&order).Error
 	}); err != nil {
@@ -477,6 +522,7 @@ func ExecuteCloseTrade(c *fiber.Ctx) error {
 			Payload: fiber.Map{"balance": wallet.Balance, "currency": wallet.Currency, "total_value": totalPortfolioValue},
 		})
 	}
+	services.NotifyPositionChanged()
 
 	return c.JSON(fiber.Map{
 		"success":     true,
