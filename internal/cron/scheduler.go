@@ -27,6 +27,9 @@ func Start() {
 		if err := runPriceUpdate(); err != nil {
 			log.Printf("Price update job failed: %v", err)
 		}
+		if services.GetStreamSupervisor() != nil && services.GetStreamSupervisor().Enabled() {
+			log.Printf("cron reconcile completed (stream exits active, fallback-only mode)")
+		}
 	})
 	if err != nil {
 		log.Printf("Failed to register price update job: %v", err)

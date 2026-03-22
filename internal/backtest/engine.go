@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"time"
+	"trading-go/internal/database"
 	"trading-go/internal/services"
 )
 
@@ -54,6 +55,19 @@ type symbolState struct {
 	currentIndex int
 }
 
+type executionSymbolState struct {
+	series      []services.OHLCV
+	indexByTime map[int64]int
+}
+
+// replaySnapshotEntry is a preloaded universe snapshot for dynamic_replay mode.
+type replaySnapshotEntry struct {
+	Timestamp    time.Time
+	RegimeState  string
+	BreadthRatio float64
+	Members      []database.UniverseMember
+}
+
 func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (BacktestResult, error) {
 	if config.InitialBalance <= 0 {
 		return BacktestResult{}, fmt.Errorf("initial balance must be > 0")
@@ -102,6 +116,20 @@ func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (Bac
 		equityBySymbol[symbol] = []EquityPoint{}
 	}
 
+	// Build execution (1m) states if available
+	execStates := buildExecutionSymbolStates(config.ExecutionSeries)
+	has1mData := len(execStates) > 0
+
+	// Load replay snapshots for dynamic_replay mode
+	var replaySnapshots []replaySnapshotEntry
+	if config.UniverseMode == UniverseDynamicReplay {
+		var err error
+		replaySnapshots, err = loadReplaySnapshots(config.Start, config.End)
+		if err != nil {
+			return BacktestResult{}, fmt.Errorf("failed to load replay snapshots: %w", err)
+		}
+	}
+
 	currentUniverse := backtestUniverseSelection{}
 	lastRebalance := time.Time{}
 
@@ -129,12 +157,18 @@ func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (Bac
 			contexts[symbol] = barContext{Rating: rating, Signal: signal, Atr: computeAtr(window, config)}
 		}
 
-		if config.UniverseMode == UniverseDynamicRecompute {
+		switch config.UniverseMode {
+		case UniverseDynamicRecompute:
 			if lastRebalance.IsZero() || currentTime.Sub(lastRebalance) >= config.UniversePolicy.RebalanceInterval {
 				currentUniverse = buildBacktestUniverseSelection(config, states, currentBars, lookback, true)
 				lastRebalance = currentTime
 			}
-		} else {
+		case UniverseDynamicReplay:
+			if lastRebalance.IsZero() || currentTime.Sub(lastRebalance) >= config.UniversePolicy.RebalanceInterval {
+				currentUniverse = resolveReplayUniverse(replaySnapshots, currentTime)
+				lastRebalance = currentTime
+			}
+		default:
 			currentUniverse = buildBacktestUniverseSelection(config, states, currentBars, lookback, false)
 		}
 
@@ -165,6 +199,46 @@ func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (Bac
 				pos.TrailingStop = services.RatchetPercentTrailingStop(pos.TrailingStop, bar.High, pos.EntryPrice, config.TrailingStopPercent)
 			}
 
+			// Try intrabar protective exit using 1m data if available
+			var intrabarExit *intrabarExitResult
+			if has1mData {
+				intrabarExit = evaluateIntrabarProtectiveExit(execStates[symbol], bar, pos, config)
+			}
+
+			if intrabarExit != nil {
+				// Intrabar protective exit triggered (stop-loss or take-profit from 1m data)
+				exitPrice := applySlippage(intrabarExit.Price, config.SlippageBps, false)
+				proceeds := pos.Size * exitPrice
+				exitFee := proceeds * (config.FeeBps / 10000)
+				cash += proceeds - exitFee
+				pnl := (exitPrice-pos.EntryPrice)*pos.Size - pos.EntryFee - exitFee
+				trades = append(trades, Trade{
+					Symbol:               symbol,
+					EntryTime:            pos.EntryTime,
+					ExitTime:             intrabarExit.Time,
+					EntryPrice:           pos.EntryPrice,
+					ExitPrice:            exitPrice,
+					Size:                 pos.Size,
+					Pnl:                  pnl,
+					PnlPercent:           pnl / (pos.EntryPrice * pos.Size) * 100,
+					Reason:               intrabarExit.Reason,
+					HoldBars:             pos.BarsHeld,
+					EntryRank:            pos.EntryRank,
+					RegimeState:          pos.RegimeState,
+					BreadthRatio:         pos.BreadthRatio,
+					UniverseMode:         config.UniverseMode,
+					PolicyVersion:        config.Governance.PolicyVersions.CompositeVersion,
+					RolloutState:         config.Governance.RolloutState,
+					ExperimentID:         config.Governance.ExperimentID,
+					ModelVersion:         pos.ModelVersion,
+					PredictedProbability: cloneFloat64Ptr(pos.PredictedProb),
+					PredictedEV:          cloneFloat64Ptr(pos.PredictedEV),
+				})
+				delete(positions, symbol)
+				continue
+			}
+
+			// Fall back to bar-close exit evaluation (signal exits, time stops)
 			decision := services.EvaluateBarCloseExit(services.ExitEvaluationInput{
 				CurrentPrice:      bar.Close,
 				HighPrice:         bar.High,
@@ -241,7 +315,14 @@ func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (Bac
 			}
 
 			portfolioValue := cash + currentPositionsValue(positions, states)
-			entryPrice := applySlippage(bar.Close, config.SlippageBps, true)
+			// Use next 1m bar open for entry when execution data is available
+			rawEntryPrice := bar.Close
+			if has1mData {
+				if exec1mOpen := findNext1mOpen(execStates[symbol], bar.CloseTime); exec1mOpen > 0 {
+					rawEntryPrice = exec1mOpen
+				}
+			}
+			entryPrice := applySlippage(rawEntryPrice, config.SlippageBps, true)
 			amountUsdt, size, stopPrice, takeProfitPrice, err := determinePositionSize(config, ctx.Atr, entryPrice, cash, portfolioValue)
 			if err != nil {
 				continue
@@ -311,6 +392,7 @@ func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (Bac
 		ModelVersion:   config.Governance.ModelVersion,
 		PolicyVersion:  config.Governance.PolicyVersions.CompositeVersion,
 		RolloutState:   config.Governance.RolloutState,
+		UniverseMode:   config.UniverseMode,
 		RankingMetrics: rankingMetrics,
 		Diagnostics:    diagnostics,
 		Equity:         equity,
@@ -833,4 +915,237 @@ func maxInt(a int, b int) int {
 		return a
 	}
 	return b
+}
+
+// --- Execution (1m) series helpers ---
+
+func buildExecutionSymbolStates(execSeries map[string][]services.OHLCV) map[string]*executionSymbolState {
+	if len(execSeries) == 0 {
+		return nil
+	}
+	states := make(map[string]*executionSymbolState, len(execSeries))
+	for symbol, candles := range execSeries {
+		indexByTime := make(map[int64]int, len(candles))
+		for i, c := range candles {
+			indexByTime[c.OpenTime] = i
+		}
+		states[symbol] = &executionSymbolState{series: candles, indexByTime: indexByTime}
+	}
+	return states
+}
+
+// findNext1mOpen returns the open price of the first 1m bar after the given timestamp.
+// This is used for entry timing: fill at the next 1m open after a 15m signal.
+func findNext1mOpen(state *executionSymbolState, afterTimestampMs int64) float64 {
+	if state == nil || len(state.series) == 0 {
+		return 0
+	}
+	// Binary search for the first 1m bar with OpenTime > afterTimestampMs
+	idx := sort.Search(len(state.series), func(i int) bool {
+		return state.series[i].OpenTime > afterTimestampMs
+	})
+	if idx < len(state.series) {
+		return state.series[idx].Open
+	}
+	return 0
+}
+
+// intrabarExitResult holds the result of an intrabar protective exit check.
+type intrabarExitResult struct {
+	Price  float64
+	Time   time.Time
+	Reason string
+}
+
+// evaluateIntrabarProtectiveExit scans 1m candles within a 15m bar for stop-loss and take-profit triggers.
+// Only protective exits (stop_loss, take_profit, atr_trailing, trailing_stop) are evaluated intrabar.
+// Signal exits (sell_signal, time_stop) remain at bar-close and are not handled here.
+func evaluateIntrabarProtectiveExit(execState *executionSymbolState, bar15m services.OHLCV, pos *positionState, config BacktestConfig) *intrabarExitResult {
+	if execState == nil || len(execState.series) == 0 {
+		return nil
+	}
+
+	// Determine effective stop and TP prices
+	stopPrice := 0.0
+	if pos.StopPrice != nil {
+		stopPrice = *pos.StopPrice
+	}
+	if pos.TrailingStop != nil && *pos.TrailingStop > stopPrice {
+		stopPrice = *pos.TrailingStop
+	}
+	tpPrice := 0.0
+	if pos.TakeProfit != nil {
+		tpPrice = *pos.TakeProfit
+	}
+
+	if stopPrice <= 0 && tpPrice <= 0 {
+		return nil
+	}
+
+	// Find 1m bars within this 15m bar's time range
+	startIdx := sort.Search(len(execState.series), func(i int) bool {
+		return execState.series[i].OpenTime >= bar15m.OpenTime
+	})
+
+	for i := startIdx; i < len(execState.series); i++ {
+		bar1m := execState.series[i]
+		if bar1m.OpenTime > bar15m.CloseTime {
+			break
+		}
+
+		stopHit := stopPrice > 0 && bar1m.Low <= stopPrice
+		tpHit := tpPrice > 0 && bar1m.High >= tpPrice
+
+		if stopHit && tpHit {
+			// Deterministic tie-break: if bar opens beyond stop, use stop
+			if bar1m.Open <= stopPrice {
+				return &intrabarExitResult{
+					Price:  stopPrice,
+					Time:   time.UnixMilli(bar1m.OpenTime),
+					Reason: services.CloseReasonStopLoss,
+				}
+			}
+			// Check which trigger comes first by comparing distances
+			// If low breaches stop before high breaches TP, stop wins
+			stopDistance := bar1m.Open - stopPrice
+			tpDistance := tpPrice - bar1m.Open
+			if stopDistance <= tpDistance {
+				return &intrabarExitResult{
+					Price:  stopPrice,
+					Time:   time.UnixMilli(bar1m.OpenTime),
+					Reason: services.CloseReasonStopLoss,
+				}
+			}
+			return &intrabarExitResult{
+				Price:  tpPrice,
+				Time:   time.UnixMilli(bar1m.OpenTime),
+				Reason: services.CloseReasonTakeProfit,
+			}
+		}
+
+		if stopHit {
+			fillPrice := stopPrice
+			if bar1m.Open <= stopPrice {
+				fillPrice = bar1m.Open // gap-through: fill at open
+			}
+			reason := services.CloseReasonStopLoss
+			if pos.TrailingStop != nil && *pos.TrailingStop >= stopPrice {
+				if config.AtrTrailingEnabled {
+					reason = services.CloseReasonATRTrailing
+				} else {
+					reason = services.CloseReasonTrailingStop
+				}
+			}
+			return &intrabarExitResult{
+				Price:  fillPrice,
+				Time:   time.UnixMilli(bar1m.OpenTime),
+				Reason: reason,
+			}
+		}
+
+		if tpHit {
+			fillPrice := tpPrice
+			if bar1m.Open >= tpPrice {
+				fillPrice = bar1m.Open // gap-through: fill at open
+			}
+			return &intrabarExitResult{
+				Price:  fillPrice,
+				Time:   time.UnixMilli(bar1m.OpenTime),
+				Reason: services.CloseReasonTakeProfit,
+			}
+		}
+	}
+
+	return nil
+}
+
+// --- Dynamic Replay helpers ---
+
+// loadReplaySnapshots loads persisted UniverseSnapshot records within the given time range.
+func loadReplaySnapshots(start, end time.Time) ([]replaySnapshotEntry, error) {
+	if database.DB == nil {
+		return nil, fmt.Errorf("database not initialized")
+	}
+
+	var snapshots []database.UniverseSnapshot
+	query := database.DB.Preload("Members").Order("snapshot_time ASC")
+	if !start.IsZero() {
+		query = query.Where("snapshot_time >= ?", start)
+	}
+	if !end.IsZero() {
+		query = query.Where("snapshot_time <= ?", end)
+	}
+	if err := query.Find(&snapshots).Error; err != nil {
+		return nil, err
+	}
+
+	entries := make([]replaySnapshotEntry, 0, len(snapshots))
+	for _, snap := range snapshots {
+		entries = append(entries, replaySnapshotEntry{
+			Timestamp:    snap.SnapshotTime,
+			RegimeState:  snap.RegimeState,
+			BreadthRatio: snap.BreadthRatio,
+			Members:      snap.Members,
+		})
+	}
+	return entries, nil
+}
+
+// resolveReplayUniverse finds the latest snapshot preceding currentTime and converts it to a backtestUniverseSelection.
+func resolveReplayUniverse(snapshots []replaySnapshotEntry, currentTime time.Time) backtestUniverseSelection {
+	if len(snapshots) == 0 {
+		return backtestUniverseSelection{}
+	}
+
+	// Find the latest snapshot that precedes or equals currentTime
+	idx := sort.Search(len(snapshots), func(i int) bool {
+		return snapshots[i].Timestamp.After(currentTime)
+	})
+	if idx == 0 {
+		// No snapshot before currentTime; use the first one if it's at or before currentTime
+		if !snapshots[0].Timestamp.After(currentTime) {
+			idx = 1
+		} else {
+			return backtestUniverseSelection{}
+		}
+	}
+	snap := snapshots[idx-1]
+
+	candidates := make([]services.UniverseCandidateMetrics, 0, len(snap.Members))
+	var shortlist []services.UniverseCandidateMetrics
+	for _, m := range snap.Members {
+		candidate := services.UniverseCandidateMetrics{
+			Symbol:                    m.Symbol,
+			LastPrice:                 m.LastPrice,
+			Change24h:                 m.Change24h,
+			QuoteVolume24h:            m.QuoteVolume24h,
+			ListingAgeDays:            m.ListingAgeDays,
+			MedianDailyQuoteVolume:    m.MedianDailyQuoteVolume,
+			MedianIntradayQuoteVolume: m.MedianIntradayQuoteVolume,
+			GapRatio:                  m.GapRatio,
+			VolatilityRatio:           m.VolatilityRatio,
+			Return1D:                  m.Return1D,
+			Return3D:                  m.Return3D,
+			Return7D:                  m.Return7D,
+			Return30D:                 m.Return30D,
+			RelativeStrength:          m.RelativeStrength,
+			TrendQuality:              m.TrendQuality,
+			BreakoutProximity:         m.BreakoutProximity,
+			VolumeAcceleration:        m.VolumeAcceleration,
+			OverextensionPenalty:      m.OverextensionPenalty,
+			RankScore:                 m.RankScore,
+			Shortlisted:               m.Shortlisted,
+		}
+		candidates = append(candidates, candidate)
+		if m.Shortlisted {
+			shortlist = append(shortlist, candidate)
+		}
+	}
+
+	return backtestUniverseSelection{
+		RegimeState:    snap.RegimeState,
+		BreadthRatio:   snap.BreadthRatio,
+		ActiveUniverse: candidates,
+		Shortlist:      shortlist,
+	}
 }

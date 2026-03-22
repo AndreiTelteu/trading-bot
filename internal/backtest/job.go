@@ -280,8 +280,10 @@ func WriteBacktestOutputs(summary BacktestRunSummary, outputBase string) (string
 			"promotion_readiness":     summary.Validation.PromotionReadiness,
 			"baseline_regime_slices":  summary.Validation.BaselineRegimeSlices,
 			"vol_regime_slices":       summary.Validation.VolSizingRegimeSlices,
-			"baseline_symbol_cohorts": summary.Validation.BaselineSymbolCohorts,
-			"vol_symbol_cohorts":      summary.Validation.VolSizingSymbolCohorts,
+			"baseline_symbol_cohorts":  summary.Validation.BaselineSymbolCohorts,
+			"vol_symbol_cohorts":       summary.Validation.VolSizingSymbolCohorts,
+			"baseline_decile_metrics":  summary.Validation.BaselineDecileMetrics,
+			"vol_sizing_decile_metrics": summary.Validation.VolSizingDecileMetrics,
 		},
 	}, "", "  ")
 	if err != nil {
@@ -412,7 +414,7 @@ func prepareBacktestInputsWithSettings(settings map[string]string) (BacktestConf
 	database.DB.First(&wallet)
 
 	policy := services.GetUniversePolicy(settings)
-	universeMode := UniverseMode(services.ResolveBacktestUniverseMode(settings))
+	universeMode := resolveUniverseMode(settings)
 	symbols := parseSymbols(settings["backtest_symbols"])
 	if universeMode == UniverseDynamicRecompute && len(symbols) == 0 {
 		discoveredSymbols, err := services.DiscoverEligibleUniverseSymbols()
@@ -438,13 +440,22 @@ func prepareBacktestInputsWithSettings(settings map[string]string) (BacktestConf
 	timeframeMinutes := 15
 
 	series := map[string][]services.OHLCV{}
+	executionSeries := map[string][]services.OHLCV{}
 	ex := services.GetExchange()
+	fetchExecution := getSettingBool(settings, "backtest_execution_1m", false)
 	for _, symbol := range symbols {
 		candles, err := ex.FetchOHLCVRange(symbol, timeframe, start, end)
 		if err != nil {
 			return BacktestConfig{}, nil, err
 		}
 		series[symbol] = candles
+		// Fetch 1m execution candles when enabled
+		if fetchExecution {
+			exec1m, err := ex.FetchOHLCVRange(symbol, "1m", start, end)
+			if err == nil && len(exec1m) > 0 {
+				executionSeries[symbol] = exec1m
+			}
+		}
 	}
 	if start.IsZero() || end.IsZero() {
 		rangeStart, rangeEnd := seriesTimeRange(series)
@@ -468,6 +479,9 @@ func prepareBacktestInputsWithSettings(settings map[string]string) (BacktestConf
 
 	config := BacktestConfig{
 		BacktestMode:            resolveBacktestMode(universeMode, modelArtifact != nil),
+		ExecutionSeries:         executionSeries,
+		ExecutionTimeframe:      "1m",
+		ExecutionTimeframeMins:  1,
 		Symbols:                 symbols,
 		UniverseMode:            universeMode,
 		UniversePolicy:          policy,
@@ -588,14 +602,32 @@ func getSettingFloat(settings map[string]string, key string, defaultVal float64)
 	return v
 }
 
+func resolveUniverseMode(settings map[string]string) UniverseMode {
+	mode := strings.ToLower(strings.TrimSpace(settings["backtest_universe_mode"]))
+	switch mode {
+	case string(UniverseDynamicRecompute):
+		return UniverseDynamicRecompute
+	case string(UniverseDynamicReplay):
+		return UniverseDynamicReplay
+	default:
+		return UniverseStatic
+	}
+}
+
 func resolveBacktestMode(universeMode UniverseMode, hasModel bool) BacktestMode {
 	if hasModel {
+		if universeMode == UniverseDynamicReplay {
+			return BacktestModePaperReplay
+		}
 		if universeMode == UniverseDynamicRecompute {
 			return BacktestModeDynamicModel
 		}
 		return BacktestModePaperReplay
 	}
 	if universeMode == UniverseDynamicRecompute {
+		return BacktestModeDynamicRule
+	}
+	if universeMode == UniverseDynamicReplay {
 		return BacktestModeDynamicRule
 	}
 	return BacktestModeLegacyStatic

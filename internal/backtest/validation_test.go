@@ -52,11 +52,25 @@ func TestEvaluatePromotionReadinessRecommendsPaperWhenCoreGatesPass(t *testing.T
 	summary := validationCISet{
 		AcceptedMetrics:       []string{"sharpe", "profit_factor"},
 		ProfitFactorCandidate: MetricCI{Mean: 1.2},
+		SharpeCandidate:       MetricCI{Mean: 1.5, Lower: 1.0, Upper: 2.0},
+		SharpeBaseline:        MetricCI{Mean: 0.5, Lower: 0.1, Upper: 0.9},
 	}
 	ranking := &RankingDiagnostics{PositiveSpread: 0.5, MonotonicWinRate: true}
 	regimes := []RegimeSliceMetric{{Regime: services.UniverseRegimeRiskOn, Trades: 3}, {Regime: services.UniverseRegimeNeutral, Trades: 2}}
 
-	readiness := evaluatePromotionReadiness(config, summary, ranking, regimes)
+	deciles := []DecileMetric{
+		{Decile: 1, Trades: 5, WinRate: 0.3, AvgPnl: -1.0},
+		{Decile: 2, Trades: 5, WinRate: 0.35, AvgPnl: -0.5},
+		{Decile: 3, Trades: 5, WinRate: 0.4, AvgPnl: 0.0},
+		{Decile: 4, Trades: 5, WinRate: 0.45, AvgPnl: 0.5},
+		{Decile: 5, Trades: 5, WinRate: 0.5, AvgPnl: 1.0},
+		{Decile: 6, Trades: 5, WinRate: 0.55, AvgPnl: 1.5},
+		{Decile: 7, Trades: 5, WinRate: 0.6, AvgPnl: 2.0},
+		{Decile: 8, Trades: 5, WinRate: 0.65, AvgPnl: 2.5},
+		{Decile: 9, Trades: 5, WinRate: 0.7, AvgPnl: 3.0},
+		{Decile: 10, Trades: 5, WinRate: 0.75, AvgPnl: 3.5},
+	}
+	readiness := evaluatePromotionReadiness(config, summary, ranking, regimes, deciles)
 	if !readiness.Passed {
 		t.Fatalf("expected promotion readiness to pass, got %+v", readiness)
 	}

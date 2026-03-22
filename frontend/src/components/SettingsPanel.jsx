@@ -219,14 +219,9 @@ function GovernanceOverviewPanel({ overview, activeSection }) {
 }
 
 function LegacySettingsNotice({ activeSection }) {
-  if (!['indicators', 'atr', 'weights'].includes(activeSection)) return null
-  return (
-    <div className="glass-panel" style={{ padding: '1rem', marginBottom: '1rem' }}>
-      <div className="text-muted text-sm">
-        This section is retained for compatibility and debugging. Day-to-day operation should prefer the Execution & Risk, Universe Selection, Model & Policy, Backtest & Validation, and AI Governance surfaces.
-      </div>
-    </div>
-  )
+  // Legacy notice is no longer needed as a standalone component since
+  // legacy settings are now folded into the Execution & Risk section.
+  return null
 }
 
 function BacktestOptimizationDialogContent({ result }) {
@@ -350,6 +345,7 @@ function SettingsPanel({ activeSection }) {
   const [startingBacktest, setStartingBacktest] = useState(false)
   const [optimizingBacktest, setOptimizingBacktest] = useState(false)
   const [governanceOverview, setGovernanceOverview] = useState(null)
+  const [showLegacySettings, setShowLegacySettings] = useState(false)
   const optimizeBacktestDialog = useAlertDialog()
 
   useEffect(() => {
@@ -840,10 +836,8 @@ function SettingsPanel({ activeSection }) {
   ]
 
   const currentSettings = activeSection === 'trading' ? tradingSettings 
-    : activeSection === 'indicators' ? indicatorSettings 
     : activeSection === 'universe' ? universeSettings
     : activeSection === 'probabilistic' ? probabilisticSettings
-    : activeSection === 'atr' ? atrSettings
     : activeSection === 'backtest' ? backtestSettings
     : aiSettings
 
@@ -900,35 +894,132 @@ function SettingsPanel({ activeSection }) {
       <LegacySettingsNotice activeSection={activeSection} />
       <GovernanceOverviewPanel overview={governanceOverview} activeSection={activeSection} />
 
-      {activeSection !== 'weights' ? (
-        <div className="settings-form">
-          {currentSettings.map(s => (
-            <div key={s.key} className="form-group">
-              <label htmlFor={`setting-${s.key}`}>{s.label}</label>
-              {s.type === 'boolean' ? (
-                <CustomSelect
-                  value={settings[s.key] === true ? 'true' : 'false'}
-                  onChange={val => handleSettingChange(s.key, val === 'true')}
-                  options={[
-                    { value: 'true', label: 'True' },
-                    { value: 'false', label: 'False' }
-                  ]}
-                  id={`setting-${s.key}`}
-                />
-              ) : (
-                <input
-                  id={`setting-${s.key}`}
-                  type={s.type}
-                  step={s.step || 1}
-                  value={settings[s.key] || ''}
-                  onChange={e => handleSettingChange(s.key, e.target.value)}
-                />
-              )}
-            </div>
-          ))}
-          <button className="btn-save" onClick={handleSaveSettings} disabled={saving}>
-            {saving ? 'Saving...' : 'Save Settings'}
-          </button>
+      <div className="settings-form">
+        {currentSettings.map(s => (
+          <div key={s.key} className="form-group">
+            <label htmlFor={`setting-${s.key}`}>{s.label}</label>
+            {s.type === 'boolean' ? (
+              <CustomSelect
+                value={settings[s.key] === true ? 'true' : 'false'}
+                onChange={val => handleSettingChange(s.key, val === 'true')}
+                options={[
+                  { value: 'true', label: 'True' },
+                  { value: 'false', label: 'False' }
+                ]}
+                id={`setting-${s.key}`}
+              />
+            ) : (
+              <input
+                id={`setting-${s.key}`}
+                type={s.type}
+                step={s.step || 1}
+                value={settings[s.key] || ''}
+                onChange={e => handleSettingChange(s.key, e.target.value)}
+              />
+            )}
+          </div>
+        ))}
+
+        {activeSection === 'trading' && (
+          <div className="legacy-settings-group" style={{ marginTop: '1.5rem' }}>
+            <button
+              className="btn-primary"
+              onClick={() => setShowLegacySettings(prev => !prev)}
+              style={{ marginBottom: showLegacySettings ? '1rem' : 0, opacity: 0.85 }}
+              type="button"
+            >
+              {showLegacySettings ? 'Hide Legacy Settings' : 'Show Legacy Settings'}
+            </button>
+            {showLegacySettings && (
+              <div className="glass-panel" style={{ padding: '1rem' }}>
+                <div className="text-muted text-sm" style={{ marginBottom: '1rem' }}>
+                  These indicator, ATR, and weight settings are retained for compatibility and debugging.
+                  Day-to-day operation should prefer the Execution &amp; Risk, Model &amp; Policy, and AI Governance surfaces.
+                </div>
+                <h4 style={{ margin: '0 0 0.75rem', color: 'var(--text-muted)' }}>Indicator Settings</h4>
+                {indicatorSettings.map(s => (
+                  <div key={s.key} className="form-group">
+                    <label htmlFor={`setting-${s.key}`}>{s.label}</label>
+                    <input
+                      id={`setting-${s.key}`}
+                      type={s.type}
+                      step={s.step || 1}
+                      value={settings[s.key] || ''}
+                      onChange={e => handleSettingChange(s.key, e.target.value)}
+                    />
+                  </div>
+                ))}
+                <h4 style={{ margin: '1rem 0 0.75rem', color: 'var(--text-muted)' }}>ATR Settings</h4>
+                {atrSettings.map(s => (
+                  <div key={s.key} className="form-group">
+                    <label htmlFor={`setting-${s.key}`}>{s.label}</label>
+                    {s.type === 'boolean' ? (
+                      <CustomSelect
+                        value={settings[s.key] === true ? 'true' : 'false'}
+                        onChange={val => handleSettingChange(s.key, val === 'true')}
+                        options={[
+                          { value: 'true', label: 'True' },
+                          { value: 'false', label: 'False' }
+                        ]}
+                        id={`setting-${s.key}`}
+                      />
+                    ) : (
+                      <input
+                        id={`setting-${s.key}`}
+                        type={s.type}
+                        step={s.step || 1}
+                        value={settings[s.key] || ''}
+                        onChange={e => handleSettingChange(s.key, e.target.value)}
+                      />
+                    )}
+                  </div>
+                ))}
+                <h4 style={{ margin: '1rem 0 0.75rem', color: 'var(--text-muted)' }}>Indicator Weights</h4>
+                <div className="weights-grid">
+                  {indicatorWeights.map(w => {
+                    const val = weights[w.key] ?? 1.0;
+                    const percentage = (val / 2) * 100;
+                    return (
+                      <div key={w.key} className="weight-item glass-panel">
+                        <div className="weight-label">
+                          <label htmlFor={`weight-${w.key}`}>{w.label}</label>
+                          <p className="weight-multiplier text-muted font-mono">Multiplier: {val}x</p>
+                        </div>
+                        <div className="weight-slider-wrapper">
+                          <div className="slider-track-bg">
+                            <div className="slider-fill-active" style={{ width: `${percentage}%` }}></div>
+                          </div>
+                          <input
+                            id={`weight-${w.key}`}
+                            type="range"
+                            min="0"
+                            max="2"
+                            step="0.1"
+                            value={val}
+                            onChange={e => handleWeightChange(w.key, e.target.value)}
+                            className="custom-range-slider"
+                          />
+                        </div>
+                        <div className="weight-value-display bg-black font-mono">
+                          <span className="text-accent">{val.toFixed(1)}</span>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+                <div className="weights-actions" style={{ marginTop: '1rem' }}>
+                  <button className="btn-primary" onClick={handleSaveWeights} disabled={saving}>
+                    {saving ? 'Saving...' : 'Apply Weights'}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        <button className="btn-save" onClick={handleSaveSettings} disabled={saving}>
+          {saving ? 'Saving...' : 'Save Settings'}
+        </button>
           {activeSection === 'backtest' && (
             <div className="backtest-controls-wrapper glass-panel fade-in">
               <div className="backtest-header-bar">
@@ -1087,53 +1178,7 @@ function SettingsPanel({ activeSection }) {
             </div>
           )}
         </div>
-      ) : (
-        <div className="weights-form fade-in">
-          <div className="weights-header">
-            <h3 className="title-gradient text-lg">AI Analyzer Weights</h3>
-            <p className="text-muted text-sm pb-4">Fine-tune the importance of each indicator (0-2 scale). Values update dynamically.</p>
-          </div>
-          <div className="weights-grid">
-            {indicatorWeights.map(w => {
-              const val = weights[w.key] ?? 1.0;
-              const percentage = (val / 2) * 100;
-              return (
-                <div key={w.key} className="weight-item glass-panel">
-                  <div className="weight-label">
-                     <label htmlFor={`weight-${w.key}`}>{w.label}</label>
-                     <p className="weight-multiplier text-muted font-mono">Multiplier: {val}x</p>
-                  </div>
-                  
-                  <div className="weight-slider-wrapper">
-                    <div className="slider-track-bg">
-                       <div className="slider-fill-active" style={{ width: `${percentage}%` }}></div>
-                    </div>
-                    <input
-                      id={`weight-${w.key}`}
-                      type="range"
-                      min="0"
-                      max="2"
-                      step="0.1"
-                      value={val}
-                      onChange={e => handleWeightChange(w.key, e.target.value)}
-                      className="custom-range-slider"
-                   />
-                  </div>
-                  
-                  <div className="weight-value-display bg-black font-mono">
-                    <span className="text-accent">{val.toFixed(1)}</span>
-                  </div>
-                </div>
-              )
-            })}
-          </div>
-          <div className="weights-actions">
-            <button className="btn-primary" onClick={handleSaveWeights} disabled={saving}>
-              {saving ? 'Saving...' : 'Apply Weights'}
-            </button>
-          </div>
-        </div>
-      )}
+      </div>
       {modalOpen && createPortal(modalContent, document.body)}
       <AlertDialog
         isOpen={optimizeBacktestDialog.isOpen}

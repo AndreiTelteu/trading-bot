@@ -159,6 +159,13 @@ func setupRoutes(app *fiber.App, cfg *config.Config, authManager *middleware.Aut
 	trending.Get("/recent", handlers.GetTrendingRecent)
 	trending.Post("/analyze", handlers.AnalyzeTrending)
 
+	// Universe endpoints
+	universe := api.Group("/universe")
+	universe.Get("/latest", handlers.GetLatestUniverseSnapshot)
+	universe.Get("/snapshots", handlers.ListUniverseSnapshots)
+	universe.Get("/snapshots/:id", handlers.GetUniverseSnapshotDetail)
+	universe.Get("/symbols", handlers.GetUniverseSymbols)
+
 	// Activity logs endpoints
 	activity := api.Group("/activity-logs")
 	activity.Get("", handlers.GetActivityLogs)

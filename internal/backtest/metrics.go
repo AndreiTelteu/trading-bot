@@ -132,12 +132,16 @@ func percentile(values []float64, pct float64) float64 {
 }
 
 func buildStrategyDiagnostics(trades []Trade, rankingMetrics *RankingMetrics, config BacktestConfig, concurrentPositionCounts []int) StrategyDiagnostics {
-	return StrategyDiagnostics{
+	diag := StrategyDiagnostics{
 		Ranking:       rankingDiagnostics(rankingMetrics),
 		RegimeSlices:  buildRegimeSliceMetrics(trades),
 		SymbolCohorts: buildSymbolCohortMetrics(trades),
 		Exposure:      buildExposureDiagnostics(trades, config, concurrentPositionCounts),
 	}
+	if config.ModelArtifact != nil {
+		diag.DecileMetrics = buildDecileMetrics(trades)
+	}
+	return diag
 }
 
 func rankingDiagnostics(metrics *RankingMetrics) *RankingDiagnostics {
@@ -259,6 +263,66 @@ func buildSymbolCohortMetrics(trades []Trade) []SymbolCohortMetric {
 		return results[i].TotalPnl > results[j].TotalPnl
 	})
 	return results
+}
+
+// buildDecileMetrics groups trades by predicted probability into 10 deciles
+// and computes win rate and avg pnl per decile.
+func buildDecileMetrics(trades []Trade) []DecileMetric {
+	// Collect trades with predictions
+	type tradeProbPnl struct {
+		Prob float64
+		Pnl  float64
+	}
+	var scored []tradeProbPnl
+	for _, t := range trades {
+		if t.PredictedProbability != nil {
+			scored = append(scored, tradeProbPnl{Prob: *t.PredictedProbability, Pnl: t.Pnl})
+		}
+	}
+	if len(scored) == 0 {
+		return nil
+	}
+
+	// Sort by probability ascending
+	sort.Slice(scored, func(i, j int) bool { return scored[i].Prob < scored[j].Prob })
+
+	deciles := make([]DecileMetric, 10)
+	n := len(scored)
+	for d := 0; d < 10; d++ {
+		startIdx := d * n / 10
+		endIdx := (d + 1) * n / 10
+		if endIdx > n {
+			endIdx = n
+		}
+		bucket := scored[startIdx:endIdx]
+		if len(bucket) == 0 {
+			deciles[d] = DecileMetric{Decile: d + 1}
+			continue
+		}
+
+		wins := 0
+		totalPnl := 0.0
+		minProb := bucket[0].Prob
+		maxProb := bucket[len(bucket)-1].Prob
+		for _, t := range bucket {
+			totalPnl += t.Pnl
+			if t.Pnl > 0 {
+				wins++
+			}
+		}
+
+		deciles[d] = DecileMetric{
+			Decile:   d + 1,
+			MinProb:  minProb,
+			MaxProb:  maxProb,
+			Trades:   len(bucket),
+			WinRate:  float64(wins) / float64(len(bucket)),
+			AvgPnl:   totalPnl / float64(len(bucket)),
+			TotalPnl: totalPnl,
+		}
+	}
+
+	return deciles
 }
 
 func buildExposureDiagnostics(trades []Trade, config BacktestConfig, concurrentPositionCounts []int) ExposureDiagnostics {

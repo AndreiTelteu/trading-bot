@@ -18,6 +18,7 @@ const (
 	BacktestModePaperReplay  BacktestMode = "paper_replay"
 	UniverseStatic           UniverseMode = "static"
 	UniverseDynamicRecompute UniverseMode = "dynamic_recompute"
+	UniverseDynamicReplay    UniverseMode = "dynamic_replay"
 )
 
 type BacktestConfig struct {
@@ -59,6 +60,9 @@ type BacktestConfig struct {
 	AllowSellAtLoss         bool
 	TrailingStopEnabled     bool
 	TrailingStopPercent     float64
+	ExecutionSeries         map[string][]services.OHLCV // 1m candle data for execution replay
+	ExecutionTimeframe      string                      // e.g. "1m"
+	ExecutionTimeframeMins  int                         // e.g. 1
 }
 
 type Trade struct {
@@ -145,11 +149,22 @@ type ExposureDiagnostics struct {
 	AvgHoldHours           float64 `json:"avg_hold_hours"`
 }
 
+type DecileMetric struct {
+	Decile   int     `json:"decile"`
+	MinProb  float64 `json:"min_prob"`
+	MaxProb  float64 `json:"max_prob"`
+	Trades   int     `json:"trades"`
+	WinRate  float64 `json:"win_rate"`
+	AvgPnl   float64 `json:"avg_pnl"`
+	TotalPnl float64 `json:"total_pnl"`
+}
+
 type StrategyDiagnostics struct {
 	Ranking       *RankingDiagnostics  `json:"ranking,omitempty"`
 	RegimeSlices  []RegimeSliceMetric  `json:"regime_slices,omitempty"`
 	SymbolCohorts []SymbolCohortMetric `json:"symbol_cohorts,omitempty"`
 	Exposure      ExposureDiagnostics  `json:"exposure"`
+	DecileMetrics []DecileMetric       `json:"decile_metrics,omitempty"`
 }
 
 type RankingMetrics struct {
@@ -166,6 +181,7 @@ type BacktestResult struct {
 	ModelVersion   string                   `json:"model_version,omitempty"`
 	PolicyVersion  string                   `json:"policy_version,omitempty"`
 	RolloutState   string                   `json:"rollout_state,omitempty"`
+	UniverseMode   UniverseMode             `json:"universe_mode,omitempty"`
 	RankingMetrics *RankingMetrics          `json:"ranking_metrics,omitempty"`
 	Diagnostics    StrategyDiagnostics      `json:"diagnostics"`
 	Equity         []EquityPoint            `json:"equity"`

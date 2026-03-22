@@ -1,3 +1,47 @@
+// exit_rules.go defines the exit policy engine for all position close decisions.
+//
+// # Exit Precedence Order
+//
+// Exits are evaluated in a strict precedence order. The first matching rule wins:
+//
+//  1. stop_loss       — hard stop at the position's StopPrice
+//  2. take_profit     — hard target at the position's TakeProfitPrice
+//  3. atr_trailing    — ATR-based trailing stop (if ATRTrailingEnabled)
+//  4. trailing_stop   — percent-based trailing stop (if TrailingStopEnabled)
+//  5. (fallback) stop_loss   — computed from EntryPrice × (1 - StopLossPercent/100) when no explicit StopPrice is set
+//  6. (fallback) take_profit — computed from EntryPrice × (1 + TakeProfitPercent/100) when no explicit TakeProfitPrice is set
+//  7. time_stop       — close after BarsHeld ≥ TimeStopBars
+//  8. sell_signal     — close on SELL / STRONG_SELL signal when rating ≤ MinConfidenceToSell
+//
+// # Tick vs Bar Evaluation
+//
+// Exits are split into two evaluation cadences:
+//
+//   - Protective exits (evaluated on every tick / 1m price update via [EvaluateProtectiveExit]):
+//     stop_loss, take_profit, atr_trailing, trailing_stop, and their fallback variants.
+//     These fire as soon as the price condition is met and are always executed regardless of P&L.
+//
+//   - Discretionary exits (evaluated on 15m bar close via [EvaluateBarCloseExit]):
+//     time_stop and sell_signal. These are subject to the AllowSellAtLoss gate.
+//     Note: EvaluateBarCloseExit also re-checks protective exits first, so a protective
+//     condition discovered at bar close still takes priority.
+//
+// # AllowSellAtLoss Behavior
+//
+// The AllowSellAtLoss setting only gates discretionary exits (time_stop, sell_signal).
+// When AllowSellAtLoss is false, discretionary exits are suppressed if CurrentPrice < EntryPrice,
+// meaning the position is held until it is profitable or a protective exit triggers.
+// Protective exits (stop_loss, take_profit, trailing variants) always execute regardless of
+// the AllowSellAtLoss setting — they are safety mechanisms that must not be blocked.
+//
+// # Idempotency via exit_pending
+//
+// The [ExecutionCoordinator] sets the position's ExitPending flag to true inside a
+// database transaction before submitting the sell order. Subsequent ticks that arrive
+// while ExitPending is true are ignored by the [PositionMonitor], guaranteeing that
+// each position is closed at most once even under concurrent tick delivery or duplicate
+// events. If the sell order fails, ExitPending is rolled back to false so the next
+// evaluation cycle can retry.
 package services
 
 import "time"
@@ -60,6 +104,8 @@ type ExitDecision struct {
 	Protective   bool
 }
 
+// BuildExitPolicy constructs an ExitPolicy from the persisted settings map.
+// Missing keys fall back to safe defaults (e.g., 5% stop-loss, 30% take-profit).
 func BuildExitPolicy(settings map[string]string) ExitPolicy {
 	return ExitPolicy{
 		StopLossPercent:     getSettingFloat(settings, "stop_loss_percent", 5.0),
@@ -75,6 +121,9 @@ func BuildExitPolicy(settings map[string]string) ExitPolicy {
 	}
 }
 
+// RatchetPercentTrailingStop computes a candidate trailing stop at currentPrice × (1 - percent/100)
+// and returns the higher of the candidate and the existing stop. The stop only ratchets upward
+// and is not set until price exceeds entryPrice.
 func RatchetPercentTrailingStop(existing *float64, currentPrice float64, entryPrice float64, trailingStopPercent float64) *float64 {
 	if trailingStopPercent <= 0 || currentPrice <= 0 {
 		return existing
@@ -93,6 +142,8 @@ func RatchetPercentTrailingStop(existing *float64, currentPrice float64, entryPr
 	return existing
 }
 
+// RatchetATRTrailingStop computes a candidate trailing stop at max(currentPrice, entryPrice) - atr×mult
+// and returns the higher of the candidate and the existing stop. The stop only ratchets upward.
 func RatchetATRTrailingStop(existing *float64, currentPrice float64, entryPrice float64, atr float64, atrTrailingMult float64) *float64 {
 	if atr <= 0 || atrTrailingMult <= 0 || currentPrice <= 0 {
 		return existing
@@ -113,6 +164,10 @@ func RatchetATRTrailingStop(existing *float64, currentPrice float64, entryPrice 
 	return existing
 }
 
+// EvaluateProtectiveExit checks only protective (tick-level) exit conditions in precedence order:
+// stop_loss → take_profit → atr_trailing → trailing_stop → fallback stop_loss → fallback take_profit.
+// Returns a non-empty ExitDecision if a protective exit should fire. These exits are never gated
+// by AllowSellAtLoss and always execute to protect capital.
 func EvaluateProtectiveExit(input ExitEvaluationInput, policy ExitPolicy) ExitDecision {
 	high := normalizedHigh(input)
 	low := normalizedLow(input)
@@ -150,6 +205,8 @@ func EvaluateProtectiveExit(input ExitEvaluationInput, policy ExitPolicy) ExitDe
 	return ExitDecision{}
 }
 
+// EvaluateBarCloseExit is called on 15m bar boundaries. It first re-evaluates protective exits,
+// then checks discretionary exits (time_stop, sell_signal) which are subject to the AllowSellAtLoss gate.
 func EvaluateBarCloseExit(input ExitEvaluationInput, policy ExitPolicy) ExitDecision {
 	if decision := EvaluateProtectiveExit(input, policy); decision.Reason != "" {
 		return decision
@@ -172,6 +229,8 @@ func EvaluateBarCloseExit(input ExitEvaluationInput, policy ExitPolicy) ExitDeci
 	return ExitDecision{}
 }
 
+// discretionaryExitAllowed returns true if a discretionary exit (time_stop, sell_signal)
+// is permitted. When AllowSellAtLoss is false, the exit is blocked unless CurrentPrice ≥ EntryPrice.
 func discretionaryExitAllowed(input ExitEvaluationInput, policy ExitPolicy) bool {
 	if policy.AllowSellAtLoss {
 		return true

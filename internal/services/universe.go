@@ -3,6 +3,7 @@ package services
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"math"
 	"sort"
 	"strconv"
@@ -82,6 +83,9 @@ type UniverseSelectionResult struct {
 
 func GetUniversePolicy(settings map[string]string) UniversePolicy {
 	legacyAnalyze := getSettingInt(settings, "trending_coins_to_analyze", 8)
+	if _, ok := settings["trending_coins_to_analyze"]; ok {
+		log.Printf("universe: trending_coins_to_analyze is deprecated, use universe_analyze_top_n instead")
+	}
 	intervalLabel := getSettingString(settings, "universe_rebalance_interval", "1h")
 	interval, err := time.ParseDuration(intervalLabel)
 	if err != nil || interval <= 0 {

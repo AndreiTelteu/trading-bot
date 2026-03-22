@@ -69,6 +69,14 @@ func (s *StreamSupervisor) ShouldFallback(symbol string) bool {
 	return !s.monitor.IsHealthy(symbol)
 }
 
+// LogShadowComparison logs when a stream-driven exit would have triggered,
+// providing operational visibility for shadow mode verification. This allows
+// comparing stream exit timing against cron-based fallback exits.
+func (s *StreamSupervisor) LogShadowComparison(symbol string, streamTriggeredAt time.Time, reason string) {
+	log.Printf("SHADOW_COMPARE symbol=%s stream_triggered_at=%s reason=%s",
+		symbol, streamTriggeredAt.UTC().Format(time.RFC3339Nano), reason)
+}
+
 func (s *StreamSupervisor) Enabled() bool {
 	settings := GetAllSettings()
 	return getSettingBool(settings, "stream_exit_enabled", true)

@@ -48,6 +48,8 @@ type ValidationSummary struct {
 	BaselineSymbolCohorts           []SymbolCohortMetric      `json:"baseline_symbol_cohorts,omitempty"`
 	VolSizingSymbolCohorts          []SymbolCohortMetric      `json:"vol_sizing_symbol_cohorts,omitempty"`
 	WindowSummaries                 []ValidationWindowSummary `json:"window_summaries,omitempty"`
+	BaselineDecileMetrics           []DecileMetric            `json:"baseline_decile_metrics,omitempty"`
+	VolSizingDecileMetrics          []DecileMetric            `json:"vol_sizing_decile_metrics,omitempty"`
 	PromotionReadiness              PromotionReadiness        `json:"promotion_readiness"`
 	TrainingPassed                  bool                      `json:"training_passed"`
 	Passed                          bool                      `json:"passed"`
@@ -153,7 +155,9 @@ func RunValidation(config BacktestConfig, series map[string][]services.OHLCV, tr
 	volRegime := buildRegimeSliceMetrics(volTrades)
 	baselineSymbols := buildSymbolCohortMetrics(baselineTrades)
 	volSymbols := buildSymbolCohortMetrics(volTrades)
-	readiness := evaluatePromotionReadiness(config, testSummary, volRanking, volRegime)
+	baselineDeciles := buildDecileMetrics(baselineTrades)
+	volDeciles := buildDecileMetrics(volTrades)
+	readiness := evaluatePromotionReadiness(config, testSummary, volRanking, volRegime, volDeciles)
 
 	return ValidationSummary{
 		BacktestMode:                    config.BacktestMode,
@@ -189,6 +193,8 @@ func RunValidation(config BacktestConfig, series map[string][]services.OHLCV, tr
 		BaselineSymbolCohorts:           baselineSymbols,
 		VolSizingSymbolCohorts:          volSymbols,
 		WindowSummaries:                 windowSummaries,
+		BaselineDecileMetrics:           baselineDeciles,
+		VolSizingDecileMetrics:          volDeciles,
 		PromotionReadiness:              readiness,
 		TrainingPassed:                  trainingPassed,
 		Passed:                          trainingPassed && testPassed,
@@ -203,7 +209,7 @@ func buildRankingDiagnosticsFromTrades(trades []Trade, config BacktestConfig) *R
 	return ranking.Diagnostics
 }
 
-func evaluatePromotionReadiness(config BacktestConfig, summary validationCISet, ranking *RankingDiagnostics, regimeSlices []RegimeSliceMetric) PromotionReadiness {
+func evaluatePromotionReadiness(config BacktestConfig, summary validationCISet, ranking *RankingDiagnostics, regimeSlices []RegimeSliceMetric, deciles []DecileMetric) PromotionReadiness {
 	gates := []PromotionGateResult{
 		{
 			Name:    "walk_forward_complete",
@@ -212,7 +218,7 @@ func evaluatePromotionReadiness(config BacktestConfig, summary validationCISet, 
 		},
 		{
 			Name:    "dynamic_universe_included",
-			Passed:  config.UniverseMode == UniverseDynamicRecompute,
+			Passed:  config.UniverseMode == UniverseDynamicRecompute || config.UniverseMode == UniverseDynamicReplay,
 			Details: fmt.Sprintf("universe mode: %s", config.UniverseMode),
 		},
 		{
@@ -230,6 +236,8 @@ func evaluatePromotionReadiness(config BacktestConfig, summary validationCISet, 
 			Passed:  len(regimeSlices) >= 2,
 			Details: fmt.Sprintf("regime slices: %d", len(regimeSlices)),
 		},
+		evaluateCalibrationGate(deciles),
+		evaluateOutperformsBaselineGate(summary),
 	}
 	passed := true
 	passedCount := 0
@@ -251,6 +259,56 @@ func evaluatePromotionReadiness(config BacktestConfig, summary validationCISet, 
 		RecommendedStage: recommendedStage,
 		Passed:           passed,
 		Gates:            gates,
+	}
+}
+
+// evaluateCalibrationGate checks if top probability buckets have higher win rates than bottom ones.
+func evaluateCalibrationGate(deciles []DecileMetric) PromotionGateResult {
+	if len(deciles) < 4 {
+		return PromotionGateResult{
+			Name:    "calibration_acceptable",
+			Passed:  false,
+			Details: fmt.Sprintf("insufficient deciles: %d", len(deciles)),
+		}
+	}
+	// Compare top 3 deciles avg win rate vs bottom 3 deciles avg win rate
+	topWinRate := 0.0
+	topCount := 0
+	bottomWinRate := 0.0
+	bottomCount := 0
+	for i := 0; i < 3 && i < len(deciles); i++ {
+		if deciles[i].Trades > 0 {
+			bottomWinRate += deciles[i].WinRate
+			bottomCount++
+		}
+	}
+	for i := len(deciles) - 3; i < len(deciles); i++ {
+		if i >= 0 && deciles[i].Trades > 0 {
+			topWinRate += deciles[i].WinRate
+			topCount++
+		}
+	}
+	if topCount > 0 {
+		topWinRate /= float64(topCount)
+	}
+	if bottomCount > 0 {
+		bottomWinRate /= float64(bottomCount)
+	}
+	passed := topCount > 0 && bottomCount > 0 && topWinRate > bottomWinRate
+	return PromotionGateResult{
+		Name:    "calibration_acceptable",
+		Passed:  passed,
+		Details: fmt.Sprintf("top_decile_win_rate=%.3f bottom_decile_win_rate=%.3f", topWinRate, bottomWinRate),
+	}
+}
+
+// evaluateOutperformsBaselineGate checks if vol_sizing sharpe CI lower bound > baseline sharpe CI upper bound.
+func evaluateOutperformsBaselineGate(summary validationCISet) PromotionGateResult {
+	passed := summary.SharpeCandidate.Lower > summary.SharpeBaseline.Upper
+	return PromotionGateResult{
+		Name:    "outperforms_baseline",
+		Passed:  passed,
+		Details: fmt.Sprintf("vol_sizing_sharpe_ci_lower=%.4f baseline_sharpe_ci_upper=%.4f", summary.SharpeCandidate.Lower, summary.SharpeBaseline.Upper),
 	}
 }
 

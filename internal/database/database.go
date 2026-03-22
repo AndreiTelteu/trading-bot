@@ -66,9 +66,9 @@ func SeedData() error {
 		{Key: "take_profit_percent", Value: "30.0", Category: strPtr("trading")},
 		{Key: "rebuy_percent", Value: "2.5", Category: strPtr("trading")},
 		{Key: "max_positions", Value: "5", Category: strPtr("trading")},
-		{Key: "buy_only_strong", Value: "true", Category: strPtr("trading")},
+		{Key: "buy_only_strong", Value: "true", Category: strPtr("trading")}, // DEPRECATED: superseded by learned model selection policy
 		{Key: "sell_on_signal", Value: "true", Category: strPtr("trading")},
-		{Key: "min_confidence_to_buy", Value: "4.0", Category: strPtr("trading")},
+		{Key: "min_confidence_to_buy", Value: "4.0", Category: strPtr("trading")}, // DEPRECATED: superseded by learned model selection policy (selection_policy_min_prob)
 		{Key: "min_confidence_to_sell", Value: "3.5", Category: strPtr("trading")},
 		{Key: "stream_exit_enabled", Value: "true", Category: strPtr("trading")},
 		{Key: "allow_sell_at_loss", Value: "false", Category: strPtr("trading")},
@@ -126,28 +126,32 @@ func SeedData() error {
 		{Key: "validation_train_months", Value: "12", Category: strPtr("backtest")},
 		{Key: "validation_test_months", Value: "3", Category: strPtr("backtest")},
 		{Key: "validation_bootstrap_iterations", Value: "500", Category: strPtr("backtest")},
-		{Key: "prob_model_enabled", Value: "false", Category: strPtr("probabilistic")},
-		{Key: "prob_model_beta0", Value: "0.0", Category: strPtr("probabilistic")},
-		{Key: "prob_model_beta1", Value: "0.0", Category: strPtr("probabilistic")},
-		{Key: "prob_model_beta2", Value: "0.0", Category: strPtr("probabilistic")},
-		{Key: "prob_model_beta3", Value: "0.0", Category: strPtr("probabilistic")},
-		{Key: "prob_model_beta4", Value: "0.0", Category: strPtr("probabilistic")},
-		{Key: "prob_model_beta5", Value: "0.0", Category: strPtr("probabilistic")},
-		{Key: "prob_model_beta6", Value: "0.0", Category: strPtr("probabilistic")},
-		{Key: "prob_p_min", Value: "0.55", Category: strPtr("probabilistic")},
-		{Key: "prob_ev_min", Value: "0.0", Category: strPtr("probabilistic")},
-		{Key: "prob_avg_gain", Value: "0.02", Category: strPtr("probabilistic")},
-		{Key: "prob_avg_loss", Value: "0.01", Category: strPtr("probabilistic")},
-		{Key: "rsi_period", Value: "14", Category: strPtr("indicators")},
-		{Key: "rsi_oversold", Value: "30.0", Category: strPtr("indicators")},
-		{Key: "rsi_overbought", Value: "70.0", Category: strPtr("indicators")},
-		{Key: "macd_fast_period", Value: "12", Category: strPtr("indicators")},
-		{Key: "macd_slow_period", Value: "26", Category: strPtr("indicators")},
-		{Key: "macd_signal_period", Value: "9", Category: strPtr("indicators")},
-		{Key: "bb_period", Value: "20", Category: strPtr("indicators")},
-		{Key: "bb_std", Value: "2.0", Category: strPtr("indicators")},
-		{Key: "volume_ma_period", Value: "20", Category: strPtr("indicators")},
-		{Key: "momentum_period", Value: "10", Category: strPtr("indicators")},
+		// DEPRECATED: Manual probability model betas are superseded by the learned model artifact.
+		// Retained for rollback compatibility. Do not use for new configurations.
+		{Key: "prob_model_enabled", Value: "false", Category: strPtr("probabilistic")}, // DEPRECATED
+		{Key: "prob_model_beta0", Value: "0.0", Category: strPtr("probabilistic")},     // DEPRECATED
+		{Key: "prob_model_beta1", Value: "0.0", Category: strPtr("probabilistic")},     // DEPRECATED
+		{Key: "prob_model_beta2", Value: "0.0", Category: strPtr("probabilistic")},     // DEPRECATED
+		{Key: "prob_model_beta3", Value: "0.0", Category: strPtr("probabilistic")},     // DEPRECATED
+		{Key: "prob_model_beta4", Value: "0.0", Category: strPtr("probabilistic")},     // DEPRECATED
+		{Key: "prob_model_beta5", Value: "0.0", Category: strPtr("probabilistic")},     // DEPRECATED
+		{Key: "prob_model_beta6", Value: "0.0", Category: strPtr("probabilistic")},     // DEPRECATED
+		{Key: "prob_p_min", Value: "0.55", Category: strPtr("probabilistic")},           // DEPRECATED: use selection_policy_min_prob
+		{Key: "prob_ev_min", Value: "0.0", Category: strPtr("probabilistic")},           // DEPRECATED: use selection_policy_min_ev
+		{Key: "prob_avg_gain", Value: "0.02", Category: strPtr("probabilistic")},        // DEPRECATED
+		{Key: "prob_avg_loss", Value: "0.01", Category: strPtr("probabilistic")},        // DEPRECATED
+		// DEPRECATED: Indicator period settings are legacy controls. The learned model and
+		// policy framework now govern entry decisions. Retained for rollback compatibility.
+		{Key: "rsi_period", Value: "14", Category: strPtr("indicators")},          // DEPRECATED: legacy indicator tuning
+		{Key: "rsi_oversold", Value: "30.0", Category: strPtr("indicators")},      // DEPRECATED: legacy indicator tuning
+		{Key: "rsi_overbought", Value: "70.0", Category: strPtr("indicators")},    // DEPRECATED: legacy indicator tuning
+		{Key: "macd_fast_period", Value: "12", Category: strPtr("indicators")},    // DEPRECATED: legacy indicator tuning
+		{Key: "macd_slow_period", Value: "26", Category: strPtr("indicators")},    // DEPRECATED: legacy indicator tuning
+		{Key: "macd_signal_period", Value: "9", Category: strPtr("indicators")},   // DEPRECATED: legacy indicator tuning
+		{Key: "bb_period", Value: "20", Category: strPtr("indicators")},           // DEPRECATED: legacy indicator tuning
+		{Key: "bb_std", Value: "2.0", Category: strPtr("indicators")},             // DEPRECATED: legacy indicator tuning
+		{Key: "volume_ma_period", Value: "20", Category: strPtr("indicators")},    // DEPRECATED: legacy indicator tuning
+		{Key: "momentum_period", Value: "10", Category: strPtr("indicators")},     // DEPRECATED: legacy indicator tuning
 		{Key: "ai_analysis_interval", Value: "24", Category: strPtr("ai")},
 		{Key: "ai_lookback_days", Value: "30", Category: strPtr("ai")},
 		{Key: "ai_min_proposals", Value: "1", Category: strPtr("ai")},

@@ -67,17 +67,27 @@ func GenerateProposals() (interface{}, error) {
 	}
 	response := llmResult.Content
 
-	proposals, err := parseProposalsFromResponse(response, settings, weights, allowedKeys, settingCategories)
+	// Parse governance wrapper (new format: JSON object with proposals + governance_recommendation)
+	govRec, govExplanation, proposalJSON := extractGovernanceWrapper(response)
+
+	proposals, err := parseProposalsFromResponse(proposalJSON, settings, weights, allowedKeys, settingCategories)
 	if err != nil {
 		return nil, fiber.NewError(500, "Failed to parse proposals: "+err.Error())
 	}
 
 	if len(proposals) == 0 {
-		return fiber.Map{
+		result := fiber.Map{
 			"success":   true,
 			"proposals": []database.AIProposal{},
 			"message":   "No proposals generated based on current market conditions",
-		}, nil
+		}
+		if govRec != "" {
+			result["governance_recommendation"] = govRec
+		}
+		if govExplanation != "" {
+			result["governance_explanation"] = govExplanation
+		}
+		return result, nil
 	}
 
 	createdProposals := []database.AIProposal{}
@@ -90,11 +100,18 @@ func GenerateProposals() (interface{}, error) {
 		createdProposals = append(createdProposals, proposal)
 	}
 
-	return fiber.Map{
+	result := fiber.Map{
 		"success":   true,
 		"proposals": createdProposals,
 		"count":     len(createdProposals),
-	}, nil
+	}
+	if govRec != "" {
+		result["governance_recommendation"] = govRec
+	}
+	if govExplanation != "" {
+		result["governance_explanation"] = govExplanation
+	}
+	return result, nil
 }
 
 type BacktestOptimizationInput struct {
@@ -572,6 +589,60 @@ func isAIAdjustableSettingKey(key string) bool {
 	}
 }
 
+// governanceAllowedParameterKeys lists the only parameter keys the AI is permitted to propose changes to.
+var governanceAllowedParameterKeys = map[string]bool{
+	"selection_policy_top_k":            true,
+	"selection_policy_min_prob":         true,
+	"selection_policy_min_ev":           true,
+	"risk_per_trade":                    true,
+	"stop_mult":                         true,
+	"tp_mult":                           true,
+	"max_position_value":                true,
+	"universe_top_k":                    true,
+	"universe_analyze_top_n":            true,
+	"universe_min_daily_quote_volume":   true,
+	"time_stop_bars":                    true,
+	"max_positions":                     true,
+	"model_rollout_state":               true,
+}
+
+// deprecatedParameterPrefixes lists prefixes that mark a parameter as deprecated and not proposable.
+var deprecatedParameterPrefixes = []string{
+	"prob_model_beta",
+	"rsi_",
+	"macd_",
+	"bb_",
+	"volume_ma_",
+	"momentum_",
+}
+
+// deprecatedParameterKeys lists exact keys that are deprecated.
+var deprecatedParameterKeys = map[string]bool{
+	"buy_only_strong":       true,
+	"min_confidence_to_buy": true,
+	"prob_model_enabled":    true,
+	"prob_p_min":            true,
+	"prob_ev_min":           true,
+	"prob_avg_gain":         true,
+	"prob_avg_loss":         true,
+}
+
+// isDeprecatedParameterKey returns true if the given key is deprecated and should not be proposed by the AI.
+func isDeprecatedParameterKey(key string) bool {
+	if deprecatedParameterKeys[key] {
+		return true
+	}
+	for _, prefix := range deprecatedParameterPrefixes {
+		if strings.HasPrefix(key, prefix) {
+			return true
+		}
+	}
+	if strings.HasPrefix(key, "weight:") {
+		return true
+	}
+	return false
+}
+
 func buildProposalPrompt(analysisData []AnalysisSummary, wallet map[string]interface{}, positions []map[string]interface{}, settings map[string]string, weights map[string]float64, gateMetrics GateMetrics, recentDecisions []DecisionSummary, lockedKeys map[string]bool, governanceOverview GovernanceOverview) string {
 	analysisJSON, _ := json.Marshal(analysisData)
 	positionsJSON, _ := json.Marshal(positions)
@@ -580,8 +651,30 @@ func buildProposalPrompt(analysisData []AnalysisSummary, wallet map[string]inter
 	governanceJSON, _ := json.Marshal(governanceOverview)
 
 	var sb strings.Builder
-	sb.WriteString("You are a trading governance assistant. Analyze the data and suggest safe policy adjustments only.\n\n")
-	sb.WriteString("Current Market Analysis:\n")
+	sb.WriteString("You are a trading governance assistant. Your role is to review validation evidence, monitoring data, and experiment results, then recommend safe policy adjustments and rollout decisions.\n\n")
+
+	// Governance context
+	sb.WriteString("=== Governance Context ===\n")
+	sb.WriteString(string(governanceJSON))
+	sb.WriteString("\n\n")
+
+	// Monitoring summary
+	if governanceOverview.LatestMonitoring != nil {
+		sb.WriteString("=== Latest Monitoring Summary ===\n")
+		monitoringJSON, _ := json.Marshal(governanceOverview.LatestMonitoring)
+		sb.WriteString(string(monitoringJSON))
+		sb.WriteString("\n\n")
+	}
+
+	// Experiment results
+	if governanceOverview.LatestExperiment != nil {
+		sb.WriteString("=== Latest Experiment Results ===\n")
+		experimentJSON, _ := json.Marshal(governanceOverview.LatestExperiment)
+		sb.WriteString(string(experimentJSON))
+		sb.WriteString("\n\n")
+	}
+
+	sb.WriteString("=== Current Market Analysis ===\n")
 	sb.WriteString(string(analysisJSON))
 	sb.WriteString("\n\nWallet: ")
 	sb.WriteString(fmt.Sprintf("Balance: %.2f %s", wallet["balance"].(float64), wallet["currency"].(string)))
@@ -593,8 +686,6 @@ func buildProposalPrompt(analysisData []AnalysisSummary, wallet map[string]inter
 	}
 	sb.WriteString("\n\nRecent Decisions:\n")
 	sb.WriteString(string(recentDecisionsJSON))
-	sb.WriteString("\n\nGovernance Overview:\n")
-	sb.WriteString(string(governanceJSON))
 	sb.WriteString("\n\nGate Pass Rates:\n")
 	sb.WriteString(string(gateMetricsJSON))
 	sb.WriteString("\n\nHow the trading logic uses settings:\n")
@@ -610,6 +701,24 @@ func buildProposalPrompt(analysisData []AnalysisSummary, wallet map[string]inter
 	sb.WriteString("- Exit logic uses stop_loss_percent/take_profit_percent unless per-position ATR stop/tp were set by vol sizing.\n")
 	sb.WriteString("- Trailing stop uses trailing_stop_enabled and trailing_stop_percent.\n")
 	sb.WriteString("- Time stop uses time_stop_bars if > 0 and exits only when PnL <= 0.\n")
+
+	sb.WriteString("\n=== Allowed Parameter Keys (ONLY propose changes to these) ===\n")
+	allowedList := make([]string, 0, len(governanceAllowedParameterKeys))
+	for key := range governanceAllowedParameterKeys {
+		allowedList = append(allowedList, key)
+	}
+	sort.Strings(allowedList)
+	sb.WriteString(strings.Join(allowedList, ", "))
+	sb.WriteString("\n")
+
+	sb.WriteString("\n=== DO NOT propose changes to these deprecated parameters ===\n")
+	sb.WriteString("- Indicator weights (weight:rsi, weight:macd, etc.)\n")
+	sb.WriteString("- prob_model_beta0 through prob_model_beta6\n")
+	sb.WriteString("- buy_only_strong, min_confidence_to_buy\n")
+	sb.WriteString("- Indicator periods (rsi_period, macd_fast_period, bb_period, etc.)\n")
+	sb.WriteString("- prob_model_enabled, prob_p_min, prob_ev_min, prob_avg_gain, prob_avg_loss\n")
+	sb.WriteString("These are legacy controls superseded by the learned model and policy framework.\n")
+
 	sb.WriteString("\nImportant interactions and failure modes:\n")
 	sb.WriteString("- Tight selection_policy_min_prob or selection_policy_min_ev can suppress all entries even with a healthy shortlist.\n")
 	sb.WriteString("- Tight vol_ratio_min/max can block trades in low or high volatility regimes.\n")
@@ -629,25 +738,28 @@ func buildProposalPrompt(analysisData []AnalysisSummary, wallet map[string]inter
 		sb.WriteString(strings.Join(lockedList, ", "))
 		sb.WriteString("\n")
 	}
-	sb.WriteString("\n\nCurrent Settings (allowed keys):\n")
+	sb.WriteString("\n\nCurrent Settings (context):\n")
 	for k, v := range settings {
 		sb.WriteString(fmt.Sprintf("%s: %s\n", k, v))
 	}
-	sb.WriteString("\n\nCurrent Indicator Weights (legacy context only; do not optimize these):\n")
+	sb.WriteString("\n\nCurrent Indicator Weights (legacy context only; do NOT optimize these):\n")
 	for k, v := range weights {
 		sb.WriteString(fmt.Sprintf("weight:%s: %g\n", k, v))
 	}
-	sb.WriteString("\n\nOnly return proposals of type parameter_adjustment. Each proposal must change exactly one allowed governance or policy key.\n")
-	sb.WriteString("Allowed keys are only the adjustable settings listed above in Current Settings. Indicator weights, indicator periods, and retired probability-beta controls are context only.\n")
-	sb.WriteString("Do not return buy/sell/risk proposals. Do not return null values.\n\n")
-	sb.WriteString("Return a JSON array of proposals with these fields:\n")
+	sb.WriteString("\n\nReturn a JSON object with two fields:\n")
+	sb.WriteString("1. \"proposals\": a JSON array of parameter_adjustment proposals (may be empty)\n")
+	sb.WriteString("2. \"governance_recommendation\": one of \"promote\", \"maintain\", \"rollback\", or \"investigate\"\n")
+	sb.WriteString("3. \"governance_explanation\": a brief explanation of why you chose that recommendation based on the validation/monitoring evidence\n\n")
+	sb.WriteString("Each proposal in the array must have:\n")
 	sb.WriteString("- proposal_type: must be parameter_adjustment\n")
-	sb.WriteString("- parameter_key: one allowed key\n")
+	sb.WriteString("- parameter_key: one of the allowed keys listed above\n")
 	sb.WriteString("- old_value: current value for that key\n")
 	sb.WriteString("- new_value: proposed value for that key\n")
-	sb.WriteString("- reasoning: why this adjustment makes sense\n\n")
-	sb.WriteString("Example: [{\"proposal_type\":\"parameter_adjustment\",\"parameter_key\":\"rsi_period\",\"old_value\":\"14\",\"new_value\":\"20\",\"reasoning\":\"Longer period reduces noise\"}]\n\n")
-	sb.WriteString("Respond with only valid JSON array, no other text:")
+	sb.WriteString("- reasoning: why this adjustment makes sense based on the evidence\n\n")
+	sb.WriteString("Do not return buy/sell/risk proposals. Do not return null values. Do not propose changes to any key NOT in the allowed list.\n\n")
+	sb.WriteString("Example:\n")
+	sb.WriteString("{\"proposals\":[{\"proposal_type\":\"parameter_adjustment\",\"parameter_key\":\"selection_policy_min_prob\",\"old_value\":\"0.53\",\"new_value\":\"0.55\",\"reasoning\":\"Monitoring shows low-probability entries are dragging performance.\"}],\"governance_recommendation\":\"maintain\",\"governance_explanation\":\"Model calibration remains acceptable; no promotion or rollback warranted.\"}\n\n")
+	sb.WriteString("Respond with only valid JSON, no markdown or extra text:")
 
 	return sb.String()
 }
@@ -1479,6 +1591,36 @@ func callLLM(config *database.LLMConfig, prompt string) (LLMCallResult, error) {
 	}, nil
 }
 
+// extractGovernanceWrapper attempts to parse the LLM response as a JSON object containing
+// "proposals", "governance_recommendation", and "governance_explanation" fields.
+// If the response is a bare JSON array (old format), it returns it as-is for backward compatibility.
+func extractGovernanceWrapper(response string) (govRec string, govExplanation string, proposalJSON string) {
+	trimmed := strings.TrimSpace(response)
+
+	// Try to parse as a JSON object with governance fields
+	var wrapper struct {
+		Proposals                []json.RawMessage `json:"proposals"`
+		GovernanceRecommendation string            `json:"governance_recommendation"`
+		GovernanceExplanation    string            `json:"governance_explanation"`
+	}
+	if err := json.Unmarshal([]byte(trimmed), &wrapper); err == nil && len(wrapper.Proposals) > 0 {
+		// Re-serialize the proposals array for downstream parsing
+		proposalsBytes, _ := json.Marshal(wrapper.Proposals)
+		return strings.TrimSpace(wrapper.GovernanceRecommendation),
+			strings.TrimSpace(wrapper.GovernanceExplanation),
+			string(proposalsBytes)
+	}
+	// Also handle case where wrapper parsed but proposals is nil (object with no proposals)
+	if err := json.Unmarshal([]byte(trimmed), &wrapper); err == nil && wrapper.GovernanceRecommendation != "" {
+		return strings.TrimSpace(wrapper.GovernanceRecommendation),
+			strings.TrimSpace(wrapper.GovernanceExplanation),
+			"[]"
+	}
+
+	// Fallback: treat as raw array (backward compatible)
+	return "", "", trimmed
+}
+
 func parseProposalsFromResponse(response string, settings map[string]string, weights map[string]float64, allowedKeys map[string]bool, categories map[string]string) ([]database.AIProposal, error) {
 	return parseProposalsFromResponseWithType(response, settings, weights, allowedKeys, categories, "parameter_adjustment")
 }
@@ -1568,7 +1710,19 @@ func parseProposalsFromResponseWithTypeDetailed(response string, settings map[st
 		}
 		paramKey := strings.TrimSpace(*raw.ParameterKey)
 		if paramKey == "" || !allowedKeys[paramKey] {
+			// Check if this is a deprecated parameter and log a specific rejection
+			if paramKey != "" && isDeprecatedParameterKey(paramKey) {
+				fmt.Printf("[WARN] AI proposed deprecated parameter: %s\n", paramKey)
+				reject("deprecated_parameter")
+				continue
+			}
 			reject("disallowed_key")
+			continue
+		}
+		// Double-check: even if in allowedKeys, reject if deprecated
+		if isDeprecatedParameterKey(paramKey) {
+			fmt.Printf("[WARN] AI proposed deprecated parameter: %s\n", paramKey)
+			reject("deprecated_parameter")
 			continue
 		}
 		if strings.TrimSpace(*raw.NewValue) == "" {
