@@ -1,12 +1,12 @@
 package database
 
 import (
-	"errors"
 	"log"
 	"trading-go/internal/config"
 
-	"github.com/glebarez/sqlite"
+	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 	"gorm.io/gorm/logger"
 )
 
@@ -15,16 +15,35 @@ var DB *gorm.DB
 func Initialize(cfg *config.Config) error {
 	var err error
 
-	dbConfig := &gorm.Config{
-		Logger: logger.Default.LogMode(logger.Info),
-	}
-
-	DB, err = gorm.Open(sqlite.Open(cfg.DatabasePath), dbConfig)
+	dsn, err := cfg.DatabaseDSN()
 	if err != nil {
 		return err
 	}
 
-	if err := AutoMigrate(); err != nil {
+	dbConfig := &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Info),
+	}
+
+	DB, err = gorm.Open(postgres.Open(dsn), dbConfig)
+	if err != nil {
+		return err
+	}
+
+	sqlDB, err := DB.DB()
+	if err != nil {
+		return err
+	}
+
+	sqlDB.SetMaxOpenConns(cfg.DBMaxOpenConns)
+	sqlDB.SetMaxIdleConns(cfg.DBMaxIdleConns)
+	sqlDB.SetConnMaxLifetime(cfg.DBConnMaxLifetime)
+	sqlDB.SetConnMaxIdleTime(cfg.DBConnMaxIdleTime)
+
+	if err := sqlDB.Ping(); err != nil {
+		return err
+	}
+
+	if err := RunMigrations(DB); err != nil {
 		return err
 	}
 
@@ -37,34 +56,10 @@ func Initialize(cfg *config.Config) error {
 }
 
 func AutoMigrate() error {
-	return DB.AutoMigrate(
-		&Wallet{},
-		&Position{},
-		&Order{},
-		&Setting{},
-		&AIProposal{},
-		&IndicatorWeight{},
-		&LLMConfig{},
-		&ActivityLog{},
-		&BacktestJob{},
-		&TrendAnalysisHistory{},
-		&PortfolioSnapshot{},
-	)
+	return migrateSchema(DB)
 }
 
 func SeedData() error {
-	var count int64
-	DB.Model(&Wallet{}).Count(&count)
-	if count == 0 {
-		wallet := Wallet{
-			Balance:  400.0,
-			Currency: "USDT",
-		}
-		if err := DB.Create(&wallet).Error; err != nil {
-			return err
-		}
-	}
-
 	settings := []Setting{
 		{Key: "entry_percent", Value: "5.0", Category: strPtr("trading")},
 		{Key: "stop_loss_percent", Value: "5.0", Category: strPtr("trading")},
@@ -140,48 +135,46 @@ func SeedData() error {
 		{Key: "ai_recent_decisions_limit", Value: "10", Category: strPtr("ai")},
 		{Key: "ai_gate_metrics_limit", Value: "200", Category: strPtr("ai")},
 	}
-	for _, s := range settings {
-		var existing Setting
-		if err := DB.First(&existing, "key = ?", s.Key).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				if err := DB.Create(&s).Error; err != nil {
-					return err
-				}
-			} else {
-				return err
-			}
-		}
+	weights := []IndicatorWeight{
+		{Indicator: "rsi", Weight: 1.0},
+		{Indicator: "macd", Weight: 1.0},
+		{Indicator: "bollinger", Weight: 1.0},
+		{Indicator: "volume", Weight: 0.5},
+		{Indicator: "momentum", Weight: 1.0},
 	}
 
-	DB.Model(&IndicatorWeight{}).Count(&count)
-	if count == 0 {
-		weights := []IndicatorWeight{
-			{Indicator: "rsi", Weight: 1.0},
-			{Indicator: "macd", Weight: 1.0},
-			{Indicator: "bollinger", Weight: 1.0},
-			{Indicator: "volume", Weight: 0.5},
-			{Indicator: "momentum", Weight: 1.0},
+	return DB.Transaction(func(tx *gorm.DB) error {
+		wallet := Wallet{ID: 1, Balance: 400.0, Currency: "USDT"}
+		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&wallet).Error; err != nil {
+			return err
 		}
+
+		for _, s := range settings {
+			result := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&s)
+			if result.Error != nil {
+				return result.Error
+			}
+		}
+
 		for _, w := range weights {
-			if err := DB.Create(&w).Error; err != nil {
-				return err
+			result := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&w)
+			if result.Error != nil {
+				return result.Error
 			}
 		}
-	}
 
-	DB.Model(&LLMConfig{}).Count(&count)
-	if count == 0 {
 		llmConfig := LLMConfig{
+			ID:       1,
 			Provider: "openrouter",
 			BaseURL:  "https://openrouter.ai/api/v1",
 			Model:    "google/gemini-2.0-flash-001",
 		}
-		if err := DB.Create(&llmConfig).Error; err != nil {
+		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&llmConfig).Error; err != nil {
 			return err
 		}
-	}
 
-	return nil
+		return nil
+	})
 }
 
 func strPtr(s string) *string {

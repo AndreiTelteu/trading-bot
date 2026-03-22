@@ -13,23 +13,23 @@ type Wallet struct {
 }
 
 type Position struct {
-	ID              uint       `json:"id" gorm:"primaryKey;autoIncrement"`
-	Symbol          string     `json:"symbol" gorm:"size:20;uniqueIndex"`
-	Amount          float64    `json:"amount"`
-	AvgPrice        float64    `json:"avg_price"`
-	EntryPrice      *float64   `json:"entry_price"`
-	CurrentPrice    *float64   `json:"current_price"`
-	StopPrice       *float64   `json:"stop_price"`
-	TakeProfitPrice *float64   `json:"take_profit_price"`
-	TrailingStopPrice *float64 `json:"trailing_stop_price"`
-	LastAtrValue      *float64 `json:"last_atr_value"`
-	MaxBarsHeld     *int       `json:"max_bars_held"`
-	Pnl             float64    `json:"pnl" gorm:"default:0"`
-	PnlPercent      float64    `json:"pnl_percent" gorm:"default:0"`
-	Status          string     `json:"status" gorm:"size:20;default:open"`
-	OpenedAt        time.Time  `json:"opened_at"`
-	ClosedAt        *time.Time `json:"closed_at"`
-	CloseReason     *string    `json:"close_reason" gorm:"size:50"`
+	ID                uint       `json:"id" gorm:"primaryKey;autoIncrement"`
+	Symbol            string     `json:"symbol" gorm:"size:20;uniqueIndex;index:idx_positions_symbol_status,priority:1"`
+	Amount            float64    `json:"amount"`
+	AvgPrice          float64    `json:"avg_price"`
+	EntryPrice        *float64   `json:"entry_price"`
+	CurrentPrice      *float64   `json:"current_price"`
+	StopPrice         *float64   `json:"stop_price"`
+	TakeProfitPrice   *float64   `json:"take_profit_price"`
+	TrailingStopPrice *float64   `json:"trailing_stop_price"`
+	LastAtrValue      *float64   `json:"last_atr_value"`
+	MaxBarsHeld       *int       `json:"max_bars_held"`
+	Pnl               float64    `json:"pnl" gorm:"default:0"`
+	PnlPercent        float64    `json:"pnl_percent" gorm:"default:0"`
+	Status            string     `json:"status" gorm:"size:20;default:open;index:idx_positions_symbol_status,priority:2;index:idx_positions_status_opened,priority:1;index:idx_positions_status_closed,priority:1"`
+	OpenedAt          time.Time  `json:"opened_at" gorm:"index:idx_positions_status_opened,priority:2;index:idx_positions_status_closed,priority:3"`
+	ClosedAt          *time.Time `json:"closed_at" gorm:"index:idx_positions_status_closed,priority:2"`
+	CloseReason       *string    `json:"close_reason" gorm:"size:50"`
 }
 
 type Order struct {
@@ -40,13 +40,13 @@ type Order struct {
 	AmountUsdt   float64   `json:"amount_usdt"`
 	Price        float64   `json:"price"`
 	Fee          float64   `json:"fee" gorm:"default:0"`
-	ExecutedAt   time.Time `json:"executed_at"`
+	ExecutedAt   time.Time `json:"executed_at" gorm:"index"`
 }
 
 type Setting struct {
 	Key       string    `json:"key" gorm:"primaryKey;size:50"`
 	Value     string    `json:"value" gorm:"size:500"`
-	Category  *string   `json:"category" gorm:"size:20"`
+	Category  *string   `json:"category" gorm:"size:20;index"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
@@ -57,8 +57,8 @@ type AIProposal struct {
 	OldValue           *string    `json:"old_value" gorm:"size:200"`
 	NewValue           *string    `json:"new_value" gorm:"size:200"`
 	Reasoning          string     `json:"reasoning" gorm:"type:text"`
-	Status             string     `json:"status" gorm:"size:20;default:pending"`
-	CreatedAt          time.Time  `json:"created_at"`
+	Status             string     `json:"status" gorm:"size:20;default:pending;index"`
+	CreatedAt          time.Time  `json:"created_at" gorm:"index"`
 	ResolvedAt         *time.Time `json:"resolved_at"`
 	PreviousProposalID *uint      `json:"previous_proposal_id" gorm:"index"`
 }
@@ -86,21 +86,21 @@ type ActivityLog struct {
 }
 
 type BacktestJob struct {
-	ID         uint       `json:"id" gorm:"primaryKey;autoIncrement"`
-	Status     string     `json:"status" gorm:"size:20;default:pending"`
-	Progress   float64    `json:"progress"`
-	Message    *string    `json:"message" gorm:"size:500"`
-	SummaryJSON *string   `json:"summary_json" gorm:"type:text"`
-	Error      *string    `json:"error" gorm:"type:text"`
-	StartedAt  *time.Time `json:"started_at"`
-	FinishedAt *time.Time `json:"finished_at"`
-	CreatedAt  time.Time  `json:"created_at"`
-	UpdatedAt  time.Time  `json:"updated_at"`
+	ID          uint       `json:"id" gorm:"primaryKey;autoIncrement"`
+	Status      string     `json:"status" gorm:"size:20;default:pending"`
+	Progress    float64    `json:"progress"`
+	Message     *string    `json:"message" gorm:"size:500"`
+	SummaryJSON *string    `json:"summary_json" gorm:"type:text"`
+	Error       *string    `json:"error" gorm:"type:text"`
+	StartedAt   *time.Time `json:"started_at"`
+	FinishedAt  *time.Time `json:"finished_at"`
+	CreatedAt   time.Time  `json:"created_at" gorm:"index"`
+	UpdatedAt   time.Time  `json:"updated_at"`
 }
 
 type TrendAnalysisHistory struct {
 	ID                  uint      `json:"id" gorm:"primaryKey;autoIncrement"`
-	Symbol              string    `json:"symbol" gorm:"size:20;index"`
+	Symbol              string    `json:"symbol" gorm:"size:20;index;index:idx_trend_symbol_analyzed_at,priority:1"`
 	Timeframe           string    `json:"timeframe" gorm:"size:10;default:15m"`
 	CurrentPrice        *float64  `json:"current_price"`
 	Change24h           *float64  `json:"change_24h" gorm:"column:change_24h"`
@@ -117,12 +117,12 @@ type TrendAnalysisHistory struct {
 	Decision            *string   `json:"decision" gorm:"size:20"`
 	DecisionReason      *string   `json:"decision_reason" gorm:"type:text"`
 	IndicatorsJSON      string    `json:"indicators_json" gorm:"type:text;not null"`
-	AnalyzedAt          time.Time `json:"analyzed_at" gorm:"index"`
+	AnalyzedAt          time.Time `json:"analyzed_at" gorm:"index;index:idx_trend_symbol_analyzed_at,priority:2,sort:desc"`
 }
 
 type PortfolioSnapshot struct {
-	ID         uint      `json:"id" gorm:"primaryKey;autoIncrement"`
-	TotalValue float64   `json:"total_value"`
-	VolatilityAnnualized *float64 `json:"volatility_annualized"`
-	Timestamp  time.Time `json:"timestamp" gorm:"index"`
+	ID                   uint      `json:"id" gorm:"primaryKey;autoIncrement"`
+	TotalValue           float64   `json:"total_value"`
+	VolatilityAnnualized *float64  `json:"volatility_annualized"`
+	Timestamp            time.Time `json:"timestamp" gorm:"index"`
 }

@@ -3,6 +3,7 @@ package services
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -14,6 +15,8 @@ import (
 	"trading-go/internal/database"
 
 	"github.com/gofiber/fiber/v2"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 func GenerateProposals() (interface{}, error) {
@@ -1618,35 +1621,44 @@ func ApproveProposal(id uint) (interface{}, error) {
 	proposal.Status = "approved"
 	proposal.ResolvedAt = &now
 
-	if err := database.DB.Save(&proposal).Error; err != nil {
-		return nil, fiber.NewError(500, "Failed to approve proposal")
-	}
+	if err := database.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Save(&proposal).Error; err != nil {
+			return err
+		}
 
-	if isAdjustmentProposalType(proposal.ProposalType) && proposal.ParameterKey != nil && proposal.NewValue != nil {
+		if !isAdjustmentProposalType(proposal.ProposalType) || proposal.ParameterKey == nil || proposal.NewValue == nil {
+			return nil
+		}
+
 		paramKey := strings.TrimSpace(*proposal.ParameterKey)
 		if strings.HasPrefix(paramKey, "weight:") {
 			indicator := strings.TrimSpace(strings.TrimPrefix(paramKey, "weight:"))
-			if indicator != "" {
-				if weightValue, err := strconv.ParseFloat(strings.TrimSpace(*proposal.NewValue), 64); err == nil {
-					var weight database.IndicatorWeight
-					if err := database.DB.First(&weight, "indicator = ?", indicator).Error; err != nil {
-						weight = database.IndicatorWeight{Indicator: indicator}
-						database.DB.Create(&weight)
-					}
-					weight.Weight = weightValue
-					database.DB.Save(&weight)
-				}
+			if indicator == "" {
+				return nil
 			}
-		} else {
-			var setting database.Setting
-			if err := database.DB.First(&setting, "key = ?", paramKey).Error; err != nil {
-				setting = database.Setting{Key: paramKey}
-				database.DB.Create(&setting)
+
+			weightValue, err := strconv.ParseFloat(strings.TrimSpace(*proposal.NewValue), 64)
+			if err != nil {
+				return err
 			}
-			setting.Value = *proposal.NewValue
-			setting.UpdatedAt = time.Now()
-			database.DB.Save(&setting)
+
+			weight := database.IndicatorWeight{Indicator: indicator, Weight: weightValue}
+			return tx.Clauses(clause.OnConflict{
+				Columns:   []clause.Column{{Name: "indicator"}},
+				DoUpdates: clause.AssignmentColumns([]string{"weight"}),
+			}).Create(&weight).Error
 		}
+
+		setting := database.Setting{Key: paramKey, Value: *proposal.NewValue, UpdatedAt: time.Now()}
+		return tx.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "key"}},
+			DoUpdates: clause.AssignmentColumns([]string{"value", "updated_at"}),
+		}).Create(&setting).Error
+	}); err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, fiber.NewError(404, "Proposal not found")
+		}
+		return nil, fiber.NewError(500, "Failed to approve proposal")
 	}
 
 	return fiber.Map{

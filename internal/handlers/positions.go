@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	ws "trading-go/internal/websocket"
 
 	"github.com/gofiber/fiber/v2"
+	"gorm.io/gorm"
 )
 
 func GetPositions(c *fiber.Ctx) error {
@@ -203,63 +205,80 @@ func ExecuteOpenTrade(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": fmt.Sprintf("Insufficient balance. Required: %.2f USDT, Available: %.2f USDT", totalCost, wallet.Balance)})
 	}
 
-	// Simulate buy order - update wallet locally (paper trading)
-	wallet.Balance -= totalCost
-	database.DB.Save(&wallet)
-
-	// Create or reopen position record.
 	now := time.Now()
 	position := database.Position{}
-	if err := database.DB.Where("symbol = ?", req.Symbol).First(&position).Error; err == nil {
-		if position.Status == "open" {
-			return c.Status(400).JSON(fiber.Map{"error": "Position already exists for this symbol"})
+	if err := database.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.First(&wallet).Error; err != nil {
+			return err
+		}
+		if totalCost > wallet.Balance {
+			return fiber.NewError(400, fmt.Sprintf("Insufficient balance. Required: %.2f USDT, Available: %.2f USDT", totalCost, wallet.Balance))
 		}
 
-		position.Amount = req.Amount
-		position.AvgPrice = price
-		position.EntryPrice = &price
-		position.CurrentPrice = &price
-		position.StopPrice = nil
-		position.TakeProfitPrice = nil
-		position.TrailingStopPrice = nil
-		position.LastAtrValue = nil
-		position.MaxBarsHeld = nil
-		position.Pnl = 0
-		position.PnlPercent = 0
-		position.Status = "open"
-		position.OpenedAt = now
-		position.ClosedAt = nil
-		position.CloseReason = nil
-
-		if err := database.DB.Save(&position).Error; err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": "Failed to reopen position record"})
+		wallet.Balance -= totalCost
+		if err := tx.Save(&wallet).Error; err != nil {
+			return err
 		}
-	} else {
-		position = database.Position{
+
+		lookupErr := tx.Where("symbol = ?", req.Symbol).First(&position).Error
+		switch {
+		case lookupErr == nil:
+			if position.Status == "open" {
+				return fiber.NewError(400, "Position already exists for this symbol")
+			}
+
+			position.Amount = req.Amount
+			position.AvgPrice = price
+			position.EntryPrice = &price
+			position.CurrentPrice = &price
+			position.StopPrice = nil
+			position.TakeProfitPrice = nil
+			position.TrailingStopPrice = nil
+			position.LastAtrValue = nil
+			position.MaxBarsHeld = nil
+			position.Pnl = 0
+			position.PnlPercent = 0
+			position.Status = "open"
+			position.OpenedAt = now
+			position.ClosedAt = nil
+			position.CloseReason = nil
+
+			if err := tx.Save(&position).Error; err != nil {
+				return err
+			}
+		case errors.Is(lookupErr, gorm.ErrRecordNotFound):
+			position = database.Position{
+				Symbol:       req.Symbol,
+				Amount:       req.Amount,
+				AvgPrice:     price,
+				EntryPrice:   &price,
+				CurrentPrice: &price,
+				Status:       "open",
+				OpenedAt:     now,
+			}
+
+			if err := tx.Create(&position).Error; err != nil {
+				return err
+			}
+		default:
+			return lookupErr
+		}
+
+		order := database.Order{
+			OrderType:    "buy",
 			Symbol:       req.Symbol,
-			Amount:       req.Amount,
-			AvgPrice:     price,
-			EntryPrice:   &price,
-			CurrentPrice: &price,
-			Status:       "open",
-			OpenedAt:     now,
+			AmountCrypto: req.Amount,
+			AmountUsdt:   totalCost,
+			Price:        price,
+			ExecutedAt:   time.Now(),
 		}
-
-		if err := database.DB.Create(&position).Error; err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": "Failed to create position record"})
+		return tx.Create(&order).Error
+	}); err != nil {
+		if fiberErr, ok := err.(*fiber.Error); ok {
+			return c.Status(fiberErr.Code).JSON(fiber.Map{"error": fiberErr.Message})
 		}
+		return c.Status(500).JSON(fiber.Map{"error": "Failed to execute paper buy trade"})
 	}
-
-	// Create order record
-	order := database.Order{
-		OrderType:    "buy",
-		Symbol:       req.Symbol,
-		AmountCrypto: req.Amount,
-		AmountUsdt:   totalCost,
-		Price:        price,
-		ExecutedAt:   time.Now(),
-	}
-	database.DB.Create(&order)
 
 	// Broadcast updates
 	if wsHub != nil {
@@ -355,34 +374,42 @@ func ExecuteCloseTrade(c *fiber.Ctx) error {
 		pnlPercent = (pnl / (position.Amount * position.AvgPrice)) * 100
 	}
 
-	// Simulate sell order - update wallet locally (paper trading)
 	var wallet database.Wallet
 	if err := database.DB.First(&wallet).Error; err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "Failed to fetch wallet"})
 	}
-	wallet.Balance += totalValue
-	database.DB.Save(&wallet)
-
-	// Update position status
 	now := time.Now()
-	position.Status = "closed"
-	position.ClosedAt = &now
-	position.CloseReason = &req.CloseReason
-	position.CurrentPrice = &price
-	position.Pnl = pnl
-	position.PnlPercent = pnlPercent
-	database.DB.Save(&position)
+	if err := database.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.First(&wallet).Error; err != nil {
+			return err
+		}
+		wallet.Balance += totalValue
+		if err := tx.Save(&wallet).Error; err != nil {
+			return err
+		}
 
-	// Create order record
-	order := database.Order{
-		OrderType:    "sell",
-		Symbol:       position.Symbol,
-		AmountCrypto: position.Amount,
-		AmountUsdt:   totalValue,
-		Price:        price,
-		ExecutedAt:   time.Now(),
+		position.Status = "closed"
+		position.ClosedAt = &now
+		position.CloseReason = &req.CloseReason
+		position.CurrentPrice = &price
+		position.Pnl = pnl
+		position.PnlPercent = pnlPercent
+		if err := tx.Save(&position).Error; err != nil {
+			return err
+		}
+
+		order := database.Order{
+			OrderType:    "sell",
+			Symbol:       position.Symbol,
+			AmountCrypto: position.Amount,
+			AmountUsdt:   totalValue,
+			Price:        price,
+			ExecutedAt:   time.Now(),
+		}
+		return tx.Create(&order).Error
+	}); err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "Failed to execute paper sell trade"})
 	}
-	database.DB.Create(&order)
 
 	// Calculate total portfolio value for wallet_update (wallet + remaining open positions)
 	totalPortfolioValue := wallet.Balance

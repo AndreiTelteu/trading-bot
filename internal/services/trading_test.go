@@ -2,16 +2,14 @@ package services
 
 import (
 	"encoding/json"
+	"github.com/gofiber/fiber/v2"
 	"math"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 	"trading-go/internal/database"
-
-	"github.com/glebarez/sqlite"
-	"github.com/gofiber/fiber/v2"
-	"gorm.io/gorm"
+	"trading-go/internal/testutil"
 )
 
 func TestResolveCloseReasonPrecedence(t *testing.T) {
@@ -46,20 +44,8 @@ func TestResolveCloseReasonPercentTrailing(t *testing.T) {
 }
 
 func TestUpdatePositionsPricesAtrTrailingStopRatchet(t *testing.T) {
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
-	if err != nil {
-		t.Fatalf("Failed to connect to test database: %v", err)
-	}
+	db := testutil.SetupPostgresDB(t)
 	database.DB = db
-	database.DB.AutoMigrate(
-		&database.Wallet{},
-		&database.Position{},
-		&database.Order{},
-		&database.Setting{},
-		&database.IndicatorWeight{},
-		&database.ActivityLog{},
-		&database.PortfolioSnapshot{},
-	)
 
 	database.DB.Create(&database.Wallet{Balance: 1000.0, Currency: "USDT"})
 	database.DB.Create(&database.Setting{Key: "atr_trailing_enabled", Value: "true"})
@@ -136,7 +122,7 @@ func TestUpdatePositionsPricesAtrTrailingStopRatchet(t *testing.T) {
 		HTTPClient: server.Client(),
 	}
 
-	_, err = UpdatePositionsPrices()
+	_, err := UpdatePositionsPrices()
 	if err != nil {
 		t.Fatalf("UpdatePositionsPrices() error = %v", err)
 	}
@@ -165,20 +151,8 @@ func TestUpdatePositionsPricesAtrTrailingStopRatchet(t *testing.T) {
 }
 
 func TestUpdatePositionsPricesCreatesSnapshotWithoutOpenPositions(t *testing.T) {
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
-	if err != nil {
-		t.Fatalf("Failed to connect to test database: %v", err)
-	}
+	db := testutil.SetupPostgresDB(t)
 	database.DB = db
-	database.DB.AutoMigrate(
-		&database.Wallet{},
-		&database.Position{},
-		&database.Order{},
-		&database.Setting{},
-		&database.IndicatorWeight{},
-		&database.ActivityLog{},
-		&database.PortfolioSnapshot{},
-	)
 
 	database.DB.Create(&database.Wallet{Balance: 1234.5, Currency: "USDT"})
 

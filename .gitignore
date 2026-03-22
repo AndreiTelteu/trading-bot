@@ -19,9 +19,6 @@ frontend/package-lock.json
 
 # Instance / Runtime
 instance/
-*.db
-*.sqlite
-*.sqlite3
 *.log
 
 # Environment and secrets

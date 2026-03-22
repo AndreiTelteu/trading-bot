@@ -1,9 +1,28 @@
 
 services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: trading-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: trading_bot
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d trading_bot"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
   app:
     build: .
     container_name: trading-backend
     restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.trading-backend.rule=Host(`trading.ryzen.cloud`)"
@@ -11,10 +30,35 @@ services:
       - "traefik.http.routers.trading-backend.tls=true"
       - "traefik.http.routers.trading-backend.tls.certresolver=letsencrypt"
       - "traefik.http.services.trading-backend.loadbalancer.server.port=5001"
-    volumes:
-      - ./:/app
+    environment:
+      PORT: 5001
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/trading_bot?sslmode=disable
     networks:
+      - default
       - proxy
+
+  postgres-test:
+    image: postgres:16-alpine
+    container_name: trading-postgres-test
+    restart: unless-stopped
+    profiles: ["test"]
+    environment:
+      POSTGRES_DB: trading_bot_test
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d trading_bot_test"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - postgres_test_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_data:
+  postgres_test_data:
 
 networks:
   proxy:

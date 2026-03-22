@@ -1,6 +1,7 @@
 package services
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"trading-go/internal/websocket"
 
 	"github.com/gofiber/fiber/v2"
+	"gorm.io/gorm"
 )
 
 var exchange *ExchangeService
@@ -135,64 +137,83 @@ func ExecuteBuy(req BuyRequest) (interface{}, error) {
 
 	orderResp, err := exchange.ExecuteBuy(symbol, amount, 0)
 	if err != nil {
-		wallet.Balance -= totalCost
-		database.DB.Save(&wallet)
 		return nil, fiber.NewError(500, "Failed to place buy order")
 	}
 
-	wallet.Balance -= totalCost
-	database.DB.Save(&wallet)
-
 	now := time.Now()
 	position := database.Position{}
-	if err := database.DB.Where("symbol = ?", symbol).First(&position).Error; err == nil {
-		if position.Status == "open" {
-			return nil, fiber.NewError(400, "Position already exists for this symbol")
+	if err := database.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.First(&wallet).Error; err != nil {
+			return err
 		}
 
-		position.Amount = amount
-		position.AvgPrice = price
-		position.EntryPrice = &price
-		position.CurrentPrice = &price
-		position.StopPrice = nil
-		position.TakeProfitPrice = nil
-		position.TrailingStopPrice = nil
-		position.LastAtrValue = nil
-		position.MaxBarsHeld = nil
-		position.Pnl = 0
-		position.PnlPercent = 0
-		position.Status = "open"
-		position.OpenedAt = now
-		position.ClosedAt = nil
-		position.CloseReason = nil
-
-		if err := database.DB.Save(&position).Error; err != nil {
-			return nil, fiber.NewError(500, "Failed to reopen position")
+		if totalCost > wallet.Balance {
+			return fiber.NewError(400, "Insufficient balance")
 		}
-	} else {
-		position = database.Position{
+
+		wallet.Balance -= totalCost
+		if err := tx.Save(&wallet).Error; err != nil {
+			return err
+		}
+
+		lookupErr := tx.Where("symbol = ?", symbol).First(&position).Error
+		switch {
+		case lookupErr == nil:
+			if position.Status == "open" {
+				return fiber.NewError(400, "Position already exists for this symbol")
+			}
+
+			position.Amount = amount
+			position.AvgPrice = price
+			position.EntryPrice = &price
+			position.CurrentPrice = &price
+			position.StopPrice = nil
+			position.TakeProfitPrice = nil
+			position.TrailingStopPrice = nil
+			position.LastAtrValue = nil
+			position.MaxBarsHeld = nil
+			position.Pnl = 0
+			position.PnlPercent = 0
+			position.Status = "open"
+			position.OpenedAt = now
+			position.ClosedAt = nil
+			position.CloseReason = nil
+
+			if err := tx.Save(&position).Error; err != nil {
+				return err
+			}
+		case errors.Is(lookupErr, gorm.ErrRecordNotFound):
+			position = database.Position{
+				Symbol:       symbol,
+				Amount:       amount,
+				AvgPrice:     price,
+				EntryPrice:   &price,
+				CurrentPrice: &price,
+				Status:       "open",
+				OpenedAt:     now,
+			}
+			if err := tx.Create(&position).Error; err != nil {
+				return err
+			}
+		default:
+			return lookupErr
+		}
+
+		order := database.Order{
+			OrderType:    "buy",
 			Symbol:       symbol,
-			Amount:       amount,
-			AvgPrice:     price,
-			EntryPrice:   &price,
-			CurrentPrice: &price,
-			Status:       "open",
-			OpenedAt:     now,
+			AmountCrypto: amount,
+			AmountUsdt:   totalCost,
+			Price:        price,
+			ExecutedAt:   time.Now(),
 		}
-		if err := database.DB.Create(&position).Error; err != nil {
-			return nil, fiber.NewError(500, "Failed to create position")
+		return tx.Create(&order).Error
+	}); err != nil {
+		if fiberErr, ok := err.(*fiber.Error); ok {
+			return nil, fiberErr
 		}
+		return nil, fiber.NewError(500, "Failed to persist buy order")
 	}
-
-	order := database.Order{
-		OrderType:    "buy",
-		Symbol:       symbol,
-		AmountCrypto: amount,
-		AmountUsdt:   totalCost,
-		Price:        price,
-		ExecutedAt:   time.Now(),
-	}
-	database.DB.Create(&order)
 
 	// Calculate total value for broadcast (wallet + open positions)
 	totalValue := wallet.Balance
@@ -250,32 +271,40 @@ func ExecuteSell(req SellRequest) (interface{}, error) {
 	}
 
 	var wallet database.Wallet
-	if err := database.DB.First(&wallet).Error; err != nil {
-		return nil, fiber.NewError(500, "Failed to fetch wallet")
-	}
+	if err := database.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.First(&wallet).Error; err != nil {
+			return err
+		}
 
-	wallet.Balance += totalValue
-	database.DB.Save(&wallet)
+		wallet.Balance += totalValue
+		if err := tx.Save(&wallet).Error; err != nil {
+			return err
+		}
 
-	position.Amount -= amount
-	if position.Amount <= 0 {
-		position.Status = "closed"
-		now := time.Now()
-		position.ClosedAt = &now
-		reason := "sold"
-		position.CloseReason = &reason
-	}
-	database.DB.Save(&position)
+		position.Amount -= amount
+		if position.Amount <= 0 {
+			position.Status = "closed"
+			now := time.Now()
+			position.ClosedAt = &now
+			reason := "sold"
+			position.CloseReason = &reason
+		}
+		if err := tx.Save(&position).Error; err != nil {
+			return err
+		}
 
-	order := database.Order{
-		OrderType:    "sell",
-		Symbol:       symbol,
-		AmountCrypto: amount,
-		AmountUsdt:   totalValue,
-		Price:        price,
-		ExecutedAt:   time.Now(),
+		order := database.Order{
+			OrderType:    "sell",
+			Symbol:       symbol,
+			AmountCrypto: amount,
+			AmountUsdt:   totalValue,
+			Price:        price,
+			ExecutedAt:   time.Now(),
+		}
+		return tx.Create(&order).Error
+	}); err != nil {
+		return nil, fiber.NewError(500, "Failed to persist sell order")
 	}
-	database.DB.Create(&order)
 
 	// Calculate total value for broadcast (wallet + open positions)
 	portfolioTotalValue := wallet.Balance

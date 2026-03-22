@@ -2,6 +2,7 @@ package services
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -10,6 +11,8 @@ import (
 	"time"
 	"trading-go/internal/database"
 	"trading-go/internal/websocket"
+
+	"gorm.io/gorm"
 )
 
 // TrendingCoin represents a coin from the trending list
@@ -746,107 +749,122 @@ func executeBuyFromTrending(symbol string) (bool, error) {
 		cryptoAmount = amountUsdt / currentPrice
 	}
 
-	// Reuse the existing row for this symbol to match the unique symbol constraint.
-	var existingPosition database.Position
-	hasExisting := database.DB.Where("symbol = ?", cleanSymbol).First(&existingPosition).Error == nil
+	if err := database.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.First(&wallet).Error; err != nil {
+			return err
+		}
+		if amountUsdt > wallet.Balance {
+			return fmt.Errorf("insufficient balance")
+		}
 
-	if hasExisting && existingPosition.Status == "open" {
-		// Average into position
-		oldAmount := existingPosition.Amount
-		oldAvg := existingPosition.AvgPrice
-		newAvg := ((oldAmount * oldAvg) + (cryptoAmount * currentPrice)) / (oldAmount + cryptoAmount)
-		existingPosition.Amount += cryptoAmount
-		existingPosition.AvgPrice = newAvg
-		if volSizingEnabled {
-			stopMult := getSettingFloat(settings, "stop_mult", 1.5)
-			tpMult := getSettingFloat(settings, "tp_mult", 3.0)
-			volStop := atr * stopMult
-			volTp := atr * tpMult
-			if volStop > 0 && volTp > 0 {
-				newStop := newAvg - volStop
-				newTakeProfit := newAvg + volTp
-				if newStop > 0 && newTakeProfit > 0 {
-					existingPosition.StopPrice = &newStop
-					existingPosition.TakeProfitPrice = &newTakeProfit
+		var existingPosition database.Position
+		lookupErr := tx.Where("symbol = ?", cleanSymbol).First(&existingPosition).Error
+		hasExisting := lookupErr == nil
+		if lookupErr != nil && !errors.Is(lookupErr, gorm.ErrRecordNotFound) {
+			return lookupErr
+		}
+
+		if hasExisting && existingPosition.Status == "open" {
+			oldAmount := existingPosition.Amount
+			oldAvg := existingPosition.AvgPrice
+			newAvg := ((oldAmount * oldAvg) + (cryptoAmount * currentPrice)) / (oldAmount + cryptoAmount)
+			existingPosition.Amount += cryptoAmount
+			existingPosition.AvgPrice = newAvg
+			if volSizingEnabled {
+				stopMult := getSettingFloat(settings, "stop_mult", 1.5)
+				tpMult := getSettingFloat(settings, "tp_mult", 3.0)
+				volStop := atr * stopMult
+				volTp := atr * tpMult
+				if volStop > 0 && volTp > 0 {
+					newStop := newAvg - volStop
+					newTakeProfit := newAvg + volTp
+					if newStop > 0 && newTakeProfit > 0 {
+						existingPosition.StopPrice = &newStop
+						existingPosition.TakeProfitPrice = &newTakeProfit
+					}
 				}
+				existingPosition.MaxBarsHeld = maxBarsHeld
 			}
-			existingPosition.MaxBarsHeld = maxBarsHeld
-		}
-		if atrTrailingEnabled && atr > 0 && atrTrailingMult > 0 {
-			candidateStop := currentPrice - (atr * atrTrailingMult)
-			if candidateStop > 0 {
-				if existingPosition.TrailingStopPrice == nil || candidateStop > *existingPosition.TrailingStopPrice {
-					existingPosition.TrailingStopPrice = &candidateStop
+			if atrTrailingEnabled && atr > 0 && atrTrailingMult > 0 {
+				candidateStop := currentPrice - (atr * atrTrailingMult)
+				if candidateStop > 0 {
+					if existingPosition.TrailingStopPrice == nil || candidateStop > *existingPosition.TrailingStopPrice {
+						existingPosition.TrailingStopPrice = &candidateStop
+					}
 				}
+				existingPosition.LastAtrValue = &atr
 			}
-			existingPosition.LastAtrValue = &atr
-		}
-		database.DB.Save(&existingPosition)
-	} else {
-		var trailingStopPrice *float64
-		var lastAtrValue *float64
-		if atrTrailingEnabled && atr > 0 && atrTrailingMult > 0 {
-			entryStop := currentPrice - (atr * atrTrailingMult)
-			if entryStop > 0 {
-				trailingStopPrice = &entryStop
-			}
-			lastAtrValue = &atr
-		}
-		now := time.Now()
-		if hasExisting {
-			existingPosition.Amount = cryptoAmount
-			existingPosition.AvgPrice = currentPrice
-			existingPosition.EntryPrice = &currentPrice
-			existingPosition.CurrentPrice = &currentPrice
-			existingPosition.StopPrice = stopPrice
-			existingPosition.TakeProfitPrice = takeProfitPrice
-			existingPosition.TrailingStopPrice = trailingStopPrice
-			existingPosition.LastAtrValue = lastAtrValue
-			existingPosition.MaxBarsHeld = maxBarsHeld
-			existingPosition.Pnl = 0
-			existingPosition.PnlPercent = 0
-			existingPosition.Status = "open"
-			existingPosition.OpenedAt = now
-			existingPosition.ClosedAt = nil
-			existingPosition.CloseReason = nil
-			if err := database.DB.Save(&existingPosition).Error; err != nil {
-				return false, fmt.Errorf("failed to reopen position for %s: %w", cleanSymbol, err)
+			if err := tx.Save(&existingPosition).Error; err != nil {
+				return err
 			}
 		} else {
-			position := database.Position{
-				Symbol:            cleanSymbol,
-				Amount:            cryptoAmount,
-				AvgPrice:          currentPrice,
-				EntryPrice:        &currentPrice,
-				CurrentPrice:      &currentPrice,
-				StopPrice:         stopPrice,
-				TakeProfitPrice:   takeProfitPrice,
-				TrailingStopPrice: trailingStopPrice,
-				LastAtrValue:      lastAtrValue,
-				MaxBarsHeld:       maxBarsHeld,
-				Status:            "open",
-				OpenedAt:          now,
+			var trailingStopPrice *float64
+			var lastAtrValue *float64
+			if atrTrailingEnabled && atr > 0 && atrTrailingMult > 0 {
+				entryStop := currentPrice - (atr * atrTrailingMult)
+				if entryStop > 0 {
+					trailingStopPrice = &entryStop
+				}
+				lastAtrValue = &atr
 			}
-			if err := database.DB.Create(&position).Error; err != nil {
-				return false, fmt.Errorf("failed to create position for %s: %w", cleanSymbol, err)
+			now := time.Now()
+			if hasExisting {
+				existingPosition.Amount = cryptoAmount
+				existingPosition.AvgPrice = currentPrice
+				existingPosition.EntryPrice = &currentPrice
+				existingPosition.CurrentPrice = &currentPrice
+				existingPosition.StopPrice = stopPrice
+				existingPosition.TakeProfitPrice = takeProfitPrice
+				existingPosition.TrailingStopPrice = trailingStopPrice
+				existingPosition.LastAtrValue = lastAtrValue
+				existingPosition.MaxBarsHeld = maxBarsHeld
+				existingPosition.Pnl = 0
+				existingPosition.PnlPercent = 0
+				existingPosition.Status = "open"
+				existingPosition.OpenedAt = now
+				existingPosition.ClosedAt = nil
+				existingPosition.CloseReason = nil
+				if err := tx.Save(&existingPosition).Error; err != nil {
+					return fmt.Errorf("failed to reopen position for %s: %w", cleanSymbol, err)
+				}
+			} else {
+				position := database.Position{
+					Symbol:            cleanSymbol,
+					Amount:            cryptoAmount,
+					AvgPrice:          currentPrice,
+					EntryPrice:        &currentPrice,
+					CurrentPrice:      &currentPrice,
+					StopPrice:         stopPrice,
+					TakeProfitPrice:   takeProfitPrice,
+					TrailingStopPrice: trailingStopPrice,
+					LastAtrValue:      lastAtrValue,
+					MaxBarsHeld:       maxBarsHeld,
+					Status:            "open",
+					OpenedAt:          now,
+				}
+				if err := tx.Create(&position).Error; err != nil {
+					return fmt.Errorf("failed to create position for %s: %w", cleanSymbol, err)
+				}
 			}
 		}
-	}
 
-	// Create order record
-	order := database.Order{
-		OrderType:    "buy",
-		Symbol:       cleanSymbol,
-		AmountCrypto: cryptoAmount,
-		AmountUsdt:   amountUsdt,
-		Price:        currentPrice,
-		ExecutedAt:   time.Now(),
-	}
-	database.DB.Create(&order)
+		order := database.Order{
+			OrderType:    "buy",
+			Symbol:       cleanSymbol,
+			AmountCrypto: cryptoAmount,
+			AmountUsdt:   amountUsdt,
+			Price:        currentPrice,
+			ExecutedAt:   time.Now(),
+		}
+		if err := tx.Create(&order).Error; err != nil {
+			return err
+		}
 
-	// Update wallet balance
-	wallet.Balance -= amountUsdt
-	database.DB.Save(&wallet)
+		wallet.Balance -= amountUsdt
+		return tx.Save(&wallet).Error
+	}); err != nil {
+		return false, err
+	}
 
 	return true, nil
 }

@@ -4,6 +4,8 @@ import (
 	"trading-go/internal/database"
 
 	"github.com/gofiber/fiber/v2"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 func GetSettings(c *fiber.Ctx) error {
@@ -28,18 +30,19 @@ func UpdateSettings(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "Invalid request body"})
 	}
 
-	for _, req := range requests {
-		var setting database.Setting
-		if err := database.DB.First(&setting, "key = ?", req.Key).Error; err != nil {
-			setting = database.Setting{Key: req.Key}
-			if err := database.DB.Create(&setting).Error; err != nil {
-				return c.Status(500).JSON(fiber.Map{"error": "Failed to create setting: " + req.Key})
+	if err := database.DB.Transaction(func(tx *gorm.DB) error {
+		for _, req := range requests {
+			setting := database.Setting{Key: req.Key, Value: req.Value}
+			if err := tx.Clauses(clause.OnConflict{
+				Columns:   []clause.Column{{Name: "key"}},
+				DoUpdates: clause.AssignmentColumns([]string{"value", "updated_at"}),
+			}).Create(&setting).Error; err != nil {
+				return err
 			}
 		}
-		setting.Value = req.Value
-		if err := database.DB.Save(&setting).Error; err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": "Failed to update setting: " + req.Key})
-		}
+		return nil
+	}); err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "Failed to update settings"})
 	}
 
 	var settings []database.Setting
@@ -79,18 +82,19 @@ func UpdateIndicatorWeights(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "Invalid request body"})
 	}
 
-	for _, req := range requests {
-		var weight database.IndicatorWeight
-		if err := database.DB.First(&weight, "indicator = ?", req.Indicator).Error; err != nil {
-			weight = database.IndicatorWeight{Indicator: req.Indicator}
-			if err := database.DB.Create(&weight).Error; err != nil {
-				return c.Status(500).JSON(fiber.Map{"error": "Failed to create indicator weight: " + req.Indicator})
+	if err := database.DB.Transaction(func(tx *gorm.DB) error {
+		for _, req := range requests {
+			weight := database.IndicatorWeight{Indicator: req.Indicator, Weight: req.Weight}
+			if err := tx.Clauses(clause.OnConflict{
+				Columns:   []clause.Column{{Name: "indicator"}},
+				DoUpdates: clause.AssignmentColumns([]string{"weight"}),
+			}).Create(&weight).Error; err != nil {
+				return err
 			}
 		}
-		weight.Weight = req.Weight
-		if err := database.DB.Save(&weight).Error; err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": "Failed to update indicator weight: " + req.Indicator})
-		}
+		return nil
+	}); err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "Failed to update indicator weights"})
 	}
 
 	var weights []database.IndicatorWeight

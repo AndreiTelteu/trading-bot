@@ -7,25 +7,12 @@ import (
 	"testing"
 	"time"
 	"trading-go/internal/database"
-
-	"github.com/glebarez/sqlite"
-	"gorm.io/gorm"
+	"trading-go/internal/testutil"
 )
 
 func TestExecuteBuyFromTrendingInitializesAtrTrailingWithoutVolSizing(t *testing.T) {
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
-	if err != nil {
-		t.Fatalf("Failed to connect to test database: %v", err)
-	}
+	db := testutil.SetupPostgresDB(t)
 	database.DB = db
-	if err := database.DB.AutoMigrate(
-		&database.Wallet{},
-		&database.Position{},
-		&database.Order{},
-		&database.Setting{},
-	); err != nil {
-		t.Fatalf("AutoMigrate failed: %v", err)
-	}
 
 	database.DB.Create(&database.Wallet{Balance: 1000.0, Currency: "USDT"})
 	database.DB.Create(&database.Setting{Key: "entry_percent", Value: "10"})
@@ -101,19 +88,8 @@ func TestExecuteBuyFromTrendingInitializesAtrTrailingWithoutVolSizing(t *testing
 }
 
 func TestExecuteBuyFromTrendingReopensClosedPosition(t *testing.T) {
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
-	if err != nil {
-		t.Fatalf("Failed to connect to test database: %v", err)
-	}
+	db := testutil.SetupPostgresDB(t)
 	database.DB = db
-	if err := database.DB.AutoMigrate(
-		&database.Wallet{},
-		&database.Position{},
-		&database.Order{},
-		&database.Setting{},
-	); err != nil {
-		t.Fatalf("AutoMigrate failed: %v", err)
-	}
 
 	database.DB.Create(&database.Wallet{Balance: 1000.0, Currency: "USDT"})
 	database.DB.Create(&database.Setting{Key: "entry_percent", Value: "10"})

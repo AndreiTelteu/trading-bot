@@ -14,8 +14,8 @@ import (
 	"trading-go/internal/handlers"
 	"trading-go/internal/middleware"
 	"trading-go/internal/services"
+	"trading-go/internal/testutil"
 
-	"github.com/glebarez/sqlite"
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
 )
@@ -24,24 +24,7 @@ var testDB *gorm.DB
 var app *fiber.App
 
 func SetupTestDB(t *testing.T) {
-	var err error
-	testDB, err = gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
-	if err != nil {
-		t.Fatalf("Failed to connect to test database: %v", err)
-	}
-
-	database.DB = testDB
-	database.DB.AutoMigrate(
-		&database.Wallet{},
-		&database.Position{},
-		&database.Order{},
-		&database.Setting{},
-		&database.AIProposal{},
-		&database.IndicatorWeight{},
-		&database.ActivityLog{},
-		&database.BacktestJob{},
-		&database.LLMConfig{},
-	)
+	testDB = testutil.SetupPostgresDB(t)
 
 	wallet := database.Wallet{Balance: 1000.0, Currency: "USDT"}
 	database.DB.Create(&wallet)
