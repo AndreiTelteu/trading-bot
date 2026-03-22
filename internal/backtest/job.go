@@ -18,6 +18,8 @@ type BacktestRunSummary struct {
 	JobID            uint              `json:"job_id"`
 	StartedAt        time.Time         `json:"started_at"`
 	FinishedAt       time.Time         `json:"finished_at"`
+	UniverseMode     UniverseMode      `json:"universe_mode"`
+	CandidateSymbols []string          `json:"candidate_symbols,omitempty"`
 	SettingsSnapshot map[string]string `json:"settings_snapshot,omitempty"`
 	Baseline         BacktestResult    `json:"baseline"`
 	VolSizing        BacktestResult    `json:"vol_sizing"`
@@ -96,6 +98,8 @@ func runBacktestJob(jobID uint) {
 		JobID:            jobID,
 		StartedAt:        startedAt,
 		FinishedAt:       finishedAt,
+		UniverseMode:     config.UniverseMode,
+		CandidateSymbols: append([]string(nil), config.Symbols...),
 		SettingsSnapshot: settingsSnapshot,
 		Baseline:         baselineResult,
 		VolSizing:        volResult,
@@ -160,6 +164,8 @@ func RunBacktestSyncWithOverrides(overrides map[string]string) (BacktestRunSumma
 		JobID:            0,
 		StartedAt:        now,
 		FinishedAt:       now,
+		UniverseMode:     config.UniverseMode,
+		CandidateSymbols: append([]string(nil), config.Symbols...),
 		SettingsSnapshot: settings,
 		Baseline:         baselineResult,
 		VolSizing:        volResult,
@@ -327,7 +333,16 @@ func prepareBacktestInputsWithSettings(settings map[string]string) (BacktestConf
 	wallet := database.Wallet{}
 	database.DB.First(&wallet)
 
+	policy := services.GetUniversePolicy(settings)
+	universeMode := UniverseMode(services.ResolveBacktestUniverseMode(settings))
 	symbols := parseSymbols(settings["backtest_symbols"])
+	if universeMode == UniverseDynamicRecompute && len(symbols) == 0 {
+		discoveredSymbols, err := services.DiscoverEligibleUniverseSymbols()
+		if err != nil {
+			return BacktestConfig{}, nil, err
+		}
+		symbols = discoveredSymbols
+	}
 	if len(symbols) == 0 {
 		return BacktestConfig{}, nil, fmt.Errorf("backtest_symbols is empty")
 	}
@@ -365,6 +380,8 @@ func prepareBacktestInputsWithSettings(settings map[string]string) (BacktestConf
 
 	config := BacktestConfig{
 		Symbols:                 symbols,
+		UniverseMode:            universeMode,
+		UniversePolicy:          policy,
 		Start:                   start,
 		End:                     end,
 		IndicatorConfig:         services.GetIndicatorSettings(),

@@ -6,14 +6,19 @@ import (
 )
 
 type StrategyMode string
+type UniverseMode string
 
 const (
-	StrategyBaseline  StrategyMode = "baseline"
-	StrategyVolSizing StrategyMode = "vol_sizing"
+	StrategyBaseline         StrategyMode = "baseline"
+	StrategyVolSizing        StrategyMode = "vol_sizing"
+	UniverseStatic           UniverseMode = "static"
+	UniverseDynamicRecompute UniverseMode = "dynamic_recompute"
 )
 
 type BacktestConfig struct {
 	Symbols                 []string
+	UniverseMode            UniverseMode
+	UniversePolicy          services.UniversePolicy
 	Start                   time.Time
 	End                     time.Time
 	IndicatorConfig         services.IndicatorConfig

@@ -139,6 +139,67 @@ type TrendAnalysisHistory struct {
 	AnalyzedAt          time.Time `json:"analyzed_at" gorm:"index;index:idx_trend_symbol_analyzed_at,priority:2,sort:desc"`
 }
 
+type UniverseSymbol struct {
+	ID              uint             `json:"id" gorm:"primaryKey;autoIncrement"`
+	Symbol          string           `json:"symbol" gorm:"size:20;uniqueIndex"`
+	BaseAsset       string           `json:"base_asset" gorm:"size:20;index"`
+	QuoteAsset      string           `json:"quote_asset" gorm:"size:20;index"`
+	Status          string           `json:"status" gorm:"size:20;index"`
+	SpotTradable    bool             `json:"spot_tradable" gorm:"default:false"`
+	IsExcluded      bool             `json:"is_excluded" gorm:"default:false;index"`
+	ExclusionReason *string          `json:"exclusion_reason" gorm:"type:text"`
+	FirstSeenAt     time.Time        `json:"first_seen_at" gorm:"index"`
+	LastSeenAt      time.Time        `json:"last_seen_at" gorm:"index"`
+	CreatedAt       time.Time        `json:"created_at"`
+	UpdatedAt       time.Time        `json:"updated_at"`
+	Snapshots       []UniverseMember `json:"-" gorm:"foreignKey:Symbol;references:Symbol"`
+}
+
+type UniverseSnapshot struct {
+	ID                uint             `json:"id" gorm:"primaryKey;autoIncrement"`
+	SnapshotTime      time.Time        `json:"snapshot_time" gorm:"index"`
+	RebalanceInterval string           `json:"rebalance_interval" gorm:"size:20"`
+	RegimeState       string           `json:"regime_state" gorm:"size:20;index"`
+	BreadthRatio      float64          `json:"breadth_ratio"`
+	EligibleCount     int              `json:"eligible_count"`
+	CandidateCount    int              `json:"candidate_count"`
+	RankedCount       int              `json:"ranked_count"`
+	ShortlistCount    int              `json:"shortlist_count"`
+	Members           []UniverseMember `json:"members,omitempty"`
+	CreatedAt         time.Time        `json:"created_at"`
+	UpdatedAt         time.Time        `json:"updated_at"`
+}
+
+type UniverseMember struct {
+	ID                        uint      `json:"id" gorm:"primaryKey;autoIncrement"`
+	UniverseSnapshotID        uint      `json:"universe_snapshot_id" gorm:"index"`
+	Symbol                    string    `json:"symbol" gorm:"size:20;index"`
+	Stage                     string    `json:"stage" gorm:"size:20;index"`
+	LastPrice                 float64   `json:"last_price"`
+	Change24h                 float64   `json:"change_24h"`
+	QuoteVolume24h            float64   `json:"quote_volume_24h"`
+	ListingAgeDays            int       `json:"listing_age_days"`
+	MedianDailyQuoteVolume    float64   `json:"median_daily_quote_volume"`
+	MedianIntradayQuoteVolume float64   `json:"median_intraday_quote_volume"`
+	GapRatio                  float64   `json:"gap_ratio"`
+	VolatilityRatio           float64   `json:"volatility_ratio"`
+	Return1D                  float64   `json:"return_1d"`
+	Return3D                  float64   `json:"return_3d"`
+	Return7D                  float64   `json:"return_7d"`
+	Return30D                 float64   `json:"return_30d"`
+	RelativeStrength          float64   `json:"relative_strength"`
+	TrendQuality              float64   `json:"trend_quality"`
+	BreakoutProximity         float64   `json:"breakout_proximity"`
+	VolumeAcceleration        float64   `json:"volume_acceleration"`
+	OverextensionPenalty      float64   `json:"overextension_penalty"`
+	RankScore                 float64   `json:"rank_score"`
+	RankComponentsJSON        string    `json:"rank_components_json" gorm:"type:text"`
+	Shortlisted               bool      `json:"shortlisted" gorm:"default:false;index"`
+	RejectionReason           *string   `json:"rejection_reason" gorm:"type:text"`
+	CreatedAt                 time.Time `json:"created_at"`
+	UpdatedAt                 time.Time `json:"updated_at"`
+}
+
 type PortfolioSnapshot struct {
 	ID                   uint      `json:"id" gorm:"primaryKey;autoIncrement"`
 	TotalValue           float64   `json:"total_value"`

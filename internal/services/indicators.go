@@ -2,6 +2,8 @@ package services
 
 import (
 	"math"
+	"sort"
+	"time"
 )
 
 type Candle struct {
@@ -306,6 +308,54 @@ func CalculateVolumeRatio(volumes []float64, ma float64) float64 {
 		return 1
 	}
 	return volumes[len(volumes)-1] / ma
+}
+
+func CalculateMedian(values []float64) float64 {
+	if len(values) == 0 {
+		return 0
+	}
+	copyValues := append([]float64(nil), values...)
+	sort.Float64s(copyValues)
+	mid := len(copyValues) / 2
+	if len(copyValues)%2 == 0 {
+		return (copyValues[mid-1] + copyValues[mid]) / 2
+	}
+	return copyValues[mid]
+}
+
+func CalculateReturn(closes []float64, lookback int) float64 {
+	if len(closes) == 0 || lookback <= 0 || len(closes) <= lookback {
+		return 0
+	}
+	past := closes[len(closes)-lookback-1]
+	current := closes[len(closes)-1]
+	if past == 0 {
+		return 0
+	}
+	return ((current - past) / past) * 100
+}
+
+func CalculateMissingBarRatio(candles []OHLCV, expectedInterval time.Duration) float64 {
+	if len(candles) < 2 || expectedInterval <= 0 {
+		return 0
+	}
+	expectedMs := expectedInterval.Milliseconds()
+	if expectedMs <= 0 {
+		return 0
+	}
+	missingBars := 0
+	observedGaps := len(candles) - 1
+	for i := 1; i < len(candles); i++ {
+		gap := candles[i].OpenTime - candles[i-1].OpenTime
+		if gap <= expectedMs {
+			continue
+		}
+		missingBars += int(gap/expectedMs) - 1
+	}
+	if observedGaps <= 0 {
+		return 0
+	}
+	return float64(missingBars) / float64(observedGaps+missingBars)
 }
 
 func CalculateFeatureVector(candles []Candle, config IndicatorConfig) FeatureVector {

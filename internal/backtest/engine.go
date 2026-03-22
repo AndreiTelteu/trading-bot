@@ -2,7 +2,6 @@ package backtest
 
 import (
 	"fmt"
-	"math"
 	"sort"
 	"time"
 	"trading-go/internal/services"
@@ -16,7 +15,6 @@ type positionState struct {
 	TakeProfit   *float64
 	TrailingStop *float64
 	HighestPrice float64
-	OpenedIndex  int
 	BarsHeld     int
 	EntryTime    time.Time
 	LastAtr      float64
@@ -27,6 +25,14 @@ type barContext struct {
 	Rating float64
 	Signal string
 	Atr    float64
+}
+
+type symbolState struct {
+	series       []services.OHLCV
+	indexByTime  map[int64]int
+	lastIndex    int
+	lastPrice    float64
+	currentIndex int
 }
 
 func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (BacktestResult, error) {
@@ -41,30 +47,16 @@ func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (Bac
 	if len(indicatorWeights) == 0 {
 		indicatorWeights = services.GetIndicatorWeights()
 	}
-
-	aligned, err := alignSeries(series, config.Start, config.End)
-	if err != nil {
-		return BacktestResult{}, err
-	}
-	if len(aligned) == 0 {
+	prepared := filterSeriesWindow(series, config.Start, config.End)
+	if len(prepared) == 0 {
 		return BacktestResult{}, fmt.Errorf("no data available")
 	}
 
-	symbols := make([]string, 0, len(aligned))
-	for symbol := range aligned {
-		symbols = append(symbols, symbol)
-	}
-	sort.Strings(symbols)
-
-	minLen := minSeriesLength(aligned, symbols)
-	if minLen < 2 {
-		return BacktestResult{}, fmt.Errorf("insufficient data length")
-	}
-
-	for _, symbol := range symbols {
-		if len(aligned[symbol]) > minLen {
-			aligned[symbol] = aligned[symbol][len(aligned[symbol])-minLen:]
-		}
+	symbols := sortedSymbols(prepared)
+	states := buildSymbolStates(prepared)
+	timeline := buildTimeline(prepared)
+	if len(timeline) == 0 {
+		return BacktestResult{}, fmt.Errorf("no data available")
 	}
 
 	policy := services.ExitPolicy{
@@ -80,36 +72,54 @@ func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (Bac
 		MinConfidenceToSell: config.MinConfidenceToSell,
 	}
 
-	lookback := 200
-	if config.AtrPeriod+1 > lookback {
-		lookback = config.AtrPeriod + 1
-	}
-	if lookback >= minLen {
-		lookback = minLen - 1
-	}
-
+	lookback := computeSignalLookback(config)
 	cash := config.InitialBalance
 	positions := map[string]*positionState{}
 	var equity []EquityPoint
 	equityBySymbol := map[string][]EquityPoint{}
 	var trades []Trade
-
 	for _, symbol := range symbols {
 		equityBySymbol[symbol] = []EquityPoint{}
 	}
 
-	for idx := lookback; idx < minLen; idx++ {
-		currentTime := time.UnixMilli(aligned[symbols[0]][idx].OpenTime)
+	var entryUniverse []string
+	lastRebalance := time.Time{}
+
+	for _, ts := range timeline {
+		currentTime := time.UnixMilli(ts)
 		contexts := map[string]barContext{}
+		currentBars := map[string]services.OHLCV{}
 
 		for _, symbol := range symbols {
-			window := buildCandles(aligned[symbol], idx, lookback)
+			state := states[symbol]
+			idx, ok := state.indexByTime[ts]
+			if !ok {
+				continue
+			}
+			state.currentIndex = idx
+			state.lastIndex = idx
+			state.lastPrice = state.series[idx].Close
+			bar := state.series[idx]
+			currentBars[symbol] = bar
+			if idx < lookback {
+				continue
+			}
+			window := buildCandles(state.series, idx, lookback)
 			rating, signal := services.AnalyzeCandlesWithConfig(window, indicatorConfig, indicatorWeights)
-			atr := computeAtr(window, config)
-			contexts[symbol] = barContext{
-				Rating: rating,
-				Signal: signal,
-				Atr:    atr,
+			contexts[symbol] = barContext{Rating: rating, Signal: signal, Atr: computeAtr(window, config)}
+		}
+
+		if config.UniverseMode == UniverseDynamicRecompute {
+			if lastRebalance.IsZero() || currentTime.Sub(lastRebalance) >= config.UniversePolicy.RebalanceInterval {
+				entryUniverse = recomputeDynamicUniverse(config, states, currentBars, currentTime, lookback)
+				lastRebalance = currentTime
+			}
+		} else {
+			entryUniverse = entryUniverse[:0]
+			for _, symbol := range symbols {
+				if _, ok := contexts[symbol]; ok {
+					entryUniverse = append(entryUniverse, symbol)
+				}
 			}
 		}
 
@@ -118,25 +128,30 @@ func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (Bac
 			if pos == nil {
 				continue
 			}
-			bar := aligned[symbol][idx]
-			price := bar.Close
+			bar, ok := currentBars[symbol]
+			if !ok {
+				continue
+			}
+			ctx, ok := contexts[symbol]
+			if !ok {
+				continue
+			}
 			pos.BarsHeld++
 			if bar.High > pos.HighestPrice {
 				pos.HighestPrice = bar.High
 			}
 
 			if config.AtrTrailingEnabled && config.AtrTrailingMult > 0 {
-				atr := contexts[symbol].Atr
-				if atr > 0 {
-					pos.LastAtr = atr
-					pos.TrailingStop = services.RatchetATRTrailingStop(pos.TrailingStop, bar.High, pos.EntryPrice, atr, config.AtrTrailingMult)
+				if ctx.Atr > 0 {
+					pos.LastAtr = ctx.Atr
+					pos.TrailingStop = services.RatchetATRTrailingStop(pos.TrailingStop, bar.High, pos.EntryPrice, ctx.Atr, config.AtrTrailingMult)
 				}
 			} else if config.TrailingStopEnabled {
 				pos.TrailingStop = services.RatchetPercentTrailingStop(pos.TrailingStop, bar.High, pos.EntryPrice, config.TrailingStopPercent)
 			}
 
 			decision := services.EvaluateBarCloseExit(services.ExitEvaluationInput{
-				CurrentPrice:      price,
+				CurrentPrice:      bar.Close,
 				HighPrice:         bar.High,
 				LowPrice:          bar.Low,
 				EntryPrice:        pos.EntryPrice,
@@ -144,39 +159,47 @@ func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (Bac
 				TakeProfitPrice:   pos.TakeProfit,
 				TrailingStopPrice: pos.TrailingStop,
 				BarsHeld:          pos.BarsHeld,
-				Signal:            contexts[symbol].Signal,
-				SignalRating:      contexts[symbol].Rating,
+				Signal:            ctx.Signal,
+				SignalRating:      ctx.Rating,
 			}, policy)
 
-			if decision.Reason != "" {
-				exitPrice := determineExitPrice(bar, decision, config)
-				proceeds := pos.Size * exitPrice
-				exitFee := proceeds * (config.FeeBps / 10000)
-				cash += proceeds - exitFee
-				pnl := (exitPrice-pos.EntryPrice)*pos.Size - pos.EntryFee - exitFee
-				trades = append(trades, Trade{
-					Symbol:     symbol,
-					EntryTime:  pos.EntryTime,
-					ExitTime:   time.UnixMilli(bar.CloseTime),
-					EntryPrice: pos.EntryPrice,
-					ExitPrice:  exitPrice,
-					Size:       pos.Size,
-					Pnl:        pnl,
-					PnlPercent: pnl / (pos.EntryPrice * pos.Size) * 100,
-					Reason:     decision.Reason,
-				})
-				delete(positions, symbol)
+			if decision.Reason == "" {
+				continue
 			}
+			exitPrice := determineExitPrice(bar, decision, config)
+			proceeds := pos.Size * exitPrice
+			exitFee := proceeds * (config.FeeBps / 10000)
+			cash += proceeds - exitFee
+			pnl := (exitPrice-pos.EntryPrice)*pos.Size - pos.EntryFee - exitFee
+			trades = append(trades, Trade{
+				Symbol:     symbol,
+				EntryTime:  pos.EntryTime,
+				ExitTime:   time.UnixMilli(bar.CloseTime),
+				EntryPrice: pos.EntryPrice,
+				ExitPrice:  exitPrice,
+				Size:       pos.Size,
+				Pnl:        pnl,
+				PnlPercent: pnl / (pos.EntryPrice * pos.Size) * 100,
+				Reason:     decision.Reason,
+			})
+			delete(positions, symbol)
 		}
 
-		for _, symbol := range symbols {
+		for _, symbol := range entryUniverse {
 			if len(positions) >= config.MaxPositions {
 				break
 			}
 			if positions[symbol] != nil {
 				continue
 			}
-			ctx := contexts[symbol]
+			bar, ok := currentBars[symbol]
+			if !ok {
+				continue
+			}
+			ctx, ok := contexts[symbol]
+			if !ok {
+				continue
+			}
 			if config.BuyOnlyStrong && ctx.Signal != "STRONG_BUY" {
 				continue
 			}
@@ -187,9 +210,8 @@ func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (Bac
 				continue
 			}
 
-			price := aligned[symbol][idx].Close
-			portfolioValue := cash + currentPositionsValue(positions, aligned, idx)
-			entryPrice := applySlippage(price, config.SlippageBps, true)
+			portfolioValue := cash + currentPositionsValue(positions, states)
+			entryPrice := applySlippage(bar.Close, config.SlippageBps, true)
 			amountUsdt, size, stopPrice, takeProfitPrice, err := determinePositionSize(config, ctx.Atr, entryPrice, cash, portfolioValue)
 			if err != nil {
 				continue
@@ -217,7 +239,6 @@ func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (Bac
 				TakeProfit:   takeProfitPrice,
 				TrailingStop: trailingStop,
 				HighestPrice: entryPrice,
-				OpenedIndex:  idx,
 				BarsHeld:     0,
 				EntryTime:    currentTime,
 				LastAtr:      ctx.Atr,
@@ -229,31 +250,80 @@ func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (Bac
 			}
 		}
 
-		totalValue := cash + currentPositionsValue(positions, aligned, idx)
-		equity = append(equity, EquityPoint{
-			Time:  currentTime,
-			Value: totalValue,
-		})
+		totalValue := cash + currentPositionsValue(positions, states)
+		equity = append(equity, EquityPoint{Time: currentTime, Value: totalValue})
 		for _, symbol := range symbols {
 			value := 0.0
 			if pos := positions[symbol]; pos != nil {
-				value = pos.Size * aligned[symbol][idx].Close
+				markPrice := states[symbol].lastPrice
+				if markPrice <= 0 {
+					markPrice = pos.EntryPrice
+				}
+				value = pos.Size * markPrice
 			}
-			equityBySymbol[symbol] = append(equityBySymbol[symbol], EquityPoint{
-				Time:  currentTime,
-				Value: value,
-			})
+			equityBySymbol[symbol] = append(equityBySymbol[symbol], EquityPoint{Time: currentTime, Value: value})
 		}
 	}
 
 	metrics := ComputeMetrics(equity, trades, config.TimeframeMinutes, config.AtrAnnualizationDays)
-	return BacktestResult{
-		Mode:           config.StrategyMode,
-		Metrics:        metrics,
-		Equity:         equity,
-		EquityBySymbol: equityBySymbol,
-		Trades:         trades,
-	}, nil
+	return BacktestResult{Mode: config.StrategyMode, Metrics: metrics, Equity: equity, EquityBySymbol: equityBySymbol, Trades: trades}, nil
+}
+
+func recomputeDynamicUniverse(config BacktestConfig, states map[string]*symbolState, currentBars map[string]services.OHLCV, currentTime time.Time, lookback int) []string {
+	barsPerDay := maxInt(1, (24*60)/maxInt(1, config.TimeframeMinutes))
+	barsPerHour := maxInt(1, 60/maxInt(1, config.TimeframeMinutes))
+	windowSize := maxInt(lookback, barsPerDay*14)
+
+	btcReturn7D := 0.0
+	btcHigherTrend := false
+	btcDailyTrend := false
+	if btcState, ok := states["BTCUSDT"]; ok && btcState.lastIndex >= barsPerDay {
+		window := recentWindow(btcState.series, btcState.lastIndex, windowSize)
+		daily := aggregateOHLCVByBars(window, barsPerDay)
+		hourly := aggregateOHLCVByBars(window, barsPerHour)
+		btcReturn7D = services.CalculateReturn(closesFromOHLCV(daily), minInt(7, len(daily)-1))
+		btcHigherTrend = backtestRegimeGate(candlesFromOHLCV(hourly), 20, 50)
+		btcDailyTrend = backtestRegimeGate(candlesFromOHLCV(daily), 20, 50)
+	}
+
+	accepted := make([]services.UniverseCandidateMetrics, 0, len(currentBars))
+	for symbol := range currentBars {
+		state := states[symbol]
+		if state == nil || state.lastIndex < lookback {
+			continue
+		}
+		window := recentWindow(state.series, state.lastIndex, windowSize)
+		daily := aggregateOHLCVByBars(window, barsPerDay)
+		hourly := aggregateOHLCVByBars(window, barsPerHour)
+		if len(daily) < 2 || len(hourly) < 10 {
+			continue
+		}
+		quoteVolume24h := sumQuoteVolume(window[maxInt(0, len(window)-barsPerDay):])
+		change24h := services.CalculateReturn(closesFromOHLCV(window), minInt(barsPerDay, len(window)-1))
+		candidate := services.BuildUniverseCandidateMetrics(symbol, "", "USDT", currentBars[symbol].Close, change24h, quoteVolume24h, daily, hourly, btcReturn7D)
+		candidate.ListingAgeDays = (state.lastIndex + 1) / barsPerDay
+		if rejection := services.UniverseHardFilterReason(candidate, config.UniversePolicy); rejection != "" {
+			continue
+		}
+		accepted = append(accepted, candidate)
+	}
+
+	breadth := services.ComputeUniverseBreadth(accepted)
+	regime := services.DetermineUniverseRegime(btcHigherTrend, btcDailyTrend, breadth)
+	ranked := services.RankUniverseCandidates(accepted, config.UniversePolicy)
+	_, shortlist := services.SelectUniverseCandidates(ranked, config.UniversePolicy, regime)
+	entryUniverse := make([]string, 0, len(shortlist))
+	for _, candidate := range shortlist {
+		entryUniverse = append(entryUniverse, candidate.Symbol)
+	}
+	if len(entryUniverse) == 0 {
+		for symbol := range currentBars {
+			entryUniverse = append(entryUniverse, symbol)
+		}
+		sort.Strings(entryUniverse)
+	}
+	_ = currentTime
+	return entryUniverse
 }
 
 func determinePositionSize(config BacktestConfig, atr float64, price float64, cash float64, portfolioValue float64) (float64, float64, *float64, *float64, error) {
@@ -274,7 +344,6 @@ func determinePositionSize(config BacktestConfig, atr float64, price float64, ca
 		size := amountUsdt / price
 		return amountUsdt, size, nil, nil, nil
 	}
-
 	if atr <= 0 {
 		return 0, 0, nil, nil, fmt.Errorf("invalid ATR")
 	}
@@ -304,12 +373,14 @@ func determinePositionSize(config BacktestConfig, atr float64, price float64, ca
 	return amountUsdt, size, &stopPrice, &tpPrice, nil
 }
 
-func currentPositionsValue(positions map[string]*positionState, series map[string][]services.OHLCV, idx int) float64 {
-	var total float64
+func currentPositionsValue(positions map[string]*positionState, states map[string]*symbolState) float64 {
+	total := 0.0
 	for symbol, pos := range positions {
-		if idx < len(series[symbol]) {
-			total += pos.Size * series[symbol][idx].Close
+		markPrice := pos.EntryPrice
+		if state := states[symbol]; state != nil && state.lastPrice > 0 {
+			markPrice = state.lastPrice
 		}
+		total += pos.Size * markPrice
 	}
 	return total
 }
@@ -357,71 +428,161 @@ func buildCandles(series []services.OHLCV, idx int, lookback int) []services.Can
 		start = 0
 	}
 	window := series[start : idx+1]
-	candles := make([]services.Candle, len(window))
-	for i, c := range window {
-		candles[i] = services.Candle{
-			Close:  c.Close,
-			High:   c.High,
-			Low:    c.Low,
-			Volume: c.Volume,
-		}
+	return candlesFromOHLCV(window)
+}
+
+func candlesFromOHLCV(series []services.OHLCV) []services.Candle {
+	candles := make([]services.Candle, len(series))
+	for i, c := range series {
+		candles[i] = services.Candle{Close: c.Close, High: c.High, Low: c.Low, Volume: c.Volume}
 	}
 	return candles
 }
 
-func minSeriesLength(series map[string][]services.OHLCV, symbols []string) int {
-	minLen := math.MaxInt32
-	for _, symbol := range symbols {
-		if len(series[symbol]) < minLen {
-			minLen = len(series[symbol])
+func filterSeriesWindow(series map[string][]services.OHLCV, start time.Time, end time.Time) map[string][]services.OHLCV {
+	result := map[string][]services.OHLCV{}
+	for symbol, candles := range series {
+		var filtered []services.OHLCV
+		for _, candle := range candles {
+			openTime := time.UnixMilli(candle.OpenTime)
+			if !start.IsZero() && openTime.Before(start) {
+				continue
+			}
+			if !end.IsZero() && openTime.After(end) {
+				continue
+			}
+			filtered = append(filtered, candle)
+		}
+		if len(filtered) > 0 {
+			result[symbol] = filtered
 		}
 	}
-	if minLen == math.MaxInt32 {
-		return 0
-	}
-	return minLen
+	return result
 }
 
-func alignSeries(series map[string][]services.OHLCV, start time.Time, end time.Time) (map[string][]services.OHLCV, error) {
-	aligned := map[string][]services.OHLCV{}
-	var latestStart int64
-	var earliestEnd int64
-
+func buildSymbolStates(series map[string][]services.OHLCV) map[string]*symbolState {
+	states := make(map[string]*symbolState, len(series))
 	for symbol, candles := range series {
-		if len(candles) == 0 {
-			continue
+		indexByTime := make(map[int64]int, len(candles))
+		for i, candle := range candles {
+			indexByTime[candle.OpenTime] = i
 		}
-		first := candles[0].OpenTime
-		last := candles[len(candles)-1].OpenTime
-		if latestStart == 0 || first > latestStart {
-			latestStart = first
-		}
-		if earliestEnd == 0 || last < earliestEnd {
-			earliestEnd = last
-		}
-		aligned[symbol] = candles
+		states[symbol] = &symbolState{series: candles, indexByTime: indexByTime, lastIndex: -1, currentIndex: -1}
 	}
-	if len(aligned) == 0 {
-		return aligned, nil
-	}
-	if !start.IsZero() && start.UnixMilli() > latestStart {
-		latestStart = start.UnixMilli()
-	}
-	if !end.IsZero() && end.UnixMilli() < earliestEnd {
-		earliestEnd = end.UnixMilli()
-	}
-	if earliestEnd <= latestStart {
-		return nil, fmt.Errorf("no overlapping range")
-	}
+	return states
+}
 
-	for symbol, candles := range aligned {
-		var filtered []services.OHLCV
-		for _, c := range candles {
-			if c.OpenTime >= latestStart && c.OpenTime <= earliestEnd {
-				filtered = append(filtered, c)
-			}
+func buildTimeline(series map[string][]services.OHLCV) []int64 {
+	unique := map[int64]struct{}{}
+	for _, candles := range series {
+		for _, candle := range candles {
+			unique[candle.OpenTime] = struct{}{}
 		}
-		aligned[symbol] = filtered
 	}
-	return aligned, nil
+	timeline := make([]int64, 0, len(unique))
+	for ts := range unique {
+		timeline = append(timeline, ts)
+	}
+	sort.Slice(timeline, func(i, j int) bool { return timeline[i] < timeline[j] })
+	return timeline
+}
+
+func sortedSymbols(series map[string][]services.OHLCV) []string {
+	symbols := make([]string, 0, len(series))
+	for symbol := range series {
+		symbols = append(symbols, symbol)
+	}
+	sort.Strings(symbols)
+	return symbols
+}
+
+func computeSignalLookback(config BacktestConfig) int {
+	barsPerDay := maxInt(1, (24*60)/maxInt(1, config.TimeframeMinutes))
+	lookback := maxInt(200, barsPerDay*7)
+	if config.AtrPeriod+1 > lookback {
+		lookback = config.AtrPeriod + 1
+	}
+	return lookback
+}
+
+func recentWindow(series []services.OHLCV, idx int, size int) []services.OHLCV {
+	start := idx - size + 1
+	if start < 0 {
+		start = 0
+	}
+	return series[start : idx+1]
+}
+
+func aggregateOHLCVByBars(series []services.OHLCV, barsPerBucket int) []services.OHLCV {
+	if len(series) == 0 || barsPerBucket <= 1 {
+		copySeries := make([]services.OHLCV, len(series))
+		copy(copySeries, series)
+		return copySeries
+	}
+	aggregated := make([]services.OHLCV, 0, (len(series)+barsPerBucket-1)/barsPerBucket)
+	for start := 0; start < len(series); start += barsPerBucket {
+		end := start + barsPerBucket
+		if end > len(series) {
+			end = len(series)
+		}
+		bucket := series[start:end]
+		merged := bucket[0]
+		merged.High = bucket[0].High
+		merged.Low = bucket[0].Low
+		merged.Volume = 0
+		merged.Close = bucket[len(bucket)-1].Close
+		merged.CloseTime = bucket[len(bucket)-1].CloseTime
+		for _, candle := range bucket {
+			if candle.High > merged.High {
+				merged.High = candle.High
+			}
+			if candle.Low < merged.Low {
+				merged.Low = candle.Low
+			}
+			merged.Volume += candle.Volume
+		}
+		aggregated = append(aggregated, merged)
+	}
+	return aggregated
+}
+
+func closesFromOHLCV(series []services.OHLCV) []float64 {
+	closes := make([]float64, len(series))
+	for i, candle := range series {
+		closes[i] = candle.Close
+	}
+	return closes
+}
+
+func sumQuoteVolume(series []services.OHLCV) float64 {
+	total := 0.0
+	for _, candle := range series {
+		total += candle.Close * candle.Volume
+	}
+	return total
+}
+
+func backtestRegimeGate(candles []services.Candle, emaFast int, emaSlow int) bool {
+	if len(candles) < emaSlow {
+		return false
+	}
+	closes := make([]float64, len(candles))
+	for i, candle := range candles {
+		closes[i] = candle.Close
+	}
+	return services.CalculateEMA(closes, emaFast) > services.CalculateEMA(closes, emaSlow)
+}
+
+func minInt(a int, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func maxInt(a int, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }

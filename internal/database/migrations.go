@@ -17,6 +17,9 @@ func schemaModels() []interface{} {
 		&ActivityLog{},
 		&BacktestJob{},
 		&TrendAnalysisHistory{},
+		&UniverseSymbol{},
+		&UniverseSnapshot{},
+		&UniverseMember{},
 		&PortfolioSnapshot{},
 	}
 }
@@ -92,6 +95,22 @@ func RunMigrations(db *gorm.DB) error {
 					}
 				}
 
+				return nil
+			},
+		},
+		{
+			ID: "202603230100_universe_selection_tables",
+			Migrate: func(tx *gorm.DB) error {
+				return migrateSchema(tx)
+			},
+			Rollback: func(tx *gorm.DB) error {
+				for _, model := range []interface{}{&UniverseMember{}, &UniverseSnapshot{}, &UniverseSymbol{}} {
+					if tx.Migrator().HasTable(model) {
+						if err := tx.Migrator().DropTable(model); err != nil {
+							return err
+						}
+					}
+				}
 				return nil
 			},
 		},

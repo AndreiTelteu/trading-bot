@@ -117,6 +117,12 @@ const settingsIndicatorsRoute = createRoute({
   component: () => <SettingsSectionPage section="indicators" />,
 })
 
+const settingsUniverseRoute = createRoute({
+  getParentRoute: () => settingsRoute,
+  path: 'universe',
+  component: () => <SettingsSectionPage section="universe" />,
+})
+
 const settingsProbabilisticRoute = createRoute({
   getParentRoute: () => settingsRoute,
   path: 'probabilistic',
@@ -163,6 +169,7 @@ settingsRoute.addChildren([
   settingsIndexRoute,
   settingsTradingRoute,
   settingsIndicatorsRoute,
+  settingsUniverseRoute,
   settingsProbabilisticRoute,
   settingsAiRoute,
   settingsAtrRoute,

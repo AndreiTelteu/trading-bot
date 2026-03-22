@@ -18,10 +18,11 @@ type BacktestJobValidationSummary struct {
 }
 
 type BacktestJobSummary struct {
-	Symbols    []string                     `json:"symbols,omitempty"`
-	Baseline   BacktestJobStrategySummary   `json:"baseline"`
-	VolSizing  BacktestJobStrategySummary   `json:"vol_sizing"`
-	Validation BacktestJobValidationSummary `json:"validation"`
+	Symbols      []string                     `json:"symbols,omitempty"`
+	UniverseMode UniverseMode                 `json:"universe_mode,omitempty"`
+	Baseline     BacktestJobStrategySummary   `json:"baseline"`
+	VolSizing    BacktestJobStrategySummary   `json:"vol_sizing"`
+	Validation   BacktestJobValidationSummary `json:"validation"`
 }
 
 type BacktestJobResponse struct {
@@ -114,6 +115,11 @@ func BuildBacktestJobSummary(summary BacktestRunSummary) BacktestJobSummary {
 		symbolSet[symbol] = struct{}{}
 	}
 	if len(symbolSet) == 0 {
+		for _, symbol := range summary.CandidateSymbols {
+			symbolSet[symbol] = struct{}{}
+		}
+	}
+	if len(symbolSet) == 0 {
 		for _, symbol := range parseSymbols(summary.SettingsSnapshot["backtest_symbols"]) {
 			symbolSet[symbol] = struct{}{}
 		}
@@ -126,7 +132,8 @@ func BuildBacktestJobSummary(summary BacktestRunSummary) BacktestJobSummary {
 	sort.Strings(symbols)
 
 	return BacktestJobSummary{
-		Symbols: symbols,
+		Symbols:      symbols,
+		UniverseMode: summary.UniverseMode,
 		Baseline: BacktestJobStrategySummary{
 			Mode:    summary.Baseline.Mode,
 			Metrics: summary.Baseline.Metrics,

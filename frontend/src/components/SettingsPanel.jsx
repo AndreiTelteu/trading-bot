@@ -172,6 +172,7 @@ function BacktestOptimizationDialogContent({ result }) {
 const SETTINGS_SECTIONS = [
   { key: 'trading', label: 'Trading', to: '/settings/trading' },
   { key: 'indicators', label: 'Indicators', to: '/settings/indicators' },
+  { key: 'universe', label: 'Universe', to: '/settings/universe' },
   { key: 'probabilistic', label: 'Probabilistic', to: '/settings/probabilistic' },
   { key: 'ai', label: 'AI Settings', to: '/settings/ai' },
   { key: 'atr', label: 'ATR', to: '/settings/atr' },
@@ -555,7 +556,6 @@ function SettingsPanel({ activeSection }) {
     { key: 'take_profit_percent', label: 'Take Profit %', type: 'number', step: 0.1 },
     { key: 'rebuy_percent', label: 'Rebuy %', type: 'number', step: 0.1 },
     { key: 'max_positions', label: 'Max Positions', type: 'number' },
-    { key: 'trending_coins_to_analyze', label: 'Trending Coins Analysis', type: 'number' },
     { key: 'regime_gate_enabled', label: 'Regime Gate Enabled', type: 'boolean' },
     { key: 'regime_timeframe', label: 'Regime Timeframe', type: 'text' },
     { key: 'regime_ema_fast', label: 'Regime EMA Fast', type: 'number' },
@@ -573,6 +573,20 @@ function SettingsPanel({ activeSection }) {
     { key: 'pyramiding_enabled', label: 'Pyramiding', type: 'boolean' },
     { key: 'max_pyramid_layers', label: 'Max Pyramid Layers', type: 'number' },
     { key: 'position_scale_percent', label: 'Position Scale %', type: 'number', step: 0.1 },
+  ]
+
+  const universeSettings = [
+    { key: 'universe_mode', label: 'Universe Mode', type: 'text' },
+    { key: 'universe_rebalance_interval', label: 'Rebalance Interval', type: 'text' },
+    { key: 'universe_min_listing_days', label: 'Min Listing Days', type: 'number', step: 1 },
+    { key: 'universe_min_daily_quote_volume', label: 'Min Daily Quote Volume', type: 'number', step: 1000 },
+    { key: 'universe_min_intraday_quote_volume', label: 'Min Intraday Quote Volume', type: 'number', step: 1000 },
+    { key: 'universe_max_gap_ratio', label: 'Max Missing-Bar Ratio', type: 'number', step: 0.001 },
+    { key: 'universe_vol_ratio_min', label: 'Min ATR/Price Ratio', type: 'number', step: 0.0001 },
+    { key: 'universe_vol_ratio_max', label: 'Max ATR/Price Ratio', type: 'number', step: 0.0001 },
+    { key: 'universe_max_24h_move', label: 'Max 24h Move %', type: 'number', step: 0.1 },
+    { key: 'universe_top_k', label: 'Active Universe Top K', type: 'number', step: 1 },
+    { key: 'universe_analyze_top_n', label: 'Analyze Top N', type: 'number', step: 1 },
   ]
 
   const indicatorSettings = [
@@ -612,6 +626,7 @@ function SettingsPanel({ activeSection }) {
   ]
 
   const backtestSettings = [
+    { key: 'backtest_universe_mode', label: 'Backtest Universe Mode', type: 'text' },
     { key: 'backtest_symbols', label: 'Backtest Symbols', type: 'text' },
     { key: 'backtest_start', label: 'Backtest Start (YYYY-MM-DD or RFC3339)', type: 'text' },
     { key: 'backtest_end', label: 'Backtest End (YYYY-MM-DD or RFC3339)', type: 'text' },
@@ -657,6 +672,7 @@ function SettingsPanel({ activeSection }) {
 
   const currentSettings = activeSection === 'trading' ? tradingSettings 
     : activeSection === 'indicators' ? indicatorSettings 
+    : activeSection === 'universe' ? universeSettings
     : activeSection === 'probabilistic' ? probabilisticSettings
     : activeSection === 'atr' ? atrSettings
     : activeSection === 'backtest' ? backtestSettings

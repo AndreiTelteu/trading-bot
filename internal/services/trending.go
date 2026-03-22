@@ -34,20 +34,22 @@ type TrendingData struct {
 
 // AnalyzedCoin represents the result of analyzing a single coin
 type AnalyzedCoin struct {
-	Symbol         string            `json:"symbol"`
-	Price          float64           `json:"price"`
-	Change24h      float64           `json:"change_24h"`
-	Signal         string            `json:"signal"`
-	Rating         float64           `json:"rating"`
-	Timeframe      string            `json:"timeframe"`
-	CreatedAt      time.Time         `json:"created_at"`
-	ProbUp         *float64          `json:"prob_up,omitempty"`
-	ExpectedValue  *float64          `json:"expected_value,omitempty"`
-	Indicators     []IndicatorResult `json:"indicators"`
-	TradeExecuted  *bool             `json:"trade_executed,omitempty"`
-	Error          string            `json:"error,omitempty"`
-	Decision       string            `json:"decision,omitempty"`
-	DecisionReason string            `json:"decision_reason,omitempty"`
+	Symbol         string             `json:"symbol"`
+	Price          float64            `json:"price"`
+	Change24h      float64            `json:"change_24h"`
+	RankScore      float64            `json:"rank_score,omitempty"`
+	RankComponents map[string]float64 `json:"rank_components,omitempty"`
+	Signal         string             `json:"signal"`
+	Rating         float64            `json:"rating"`
+	Timeframe      string             `json:"timeframe"`
+	CreatedAt      time.Time          `json:"created_at"`
+	ProbUp         *float64           `json:"prob_up,omitempty"`
+	ExpectedValue  *float64           `json:"expected_value,omitempty"`
+	Indicators     []IndicatorResult  `json:"indicators"`
+	TradeExecuted  *bool              `json:"trade_executed,omitempty"`
+	Error          string             `json:"error,omitempty"`
+	Decision       string             `json:"decision,omitempty"`
+	DecisionReason string             `json:"decision_reason,omitempty"`
 }
 
 // IndicatorResult stores a single indicator's analysis
@@ -61,10 +63,11 @@ type IndicatorResult struct {
 
 // TrendingAnalysisResult is the final return from AnalyzeTrendingCoins
 type TrendingAnalysisResult struct {
-	Timestamp    string         `json:"timestamp"`
-	Trending     TrendingData   `json:"trending"`
-	Analyzed     []AnalyzedCoin `json:"analyzed"`
-	TradesOpened int            `json:"trades_opened"`
+	Timestamp    string                   `json:"timestamp"`
+	Trending     TrendingData             `json:"trending"`
+	Universe     *UniverseSelectionResult `json:"universe,omitempty"`
+	Analyzed     []AnalyzedCoin           `json:"analyzed"`
+	TradesOpened int                      `json:"trades_opened"`
 }
 
 // GetAllSettings retrieves all settings from the database as a map
@@ -675,6 +678,193 @@ func analyzeSymbolForTrending(symbol string, timeframe string) (*AnalyzedCoin, e
 	return analyzeSymbolFromCandles(symbol, timeframe, candles), nil
 }
 
+func AnalyzeShortlist(shortlist []UniverseCandidateMetrics, settings map[string]string) ([]AnalyzedCoin, error) {
+	probModelEnabled := getSettingBool(settings, "prob_model_enabled", false)
+	results := make([]AnalyzedCoin, 0, len(shortlist))
+
+	for _, candidate := range shortlist {
+		candles15m, err := fetchCandles(candidate.Symbol, "15m", 200)
+		if err != nil {
+			logActivity("error", fmt.Sprintf("Error analyzing %s", candidate.Symbol), err.Error())
+			results = append(results, AnalyzedCoin{
+				Symbol:         candidate.Symbol,
+				Change24h:      candidate.Change24h,
+				RankScore:      candidate.RankScore,
+				RankComponents: candidate.RankComponents,
+				Error:          err.Error(),
+			})
+			continue
+		}
+
+		analysis := analyzeSymbolFromCandles(candidate.Symbol, "15m", candles15m)
+		analysis.CreatedAt = time.Now().UTC()
+		analysis.Change24h = candidate.Change24h
+		analysis.RankScore = candidate.RankScore
+		analysis.RankComponents = candidate.RankComponents
+
+		if probModelEnabled {
+			features := CalculateFeatureVector(candles15m, GetIndicatorSettings())
+			pUp, ev, ok := computeProbGate(features, settings)
+			if ok || features.Valid {
+				analysis.ProbUp = &pUp
+				analysis.ExpectedValue = &ev
+			}
+		}
+
+		logActivity("analysis", fmt.Sprintf("Analyzed %s", candidate.Symbol),
+			fmt.Sprintf("Signal: %s, Rating: %.2f, Rank: %.2f", analysis.Signal, analysis.Rating, analysis.RankScore))
+
+		results = append(results, *analysis)
+	}
+
+	return results, nil
+}
+
+func ExecuteShortlistTrades(analyses []AnalyzedCoin, universe *UniverseSelectionResult, settings map[string]string) ([]AnalyzedCoin, int) {
+	autoTradeEnabled := getSettingBool(settings, "auto_trade_enabled", false)
+	maxPositions := getSettingInt(settings, "max_positions", 5)
+	buyOnlyStrong := getSettingBool(settings, "buy_only_strong", true)
+	minConfidenceToBuy := getSettingFloat(settings, "min_confidence_to_buy", 4.0)
+	probModelEnabled := getSettingBool(settings, "prob_model_enabled", false)
+	regimeGateEnabled := getSettingBool(settings, "regime_gate_enabled", true)
+	regimeTimeframe := getSettingString(settings, "regime_timeframe", "1h")
+	regimeEmaFast := getSettingInt(settings, "regime_ema_fast", 50)
+	regimeEmaSlow := getSettingInt(settings, "regime_ema_slow", 200)
+	volAtrPeriod := getSettingInt(settings, "vol_atr_period", 14)
+	volRatioMin := getSettingFloat(settings, "vol_ratio_min", 0.002)
+	volRatioMax := getSettingFloat(settings, "vol_ratio_max", 0.02)
+	pMin := getSettingFloat(settings, "prob_p_min", 0)
+	evMin := getSettingFloat(settings, "prob_ev_min", 0)
+
+	var currentOpenCount int64
+	database.DB.Model(&database.Position{}).Where("status = ?", "open").Count(&currentOpenCount)
+	tradesOpened := 0
+
+	for i := range analyses {
+		analysis := &analyses[i]
+		signalQualifies := false
+		if buyOnlyStrong {
+			signalQualifies = analysis.Signal == "STRONG_BUY"
+		} else {
+			signalQualifies = analysis.Signal == "BUY" || analysis.Signal == "STRONG_BUY"
+		}
+
+		probOk := true
+		if probModelEnabled {
+			probOk = analysis.ProbUp != nil && analysis.ExpectedValue != nil && *analysis.ProbUp > pMin && *analysis.ExpectedValue > evMin
+		}
+		confidenceQualifies := analysis.Rating >= minConfidenceToBuy
+		if probModelEnabled {
+			confidenceQualifies = probOk
+		}
+
+		regimeOk := universe == nil || universe.RegimeState != UniverseRegimeRiskOff
+		volOk := true
+		if regimeGateEnabled && analysis.Error == "" {
+			candles15m, candleErr := fetchCandles(analysis.Symbol, "15m", 200)
+			if candleErr != nil {
+				regimeOk = false
+				volOk = false
+			} else {
+				candlesHigher, regimeErr := fetchCandles(analysis.Symbol, regimeTimeframe, 200)
+				if regimeErr != nil {
+					regimeOk = false
+				} else {
+					regimeOk = regimeOk && computeRegimeGate(candlesHigher, regimeEmaFast, regimeEmaSlow)
+				}
+				volOk = computeVolGate(candles15m, analysis.Price, volAtrPeriod, volRatioMin, volRatioMax)
+			}
+		}
+
+		decision := "skip"
+		decisionReason := ""
+		if analysis.Error != "" {
+			decisionReason = "analysis_error"
+		} else if !autoTradeEnabled {
+			decisionReason = "auto_trade_disabled"
+		} else if universe != nil && universe.RegimeState == UniverseRegimeRiskOff {
+			decisionReason = "universe_regime_risk_off"
+		} else if !signalQualifies {
+			decisionReason = "signal_not_qualified"
+		} else if !confidenceQualifies {
+			decisionReason = "confidence_not_qualified"
+		} else if !regimeOk {
+			decisionReason = "regime_gate_failed"
+		} else if !volOk {
+			decisionReason = "vol_gate_failed"
+		} else if (int(currentOpenCount) + tradesOpened) >= maxPositions {
+			decisionReason = "max_positions_reached"
+		} else {
+			decision = "buy_candidate"
+			decisionReason = "passed_gates"
+		}
+
+		if autoTradeEnabled && analysis.Error == "" && signalQualifies && confidenceQualifies && regimeOk && volOk &&
+			(universe == nil || universe.RegimeState != UniverseRegimeRiskOff) &&
+			(int(currentOpenCount)+tradesOpened) < maxPositions {
+
+			cleanSymbol := strings.ReplaceAll(analysis.Symbol, "USDT", "")
+			var existingPosition database.Position
+			hasExisting := database.DB.Where("symbol = ? AND status = ?", cleanSymbol, "open").First(&existingPosition).Error == nil
+
+			if !hasExisting {
+				success, buyErr := executeBuyFromTrending(analysis.Symbol)
+				if success {
+					tradesOpened++
+					trueVal := true
+					analysis.TradeExecuted = &trueVal
+					decision = "buy"
+					decisionReason = "order_executed"
+					logActivity("trade", fmt.Sprintf("Bought %s", analysis.Symbol), fmt.Sprintf("At $%.2f", analysis.Price))
+					broadcastTradeUpdates()
+				} else {
+					falseVal := false
+					analysis.TradeExecuted = &falseVal
+					if buyErr != nil {
+						decisionReason = buyErr.Error()
+					} else {
+						decisionReason = "buy_failed"
+					}
+					decision = "buy_failed"
+					logActivity("trade", fmt.Sprintf("Failed to buy %s", analysis.Symbol), decisionReason)
+				}
+			} else {
+				decision = "skip"
+				decisionReason = "position_exists"
+				logActivity("trade", fmt.Sprintf("Skipped %s - position already exists", analysis.Symbol), "")
+			}
+		}
+
+		analysis.Decision = decision
+		analysis.DecisionReason = decisionReason
+
+		indicatorsJSON, _ := json.Marshal(analysis.Indicators)
+		history := database.TrendAnalysisHistory{
+			Symbol:              analysis.Symbol,
+			Timeframe:           "15m",
+			CurrentPrice:        &analysis.Price,
+			Change24h:           &analysis.Change24h,
+			FinalSignal:         &analysis.Signal,
+			FinalRating:         &analysis.Rating,
+			ProbUp:              analysis.ProbUp,
+			ExpectedValue:       analysis.ExpectedValue,
+			AutoTrade:           &autoTradeEnabled,
+			SignalQualifies:     &signalQualifies,
+			ConfidenceQualifies: &confidenceQualifies,
+			RegimeOk:            &regimeOk,
+			VolOk:               &volOk,
+			ProbOk:              &probOk,
+			Decision:            &decision,
+			DecisionReason:      &decisionReason,
+			IndicatorsJSON:      string(indicatorsJSON),
+			AnalyzedAt:          time.Now(),
+		}
+		database.DB.Create(&history)
+	}
+
+	return analyses, tradesOpened
+}
+
 // executeBuyFromTrending performs a buy based on trending analysis (matching Python execute_buy logic)
 func executeBuyFromTrending(symbol string) (bool, error) {
 	settings := GetAllSettings()
@@ -901,212 +1091,27 @@ func executeBuyFromTrending(symbol string) (bool, error) {
 // AnalyzeTrendingCoins is the main function that mirrors the Python analyze_trending_coins
 func AnalyzeTrendingCoins() (*TrendingAnalysisResult, error) {
 	settings := GetAllSettings()
-
 	autoTradeEnabled := getSettingBool(settings, "auto_trade_enabled", false)
-	maxPositions := getSettingInt(settings, "max_positions", 5)
-	topNToAnalyze := getSettingInt(settings, "trending_coins_to_analyze", 5)
-	buyOnlyStrong := getSettingBool(settings, "buy_only_strong", true)
-	minConfidenceToBuy := getSettingFloat(settings, "min_confidence_to_buy", 4.0)
-	probModelEnabled := getSettingBool(settings, "prob_model_enabled", false)
-	regimeGateEnabled := getSettingBool(settings, "regime_gate_enabled", true)
-	regimeTimeframe := getSettingString(settings, "regime_timeframe", "1h")
-	regimeEmaFast := getSettingInt(settings, "regime_ema_fast", 50)
-	regimeEmaSlow := getSettingInt(settings, "regime_ema_slow", 200)
-	volAtrPeriod := getSettingInt(settings, "vol_atr_period", 14)
-	volRatioMin := getSettingFloat(settings, "vol_ratio_min", 0.002)
-	volRatioMax := getSettingFloat(settings, "vol_ratio_max", 0.02)
+	policy := GetUniversePolicy(settings)
 
 	logActivity("system", "Starting trending coins analysis",
-		fmt.Sprintf("Auto-trade: %v, buy_only_strong: %v, min_confidence: %.1f", autoTradeEnabled, buyOnlyStrong, minConfidenceToBuy))
+		fmt.Sprintf("Auto-trade: %v, universe_mode: %s, analyze_top_n: %d", autoTradeEnabled, policy.Mode, policy.AnalyzeTopN))
 
-	// Get trending data from Binance
-	trendingData, err := GetBinanceTrending(20, 20, 20)
+	selection, err := BuildUniverseSnapshot(policy)
 	if err != nil {
-		logActivity("error", "Failed to fetch trending data", err.Error())
-		return nil, fmt.Errorf("failed to fetch trending data: %w", err)
+		logActivity("error", "Failed to build universe snapshot", err.Error())
+		return nil, fmt.Errorf("failed to build universe snapshot: %w", err)
 	}
 
-	// Combine all trending categories (TopVolume + TopGainers + TopLosers) and deduplicate
-	coinsMap := make(map[string]TrendingCoin)
-	for _, coin := range trendingData.TopVolume {
-		coinsMap[coin.Symbol] = coin
+	results, err := AnalyzeShortlist(selection.Shortlist, settings)
+	if err != nil {
+		logActivity("error", "Failed to analyze shortlist", err.Error())
+		return nil, err
 	}
-	for _, coin := range trendingData.TopGainers {
-		coinsMap[coin.Symbol] = coin
-	}
-	for _, coin := range trendingData.TopLosers {
-		coinsMap[coin.Symbol] = coin
-	}
-
-	// Convert map to slice
-	var allCoins []TrendingCoin
-	for _, coin := range coinsMap {
-		allCoins = append(allCoins, coin)
-	}
-
-	// Limit to topNToAnalyze (prioritize by volume)
-	sort.Slice(allCoins, func(i, j int) bool {
-		return allCoins[i].Volume24h > allCoins[j].Volume24h
-	})
-	coinsToAnalyze := allCoins
-	if len(coinsToAnalyze) > topNToAnalyze {
-		coinsToAnalyze = coinsToAnalyze[:topNToAnalyze]
-	}
-
-	var results []AnalyzedCoin
-	tradesOpened := 0
-
-	// Count current open positions
-	var currentOpenCount int64
-	database.DB.Model(&database.Position{}).Where("status = ?", "open").Count(&currentOpenCount)
-
-	for _, coin := range coinsToAnalyze {
-		// Convert symbol format for analysis (Binance uses ETHUSDT, keep that)
-		symbol := coin.Symbol
-
-		candles15m, err := fetchCandles(symbol, "15m", 200)
-		if err != nil {
-			logActivity("error", fmt.Sprintf("Error analyzing %s", symbol), err.Error())
-			results = append(results, AnalyzedCoin{
-				Symbol: symbol,
-				Error:  err.Error(),
-			})
-			continue
-		}
-
-		analysis := analyzeSymbolFromCandles(symbol, "15m", candles15m)
-		analysis.CreatedAt = time.Now().UTC()
-		analysis.Change24h = coin.Change24h
-
-		var probUp *float64
-		var expectedValue *float64
-		probOk := true
-		if probModelEnabled {
-			features := CalculateFeatureVector(candles15m, GetIndicatorSettings())
-			pUp, ev, ok := computeProbGate(features, settings)
-			probOk = ok
-			if features.Valid {
-				probUp = &pUp
-				expectedValue = &ev
-				analysis.ProbUp = probUp
-				analysis.ExpectedValue = expectedValue
-			}
-		}
-
-		logActivity("analysis", fmt.Sprintf("Analyzed %s", symbol),
-			fmt.Sprintf("Signal: %s, Rating: %.2f", analysis.Signal, analysis.Rating))
-
-		// Determine buy signal qualification (matching Python logic)
-		signalQualifies := false
-		if buyOnlyStrong {
-			signalQualifies = analysis.Signal == "STRONG_BUY"
-		} else {
-			signalQualifies = analysis.Signal == "BUY" || analysis.Signal == "STRONG_BUY"
-		}
-		confidenceQualifies := analysis.Rating >= minConfidenceToBuy
-		if probModelEnabled {
-			confidenceQualifies = probOk
-		}
-
-		regimeOk := true
-		volOk := true
-		if regimeGateEnabled {
-			candlesHigher, regimeErr := fetchCandles(symbol, regimeTimeframe, 200)
-			if regimeErr != nil {
-				regimeOk = false
-			} else {
-				regimeOk = computeRegimeGate(candlesHigher, regimeEmaFast, regimeEmaSlow)
-			}
-			volOk = computeVolGate(candles15m, analysis.Price, volAtrPeriod, volRatioMin, volRatioMax)
-		}
-
-		decision := "skip"
-		decisionReason := ""
-
-		if !autoTradeEnabled {
-			decisionReason = "auto_trade_disabled"
-		} else if !signalQualifies {
-			decisionReason = "signal_not_qualified"
-		} else if !confidenceQualifies {
-			decisionReason = "confidence_not_qualified"
-		} else if !regimeOk {
-			decisionReason = "regime_gate_failed"
-		} else if !volOk {
-			decisionReason = "vol_gate_failed"
-		} else if (int(currentOpenCount) + tradesOpened) >= maxPositions {
-			decisionReason = "max_positions_reached"
-		} else {
-			decision = "buy_candidate"
-			decisionReason = "passed_gates"
-		}
-
-		if autoTradeEnabled && signalQualifies && confidenceQualifies && regimeOk && volOk &&
-			(int(currentOpenCount)+tradesOpened) < maxPositions {
-
-			// Only an open position should block a new trending buy.
-			cleanSymbol := strings.ReplaceAll(symbol, "USDT", "")
-			var existingPosition database.Position
-			hasExisting := database.DB.Where("symbol = ? AND status = ?", cleanSymbol, "open").First(&existingPosition).Error == nil
-
-			if !hasExisting {
-				success, buyErr := executeBuyFromTrending(symbol)
-				if success {
-					tradesOpened++
-					trueVal := true
-					analysis.TradeExecuted = &trueVal
-					decision = "buy"
-					decisionReason = "order_executed"
-					logActivity("trade", fmt.Sprintf("Bought %s", symbol),
-						fmt.Sprintf("At $%.2f", analysis.Price))
-
-					// Broadcast wallet and positions updates after successful trade
-					broadcastTradeUpdates()
-				} else {
-					falseVal := false
-					analysis.TradeExecuted = &falseVal
-					errMsg := "Unknown error"
-					if buyErr != nil {
-						errMsg = buyErr.Error()
-					}
-					decision = "buy_failed"
-					decisionReason = errMsg
-					logActivity("trade", fmt.Sprintf("Failed to buy %s", symbol), errMsg)
-				}
-			} else {
-				decision = "skip"
-				decisionReason = "position_exists"
-				logActivity("trade", fmt.Sprintf("Skipped %s - position already exists", symbol), "")
-			}
-		}
-
-		indicatorsJSON, _ := json.Marshal(analysis.Indicators)
-		history := database.TrendAnalysisHistory{
-			Symbol:              symbol,
-			Timeframe:           "15m",
-			CurrentPrice:        &analysis.Price,
-			Change24h:           &coin.Change24h,
-			FinalSignal:         &analysis.Signal,
-			FinalRating:         &analysis.Rating,
-			ProbUp:              probUp,
-			ExpectedValue:       expectedValue,
-			AutoTrade:           &autoTradeEnabled,
-			SignalQualifies:     &signalQualifies,
-			ConfidenceQualifies: &confidenceQualifies,
-			RegimeOk:            &regimeOk,
-			VolOk:               &volOk,
-			ProbOk:              &probOk,
-			Decision:            &decision,
-			DecisionReason:      &decisionReason,
-			IndicatorsJSON:      string(indicatorsJSON),
-			AnalyzedAt:          time.Now(),
-		}
-		database.DB.Create(&history)
-
-		results = append(results, *analysis)
-	}
+	results, tradesOpened := ExecuteShortlistTrades(results, selection, settings)
 
 	logActivity("system", "Trending analysis complete",
-		fmt.Sprintf("Analyzed %d coins, opened %d trades", len(results), tradesOpened))
+		fmt.Sprintf("Analyzed %d coins, opened %d trades, regime %s", len(results), tradesOpened, selection.RegimeState))
 
 	// Broadcast trending updates and analysis completion
 	websocket.BroadcastTrendingUpdate(results)
@@ -1118,7 +1123,8 @@ func AnalyzeTrendingCoins() (*TrendingAnalysisResult, error) {
 
 	return &TrendingAnalysisResult{
 		Timestamp:    time.Now().UTC().Format(time.RFC3339),
-		Trending:     *trendingData,
+		Trending:     selection.Trending,
+		Universe:     selection,
 		Analyzed:     results,
 		TradesOpened: tradesOpened,
 	}, nil

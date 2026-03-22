@@ -3,6 +3,7 @@ package services
 import (
 	"math"
 	"testing"
+	"time"
 )
 
 func TestCalculateRSI(t *testing.T) {
@@ -287,6 +288,28 @@ func TestCalculateVolumeRatio(t *testing.T) {
 	}
 	if got := CalculateVolumeRatio([]float64{10}, 0); math.Abs(got-1.0) > 0.0001 {
 		t.Errorf("CalculateVolumeRatio() ma<=0 = %v, want 1.0", got)
+	}
+}
+
+func TestCalculateMedian(t *testing.T) {
+	if got := CalculateMedian([]float64{5, 1, 3}); math.Abs(got-3) > 0.0001 {
+		t.Fatalf("CalculateMedian() = %v, want 3", got)
+	}
+	if got := CalculateMedian([]float64{1, 2, 3, 4}); math.Abs(got-2.5) > 0.0001 {
+		t.Fatalf("CalculateMedian() even count = %v, want 2.5", got)
+	}
+}
+
+func TestCalculateMissingBarRatio(t *testing.T) {
+	start := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	candles := []OHLCV{
+		{OpenTime: start.UnixMilli()},
+		{OpenTime: start.Add(time.Hour).UnixMilli()},
+		{OpenTime: start.Add(3 * time.Hour).UnixMilli()},
+	}
+	got := CalculateMissingBarRatio(candles, time.Hour)
+	if math.Abs(got-(1.0/3.0)) > 0.0001 {
+		t.Fatalf("CalculateMissingBarRatio() = %v, want 0.3333", got)
 	}
 }
 

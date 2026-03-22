@@ -26,6 +26,7 @@ func main() {
 	end := flag.String("end", "", "")
 	feeBps := flag.Float64("fee-bps", -1, "")
 	slippageBps := flag.Float64("slippage-bps", -1, "")
+	universeMode := flag.String("universe-mode", "", "")
 	flag.Parse()
 
 	overrides := map[string]string{}
@@ -43,6 +44,9 @@ func main() {
 	}
 	if *slippageBps >= 0 {
 		overrides["backtest_slippage_bps"] = strconv.FormatFloat(*slippageBps, 'f', -1, 64)
+	}
+	if *universeMode != "" {
+		overrides["backtest_universe_mode"] = *universeMode
 	}
 
 	summary, err := backtest.RunBacktestSyncWithOverrides(overrides)

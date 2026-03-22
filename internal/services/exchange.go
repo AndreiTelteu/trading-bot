@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -20,6 +21,10 @@ type ExchangeService struct {
 	APISecret  string
 	BaseURL    string
 	HTTPClient *http.Client
+
+	exchangeInfoMu       sync.RWMutex
+	exchangeInfoCache    *ExchangeInfo
+	exchangeInfoCachedAt time.Time
 }
 
 type TickerPrice struct {
@@ -73,6 +78,19 @@ type OHLCV struct {
 	Close     float64
 	Volume    float64
 	CloseTime int64
+}
+
+type ExchangeInfo struct {
+	Symbols []ExchangeSymbolInfo `json:"symbols"`
+}
+
+type ExchangeSymbolInfo struct {
+	Symbol               string   `json:"symbol"`
+	Status               string   `json:"status"`
+	BaseAsset            string   `json:"baseAsset"`
+	QuoteAsset           string   `json:"quoteAsset"`
+	IsSpotTradingAllowed bool     `json:"isSpotTradingAllowed"`
+	Permissions          []string `json:"permissions"`
 }
 
 func NewExchangeService(apiKey, apiSecret string) *ExchangeService {
@@ -390,6 +408,51 @@ func (s *ExchangeService) FetchOHLCVRange(symbol, interval string, start time.Ti
 	}
 
 	return result, nil
+}
+
+func (s *ExchangeService) FetchExchangeInfo() (*ExchangeInfo, error) {
+	data, err := s.makeRequest("GET", "/api/v3/exchangeInfo", nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var info ExchangeInfo
+	if err := json.Unmarshal(data, &info); err != nil {
+		return nil, fmt.Errorf("failed to parse exchange info response: %w", err)
+	}
+
+	return &info, nil
+}
+
+func (s *ExchangeService) FetchExchangeInfoCached(maxAge time.Duration) (*ExchangeInfo, error) {
+	if maxAge <= 0 {
+		maxAge = 6 * time.Hour
+	}
+
+	s.exchangeInfoMu.RLock()
+	if s.exchangeInfoCache != nil && time.Since(s.exchangeInfoCachedAt) <= maxAge {
+		cached := *s.exchangeInfoCache
+		s.exchangeInfoMu.RUnlock()
+		return &cached, nil
+	}
+	s.exchangeInfoMu.RUnlock()
+
+	s.exchangeInfoMu.Lock()
+	defer s.exchangeInfoMu.Unlock()
+	if s.exchangeInfoCache != nil && time.Since(s.exchangeInfoCachedAt) <= maxAge {
+		cached := *s.exchangeInfoCache
+		return &cached, nil
+	}
+
+	info, err := s.FetchExchangeInfo()
+	if err != nil {
+		return nil, err
+	}
+
+	s.exchangeInfoCache = info
+	s.exchangeInfoCachedAt = time.Now()
+	cached := *info
+	return &cached, nil
 }
 
 func parseOHLCV(klines [][]interface{}) []OHLCV {
