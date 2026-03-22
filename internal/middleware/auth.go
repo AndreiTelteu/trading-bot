@@ -26,6 +26,7 @@ func NewAuthManager(cfg *config.Config) *AuthManager {
 	return &AuthManager{
 		store: session.New(session.Config{
 			CookieHTTPOnly: true,
+			CookiePath:     "/",
 			CookieSameSite: "Lax",
 			Expiration:     24 * time.Hour,
 			KeyLookup:      "cookie:" + cfg.SessionCookie,

@@ -1,8 +1,8 @@
 #!/bin/bash
 # Deploy script for trading platform
 
-echo "Deploying trading platform to trading.ryzen.cloud..."
+echo "Deploying trading platform to trading.local..."
 
-ssh andrei@trading.ryzen.cloud "cd trading && git pull && docker compose restart app"
+ssh andrei@dockernas "cd trading-bot && git pull && docker compose restart app"
 
 echo "Deployment complete!"
