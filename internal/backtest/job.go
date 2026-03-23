@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"trading-go/internal/database"
 	"trading-go/internal/services"
@@ -73,25 +75,35 @@ func runBacktestJob(jobID uint) {
 		return
 	}
 
-	updateBacktestJob(jobID, "running", 0.35, "Running baseline backtest")
-	baselineConfig := config
-	baselineConfig.StrategyMode = StrategyBaseline
-	baselineResult, err := RunBacktest(baselineConfig, series)
-	if err != nil {
-		failBacktestJob(jobID, err)
+	updateBacktestJob(jobID, "running", 0.35, "Running baseline + vol sizing backtests")
+
+	var baselineResult, volResult BacktestResult
+	var baselineErr, volErr error
+	var btWg sync.WaitGroup
+	btWg.Add(2)
+	go func() {
+		defer btWg.Done()
+		baselineConfig := config
+		baselineConfig.StrategyMode = StrategyBaseline
+		baselineResult, baselineErr = RunBacktest(baselineConfig, series)
+	}()
+	go func() {
+		defer btWg.Done()
+		volConfig := config
+		volConfig.StrategyMode = StrategyVolSizing
+		volResult, volErr = RunBacktest(volConfig, series)
+	}()
+	btWg.Wait()
+	if baselineErr != nil {
+		failBacktestJob(jobID, baselineErr)
+		return
+	}
+	if volErr != nil {
+		failBacktestJob(jobID, volErr)
 		return
 	}
 
-	updateBacktestJob(jobID, "running", 0.6, "Running volatility sizing backtest")
-	volConfig := config
-	volConfig.StrategyMode = StrategyVolSizing
-	volResult, err := RunBacktest(volConfig, series)
-	if err != nil {
-		failBacktestJob(jobID, err)
-		return
-	}
-
-	updateBacktestJob(jobID, "running", 0.8, "Running validation")
+	updateBacktestJob(jobID, "running", 0.7, "Running validation")
 	validation, err := RunValidation(config, series,
 		getSettingInt(settingsSnapshot, "validation_train_months", 12),
 		getSettingInt(settingsSnapshot, "validation_test_months", 3),
@@ -160,18 +172,28 @@ func RunBacktestSyncWithOverrides(overrides map[string]string) (BacktestRunSumma
 		return BacktestRunSummary{}, err
 	}
 
-	baselineConfig := config
-	baselineConfig.StrategyMode = StrategyBaseline
-	baselineResult, err := RunBacktest(baselineConfig, series)
-	if err != nil {
-		return BacktestRunSummary{}, err
+	var baselineResult, volResult BacktestResult
+	var baselineErr, volErr error
+	var btWg sync.WaitGroup
+	btWg.Add(2)
+	go func() {
+		defer btWg.Done()
+		c := config
+		c.StrategyMode = StrategyBaseline
+		baselineResult, baselineErr = RunBacktest(c, series)
+	}()
+	go func() {
+		defer btWg.Done()
+		c := config
+		c.StrategyMode = StrategyVolSizing
+		volResult, volErr = RunBacktest(c, series)
+	}()
+	btWg.Wait()
+	if baselineErr != nil {
+		return BacktestRunSummary{}, baselineErr
 	}
-
-	volConfig := config
-	volConfig.StrategyMode = StrategyVolSizing
-	volResult, err := RunBacktest(volConfig, series)
-	if err != nil {
-		return BacktestRunSummary{}, err
+	if volErr != nil {
+		return BacktestRunSummary{}, volErr
 	}
 
 	validation, err := RunValidation(config, series,
@@ -443,18 +465,59 @@ func prepareBacktestInputsWithSettings(settings map[string]string) (BacktestConf
 	executionSeries := map[string][]services.OHLCV{}
 	ex := services.GetExchange()
 	fetchExecution := getSettingBool(settings, "backtest_execution_1m", false)
-	for _, symbol := range symbols {
-		candles, err := ex.FetchOHLCVRange(symbol, timeframe, start, end)
-		if err != nil {
-			return BacktestConfig{}, nil, err
-		}
-		series[symbol] = candles
-		// Fetch 1m execution candles when enabled
-		if fetchExecution {
-			exec1m, err := ex.FetchOHLCVRange(symbol, "1m", start, end)
-			if err == nil && len(exec1m) > 0 {
-				executionSeries[symbol] = exec1m
+
+	type fetchResult struct {
+		symbol    string
+		candles   []services.OHLCV
+		exec1m    []services.OHLCV
+		err       error
+	}
+
+	workers := runtime.NumCPU()
+	if workers > len(symbols) {
+		workers = len(symbols)
+	}
+	if workers < 1 {
+		workers = 1
+	}
+
+	symbolCh := make(chan string, len(symbols))
+	resultCh := make(chan fetchResult, len(symbols))
+	for _, s := range symbols {
+		symbolCh <- s
+	}
+	close(symbolCh)
+
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for sym := range symbolCh {
+				candles, fetchErr := ex.FetchOHLCVRange(sym, timeframe, start, end)
+				res := fetchResult{symbol: sym, candles: candles, err: fetchErr}
+				if fetchErr == nil && fetchExecution {
+					exec1m, execErr := ex.FetchOHLCVRange(sym, "1m", start, end)
+					if execErr == nil && len(exec1m) > 0 {
+						res.exec1m = exec1m
+					}
+				}
+				resultCh <- res
 			}
+		}()
+	}
+	go func() {
+		wg.Wait()
+		close(resultCh)
+	}()
+
+	for res := range resultCh {
+		if res.err != nil {
+			return BacktestConfig{}, nil, fmt.Errorf("fetch %s: %w", res.symbol, res.err)
+		}
+		series[res.symbol] = res.candles
+		if len(res.exec1m) > 0 {
+			executionSeries[res.symbol] = res.exec1m
 		}
 	}
 	if start.IsZero() || end.IsZero() {

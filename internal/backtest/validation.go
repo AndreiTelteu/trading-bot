@@ -3,7 +3,9 @@ package backtest
 import (
 	"fmt"
 	"math/rand"
+	"runtime"
 	"strings"
+	"sync"
 	"time"
 	"trading-go/internal/services"
 )
@@ -100,6 +102,65 @@ func RunValidation(config BacktestConfig, series map[string][]services.OHLCV, tr
 		return ValidationSummary{}, fmt.Errorf("no validation windows")
 	}
 
+	type windowResult struct {
+		index           int
+		trainBaseline   BacktestResult
+		trainVol        BacktestResult
+		testBaseline    BacktestResult
+		testVol         BacktestResult
+		window          WalkForwardWindow
+		ok              bool
+	}
+
+	results := make([]windowResult, len(windows))
+	workers := runtime.NumCPU()
+	if workers > len(windows) {
+		workers = len(windows)
+	}
+	if workers < 1 {
+		workers = 1
+	}
+
+	windowCh := make(chan int, len(windows))
+	for i := range windows {
+		windowCh <- i
+	}
+	close(windowCh)
+
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for idx := range windowCh {
+				window := windows[idx]
+				trainSeries := filterSeriesByTime(series, window.TrainStart, window.TrainEnd)
+				testSeries := filterSeriesByTime(series, window.TestStart, window.TestEnd)
+				if len(trainSeries) == 0 || len(testSeries) == 0 {
+					continue
+				}
+				trainBaseline, trainVol, err := runValidationPair(config, trainSeries, window.TrainStart, window.TrainEnd)
+				if err != nil {
+					continue
+				}
+				testBaseline, testVol, err := runValidationPair(config, testSeries, window.TestStart, window.TestEnd)
+				if err != nil {
+					continue
+				}
+				results[idx] = windowResult{
+					index:         idx,
+					trainBaseline: trainBaseline,
+					trainVol:      trainVol,
+					testBaseline:  testBaseline,
+					testVol:       testVol,
+					window:        window,
+					ok:            true,
+				}
+			}
+		}()
+	}
+	wg.Wait()
+
 	var trainBaselineMetrics []Metrics
 	var trainVolMetrics []Metrics
 	var testBaselineMetrics []Metrics
@@ -108,36 +169,24 @@ func RunValidation(config BacktestConfig, series map[string][]services.OHLCV, tr
 	var volTrades []Trade
 	windowSummaries := make([]ValidationWindowSummary, 0, len(windows))
 
-	for _, window := range windows {
-		trainSeries := filterSeriesByTime(series, window.TrainStart, window.TrainEnd)
-		testSeries := filterSeriesByTime(series, window.TestStart, window.TestEnd)
-		if len(trainSeries) == 0 || len(testSeries) == 0 {
+	for _, res := range results {
+		if !res.ok {
 			continue
 		}
-
-		trainBaseline, trainVol, err := runValidationPair(config, trainSeries, window.TrainStart, window.TrainEnd)
-		if err != nil {
-			continue
-		}
-		testBaseline, testVol, err := runValidationPair(config, testSeries, window.TestStart, window.TestEnd)
-		if err != nil {
-			continue
-		}
-
-		trainBaselineMetrics = append(trainBaselineMetrics, trainBaseline.Metrics)
-		trainVolMetrics = append(trainVolMetrics, trainVol.Metrics)
-		testBaselineMetrics = append(testBaselineMetrics, testBaseline.Metrics)
-		testVolMetrics = append(testVolMetrics, testVol.Metrics)
-		baselineTrades = append(baselineTrades, testBaseline.Trades...)
-		volTrades = append(volTrades, testVol.Trades...)
+		trainBaselineMetrics = append(trainBaselineMetrics, res.trainBaseline.Metrics)
+		trainVolMetrics = append(trainVolMetrics, res.trainVol.Metrics)
+		testBaselineMetrics = append(testBaselineMetrics, res.testBaseline.Metrics)
+		testVolMetrics = append(testVolMetrics, res.testVol.Metrics)
+		baselineTrades = append(baselineTrades, res.testBaseline.Trades...)
+		volTrades = append(volTrades, res.testVol.Trades...)
 		windowSummaries = append(windowSummaries, ValidationWindowSummary{
-			Window:            window,
-			TrainingBaseline:  trainBaseline.Metrics,
-			TrainingVolSizing: trainVol.Metrics,
-			Baseline:          testBaseline.Metrics,
-			VolSizing:         testVol.Metrics,
-			BaselineRanking:   rankingDiagnostics(testBaseline.RankingMetrics),
-			VolSizingRanking:  rankingDiagnostics(testVol.RankingMetrics),
+			Window:            res.window,
+			TrainingBaseline:  res.trainBaseline.Metrics,
+			TrainingVolSizing: res.trainVol.Metrics,
+			Baseline:          res.testBaseline.Metrics,
+			VolSizing:         res.testVol.Metrics,
+			BaselineRanking:   rankingDiagnostics(res.testBaseline.RankingMetrics),
+			VolSizingRanking:  rankingDiagnostics(res.testVol.RankingMetrics),
 		})
 	}
 
