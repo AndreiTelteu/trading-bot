@@ -723,7 +723,11 @@ function SettingsPanel({ activeSection }) {
     { key: 'rebuy_percent', label: 'Rebuy %', type: 'number', step: 0.1 },
     { key: 'max_positions', label: 'Max Positions', type: 'number' },
     { key: 'regime_gate_enabled', label: 'Regime Gate Enabled', type: 'boolean' },
-    { key: 'regime_timeframe', label: 'Regime Timeframe', type: 'text' },
+    { key: 'regime_timeframe', label: 'Regime Timeframe', type: 'select', options: [
+      { value: '1h', label: '1 hour' },
+      { value: '4h', label: '4 hours' },
+      { value: '1d', label: '1 day' },
+    ]},
     { key: 'regime_ema_fast', label: 'Regime EMA Fast', type: 'number' },
     { key: 'regime_ema_slow', label: 'Regime EMA Slow', type: 'number' },
     { key: 'vol_atr_period', label: 'Vol ATR Period', type: 'number' },
@@ -740,8 +744,16 @@ function SettingsPanel({ activeSection }) {
   ]
 
   const universeSettings = [
-    { key: 'universe_mode', label: 'Universe Mode', type: 'text' },
-    { key: 'universe_rebalance_interval', label: 'Rebalance Interval', type: 'text' },
+    { key: 'universe_mode', label: 'Universe Mode', type: 'select', options: [
+      { value: 'dynamic', label: 'Dynamic' },
+      { value: 'static', label: 'Static' },
+    ]},
+    { key: 'universe_rebalance_interval', label: 'Rebalance Interval', type: 'select', options: [
+      { value: '30m', label: '30 minutes' },
+      { value: '1h', label: '1 hour' },
+      { value: '2h', label: '2 hours' },
+      { value: '4h', label: '4 hours' },
+    ]},
     { key: 'universe_min_listing_days', label: 'Min Listing Days', type: 'number', step: 1 },
     { key: 'universe_min_daily_quote_volume', label: 'Min Daily Quote Volume', type: 'number', step: 1000 },
     { key: 'universe_min_intraday_quote_volume', label: 'Min Intraday Quote Volume', type: 'number', step: 1000 },
@@ -768,8 +780,17 @@ function SettingsPanel({ activeSection }) {
 
   const probabilisticSettings = [
     { key: 'active_model_version', label: 'Active Model Version', type: 'text' },
-    { key: 'model_rollout_state', label: 'Model Rollout State', type: 'text' },
-    { key: 'model_fallback_mode', label: 'Rollback Fallback Mode', type: 'text' },
+    { key: 'model_rollout_state', label: 'Model Rollout State', type: 'select', options: [
+      { value: 'research_only', label: 'Research Only' },
+      { value: 'shadow', label: 'Shadow' },
+      { value: 'paper', label: 'Paper' },
+      { value: 'limited_live', label: 'Limited Live' },
+      { value: 'full_live', label: 'Full Live' },
+      { value: 'rollback', label: 'Rollback' },
+    ]},
+    { key: 'model_fallback_mode', label: 'Rollback Fallback Mode', type: 'select', options: [
+      { value: 'rule_based', label: 'Rule Based' },
+    ]},
     { key: 'model_rollback_target', label: 'Rollback Target Model', type: 'text' },
     { key: 'selection_policy_top_k', label: 'Selection Policy Top K', type: 'number', step: 1 },
     { key: 'selection_policy_min_prob', label: 'Selection Policy Min Prob', type: 'number', step: 0.0001 },
@@ -787,7 +808,11 @@ function SettingsPanel({ activeSection }) {
   ]
 
   const backtestSettings = [
-    { key: 'backtest_universe_mode', label: 'Backtest Universe Mode', type: 'text' },
+    { key: 'backtest_universe_mode', label: 'Backtest Universe Mode', type: 'select', options: [
+      { value: 'static', label: 'Static' },
+      { value: 'dynamic_recompute', label: 'Dynamic Recompute' },
+      { value: 'dynamic_replay', label: 'Dynamic Replay' },
+    ]},
     { key: 'backtest_symbols', label: 'Backtest Symbols', type: 'text' },
     { key: 'backtest_start', label: 'Backtest Start (YYYY-MM-DD or RFC3339)', type: 'text' },
     { key: 'backtest_end', label: 'Backtest End (YYYY-MM-DD or RFC3339)', type: 'text' },
@@ -907,6 +932,13 @@ function SettingsPanel({ activeSection }) {
                   { value: 'true', label: 'True' },
                   { value: 'false', label: 'False' }
                 ]}
+                id={`setting-${s.key}`}
+              />
+            ) : s.type === 'select' ? (
+              <CustomSelect
+                value={String(settings[s.key] || s.options[0]?.value || '')}
+                onChange={val => handleSettingChange(s.key, val)}
+                options={s.options}
                 id={`setting-${s.key}`}
               />
             ) : (
