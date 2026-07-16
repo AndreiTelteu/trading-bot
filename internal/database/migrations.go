@@ -10,6 +10,10 @@ func schemaModels() []interface{} {
 		&Wallet{},
 		&Position{},
 		&Order{},
+		&LedgerBatch{},
+		&Fill{},
+		&LedgerEvent{},
+		&LedgerMigrationState{},
 		&Setting{},
 		&AIProposal{},
 		&IndicatorWeight{},
@@ -152,6 +156,49 @@ func RunMigrations(db *gorm.DB) error {
 					}
 				}
 				return nil
+			},
+		},
+		{
+			ID: "202607160100_immutable_ledger",
+			Migrate: func(tx *gorm.DB) error {
+				if err := migrateSchema(tx); err != nil {
+					return err
+				}
+				// Database enforcement is deliberate: accidental GORM Save/Delete calls
+				// cannot rewrite economic history.
+				return tx.Exec(`
+					ALTER TABLE ledger_events DROP CONSTRAINT IF EXISTS ledger_events_type_check;
+					ALTER TABLE ledger_events ADD CONSTRAINT ledger_events_type_check CHECK (event_type IN ('capital_deposit','capital_withdrawal','buy_fill','sell_fill','trading_fee','exchange_fee','funding_interest','administrative_correction','reversal'));
+					ALTER TABLE ledger_events DROP CONSTRAINT IF EXISTS ledger_events_sign_check;
+					ALTER TABLE ledger_events ADD CONSTRAINT ledger_events_sign_check CHECK (
+						(event_type = 'buy_fill' AND cash_delta < 0 AND asset_delta > 0) OR
+						(event_type = 'sell_fill' AND cash_delta > 0 AND asset_delta < 0) OR
+						(event_type IN ('trading_fee','exchange_fee') AND cash_delta <= 0 AND asset_delta = 0) OR
+						(event_type = 'capital_deposit' AND cash_delta >= 0 AND asset_delta = 0) OR
+						(event_type = 'capital_withdrawal' AND cash_delta <= 0 AND asset_delta = 0) OR
+						event_type IN ('funding_interest','administrative_correction','reversal')
+					);
+					ALTER TABLE fills DROP CONSTRAINT IF EXISTS fills_economic_check;
+					ALTER TABLE fills ADD CONSTRAINT fills_economic_check CHECK (side IN ('buy','sell') AND quantity > 0 AND requested_price > 0 AND fill_price > 0 AND gross_amount > 0 AND fee_amount >= 0);
+					CREATE OR REPLACE FUNCTION reject_ledger_mutation() RETURNS trigger AS $$
+					BEGIN RAISE EXCEPTION 'ledger rows are immutable'; END;
+					$$ LANGUAGE plpgsql;
+					DROP TRIGGER IF EXISTS ledger_events_immutable ON ledger_events;
+					CREATE TRIGGER ledger_events_immutable BEFORE UPDATE OR DELETE ON ledger_events
+					FOR EACH ROW EXECUTE FUNCTION reject_ledger_mutation();
+					DROP TRIGGER IF EXISTS fills_immutable ON fills;
+					CREATE TRIGGER fills_immutable BEFORE UPDATE OR DELETE ON fills
+					FOR EACH ROW EXECUTE FUNCTION reject_ledger_mutation();
+				`).Error
+			},
+			Rollback: func(tx *gorm.DB) error {
+				if err := tx.Exec(`DROP TRIGGER IF EXISTS ledger_events_immutable ON ledger_events; DROP TRIGGER IF EXISTS fills_immutable ON fills;`).Error; err != nil {
+					return err
+				}
+				if err := tx.Migrator().DropTable(&LedgerEvent{}, &Fill{}, &LedgerBatch{}, &LedgerMigrationState{}); err != nil {
+					return err
+				}
+				return tx.Exec(`DROP FUNCTION IF EXISTS reject_ledger_mutation()`).Error
 			},
 		},
 	})

@@ -119,6 +119,8 @@ func SeedData() error {
 		{Key: "monitoring_min_outcomes", Value: "10", Category: strPtr("model")},
 		{Key: "backtest_fee_bps", Value: "10", Category: strPtr("backtest")},
 		{Key: "backtest_slippage_bps", Value: "5", Category: strPtr("backtest")},
+		{Key: "paper_fee_bps", Value: "10", Category: strPtr("trading")},
+		{Key: "paper_slippage_bps", Value: "5", Category: strPtr("trading")},
 		{Key: "backtest_start", Value: "", Category: strPtr("backtest")},
 		{Key: "backtest_end", Value: "", Category: strPtr("backtest")},
 		{Key: "backtest_symbols", Value: "", Category: strPtr("backtest")},
@@ -136,22 +138,22 @@ func SeedData() error {
 		{Key: "prob_model_beta4", Value: "0.0", Category: strPtr("probabilistic")},     // DEPRECATED
 		{Key: "prob_model_beta5", Value: "0.0", Category: strPtr("probabilistic")},     // DEPRECATED
 		{Key: "prob_model_beta6", Value: "0.0", Category: strPtr("probabilistic")},     // DEPRECATED
-		{Key: "prob_p_min", Value: "0.55", Category: strPtr("probabilistic")},           // DEPRECATED: use selection_policy_min_prob
-		{Key: "prob_ev_min", Value: "0.0", Category: strPtr("probabilistic")},           // DEPRECATED: use selection_policy_min_ev
-		{Key: "prob_avg_gain", Value: "0.02", Category: strPtr("probabilistic")},        // DEPRECATED
-		{Key: "prob_avg_loss", Value: "0.01", Category: strPtr("probabilistic")},        // DEPRECATED
+		{Key: "prob_p_min", Value: "0.55", Category: strPtr("probabilistic")},          // DEPRECATED: use selection_policy_min_prob
+		{Key: "prob_ev_min", Value: "0.0", Category: strPtr("probabilistic")},          // DEPRECATED: use selection_policy_min_ev
+		{Key: "prob_avg_gain", Value: "0.02", Category: strPtr("probabilistic")},       // DEPRECATED
+		{Key: "prob_avg_loss", Value: "0.01", Category: strPtr("probabilistic")},       // DEPRECATED
 		// DEPRECATED: Indicator period settings are legacy controls. The learned model and
 		// policy framework now govern entry decisions. Retained for rollback compatibility.
-		{Key: "rsi_period", Value: "14", Category: strPtr("indicators")},          // DEPRECATED: legacy indicator tuning
-		{Key: "rsi_oversold", Value: "30.0", Category: strPtr("indicators")},      // DEPRECATED: legacy indicator tuning
-		{Key: "rsi_overbought", Value: "70.0", Category: strPtr("indicators")},    // DEPRECATED: legacy indicator tuning
-		{Key: "macd_fast_period", Value: "12", Category: strPtr("indicators")},    // DEPRECATED: legacy indicator tuning
-		{Key: "macd_slow_period", Value: "26", Category: strPtr("indicators")},    // DEPRECATED: legacy indicator tuning
-		{Key: "macd_signal_period", Value: "9", Category: strPtr("indicators")},   // DEPRECATED: legacy indicator tuning
-		{Key: "bb_period", Value: "20", Category: strPtr("indicators")},           // DEPRECATED: legacy indicator tuning
-		{Key: "bb_std", Value: "2.0", Category: strPtr("indicators")},             // DEPRECATED: legacy indicator tuning
-		{Key: "volume_ma_period", Value: "20", Category: strPtr("indicators")},    // DEPRECATED: legacy indicator tuning
-		{Key: "momentum_period", Value: "10", Category: strPtr("indicators")},     // DEPRECATED: legacy indicator tuning
+		{Key: "rsi_period", Value: "14", Category: strPtr("indicators")},        // DEPRECATED: legacy indicator tuning
+		{Key: "rsi_oversold", Value: "30.0", Category: strPtr("indicators")},    // DEPRECATED: legacy indicator tuning
+		{Key: "rsi_overbought", Value: "70.0", Category: strPtr("indicators")},  // DEPRECATED: legacy indicator tuning
+		{Key: "macd_fast_period", Value: "12", Category: strPtr("indicators")},  // DEPRECATED: legacy indicator tuning
+		{Key: "macd_slow_period", Value: "26", Category: strPtr("indicators")},  // DEPRECATED: legacy indicator tuning
+		{Key: "macd_signal_period", Value: "9", Category: strPtr("indicators")}, // DEPRECATED: legacy indicator tuning
+		{Key: "bb_period", Value: "20", Category: strPtr("indicators")},         // DEPRECATED: legacy indicator tuning
+		{Key: "bb_std", Value: "2.0", Category: strPtr("indicators")},           // DEPRECATED: legacy indicator tuning
+		{Key: "volume_ma_period", Value: "20", Category: strPtr("indicators")},  // DEPRECATED: legacy indicator tuning
+		{Key: "momentum_period", Value: "10", Category: strPtr("indicators")},   // DEPRECATED: legacy indicator tuning
 		{Key: "ai_analysis_interval", Value: "24", Category: strPtr("ai")},
 		{Key: "ai_lookback_days", Value: "30", Category: strPtr("ai")},
 		{Key: "ai_min_proposals", Value: "1", Category: strPtr("ai")},
@@ -174,7 +176,16 @@ func SeedData() error {
 
 	return DB.Transaction(func(tx *gorm.DB) error {
 		wallet := Wallet{ID: 1, Balance: 400.0, Currency: "USDT"}
-		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&wallet).Error; err != nil {
+		walletResult := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&wallet)
+		if err := walletResult.Error; err != nil {
+			return err
+		}
+		if walletResult.RowsAffected == 0 {
+			if err := tx.First(&wallet, 1).Error; err != nil {
+				return err
+			}
+		}
+		if err := seedLedgerBoundary(tx, wallet, walletResult.RowsAffected == 1); err != nil {
 			return err
 		}
 

@@ -298,9 +298,18 @@ type Broker interface {
 type LedgerEventType string
 
 const (
-	LedgerCashAdjusted LedgerEventType = "cash_adjusted"
-	LedgerTradeFilled  LedgerEventType = "trade_filled"
-	LedgerFeeCharged   LedgerEventType = "fee_charged"
+	LedgerCashAdjusted      LedgerEventType = "cash_adjusted" // Stage 00 compatibility alias.
+	LedgerTradeFilled       LedgerEventType = "trade_filled"  // Stage 00 compatibility alias.
+	LedgerFeeCharged        LedgerEventType = "fee_charged"   // Stage 00 compatibility alias.
+	LedgerCapitalDeposit    LedgerEventType = "capital_deposit"
+	LedgerCapitalWithdrawal LedgerEventType = "capital_withdrawal"
+	LedgerBuyFill           LedgerEventType = "buy_fill"
+	LedgerSellFill          LedgerEventType = "sell_fill"
+	LedgerTradingFee        LedgerEventType = "trading_fee"
+	LedgerExchangeFee       LedgerEventType = "exchange_fee"
+	LedgerFundingInterest   LedgerEventType = "funding_interest"
+	LedgerAdminCorrection   LedgerEventType = "administrative_correction"
+	LedgerReversal          LedgerEventType = "reversal"
 )
 
 type PostingDimension string
@@ -342,7 +351,12 @@ func NewLedgerEvent(event LedgerEvent, postings []LedgerPosting) (LedgerEvent, e
 	if len(postings) == 0 {
 		return LedgerEvent{}, fmt.Errorf("ledger event requires postings")
 	}
-	if event.Type != LedgerCashAdjusted && event.Type != LedgerTradeFilled && event.Type != LedgerFeeCharged {
+	switch event.Type {
+	case LedgerCashAdjusted, LedgerTradeFilled, LedgerFeeCharged,
+		LedgerCapitalDeposit, LedgerCapitalWithdrawal, LedgerBuyFill,
+		LedgerSellFill, LedgerTradingFee, LedgerExchangeFee,
+		LedgerFundingInterest, LedgerAdminCorrection, LedgerReversal:
+	default:
 		return LedgerEvent{}, fmt.Errorf("unsupported ledger event type %q", event.Type)
 	}
 	for _, posting := range postings {

@@ -1,18 +1,18 @@
 package services
 
 import (
+	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"math"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+	"trading-go/internal/accounting"
 	"trading-go/internal/database"
+	ledgerpkg "trading-go/internal/ledger"
 	"trading-go/internal/websocket"
-
-	"gorm.io/gorm"
 )
 
 // TrendingCoin represents a coin from the trending list
@@ -1192,163 +1192,30 @@ func executeBuyFromTrendingWithContext(symbol string, decisionContext TradeDecis
 		}
 	}
 
-	if err := database.DB.Transaction(func(tx *gorm.DB) error {
-		now := time.Now()
-		if err := tx.First(&wallet).Error; err != nil {
-			return err
+	quantityExact, quantityErr := accounting.FromFloat(cryptoAmount)
+	requestedExact, priceErr := accounting.FromFloat(currentPrice)
+	if quantityErr != nil || priceErr != nil {
+		return false, fmt.Errorf("invalid paper fill precision")
+	}
+	feeBPS := int64(getSettingInt(settings, "paper_fee_bps", 10))
+	slippageBPS := int64(getSettingInt(settings, "paper_slippage_bps", 5))
+	fillExact, feeExact, costErr := ledgerpkg.CostedPaperFill("buy", quantityExact, requestedExact, feeBPS, slippageBPS)
+	if costErr != nil {
+		return false, costErr
+	}
+	var trailingStopPrice *float64
+	var lastAtrValue *float64
+	if atrTrailingEnabled && atr > 0 && atrTrailingMult > 0 {
+		candidate := fillExact.Float64() - atr*atrTrailingMult
+		if candidate > 0 {
+			trailingStopPrice = &candidate
 		}
-		if amountUsdt > wallet.Balance {
-			return fmt.Errorf("insufficient balance")
-		}
-
-		var existingPosition database.Position
-		lookupErr := tx.Where("symbol = ?", cleanSymbol).First(&existingPosition).Error
-		hasExisting := lookupErr == nil
-		if lookupErr != nil && !errors.Is(lookupErr, gorm.ErrRecordNotFound) {
-			return lookupErr
-		}
-
-		if hasExisting && existingPosition.Status == "open" {
-			applyAutoBuyAddition(&existingPosition, cryptoAmount, currentPrice)
-			newAvg := existingPosition.AvgPrice
-			existingPosition.ExecutionMode = ExecutionModePaper
-			existingPosition.EntrySource = EntrySourceAutoTrend
-			existingPosition.ExitPending = false
-			existingPosition.CurrentPrice = &currentPrice
-			existingPosition.LastMarkPrice = &currentPrice
-			existingPosition.LastMarkAt = &now
-			existingPosition.DecisionTimeframe = DecisionTimeframeDefault
-			existingPosition.ModelVersion = decisionContext.ModelVersion
-			existingPosition.PolicyVersion = decisionContext.PolicyVersion
-			existingPosition.UniverseMode = decisionContext.UniverseMode
-			existingPosition.RolloutState = decisionContext.RolloutState
-			existingPosition.ExperimentID = stringPtr(decisionContext.ExperimentID)
-			existingPosition.PredictionLogID = decisionContext.PredictionLogID
-			existingPosition.DecisionContextJSON = defaultDecisionContextJSON(decisionContext)
-			if volSizingEnabled {
-				stopMult := getSettingFloat(settings, "stop_mult", 1.5)
-				tpMult := getSettingFloat(settings, "tp_mult", 3.0)
-				volStop := atr * stopMult
-				volTp := atr * tpMult
-				if volStop > 0 && volTp > 0 {
-					newStop := newAvg - volStop
-					newTakeProfit := newAvg + volTp
-					if newStop > 0 && newTakeProfit > 0 {
-						existingPosition.StopPrice = &newStop
-						existingPosition.TakeProfitPrice = &newTakeProfit
-					}
-				}
-				existingPosition.MaxBarsHeld = maxBarsHeld
-			}
-			if atrTrailingEnabled && atr > 0 && atrTrailingMult > 0 {
-				candidateStop := currentPrice - (atr * atrTrailingMult)
-				if candidateStop > 0 {
-					if existingPosition.TrailingStopPrice == nil || candidateStop > *existingPosition.TrailingStopPrice {
-						existingPosition.TrailingStopPrice = &candidateStop
-					}
-				}
-				existingPosition.LastAtrValue = &atr
-			}
-			if err := tx.Save(&existingPosition).Error; err != nil {
-				return err
-			}
-		} else {
-			var trailingStopPrice *float64
-			var lastAtrValue *float64
-			if atrTrailingEnabled && atr > 0 && atrTrailingMult > 0 {
-				entryStop := currentPrice - (atr * atrTrailingMult)
-				if entryStop > 0 {
-					trailingStopPrice = &entryStop
-				}
-				lastAtrValue = &atr
-			}
-			if hasExisting {
-				resetClosedPositionForAutoBuy(&existingPosition, cryptoAmount, currentPrice, now)
-				existingPosition.ExecutionMode = ExecutionModePaper
-				existingPosition.EntrySource = EntrySourceAutoTrend
-				existingPosition.ExitPending = false
-				existingPosition.LastMarkPrice = &currentPrice
-				existingPosition.LastMarkAt = &now
-				existingPosition.ClientPositionID = newClientPositionID(cleanSymbol, now)
-				existingPosition.DecisionTimeframe = DecisionTimeframeDefault
-				existingPosition.ModelVersion = decisionContext.ModelVersion
-				existingPosition.PolicyVersion = decisionContext.PolicyVersion
-				existingPosition.UniverseMode = decisionContext.UniverseMode
-				existingPosition.RolloutState = decisionContext.RolloutState
-				existingPosition.ExperimentID = stringPtr(decisionContext.ExperimentID)
-				existingPosition.PredictionLogID = decisionContext.PredictionLogID
-				existingPosition.DecisionContextJSON = defaultDecisionContextJSON(decisionContext)
-				existingPosition.StopPrice = stopPrice
-				existingPosition.TakeProfitPrice = takeProfitPrice
-				existingPosition.TrailingStopPrice = trailingStopPrice
-				existingPosition.LastAtrValue = lastAtrValue
-				existingPosition.MaxBarsHeld = maxBarsHeld
-				if err := tx.Save(&existingPosition).Error; err != nil {
-					return fmt.Errorf("failed to reopen position for %s: %w", cleanSymbol, err)
-				}
-			} else {
-				position := database.Position{
-					Symbol:              cleanSymbol,
-					Amount:              cryptoAmount,
-					AvgPrice:            currentPrice,
-					EntryPrice:          &currentPrice,
-					CurrentPrice:        &currentPrice,
-					ExecutionMode:       ExecutionModePaper,
-					EntrySource:         EntrySourceAutoTrend,
-					LastMarkPrice:       &currentPrice,
-					LastMarkAt:          &now,
-					ClientPositionID:    newClientPositionID(cleanSymbol, now),
-					DecisionTimeframe:   DecisionTimeframeDefault,
-					ModelVersion:        decisionContext.ModelVersion,
-					PolicyVersion:       decisionContext.PolicyVersion,
-					UniverseMode:        decisionContext.UniverseMode,
-					RolloutState:        decisionContext.RolloutState,
-					ExperimentID:        stringPtr(decisionContext.ExperimentID),
-					PredictionLogID:     decisionContext.PredictionLogID,
-					DecisionContextJSON: defaultDecisionContextJSON(decisionContext),
-					StopPrice:           stopPrice,
-					TakeProfitPrice:     takeProfitPrice,
-					TrailingStopPrice:   trailingStopPrice,
-					LastAtrValue:        lastAtrValue,
-					MaxBarsHeld:         maxBarsHeld,
-					Status:              "open",
-					OpenedAt:            now,
-				}
-				if err := tx.Create(&position).Error; err != nil {
-					return fmt.Errorf("failed to create position for %s: %w", cleanSymbol, err)
-				}
-			}
-		}
-
-		order := database.Order{
-			OrderType:           "buy",
-			Symbol:              cleanSymbol,
-			AmountCrypto:        cryptoAmount,
-			AmountUsdt:          amountUsdt,
-			Price:               currentPrice,
-			Status:              OrderStatusFilled,
-			ExecutionMode:       ExecutionModePaper,
-			ModelVersion:        decisionContext.ModelVersion,
-			PolicyVersion:       decisionContext.PolicyVersion,
-			UniverseMode:        decisionContext.UniverseMode,
-			RolloutState:        decisionContext.RolloutState,
-			ExperimentID:        stringPtr(decisionContext.ExperimentID),
-			PredictionLogID:     decisionContext.PredictionLogID,
-			DecisionContextJSON: defaultDecisionContextJSON(decisionContext),
-			RequestedPrice:      &currentPrice,
-			FillPrice:           &currentPrice,
-			ExecutedQty:         &cryptoAmount,
-			SubmittedAt:         &now,
-			FilledAt:            &now,
-			ExecutedAt:          now,
-		}
-		if err := tx.Create(&order).Error; err != nil {
-			return err
-		}
-
-		wallet.Balance -= amountUsdt
-		return tx.Save(&wallet).Error
-	}); err != nil {
+		lastAtrValue = &atr
+	}
+	now := time.Now().UTC()
+	key := fmt.Sprintf("auto-trend-%s-%d", cleanSymbol, now.UnixNano())
+	_, err = ledgerpkg.New(database.DB).ApplyFill(context.Background(), ledgerpkg.FillCommand{IdempotencyKey: key, Symbol: cleanSymbol, Side: "buy", Quantity: quantityExact, RequestedPrice: requestedExact, FillPrice: fillExact, Fee: feeExact, FeeType: ledgerpkg.EventTradingFee, Currency: wallet.Currency, ExecutionMode: ExecutionModePaper, OccurredAt: now, Actor: "auto_trend", Reason: "qualified auto-trend entry", EntrySource: EntrySourceAutoTrend, DecisionTimeframe: DecisionTimeframeDefault, ModelVersion: decisionContext.ModelVersion, PolicyVersion: decisionContext.PolicyVersion, UniverseMode: decisionContext.UniverseMode, RolloutState: decisionContext.RolloutState, ExperimentID: stringPtr(decisionContext.ExperimentID), PredictionLogID: decisionContext.PredictionLogID, DecisionContextJSON: defaultDecisionContextJSON(decisionContext), StopPrice: stopPrice, TakeProfitPrice: takeProfitPrice, TrailingStopPrice: trailingStopPrice, LastAtrValue: lastAtrValue, MaxBarsHeld: maxBarsHeld, Metadata: map[string]interface{}{"fee_bps": feeBPS, "slippage_bps": slippageBPS, "sizing_amount_usdt": amountUsdt}})
+	if err != nil {
 		return false, err
 	}
 

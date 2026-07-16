@@ -2,6 +2,7 @@ package testing
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -9,9 +10,11 @@ import (
 	"strconv"
 	"testing"
 	"time"
+	"trading-go/internal/accounting"
 	"trading-go/internal/config"
 	"trading-go/internal/database"
 	"trading-go/internal/handlers"
+	ledgerpkg "trading-go/internal/ledger"
 	"trading-go/internal/middleware"
 	"trading-go/internal/services"
 	"trading-go/internal/testutil"
@@ -25,16 +28,9 @@ var app *fiber.App
 
 func SetupTestDB(t *testing.T) {
 	testDB = testutil.SetupPostgresDB(t)
-
-	wallet := database.Wallet{Balance: 1000.0, Currency: "USDT"}
-	database.DB.Create(&wallet)
-
-	llmConfig := database.LLMConfig{
-		Provider: "openrouter",
-		BaseURL:  "https://openrouter.ai/api/v1",
-		Model:    "google/gemini-2.0-flash-001",
+	if err := database.SeedData(); err != nil {
+		t.Fatalf("Failed to seed test database: %v", err)
 	}
-	database.DB.Create(&llmConfig)
 }
 
 func SetupTestApp() *fiber.App {
@@ -339,29 +335,11 @@ func TestExecuteCloseTradeRejectsAlreadyClosedPosition(t *testing.T) {
 	exchange.BaseURL = tickerServer.URL
 	exchange.HTTPClient = tickerServer.Client()
 
-	var wallet database.Wallet
-	if err := database.DB.First(&wallet).Error; err != nil {
-		t.Fatalf("Failed to fetch wallet: %v", err)
+	opened, openErr := ledgerpkg.New(database.DB).ApplyFill(context.Background(), ledgerpkg.FillCommand{IdempotencyKey: "api-close-open", Symbol: "BANK", Side: "buy", Quantity: accounting.MustParse("2"), RequestedPrice: accounting.MustParse("6.5"), FillPrice: accounting.MustParse("6.5"), Fee: accounting.Zero(), FeeType: ledgerpkg.EventTradingFee, Currency: "USDT", ExecutionMode: "paper", Actor: "test", Reason: "api fixture", OccurredAt: time.Now().UTC()})
+	if openErr != nil {
+		t.Fatalf("Failed to open ledger position: %v", openErr)
 	}
-	wallet.Balance = 100
-	if err := database.DB.Save(&wallet).Error; err != nil {
-		t.Fatalf("Failed to seed wallet: %v", err)
-	}
-
-	entryPrice := 6.5
-	currentPrice := 6.8
-	position := database.Position{
-		Symbol:       "BANK",
-		Amount:       2,
-		AvgPrice:     entryPrice,
-		EntryPrice:   &entryPrice,
-		CurrentPrice: &currentPrice,
-		Status:       "open",
-		OpenedAt:     time.Now().UTC(),
-	}
-	if err := database.DB.Create(&position).Error; err != nil {
-		t.Fatalf("Failed to create position: %v", err)
-	}
+	position := opened.Position
 
 	body, _ := json.Marshal(map[string]interface{}{
 		"close_reason": "manual",
@@ -397,8 +375,8 @@ func TestExecuteCloseTradeRejectsAlreadyClosedPosition(t *testing.T) {
 	if err := database.DB.First(&refreshedWallet).Error; err != nil {
 		t.Fatalf("Failed to reload wallet: %v", err)
 	}
-	if refreshedWallet.Balance != 114 {
-		t.Fatalf("Expected wallet balance 114 after one close, got %.2f", refreshedWallet.Balance)
+	if refreshedWallet.BalanceExact == nil || refreshedWallet.BalanceExact.String() != "400.979007" {
+		t.Fatalf("Expected exact wallet balance 400.979007 after one costed close, got %v", refreshedWallet.BalanceExact)
 	}
 
 	var refreshedPosition database.Position
@@ -460,7 +438,7 @@ func TestSettingsEndpoint(t *testing.T) {
 		Key:   "test_key",
 		Value: "test_value",
 	}
-	database.DB.Create(&setting)
+	database.DB.Save(&setting)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/settings", nil)
 	req.Header.Set("Cookie", cookie)
@@ -532,7 +510,7 @@ func TestOptimizeBacktestEndpointCreatesProposal(t *testing.T) {
 		{Key: "ai_max_keys_per_category", Value: "2", Category: strPtr("ai")},
 	}
 	for _, setting := range settings {
-		database.DB.Create(&setting)
+		database.DB.Save(&setting)
 	}
 	weight := database.IndicatorWeight{Indicator: "rsi", Weight: 1.0}
 	database.DB.Create(&weight)
@@ -572,13 +550,14 @@ func TestOptimizeBacktestEndpointCreatesProposal(t *testing.T) {
 		payload, _ := io.ReadAll(resp.Body)
 		t.Fatalf("Expected status 200, got %d: %s", resp.StatusCode, string(payload))
 	}
+	responsePayload, _ := io.ReadAll(resp.Body)
 
 	var proposals []database.AIProposal
 	if err := database.DB.Find(&proposals).Error; err != nil {
 		t.Fatalf("Failed to load proposals: %v", err)
 	}
 	if len(proposals) != 1 {
-		t.Fatalf("Expected 1 proposal, got %d", len(proposals))
+		t.Fatalf("Expected 1 proposal, got %d; response=%s", len(proposals), string(responsePayload))
 	}
 	if proposals[0].ProposalType != "backtest_parameter_adjustment" {
 		t.Fatalf("Unexpected proposal type: %s", proposals[0].ProposalType)
@@ -604,7 +583,7 @@ func TestOptimizeBacktestEndpointFallsBackToHypotheses(t *testing.T) {
 		{Key: "ai_max_keys_per_category", Value: "2", Category: strPtr("ai")},
 	}
 	for _, setting := range settings {
-		database.DB.Create(&setting)
+		database.DB.Save(&setting)
 	}
 	weight := database.IndicatorWeight{Indicator: "rsi", Weight: 1.0}
 	database.DB.Create(&weight)
@@ -709,7 +688,7 @@ func TestOptimizeBacktestEndpointReturnsRawResponseForNoJSONArray(t *testing.T) 
 		{Key: "ai_max_keys_per_category", Value: "2", Category: strPtr("ai")},
 	}
 	for _, setting := range settings {
-		database.DB.Create(&setting)
+		database.DB.Save(&setting)
 	}
 
 	requestCount := 0

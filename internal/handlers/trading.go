@@ -19,6 +19,9 @@ func ExecuteBuy(c *fiber.Ctx) error {
 	if req.Amount <= 0 {
 		return c.Status(400).JSON(fiber.Map{"error": "Amount must be greater than 0"})
 	}
+	if req.IdempotencyKey == "" {
+		req.IdempotencyKey = c.Get("Idempotency-Key")
+	}
 
 	result, err := services.ExecuteBuy(req)
 	if err != nil {
@@ -43,6 +46,9 @@ func ExecuteSell(c *fiber.Ctx) error {
 
 	if req.Amount <= 0 {
 		return c.Status(400).JSON(fiber.Map{"error": "Amount must be greater than 0"})
+	}
+	if req.IdempotencyKey == "" {
+		req.IdempotencyKey = c.Get("Idempotency-Key")
 	}
 
 	result, err := services.ExecuteSell(req)

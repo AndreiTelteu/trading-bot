@@ -116,6 +116,7 @@ func setupRoutes(app *fiber.App, cfg *config.Config, authManager *middleware.Aut
 	wallet.Get("", handlers.GetWallet)
 	wallet.Put("", handlers.UpdateWallet)
 	wallet.Get("/snapshots", handlers.GetPortfolioSnapshots)
+	api.Get("/ledger/reconciliation", handlers.GetLedgerReconciliation)
 
 	positions := api.Group("/positions")
 	positions.Get("", handlers.GetPositions)

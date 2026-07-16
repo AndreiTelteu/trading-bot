@@ -56,6 +56,7 @@ func TestUpdatePositionsPricesAtrTrailingStopRatchet(t *testing.T) {
 	entry := 100.0
 	trailingOne := 120.0
 	trailingTwo := 140.0
+	lastATR := 20.0
 	now := time.Now()
 
 	database.DB.Create(&database.Position{
@@ -63,6 +64,7 @@ func TestUpdatePositionsPricesAtrTrailingStopRatchet(t *testing.T) {
 		Amount:            1.0,
 		AvgPrice:          100.0,
 		EntryPrice:        &entry,
+		LastAtrValue:      &lastATR,
 		TrailingStopPrice: &trailingOne,
 		Status:            "open",
 		OpenedAt:          now,
@@ -72,6 +74,7 @@ func TestUpdatePositionsPricesAtrTrailingStopRatchet(t *testing.T) {
 		Amount:            1.0,
 		AvgPrice:          100.0,
 		EntryPrice:        &entry,
+		LastAtrValue:      &lastATR,
 		TrailingStopPrice: &trailingTwo,
 		Status:            "open",
 		OpenedAt:          now,

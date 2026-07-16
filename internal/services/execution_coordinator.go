@@ -1,11 +1,14 @@
 package services
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 	"strings"
 	"time"
+	"trading-go/internal/accounting"
 	"trading-go/internal/database"
+	ledgerpkg "trading-go/internal/ledger"
 	"trading-go/internal/websocket"
 
 	"gorm.io/gorm"
@@ -60,6 +63,9 @@ func (c *ExecutionCoordinator) RequestClose(req CloseRequest) (*CloseResult, err
 	if req.TriggeredAt.IsZero() {
 		req.TriggeredAt = time.Now()
 	}
+	if err := ledgerpkg.New(database.DB).CheckReady(context.Background(), ""); err != nil {
+		return nil, err
+	}
 
 	position, order, err := c.markExitPending(req)
 	if err != nil {
@@ -110,10 +116,14 @@ func (c *ExecutionCoordinator) RequestClose(req CloseRequest) (*CloseResult, err
 
 	result, err := c.completeClose(position, *order, fillPrice, status, exchangeOrderID, executedQty, req)
 	if err != nil {
-		return nil, err
+		return nil, c.failClose(position.ID, order.ID, err)
 	}
 
-	websocket.BroadcastTradeExecuted("sell", result.Position.Symbol, result.Position.Amount, fillPrice, result.Wallet.Balance)
+	filledQuantity := position.Amount
+	if executedQty != nil && *executedQty > 0 {
+		filledQuantity = *executedQty
+	}
+	websocket.BroadcastTradeExecuted("sell", result.Position.Symbol, filledQuantity, result.Price, result.Wallet.Balance)
 	broadcastTradeUpdates()
 	NotifyPositionChanged()
 
@@ -185,83 +195,57 @@ func (c *ExecutionCoordinator) markExitPending(req CloseRequest) (database.Posit
 }
 
 func (c *ExecutionCoordinator) completeClose(position database.Position, order database.Order, fillPrice float64, status string, exchangeOrderID *string, executedQty *float64, req CloseRequest) (*CloseResult, error) {
-	var result CloseResult
-	err := database.DB.Transaction(func(tx *gorm.DB) error {
-		var lockedPosition database.Position
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&lockedPosition, position.ID).Error; err != nil {
-			return err
+	quantity := position.Amount
+	if executedQty != nil && *executedQty > 0 {
+		quantity = *executedQty
+	}
+	quantityExact, qErr := accounting.FromFloat(quantity)
+	requestedExact, pErr := accounting.FromFloat(order.Price)
+	fillExact, fErr := accounting.FromFloat(fillPrice)
+	if qErr != nil || pErr != nil || fErr != nil {
+		return nil, fmt.Errorf("invalid close fill precision")
+	}
+	providerID := ""
+	if exchangeOrderID != nil {
+		providerID = *exchangeOrderID
+	}
+	key := fmt.Sprintf("coordinated-close-order-%d", order.ID)
+	if order.ClientOrderID != nil {
+		key = *order.ClientOrderID
+	}
+	mode := normalizeExecutionMode(position.ExecutionMode)
+	if mode == ExecutionModeShadow {
+		return nil, fmt.Errorf("shadow position close requires a separate shadow account ledger adapter")
+	}
+	fee := accounting.Zero()
+	feeType := ledgerpkg.EventExchangeFee
+	metadata := map[string]interface{}{"exchange_fee_status": "unavailable_from_order_response", "broker_status": status}
+	if mode == ExecutionModePaper {
+		settings := GetAllSettings()
+		feeBPS := int64(getSettingInt(settings, "paper_fee_bps", 10))
+		slippageBPS := int64(getSettingInt(settings, "paper_slippage_bps", 5))
+		costedFill, costedFee, costErr := ledgerpkg.CostedPaperFill("sell", quantityExact, requestedExact, feeBPS, slippageBPS)
+		if costErr != nil {
+			return nil, costErr
 		}
-
-		var lockedOrder database.Order
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&lockedOrder, order.ID).Error; err != nil {
-			return err
-		}
-
-		var wallet database.Wallet
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&wallet).Error; err != nil {
-			return err
-		}
-
-		now := req.TriggeredAt
-		if now.IsZero() {
-			now = time.Now()
-		}
-		proceeds := lockedPosition.Amount * fillPrice
-		pnl := proceeds - (lockedPosition.Amount * lockedPosition.AvgPrice)
-		pnlPercent := 0.0
-		if lockedPosition.AvgPrice > 0 {
-			pnlPercent = ((fillPrice - lockedPosition.AvgPrice) / lockedPosition.AvgPrice) * 100
-		}
-
-		if normalizeExecutionMode(lockedPosition.ExecutionMode) != ExecutionModeShadow {
-			wallet.Balance += proceeds
-			if err := tx.Save(&wallet).Error; err != nil {
-				return err
-			}
-		}
-
-		lockedPosition.Status = "closed"
-		lockedPosition.ExitPending = false
-		lockedPosition.CurrentPrice = floatPtr(fillPrice)
-		lockedPosition.LastMarkPrice = floatPtr(fillPrice)
-		lockedPosition.LastMarkAt = &now
-		lockedPosition.ClosedAt = &now
-		lockedPosition.CloseReason = stringPtr(req.Reason)
-		lockedPosition.Pnl = pnl
-		lockedPosition.PnlPercent = pnlPercent
-		if err := tx.Save(&lockedPosition).Error; err != nil {
-			return err
-		}
-
-		lockedOrder.Status = status
-		lockedOrder.Price = fillPrice
-		lockedOrder.AmountUsdt = proceeds
-		lockedOrder.ExchangeOrderID = exchangeOrderID
-		lockedOrder.FillPrice = floatPtr(fillPrice)
-		lockedOrder.ExecutedQty = executedQty
-		lockedOrder.FilledAt = &now
-		lockedOrder.ExecutedAt = now
-		if err := tx.Save(&lockedOrder).Error; err != nil {
-			return err
-		}
-		if err := RecordTradeOutcome(tx, lockedPosition); err != nil {
-			return err
-		}
-
-		result = CloseResult{
-			Closed:   true,
-			Position: lockedPosition,
-			Order:    lockedOrder,
-			Wallet:   wallet,
-			Reason:   req.Reason,
-			Price:    fillPrice,
-		}
-		return nil
-	})
+		fillExact, fee, feeType = costedFill, costedFee, ledgerpkg.EventTradingFee
+		metadata = map[string]interface{}{"fee_bps": feeBPS, "slippage_bps": slippageBPS, "broker_status": status}
+	}
+	fillResult, err := ledgerpkg.New(database.DB).ApplyFill(context.Background(), ledgerpkg.FillCommand{IdempotencyKey: key, Symbol: position.Symbol, Side: "sell", Quantity: quantityExact, RequestedPrice: requestedExact, FillPrice: fillExact, Fee: fee, FeeType: feeType, Currency: "USDT", ExecutionMode: mode, ProviderFillID: providerID, ProviderOrderID: providerID, OrderStatus: status, ExistingOrderID: order.ID, OccurredAt: req.TriggeredAt, Actor: nonemptySource(req.Source), Reason: req.Reason, StrategyVersion: position.ModelVersion, PolicyVersion: position.PolicyVersion, Metadata: metadata})
 	if err != nil {
 		return nil, err
 	}
-	return &result, nil
+	if fillResult.Position.Status == "closed" {
+		_ = database.DB.Transaction(func(tx *gorm.DB) error { return RecordTradeOutcome(tx, fillResult.Position) })
+	}
+	return &CloseResult{Closed: fillResult.Position.Status == "closed", Position: fillResult.Position, Order: fillResult.Order, Wallet: fillResult.Wallet, Reason: req.Reason, Price: fillExact.Float64()}, nil
+}
+
+func nonemptySource(source string) string {
+	if strings.TrimSpace(source) == "" {
+		return "execution_coordinator"
+	}
+	return source
 }
 
 func (c *ExecutionCoordinator) failClose(positionID uint, orderID uint, closeErr error) error {

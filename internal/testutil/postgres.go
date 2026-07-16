@@ -53,11 +53,7 @@ func SetupPostgresDB(t *testing.T) *gorm.DB {
 }
 
 func truncatePublicTables(db *gorm.DB) error {
-	type tableRow struct {
-		TableName string
-	}
-
-	var tables []tableRow
+	var tables []string
 	if err := db.Raw(`
 		SELECT tablename
 		FROM pg_tables
@@ -73,7 +69,7 @@ func truncatePublicTables(db *gorm.DB) error {
 
 	quoted := make([]string, 0, len(tables))
 	for _, table := range tables {
-		quoted = append(quoted, fmt.Sprintf(`"public"."%s"`, strings.ReplaceAll(table.TableName, `"`, `""`)))
+		quoted = append(quoted, fmt.Sprintf(`"public"."%s"`, strings.ReplaceAll(table, `"`, `""`)))
 	}
 
 	return db.Exec("TRUNCATE TABLE " + strings.Join(quoted, ", ") + " RESTART IDENTITY CASCADE").Error

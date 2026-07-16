@@ -1,9 +1,13 @@
 package handlers
 
 import (
+	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
+	"trading-go/internal/accounting"
 	"trading-go/internal/database"
+	ledgerpkg "trading-go/internal/ledger"
 	ws "trading-go/internal/websocket"
 
 	"github.com/gofiber/fiber/v2"
@@ -24,8 +28,13 @@ func UpdateWallet(c *fiber.Ctx) error {
 	}
 
 	type UpdateWalletRequest struct {
-		Balance  *float64 `json:"balance"`
-		Currency *string  `json:"currency"`
+		Type           string          `json:"type"`
+		Amount         json.RawMessage `json:"amount"`
+		Reason         string          `json:"reason"`
+		Actor          string          `json:"actor"`
+		IdempotencyKey string          `json:"idempotency_key"`
+		Balance        *float64        `json:"balance"`
+		Currency       *string         `json:"currency"`
 	}
 
 	var req UpdateWalletRequest
@@ -33,16 +42,23 @@ func UpdateWallet(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "Invalid request body"})
 	}
 
-	if req.Balance != nil {
-		wallet.Balance = *req.Balance
+	if req.Balance != nil || req.Currency != nil {
+		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "Absolute balance/currency edits are disabled; use a typed deposit, withdrawal, or administrative correction"})
 	}
-	if req.Currency != nil {
-		wallet.Currency = *req.Currency
+	amountText := strings.Trim(string(req.Amount), `"`)
+	amount, err := accounting.Parse(amountText)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": fmt.Sprintf("Invalid exact amount: %v", err)})
 	}
-
-	if err := database.DB.Save(&wallet).Error; err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "Failed to update wallet"})
+	result, err := ledgerpkg.New(database.DB).ApplyAdjustment(c.UserContext(), ledgerpkg.AdjustmentCommand{IdempotencyKey: req.IdempotencyKey, Type: req.Type, Amount: amount, Currency: wallet.Currency, Actor: req.Actor, Reason: req.Reason})
+	if err != nil {
+		status := fiber.StatusBadRequest
+		if ledgerpkg.IsConflict(err) {
+			status = fiber.StatusConflict
+		}
+		return c.Status(status).JSON(fiber.Map{"error": err.Error()})
 	}
+	wallet = result.Wallet
 
 	if wsHub != nil {
 		wsHub.BroadcastMsg(&ws.Message{

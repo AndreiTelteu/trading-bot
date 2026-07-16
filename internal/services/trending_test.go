@@ -1,12 +1,16 @@
 package services
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
+	"trading-go/internal/accounting"
 	"trading-go/internal/database"
+	ledgerpkg "trading-go/internal/ledger"
 	"trading-go/internal/testutil"
 )
 
@@ -14,14 +18,17 @@ func TestExecuteBuyFromTrendingInitializesAtrTrailingWithoutVolSizing(t *testing
 	db := testutil.SetupPostgresDB(t)
 	database.DB = db
 
-	database.DB.Create(&database.Wallet{Balance: 1000.0, Currency: "USDT"})
-	database.DB.Create(&database.Setting{Key: "entry_percent", Value: "10"})
-	database.DB.Create(&database.Setting{Key: "vol_sizing_enabled", Value: "false"})
-	database.DB.Create(&database.Setting{Key: "atr_trailing_enabled", Value: "true"})
-	database.DB.Create(&database.Setting{Key: "atr_trailing_mult", Value: "1"})
-	database.DB.Create(&database.Setting{Key: "atr_trailing_period", Value: "14"})
-	database.DB.Create(&database.Setting{Key: "atr_annualization_enabled", Value: "false"})
-	database.DB.Create(&database.Setting{Key: "atr_annualization_days", Value: "365"})
+	if err := database.SeedData(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ledgerpkg.New(database.DB).ApplyAdjustment(context.Background(), ledgerpkg.AdjustmentCommand{IdempotencyKey: "trending-test-deposit", Type: ledgerpkg.EventCapitalDeposit, Amount: accounting.MustParse("600"), Currency: "USDT", Actor: "test", Reason: "fixture funding"}); err != nil {
+		t.Fatal(err)
+	}
+	for key, value := range map[string]string{"entry_percent": "10", "vol_sizing_enabled": "false", "atr_trailing_enabled": "true", "atr_trailing_mult": "1", "atr_trailing_period": "14", "atr_annualization_enabled": "false", "atr_annualization_days": "365"} {
+		if err := database.DB.Model(&database.Setting{}).Where("key = ?", key).Update("value", value).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -87,14 +94,18 @@ func TestExecuteBuyFromTrendingInitializesAtrTrailingWithoutVolSizing(t *testing
 	}
 }
 
-func TestExecuteBuyFromTrendingReopensClosedPosition(t *testing.T) {
+func TestExecuteBuyFromTrendingRejectsUnreconciledClosedLegacyPosition(t *testing.T) {
 	db := testutil.SetupPostgresDB(t)
 	database.DB = db
 
-	database.DB.Create(&database.Wallet{Balance: 1000.0, Currency: "USDT"})
-	database.DB.Create(&database.Setting{Key: "entry_percent", Value: "10"})
-	database.DB.Create(&database.Setting{Key: "vol_sizing_enabled", Value: "false"})
-	database.DB.Create(&database.Setting{Key: "atr_trailing_enabled", Value: "false"})
+	if err := database.SeedData(); err != nil {
+		t.Fatal(err)
+	}
+	for key, value := range map[string]string{"entry_percent": "10", "vol_sizing_enabled": "false", "atr_trailing_enabled": "false"} {
+		if err := database.DB.Model(&database.Setting{}).Where("key = ?", key).Update("value", value).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	entry := 90.0
 	closedAt := time.Now().Add(-48 * time.Hour)
@@ -143,11 +154,8 @@ func TestExecuteBuyFromTrendingReopensClosedPosition(t *testing.T) {
 	}
 
 	success, err := executeBuyFromTrending("ZECUSDT")
-	if err != nil {
-		t.Fatalf("executeBuyFromTrending() error = %v", err)
-	}
-	if !success {
-		t.Fatal("executeBuyFromTrending() expected success")
+	if success || !errors.Is(err, ledgerpkg.ErrProjectionUnavailable) {
+		t.Fatalf("success=%v error=%v, want explicit legacy projection conflict", success, err)
 	}
 
 	var positions []database.Position
@@ -159,19 +167,7 @@ func TestExecuteBuyFromTrendingReopensClosedPosition(t *testing.T) {
 	}
 
 	position := positions[0]
-	if position.Status != "open" {
-		t.Fatalf("Position status = %s, want open", position.Status)
-	}
-	if position.ClosedAt != nil {
-		t.Fatal("ClosedAt should be cleared when reopening a position")
-	}
-	if position.CloseReason != nil {
-		t.Fatal("CloseReason should be cleared when reopening a position")
-	}
-	if position.Pnl != 0 || position.PnlPercent != 0 {
-		t.Fatalf("Expected pnl fields reset, got pnl=%v pnlPercent=%v", position.Pnl, position.PnlPercent)
-	}
-	if position.AvgPrice != 150 {
-		t.Fatalf("AvgPrice = %v, want 150", position.AvgPrice)
+	if position.Status != "closed" || position.ClosedAt == nil || position.CloseReason == nil {
+		t.Fatalf("legacy position was mutated: %+v", position)
 	}
 }

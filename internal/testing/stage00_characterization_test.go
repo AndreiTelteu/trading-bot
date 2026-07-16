@@ -10,7 +10,7 @@ import (
 	"trading-go/internal/database"
 )
 
-func TestCharacterizationDirectCloseBypassesWalletAndOrderAccounting(t *testing.T) {
+func TestStage01DirectCloseFailsClosedWithoutExactLedgerProjection(t *testing.T) {
 	SetupTestDB(t)
 	application := SetupTestApp()
 	cookie := loginCookie(t, application)
@@ -31,34 +31,34 @@ func TestCharacterizationDirectCloseBypassesWalletAndOrderAccounting(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if response.StatusCode != http.StatusOK {
-		t.Fatalf("direct close status = %d, want 200", response.StatusCode)
+	if response.StatusCode != http.StatusConflict {
+		t.Fatalf("direct close status = %d, want 409", response.StatusCode)
 	}
 
-	var closed database.Position
-	if err := database.DB.First(&closed, position.ID).Error; err != nil {
+	var refreshed database.Position
+	if err := database.DB.First(&refreshed, position.ID).Error; err != nil {
 		t.Fatal(err)
 	}
-	if closed.Status != "closed" || closed.ClosedAt == nil || closed.CloseReason == nil || *closed.CloseReason != "manual_direct" {
-		t.Fatalf("direct close did not update only position status fields: %+v", closed)
+	if refreshed.Status != "open" || refreshed.ExitPending || refreshed.ClosedAt != nil {
+		t.Fatalf("failed close mutated economic projection: %+v", refreshed)
 	}
 	var walletAfter database.Wallet
 	if err := database.DB.First(&walletAfter).Error; err != nil {
 		t.Fatal(err)
 	}
-	if walletAfter.Balance != walletBefore.Balance {
-		t.Fatalf("wallet changed from %v to %v", walletBefore.Balance, walletAfter.Balance)
+	if walletAfter.Balance != walletBefore.Balance || walletAfter.BalanceExact == nil || walletBefore.BalanceExact == nil || walletAfter.BalanceExact.String() != walletBefore.BalanceExact.String() {
+		t.Fatalf("wallet changed from %+v to %+v", walletBefore, walletAfter)
 	}
-	var orderCount int64
-	if err := database.DB.Model(&database.Order{}).Count(&orderCount).Error; err != nil {
+	var orders []database.Order
+	if err := database.DB.Where("symbol = ? AND order_type = ?", position.Symbol, "sell").Find(&orders).Error; err != nil {
 		t.Fatal(err)
 	}
-	if orderCount != 0 {
-		t.Fatalf("direct close created %d orders, want 0", orderCount)
+	if len(orders) != 1 || orders[0].Status != "failed" {
+		t.Fatalf("expected one failed audit order, got %+v", orders)
 	}
 }
 
-func TestCharacterizationDeleteRemovesPositionWithoutWalletOrOrderAccounting(t *testing.T) {
+func TestStage01DirectDeleteIsFencedAndRetainsEconomicHistory(t *testing.T) {
 	SetupTestDB(t)
 	application := SetupTestApp()
 	cookie := loginCookie(t, application)
@@ -78,23 +78,23 @@ func TestCharacterizationDeleteRemovesPositionWithoutWalletOrOrderAccounting(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	if response.StatusCode != http.StatusOK {
-		t.Fatalf("delete status = %d, want 200", response.StatusCode)
+	if response.StatusCode != http.StatusConflict {
+		t.Fatalf("delete status = %d, want 409", response.StatusCode)
 	}
 
 	var count int64
 	if err := database.DB.Model(&database.Position{}).Where("id = ?", position.ID).Count(&count).Error; err != nil {
 		t.Fatal(err)
 	}
-	if count != 0 {
-		t.Fatalf("position still exists after direct delete")
+	if count != 1 {
+		t.Fatalf("position history was deleted")
 	}
 	var walletAfter database.Wallet
 	if err := database.DB.First(&walletAfter).Error; err != nil {
 		t.Fatal(err)
 	}
-	if walletAfter.Balance != walletBefore.Balance {
-		t.Fatalf("wallet changed from %v to %v", walletBefore.Balance, walletAfter.Balance)
+	if walletAfter.Balance != walletBefore.Balance || walletAfter.BalanceExact == nil || walletBefore.BalanceExact == nil || walletAfter.BalanceExact.String() != walletBefore.BalanceExact.String() {
+		t.Fatalf("wallet changed from %+v to %+v", walletBefore, walletAfter)
 	}
 	var orderCount int64
 	if err := database.DB.Model(&database.Order{}).Count(&orderCount).Error; err != nil {

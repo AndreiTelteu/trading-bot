@@ -1,10 +1,13 @@
 package services
 
 import (
+	"context"
 	"sync"
 	"testing"
 	"time"
+	"trading-go/internal/accounting"
 	"trading-go/internal/database"
+	ledgerpkg "trading-go/internal/ledger"
 	"trading-go/internal/testutil"
 )
 
@@ -41,30 +44,18 @@ func (f *fakePriceStream) send(symbol string, event PriceEvent) {
 
 func TestPositionMonitorDuplicateTicksClosePositionOnce(t *testing.T) {
 	testutil.SetupPostgresDB(t)
-
-	wallet := database.Wallet{Balance: 100, Currency: "USDT"}
-	if err := database.DB.Create(&wallet).Error; err != nil {
-		t.Fatalf("failed to seed wallet: %v", err)
+	if err := database.SeedData(); err != nil {
+		t.Fatalf("seed ledger: %v", err)
 	}
 
-	entry := 10.0
 	current := 10.0
 	stop := 9.0
-	position := database.Position{
-		Symbol:        "TEST",
-		Amount:        2,
-		AvgPrice:      entry,
-		EntryPrice:    &entry,
-		CurrentPrice:  &current,
-		StopPrice:     &stop,
-		ExecutionMode: ExecutionModePaper,
-		EntrySource:   EntrySourcePaperTest,
-		Status:        "open",
-		OpenedAt:      time.Now().Add(-30 * time.Minute),
+	opened, err := ledgerpkg.New(database.DB).ApplyFill(context.Background(), ledgerpkg.FillCommand{IdempotencyKey: "monitor-open", Symbol: "TEST", Side: "buy", Quantity: accounting.MustParse("2"), RequestedPrice: accounting.MustParse("10"), FillPrice: accounting.MustParse("10"), Fee: accounting.Zero(), FeeType: ledgerpkg.EventTradingFee, Currency: "USDT", ExecutionMode: ExecutionModePaper, Actor: "test", Reason: "monitor fixture", OccurredAt: time.Now().Add(-30 * time.Minute), EntrySource: EntrySourcePaperTest, StopPrice: &stop})
+	if err != nil {
+		t.Fatalf("open ledger position: %v", err)
 	}
-	if err := database.DB.Create(&position).Error; err != nil {
-		t.Fatalf("failed to create position: %v", err)
-	}
+	position := opened.Position
+	position.CurrentPrice = &current
 
 	stream := newFakePriceStream()
 	monitor := NewPositionMonitor(stream, NewExecutionCoordinator(nil), time.Minute)
@@ -113,8 +104,8 @@ func TestPositionMonitorDuplicateTicksClosePositionOnce(t *testing.T) {
 	if err := database.DB.First(&refreshedWallet).Error; err != nil {
 		t.Fatalf("failed to reload wallet: %v", err)
 	}
-	if refreshedWallet.Balance != 116 {
-		t.Fatalf("expected wallet balance 116 after one close, got %.2f", refreshedWallet.Balance)
+	if refreshedWallet.BalanceExact == nil || refreshedWallet.BalanceExact.String() != "397.973009" {
+		t.Fatalf("expected exact wallet balance 397.973009 after one costed round trip, got %v", refreshedWallet.BalanceExact)
 	}
 
 	var orders []database.Order

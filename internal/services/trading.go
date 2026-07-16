@@ -1,16 +1,18 @@
 package services
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strconv"
 	"strings"
 	"time"
+	"trading-go/internal/accounting"
 	"trading-go/internal/database"
+	ledgerpkg "trading-go/internal/ledger"
 	"trading-go/internal/websocket"
 
 	"github.com/gofiber/fiber/v2"
-	"gorm.io/gorm"
 )
 
 var exchange *ExchangeService
@@ -27,17 +29,19 @@ func GetExchange() *ExchangeService {
 }
 
 type BuyRequest struct {
-	Symbol string  `json:"symbol"`
-	Amount float64 `json:"amount"`
-	Price  float64 `json:"price"`
-	UserID uint    `json:"user_id"`
+	Symbol         string  `json:"symbol"`
+	Amount         float64 `json:"amount"`
+	Price          float64 `json:"price"`
+	UserID         uint    `json:"user_id"`
+	IdempotencyKey string  `json:"idempotency_key"`
 }
 
 type SellRequest struct {
-	Symbol string  `json:"symbol"`
-	Amount float64 `json:"amount"`
-	Price  float64 `json:"price"`
-	UserID uint    `json:"user_id"`
+	Symbol         string  `json:"symbol"`
+	Amount         float64 `json:"amount"`
+	Price          float64 `json:"price"`
+	UserID         uint    `json:"user_id"`
+	IdempotencyKey string  `json:"idempotency_key"`
 }
 
 type UpdatePricesRequest struct {
@@ -164,6 +168,9 @@ func createPortfolioSnapshot() (database.PortfolioSnapshot, database.Wallet, []d
 }
 
 func ExecuteBuy(req BuyRequest) (interface{}, error) {
+	if err := ledgerpkg.New(database.DB).CheckReady(context.Background(), ""); err != nil {
+		return nil, fiber.NewError(409, err.Error())
+	}
 	var wallet database.Wallet
 	if err := database.DB.First(&wallet).Error; err != nil {
 		return nil, fiber.NewError(500, "Failed to fetch wallet")
@@ -181,9 +188,12 @@ func ExecuteBuy(req BuyRequest) (interface{}, error) {
 		p, _ := strconv.ParseFloat(ticker.LastPrice, 64)
 		price = p
 	}
-
-	totalCost := amount * price
-	if totalCost > wallet.Balance {
+	approvedQuantity, quantityErr := accounting.FromFloat(amount)
+	approvedPrice, approvedPriceErr := accounting.FromFloat(price)
+	if quantityErr != nil || approvedPriceErr != nil || wallet.BalanceExact == nil {
+		return nil, fiber.NewError(409, "Exact ledger cash projection is unavailable")
+	}
+	if approvedQuantity.Mul(approvedPrice).Cmp(*wallet.BalanceExact) > 0 {
 		return nil, fiber.NewError(400, "Insufficient balance")
 	}
 
@@ -192,104 +202,42 @@ func ExecuteBuy(req BuyRequest) (interface{}, error) {
 		return nil, fiber.NewError(500, "Failed to place buy order")
 	}
 
-	now := time.Now()
-	position := database.Position{}
-	if err := database.DB.Transaction(func(tx *gorm.DB) error {
-		if err := tx.First(&wallet).Error; err != nil {
-			return err
-		}
-
-		if totalCost > wallet.Balance {
-			return fiber.NewError(400, "Insufficient balance")
-		}
-
-		wallet.Balance -= totalCost
-		if err := tx.Save(&wallet).Error; err != nil {
-			return err
-		}
-
-		lookupErr := tx.Where("symbol = ?", symbol).First(&position).Error
-		switch {
-		case lookupErr == nil:
-			if position.Status == "open" {
-				return fiber.NewError(400, "Position already exists for this symbol")
-			}
-
-			position.Amount = amount
-			position.AvgPrice = price
-			position.EntryPrice = &price
-			position.ExecutionMode = ExecutionModeExchange
-			position.EntrySource = EntrySourceManual
-			position.ExitPending = false
-			position.CurrentPrice = &price
-			position.LastMarkPrice = &price
-			position.LastMarkAt = &now
-			position.ClientPositionID = newClientPositionID(symbol, now)
-			position.DecisionTimeframe = DecisionTimeframeDefault
-			position.StopPrice = nil
-			position.TakeProfitPrice = nil
-			position.TrailingStopPrice = nil
-			position.LastAtrValue = nil
-			position.MaxBarsHeld = nil
-			position.Pnl = 0
-			position.PnlPercent = 0
-			position.Status = "open"
-			position.OpenedAt = now
-			position.ClosedAt = nil
-			position.CloseReason = nil
-
-			if err := tx.Save(&position).Error; err != nil {
-				return err
-			}
-		case errors.Is(lookupErr, gorm.ErrRecordNotFound):
-			position = database.Position{
-				Symbol:            symbol,
-				Amount:            amount,
-				AvgPrice:          price,
-				EntryPrice:        &price,
-				CurrentPrice:      &price,
-				ExecutionMode:     ExecutionModeExchange,
-				EntrySource:       EntrySourceManual,
-				LastMarkPrice:     &price,
-				LastMarkAt:        &now,
-				ClientPositionID:  newClientPositionID(symbol, now),
-				DecisionTimeframe: DecisionTimeframeDefault,
-				Status:            "open",
-				OpenedAt:          now,
-			}
-			if err := tx.Create(&position).Error; err != nil {
-				return err
-			}
-		default:
-			return lookupErr
-		}
-
-		order := database.Order{
-			OrderType:      "buy",
-			Symbol:         symbol,
-			AmountCrypto:   amount,
-			AmountUsdt:     totalCost,
-			Price:          price,
-			Status:         normalizeOrderStatus(orderResp.Status),
-			ExecutionMode:  ExecutionModeExchange,
-			RequestedPrice: &price,
-			FillPrice:      &price,
-			ExecutedQty:    floatPtr(amount),
-			SubmittedAt:    &now,
-			FilledAt:       &now,
-			ExecutedAt:     now,
-		}
-		if orderResp.OrderID > 0 {
-			value := strconv.FormatInt(orderResp.OrderID, 10)
-			order.ExchangeOrderID = &value
-		}
-		return tx.Create(&order).Error
-	}); err != nil {
-		if fiberErr, ok := err.(*fiber.Error); ok {
-			return nil, fiberErr
-		}
-		return nil, fiber.NewError(500, "Failed to persist buy order")
+	executed := orderResp.ExecutedQty
+	if executed <= 0 && strings.EqualFold(orderResp.Status, "filled") {
+		executed = amount
 	}
+	if executed <= 0 {
+		return fiber.Map{"success": true, "order_id": orderResp.OrderID, "status": normalizeOrderStatus(orderResp.Status), "message": "order accepted without a reported fill; no economic projection changed"}, nil
+	}
+	fillPrice := orderResp.Price
+	if fillPrice <= 0 {
+		fillPrice = price
+	}
+	quantityExact, qErr := accounting.FromFloat(executed)
+	requestedExact, pErr := accounting.FromFloat(price)
+	fillExact, fErr := accounting.FromFloat(fillPrice)
+	if qErr != nil || pErr != nil || fErr != nil {
+		return nil, fiber.NewError(500, "Exchange fill precision is invalid")
+	}
+	key := req.IdempotencyKey
+	if key == "" {
+		key = fmt.Sprintf("exchange-fill-%d-%s", orderResp.OrderID, quantityExact.String())
+	}
+	now := time.Now().UTC()
+	providerID := ""
+	providerOrderID := ""
+	if orderResp.OrderID > 0 {
+		providerOrderID = strconv.FormatInt(orderResp.OrderID, 10)
+		providerID = providerOrderID + ":" + quantityExact.String()
+	}
+	fillResult, err := ledgerpkg.New(database.DB).ApplyFill(context.Background(), ledgerpkg.FillCommand{IdempotencyKey: key, Symbol: symbol, Side: "buy", Quantity: quantityExact, RequestedPrice: requestedExact, FillPrice: fillExact, Fee: accounting.Zero(), FeeType: ledgerpkg.EventExchangeFee, Currency: wallet.Currency, ExecutionMode: ExecutionModeExchange, ProviderFillID: providerID, ProviderOrderID: providerOrderID, OrderStatus: normalizeOrderStatus(orderResp.Status), OccurredAt: now, Actor: "binance_adapter", Reason: "manual exchange buy", EntrySource: EntrySourceManual, DecisionTimeframe: DecisionTimeframeDefault, Metadata: map[string]interface{}{"exchange_fee_status": "unavailable_from_order_response"}})
+	if err != nil {
+		if errors.Is(err, ledgerpkg.ErrInsufficientCash) {
+			return nil, fiber.NewError(400, err.Error())
+		}
+		return nil, fiber.NewError(409, err.Error())
+	}
+	wallet, position := fillResult.Wallet, fillResult.Position
 
 	// Calculate total value for broadcast (wallet + open positions)
 	totalValue := wallet.Balance
@@ -318,6 +266,9 @@ func ExecuteBuy(req BuyRequest) (interface{}, error) {
 }
 
 func ExecuteSell(req SellRequest) (interface{}, error) {
+	if err := ledgerpkg.New(database.DB).CheckReady(context.Background(), ""); err != nil {
+		return nil, fiber.NewError(409, err.Error())
+	}
 	var position database.Position
 	if err := database.DB.Where("symbol = ? AND status = ?", req.Symbol, "open").First(&position).Error; err != nil {
 		return nil, fiber.NewError(404, "Position not found")
@@ -325,6 +276,9 @@ func ExecuteSell(req SellRequest) (interface{}, error) {
 
 	if req.Amount > position.Amount {
 		return nil, fiber.NewError(400, "Insufficient position amount")
+	}
+	if position.AmountExact == nil {
+		return nil, fiber.NewError(409, ledgerpkg.ErrProjectionUnavailable.Error())
 	}
 
 	symbol := req.Symbol
@@ -340,68 +294,45 @@ func ExecuteSell(req SellRequest) (interface{}, error) {
 		price = p
 	}
 
-	totalValue := amount * price
-
 	orderResp, err := exchange.ExecuteSell(symbol, amount, 0)
 	if err != nil {
 		return nil, fiber.NewError(500, "Failed to place sell order")
 	}
 
-	var wallet database.Wallet
-	if err := database.DB.Transaction(func(tx *gorm.DB) error {
-		now := time.Now()
-		if err := tx.First(&wallet).Error; err != nil {
-			return err
-		}
-
-		wallet.Balance += totalValue
-		if err := tx.Save(&wallet).Error; err != nil {
-			return err
-		}
-
-		position.Amount -= amount
-		markPositionPrice(&position, price, time.Now())
-		position.ExitPending = false
-		if position.Amount <= 0 {
-			position.Status = "closed"
-			now := time.Now()
-			position.ClosedAt = &now
-			reason := "sold"
-			position.CloseReason = &reason
-		}
-		if err := tx.Save(&position).Error; err != nil {
-			return err
-		}
-		if position.Status == "closed" {
-			if err := RecordTradeOutcome(tx, position); err != nil {
-				return err
-			}
-		}
-
-		order := database.Order{
-			OrderType:      "sell",
-			Symbol:         symbol,
-			AmountCrypto:   amount,
-			AmountUsdt:     totalValue,
-			Price:          price,
-			Status:         normalizeOrderStatus(orderResp.Status),
-			ExecutionMode:  ExecutionModeExchange,
-			RequestedPrice: &price,
-			FillPrice:      &price,
-			ExecutedQty:    floatPtr(amount),
-			TriggerReason:  stringPtr("manual_sell"),
-			SubmittedAt:    &now,
-			FilledAt:       &now,
-			ExecutedAt:     now,
-		}
-		if orderResp.OrderID > 0 {
-			value := strconv.FormatInt(orderResp.OrderID, 10)
-			order.ExchangeOrderID = &value
-		}
-		return tx.Create(&order).Error
-	}); err != nil {
-		return nil, fiber.NewError(500, "Failed to persist sell order")
+	executed := orderResp.ExecutedQty
+	if executed <= 0 && strings.EqualFold(orderResp.Status, "filled") {
+		executed = amount
 	}
+	if executed <= 0 {
+		return fiber.Map{"success": true, "order_id": orderResp.OrderID, "status": normalizeOrderStatus(orderResp.Status), "message": "order accepted without a reported fill; no economic projection changed"}, nil
+	}
+	fillPrice := orderResp.Price
+	if fillPrice <= 0 {
+		fillPrice = price
+	}
+	quantityExact, qErr := accounting.FromFloat(executed)
+	requestedExact, pErr := accounting.FromFloat(price)
+	fillExact, fErr := accounting.FromFloat(fillPrice)
+	if qErr != nil || pErr != nil || fErr != nil {
+		return nil, fiber.NewError(500, "Exchange fill precision is invalid")
+	}
+	key := req.IdempotencyKey
+	if key == "" {
+		key = fmt.Sprintf("exchange-fill-%d-%s", orderResp.OrderID, quantityExact.String())
+	}
+	now := time.Now().UTC()
+	providerID := ""
+	providerOrderID := ""
+	if orderResp.OrderID > 0 {
+		providerOrderID = strconv.FormatInt(orderResp.OrderID, 10)
+		providerID = providerOrderID + ":" + quantityExact.String()
+	}
+	var wallet database.Wallet
+	fillResult, err := ledgerpkg.New(database.DB).ApplyFill(context.Background(), ledgerpkg.FillCommand{IdempotencyKey: key, Symbol: symbol, Side: "sell", Quantity: quantityExact, RequestedPrice: requestedExact, FillPrice: fillExact, Fee: accounting.Zero(), FeeType: ledgerpkg.EventExchangeFee, Currency: "USDT", ExecutionMode: ExecutionModeExchange, ProviderFillID: providerID, ProviderOrderID: providerOrderID, OrderStatus: normalizeOrderStatus(orderResp.Status), OccurredAt: now, Actor: "binance_adapter", Reason: "manual_sell", Metadata: map[string]interface{}{"exchange_fee_status": "unavailable_from_order_response"}})
+	if err != nil {
+		return nil, fiber.NewError(409, err.Error())
+	}
+	wallet, position = fillResult.Wallet, fillResult.Position
 
 	// Calculate total value for broadcast (wallet + open positions)
 	portfolioTotalValue := wallet.Balance

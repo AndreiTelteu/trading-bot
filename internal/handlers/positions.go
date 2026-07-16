@@ -6,13 +6,14 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"trading-go/internal/accounting"
 	"trading-go/internal/database"
+	ledgerpkg "trading-go/internal/ledger"
 	"trading-go/internal/services"
 	ws "trading-go/internal/websocket"
 
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 )
 
 func GetPositions(c *fiber.Ctx) error {
@@ -27,83 +28,7 @@ func GetPositions(c *fiber.Ctx) error {
 }
 
 func CreatePosition(c *fiber.Ctx) error {
-	type CreatePositionRequest struct {
-		Symbol     string   `json:"symbol"`
-		Amount     float64  `json:"amount"`
-		AvgPrice   float64  `json:"avg_price"`
-		EntryPrice *float64 `json:"entry_price"`
-	}
-
-	var req CreatePositionRequest
-	if err := c.BodyParser(&req); err != nil {
-		return c.Status(400).JSON(fiber.Map{"error": "Invalid request body"})
-	}
-
-	if req.Symbol == "" {
-		return c.Status(400).JSON(fiber.Map{"error": "Symbol is required"})
-	}
-
-	existing := database.Position{}
-	if err := database.DB.Where("symbol = ? AND status = ?", req.Symbol, "open").First(&existing).Error; err == nil {
-		return c.Status(400).JSON(fiber.Map{"error": "Position already exists for this symbol"})
-	}
-
-	now := time.Now()
-	position := database.Position{}
-	if err := database.DB.Where("symbol = ?", req.Symbol).First(&position).Error; err == nil {
-		position.Amount = req.Amount
-		position.AvgPrice = req.AvgPrice
-		position.EntryPrice = req.EntryPrice
-		position.ExecutionMode = services.ExecutionModePaper
-		position.EntrySource = services.EntrySourcePaperTest
-		position.ExitPending = false
-		position.CurrentPrice = nil
-		position.LastMarkPrice = nil
-		position.LastMarkAt = nil
-		position.ClientPositionID = nil
-		position.DecisionTimeframe = services.DecisionTimeframeDefault
-		position.StopPrice = nil
-		position.TakeProfitPrice = nil
-		position.TrailingStopPrice = nil
-		position.LastAtrValue = nil
-		position.MaxBarsHeld = nil
-		position.Pnl = 0
-		position.PnlPercent = 0
-		position.Status = "open"
-		position.OpenedAt = now
-		position.ClosedAt = nil
-		position.CloseReason = nil
-
-		if err := database.DB.Save(&position).Error; err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": "Failed to reopen position"})
-		}
-	} else {
-		position = database.Position{
-			Symbol:            req.Symbol,
-			Amount:            req.Amount,
-			AvgPrice:          req.AvgPrice,
-			EntryPrice:        req.EntryPrice,
-			ExecutionMode:     services.ExecutionModePaper,
-			EntrySource:       services.EntrySourcePaperTest,
-			DecisionTimeframe: services.DecisionTimeframeDefault,
-			Status:            "open",
-			OpenedAt:          now,
-		}
-
-		if err := database.DB.Create(&position).Error; err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": "Failed to create position"})
-		}
-	}
-
-	if wsHub != nil {
-		wsHub.BroadcastMsg(&ws.Message{
-			Type:    "position_update",
-			Payload: position,
-		})
-	}
-	services.NotifyPositionChanged()
-
-	return c.Status(201).JSON(position)
+	return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "Direct position creation is disabled; submit a paper or exchange execution request"})
 }
 
 func ClosePosition(c *fiber.Ctx) error {
@@ -118,37 +43,25 @@ func ClosePosition(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "Invalid request body"})
 	}
 
-	var position database.Position
-	if err := database.DB.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&position, id).Error; err != nil {
-			return err
-		}
-
-		now := time.Now()
-		if err := applyDirectCloseProjection(&position, req.CloseReason, now); err != nil {
-			return err
-		}
-
-		return tx.Save(&position).Error
-	}); err != nil {
+	positionID, err := strconv.ParseUint(id, 10, 64)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "Invalid position id"})
+	}
+	reason := "manual"
+	if req.CloseReason != nil && strings.TrimSpace(*req.CloseReason) != "" {
+		reason = *req.CloseReason
+	}
+	result, err := services.GetExecutionCoordinator().RequestClose(services.CloseRequest{PositionID: uint(positionID), Reason: reason, TriggeredAt: time.Now(), Source: "positions_close_api"})
+	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return c.Status(404).JSON(fiber.Map{"error": "Position not found"})
 		}
-		if fiberErr, ok := err.(*fiber.Error); ok {
-			return c.Status(fiberErr.Code).JSON(fiber.Map{"error": fiberErr.Message})
-		}
-		return c.Status(500).JSON(fiber.Map{"error": "Failed to close position"})
+		return c.Status(409).JSON(fiber.Map{"error": err.Error()})
 	}
-
-	if wsHub != nil {
-		wsHub.BroadcastMsg(&ws.Message{
-			Type:    "position_update",
-			Payload: position,
-		})
+	if result.Duplicate {
+		return c.Status(409).JSON(fiber.Map{"error": "Position is already closed or closing"})
 	}
-	services.NotifyPositionChanged()
-
-	return c.JSON(position)
+	return c.JSON(result.Position)
 }
 
 func applyDirectCloseProjection(position *database.Position, reason *string, closedAt time.Time) error {
@@ -165,24 +78,7 @@ func applyDirectCloseProjection(position *database.Position, reason *string, clo
 }
 
 func DeletePosition(c *fiber.Ctx) error {
-	symbol := c.Params("symbol")
-	_, err := performDirectPositionDelete(gormDirectPositionStore{}, symbol)
-	if err != nil && !errors.Is(err, errDirectPositionDelete) {
-		return c.Status(404).JSON(fiber.Map{"error": "Position not found"})
-	}
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "Failed to delete position"})
-	}
-
-	if wsHub != nil {
-		wsHub.BroadcastMsg(&ws.Message{
-			Type:    "position_deleted",
-			Payload: symbol,
-		})
-	}
-	services.NotifyPositionChanged()
-
-	return c.JSON(fiber.Map{"message": "Position deleted successfully"})
+	return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "Position deletion is disabled; immutable economic history must be retained"})
 }
 
 var errDirectPositionDelete = errors.New("direct position delete failed")
@@ -217,10 +113,11 @@ func performDirectPositionDelete(store directPositionStore, symbol string) (data
 // ExecuteOpenTrade simulates a buy order and creates a position (paper trading)
 func ExecuteOpenTrade(c *fiber.Ctx) error {
 	type OpenTradeRequest struct {
-		Symbol    string  `json:"symbol"`
-		Amount    float64 `json:"amount"`
-		Price     float64 `json:"price"`      // 0 for market order
-		OrderType string  `json:"order_type"` // "market" or "limit"
+		Symbol         string  `json:"symbol"`
+		Amount         float64 `json:"amount"`
+		Price          float64 `json:"price"`      // 0 for market order
+		OrderType      string  `json:"order_type"` // "market" or "limit"
+		IdempotencyKey string  `json:"idempotency_key"`
 	}
 
 	var req OpenTradeRequest
@@ -253,7 +150,18 @@ func ExecuteOpenTrade(c *fiber.Ctx) error {
 		price, _ = strconv.ParseFloat(ticker.LastPrice, 64)
 	}
 
-	totalCost := req.Amount * price
+	quantityExact, quantityErr := accounting.FromFloat(req.Amount)
+	requestedExact, priceErr := accounting.FromFloat(price)
+	if quantityErr != nil || priceErr != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "Amount and price must be exact finite decimals"})
+	}
+	feeBPS, slippageBPS := paperCostBPS()
+	fillExact, feeExact, costErr := ledgerpkg.CostedPaperFill("buy", quantityExact, requestedExact, feeBPS, slippageBPS)
+	if costErr != nil {
+		return c.Status(500).JSON(fiber.Map{"error": costErr.Error()})
+	}
+	totalCostExact := quantityExact.Mul(fillExact).Add(feeExact)
+	totalCost := totalCostExact.Float64()
 
 	// Check wallet balance
 	var wallet database.Wallet
@@ -265,99 +173,21 @@ func ExecuteOpenTrade(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": fmt.Sprintf("Insufficient balance. Required: %.2f USDT, Available: %.2f USDT", totalCost, wallet.Balance)})
 	}
 
-	now := time.Now()
-	position := database.Position{}
-	if err := database.DB.Transaction(func(tx *gorm.DB) error {
-		if err := tx.First(&wallet).Error; err != nil {
-			return err
-		}
-		if totalCost > wallet.Balance {
-			return fiber.NewError(400, fmt.Sprintf("Insufficient balance. Required: %.2f USDT, Available: %.2f USDT", totalCost, wallet.Balance))
-		}
-
-		wallet.Balance -= totalCost
-		if err := tx.Save(&wallet).Error; err != nil {
-			return err
-		}
-
-		lookupErr := tx.Where("symbol = ?", req.Symbol).First(&position).Error
-		switch {
-		case lookupErr == nil:
-			if position.Status == "open" {
-				return fiber.NewError(400, "Position already exists for this symbol")
-			}
-
-			position.Amount = req.Amount
-			position.AvgPrice = price
-			position.EntryPrice = &price
-			position.CurrentPrice = &price
-			position.ExecutionMode = services.ExecutionModePaper
-			position.EntrySource = services.EntrySourcePaperTest
-			position.ExitPending = false
-			position.LastMarkPrice = &price
-			position.LastMarkAt = &now
-			position.ClientPositionID = nil
-			position.DecisionTimeframe = services.DecisionTimeframeDefault
-			position.StopPrice = nil
-			position.TakeProfitPrice = nil
-			position.TrailingStopPrice = nil
-			position.LastAtrValue = nil
-			position.MaxBarsHeld = nil
-			position.Pnl = 0
-			position.PnlPercent = 0
-			position.Status = "open"
-			position.OpenedAt = now
-			position.ClosedAt = nil
-			position.CloseReason = nil
-
-			if err := tx.Save(&position).Error; err != nil {
-				return err
-			}
-		case errors.Is(lookupErr, gorm.ErrRecordNotFound):
-			position = database.Position{
-				Symbol:            req.Symbol,
-				Amount:            req.Amount,
-				AvgPrice:          price,
-				EntryPrice:        &price,
-				CurrentPrice:      &price,
-				ExecutionMode:     services.ExecutionModePaper,
-				EntrySource:       services.EntrySourcePaperTest,
-				LastMarkPrice:     &price,
-				LastMarkAt:        &now,
-				DecisionTimeframe: services.DecisionTimeframeDefault,
-				Status:            "open",
-				OpenedAt:          now,
-			}
-
-			if err := tx.Create(&position).Error; err != nil {
-				return err
-			}
-		default:
-			return lookupErr
-		}
-
-		order := database.Order{
-			OrderType:      "buy",
-			Symbol:         req.Symbol,
-			AmountCrypto:   req.Amount,
-			AmountUsdt:     totalCost,
-			Price:          price,
-			Status:         services.OrderStatusFilled,
-			ExecutionMode:  services.ExecutionModePaper,
-			RequestedPrice: &price,
-			FillPrice:      &price,
-			ExecutedQty:    &req.Amount,
-			SubmittedAt:    &now,
-			FilledAt:       &now,
-			ExecutedAt:     now,
-		}
-		return tx.Create(&order).Error
-	}); err != nil {
-		if fiberErr, ok := err.(*fiber.Error); ok {
-			return c.Status(fiberErr.Code).JSON(fiber.Map{"error": fiberErr.Message})
-		}
-		return c.Status(500).JSON(fiber.Map{"error": "Failed to execute paper buy trade"})
+	now := time.Now().UTC()
+	key := req.IdempotencyKey
+	if key == "" {
+		key = fmt.Sprintf("paper-open-%s-%d", req.Symbol, now.UnixNano())
 	}
+	fillResult, err := ledgerpkg.New(database.DB).ApplyFill(c.UserContext(), ledgerpkg.FillCommand{IdempotencyKey: key, Symbol: req.Symbol, Side: "buy", Quantity: quantityExact, RequestedPrice: requestedExact, FillPrice: fillExact, Fee: feeExact, FeeType: ledgerpkg.EventTradingFee, Currency: wallet.Currency, ExecutionMode: services.ExecutionModePaper, OccurredAt: now, Actor: "paper_trade_api", Reason: "manual paper buy", EntrySource: services.EntrySourcePaperTest, DecisionTimeframe: services.DecisionTimeframeDefault, Metadata: map[string]interface{}{"fee_bps": feeBPS, "slippage_bps": slippageBPS}})
+	if err != nil {
+		status := fiber.StatusBadRequest
+		if ledgerpkg.IsConflict(err) {
+			status = fiber.StatusConflict
+		}
+		return c.Status(status).JSON(fiber.Map{"error": err.Error()})
+	}
+	wallet, position := fillResult.Wallet, fillResult.Position
+	price = fillExact.Float64()
 
 	// Broadcast updates
 	if wsHub != nil {
@@ -385,7 +215,7 @@ func ExecuteOpenTrade(c *fiber.Ctx) error {
 
 	return c.JSON(fiber.Map{
 		"success":     true,
-		"order_id":    fmt.Sprintf("paper_%d", time.Now().Unix()),
+		"order_id":    fillResult.Order.ID,
 		"symbol":      req.Symbol,
 		"amount":      req.Amount,
 		"price":       price,
@@ -400,9 +230,10 @@ func ExecuteCloseTrade(c *fiber.Ctx) error {
 	id := c.Params("id")
 
 	type CloseTradeRequest struct {
-		CloseReason string  `json:"close_reason"` // manual, take_profit, stop_loss
-		Price       float64 `json:"price"`        // 0 for market order
-		OrderType   string  `json:"order_type"`   // "market" or "limit"
+		CloseReason    string  `json:"close_reason"` // manual, take_profit, stop_loss
+		Price          float64 `json:"price"`        // 0 for market order
+		OrderType      string  `json:"order_type"`   // "market" or "limit"
+		IdempotencyKey string  `json:"idempotency_key"`
 	}
 
 	var req CloseTradeRequest
@@ -445,71 +276,43 @@ func ExecuteCloseTrade(c *fiber.Ctx) error {
 		price, _ = strconv.ParseFloat(ticker.LastPrice, 64)
 	}
 
-	totalValue := position.Amount * price
-
-	// Calculate PnL
-	pnl := totalValue - (position.Amount * position.AvgPrice)
-	pnlPercent := 0.0
-	if position.AvgPrice > 0 {
-		pnlPercent = (pnl / (position.Amount * position.AvgPrice)) * 100
-	}
-
 	var wallet database.Wallet
 	if err := database.DB.First(&wallet).Error; err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "Failed to fetch wallet"})
 	}
-	now := time.Now()
-	if err := database.DB.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&wallet).Error; err != nil {
-			return err
-		}
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&position, id).Error; err != nil {
-			return err
-		}
-		if position.Status != "open" {
-			return fiber.NewError(fiber.StatusBadRequest, "Position is already closed")
-		}
-		wallet.Balance += totalValue
-		if err := tx.Save(&wallet).Error; err != nil {
-			return err
-		}
-
-		position.Status = "closed"
-		position.ExitPending = false
-		position.ClosedAt = &now
-		position.CloseReason = &req.CloseReason
-		position.CurrentPrice = &price
-		position.LastMarkPrice = &price
-		position.LastMarkAt = &now
-		position.Pnl = pnl
-		position.PnlPercent = pnlPercent
-		if err := tx.Save(&position).Error; err != nil {
-			return err
-		}
-
-		order := database.Order{
-			OrderType:      "sell",
-			Symbol:         position.Symbol,
-			AmountCrypto:   position.Amount,
-			AmountUsdt:     totalValue,
-			Price:          price,
-			Status:         services.OrderStatusFilled,
-			ExecutionMode:  services.ExecutionModePaper,
-			TriggerReason:  &req.CloseReason,
-			RequestedPrice: &price,
-			FillPrice:      &price,
-			ExecutedQty:    &position.Amount,
-			SubmittedAt:    &now,
-			FilledAt:       &now,
-			ExecutedAt:     now,
-		}
-		return tx.Create(&order).Error
-	}); err != nil {
-		if fiberErr, ok := err.(*fiber.Error); ok {
-			return c.Status(fiberErr.Code).JSON(fiber.Map{"error": fiberErr.Message})
-		}
-		return c.Status(500).JSON(fiber.Map{"error": "Failed to execute paper sell trade"})
+	if position.AmountExact == nil {
+		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": ledgerpkg.ErrProjectionUnavailable.Error()})
 	}
+	requestedExact, priceErr := accounting.FromFloat(price)
+	if priceErr != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "Invalid price"})
+	}
+	feeBPS, slippageBPS := paperCostBPS()
+	fillExact, feeExact, costErr := ledgerpkg.CostedPaperFill("sell", *position.AmountExact, requestedExact, feeBPS, slippageBPS)
+	if costErr != nil {
+		return c.Status(500).JSON(fiber.Map{"error": costErr.Error()})
+	}
+	now := time.Now().UTC()
+	key := req.IdempotencyKey
+	if key == "" {
+		key = fmt.Sprintf("paper-close-%d-%d", position.ID, now.UnixNano())
+	}
+	fillResult, err := ledgerpkg.New(database.DB).ApplyFill(c.UserContext(), ledgerpkg.FillCommand{IdempotencyKey: key, Symbol: position.Symbol, Side: "sell", Quantity: *position.AmountExact, RequestedPrice: requestedExact, FillPrice: fillExact, Fee: feeExact, FeeType: ledgerpkg.EventTradingFee, Currency: wallet.Currency, ExecutionMode: services.ExecutionModePaper, OccurredAt: now, Actor: "paper_trade_api", Reason: req.CloseReason, Metadata: map[string]interface{}{"fee_bps": feeBPS, "slippage_bps": slippageBPS}})
+	if err != nil {
+		status := fiber.StatusBadRequest
+		if ledgerpkg.IsConflict(err) {
+			status = fiber.StatusConflict
+		}
+		return c.Status(status).JSON(fiber.Map{"error": err.Error()})
+	}
+	wallet, position = fillResult.Wallet, fillResult.Position
+	price = fillExact.Float64()
+	closedQuantity := fillResult.Fill.Quantity.Float64()
+	totalValue := position.Amount * price
+	// Amount is zero after a full close; use the immutable fill gross instead.
+	totalValue = fillResult.Fill.GrossAmount.Float64()
+	pnl := position.Pnl
+	pnlPercent := position.PnlPercent
 
 	// Calculate total portfolio value for wallet_update (wallet + remaining open positions)
 	totalPortfolioValue := wallet.Balance
@@ -530,7 +333,7 @@ func ExecuteCloseTrade(c *fiber.Ctx) error {
 			Payload: fiber.Map{
 				"type":        "sell",
 				"symbol":      position.Symbol,
-				"amount":      position.Amount,
+				"amount":      closedQuantity,
 				"price":       price,
 				"total_value": totalValue,
 				"pnl":         pnl,
@@ -559,9 +362,9 @@ func ExecuteCloseTrade(c *fiber.Ctx) error {
 
 	return c.JSON(fiber.Map{
 		"success":     true,
-		"order_id":    fmt.Sprintf("paper_%d", time.Now().Unix()),
+		"order_id":    fillResult.Order.ID,
 		"symbol":      position.Symbol,
-		"amount":      position.Amount,
+		"amount":      closedQuantity,
 		"price":       price,
 		"total_value": totalValue,
 		"pnl":         pnl,
@@ -569,4 +372,17 @@ func ExecuteCloseTrade(c *fiber.Ctx) error {
 		"new_balance": wallet.Balance,
 		"position":    position,
 	})
+}
+
+func paperCostBPS() (int64, int64) {
+	values := map[string]int64{"paper_fee_bps": 10, "paper_slippage_bps": 5}
+	var settings []database.Setting
+	if err := database.DB.Where("key IN ?", []string{"paper_fee_bps", "paper_slippage_bps"}).Find(&settings).Error; err == nil {
+		for _, setting := range settings {
+			if value, err := strconv.ParseInt(strings.TrimSpace(setting.Value), 10, 64); err == nil && value >= 0 {
+				values[setting.Key] = value
+			}
+		}
+	}
+	return values["paper_fee_bps"], values["paper_slippage_bps"]
 }
