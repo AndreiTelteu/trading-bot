@@ -25,48 +25,49 @@ const (
 )
 
 type BacktestConfig struct {
-	EngineMode              EngineMode
-	BacktestMode            BacktestMode
-	Symbols                 []string
-	UniverseMode            UniverseMode
-	UniversePolicy          services.UniversePolicy
-	Governance              services.GovernanceContext
-	Start                   time.Time
-	End                     time.Time
-	IndicatorConfig         services.IndicatorConfig
-	IndicatorWeights        map[string]float64
-	Timeframe               string
-	TimeframeMinutes        int
-	InitialBalance          float64
-	FeeBps                  float64
-	SlippageBps             float64
-	ModelArtifact           *services.LogisticModelArtifact
-	ModelPolicy             services.ModelSelectionPolicy
-	MaxPositions            int
-	TimeStopBars            int
-	StrategyMode            StrategyMode
-	EntryPercent            float64
-	StopLossPercent         float64
-	TakeProfitPercent       float64
-	RiskPerTrade            float64
-	StopMult                float64
-	TpMult                  float64
-	MaxPositionValue        float64
-	AtrPeriod               int
-	AtrTrailingEnabled      bool
-	AtrTrailingMult         float64
-	AtrAnnualizationEnabled bool
-	AtrAnnualizationDays    int
-	BuyOnlyStrong           bool
-	MinConfidenceToBuy      float64
-	SellOnSignal            bool
-	MinConfidenceToSell     float64
-	AllowSellAtLoss         bool
-	TrailingStopEnabled     bool
-	TrailingStopPercent     float64
-	ExecutionSeries         map[string][]services.OHLCV // 1m candle data for execution replay
-	ExecutionTimeframe      string                      // e.g. "1m"
-	ExecutionTimeframeMins  int                         // e.g. 1
+	EngineMode                             EngineMode
+	AccountID, SettlementCurrency, VenueID string
+	BacktestMode                           BacktestMode
+	Symbols                                []string
+	UniverseMode                           UniverseMode
+	UniversePolicy                         services.UniversePolicy
+	Governance                             services.GovernanceContext
+	Start                                  time.Time
+	End                                    time.Time
+	IndicatorConfig                        services.IndicatorConfig
+	IndicatorWeights                       map[string]float64
+	Timeframe                              string
+	TimeframeMinutes                       int
+	InitialBalance                         float64
+	FeeBps                                 float64
+	SlippageBps                            float64
+	ModelArtifact                          *services.LogisticModelArtifact
+	ModelPolicy                            services.ModelSelectionPolicy
+	MaxPositions                           int
+	TimeStopBars                           int
+	StrategyMode                           StrategyMode
+	EntryPercent                           float64
+	StopLossPercent                        float64
+	TakeProfitPercent                      float64
+	RiskPerTrade                           float64
+	StopMult                               float64
+	TpMult                                 float64
+	MaxPositionValue                       float64
+	AtrPeriod                              int
+	AtrTrailingEnabled                     bool
+	AtrTrailingMult                        float64
+	AtrAnnualizationEnabled                bool
+	AtrAnnualizationDays                   int
+	BuyOnlyStrong                          bool
+	MinConfidenceToBuy                     float64
+	SellOnSignal                           bool
+	MinConfidenceToSell                    float64
+	AllowSellAtLoss                        bool
+	TrailingStopEnabled                    bool
+	TrailingStopPercent                    float64
+	ExecutionSeries                        map[string][]services.OHLCV // 1m candle data for execution replay
+	ExecutionTimeframe                     string                      // e.g. "1m"
+	ExecutionTimeframeMins                 int                         // e.g. 1
 }
 
 type Trade struct {
@@ -180,15 +181,17 @@ type RankingMetrics struct {
 }
 
 type BacktestResult struct {
-	Mode           StrategyMode             `json:"mode"`
-	Metrics        Metrics                  `json:"metrics"`
-	ModelVersion   string                   `json:"model_version,omitempty"`
-	PolicyVersion  string                   `json:"policy_version,omitempty"`
-	RolloutState   string                   `json:"rollout_state,omitempty"`
-	UniverseMode   UniverseMode             `json:"universe_mode,omitempty"`
-	RankingMetrics *RankingMetrics          `json:"ranking_metrics,omitempty"`
-	Diagnostics    StrategyDiagnostics      `json:"diagnostics"`
-	Equity         []EquityPoint            `json:"equity"`
-	EquityBySymbol map[string][]EquityPoint `json:"equity_by_symbol"`
-	Trades         []Trade                  `json:"trades"`
+	SharedEngineRuns   int                      `json:"shared_engine_runs,omitempty"`
+	SharedLedgerEvents int                      `json:"shared_ledger_events,omitempty"`
+	Mode               StrategyMode             `json:"mode"`
+	Metrics            Metrics                  `json:"metrics"`
+	ModelVersion       string                   `json:"model_version,omitempty"`
+	PolicyVersion      string                   `json:"policy_version,omitempty"`
+	RolloutState       string                   `json:"rollout_state,omitempty"`
+	UniverseMode       UniverseMode             `json:"universe_mode,omitempty"`
+	RankingMetrics     *RankingMetrics          `json:"ranking_metrics,omitempty"`
+	Diagnostics        StrategyDiagnostics      `json:"diagnostics"`
+	Equity             []EquityPoint            `json:"equity"`
+	EquityBySymbol     map[string][]EquityPoint `json:"equity_by_symbol"`
+	Trades             []Trade                  `json:"trades"`
 }

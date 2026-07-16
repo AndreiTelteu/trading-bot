@@ -2,10 +2,14 @@ package ledger
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 	"strconv"
-	"strings"
 	"time"
 	"trading-go/internal/accounting"
 	"trading-go/internal/database"
@@ -15,6 +19,9 @@ import (
 type ContractAdapter struct{ service *Service }
 
 func NewContractAdapter(db *gorm.DB) *ContractAdapter { return &ContractAdapter{service: New(db)} }
+func (adapter *ContractAdapter) SetAfterWriteHook(hook func(string) error) {
+	adapter.service.AfterWrite = hook
+}
 
 var _ tradingcore.Ledger = (*ContractAdapter)(nil)
 var _ tradingcore.FillLedger = (*ContractAdapter)(nil)
@@ -22,66 +29,181 @@ var _ tradingcore.FillLedger = (*ContractAdapter)(nil)
 // RecordBrokerOutcome is the only economic mutation port used by the shared
 // orchestrator. Brokers themselves never update projections.
 func (adapter *ContractAdapter) RecordBrokerOutcome(ctx context.Context, approved tradingcore.DecisionBatch, outcome tradingcore.BrokerBatchOutcome) error {
-	if outcome.Completeness() != tradingcore.OutcomeComplete {
-		return newError(KindIndeterminate, "broker_outcome_indeterminate", "broker outcome must be recovered before ledger ingestion", nil)
+	plan, identity, payloadHash, err := validateBrokerOutcome(approved, outcome)
+	if err != nil {
+		return err
 	}
-	intents := make(map[tradingcore.OrderID]tradingcore.OrderIntent, len(approved.Intents()))
-	for _, intent := range approved.Intents() {
-		intents[intent.ID] = intent
-	}
-	for _, accepted := range outcome.Accepted() {
-		intent, ok := intents[accepted.OrderID]
-		if !ok {
-			return fmt.Errorf("accepted order %s has no approved intent", accepted.OrderID.String())
+	err = adapter.service.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var existing database.BrokerOutcomeIngestion
+		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&existing, "id = ?", identity).Error
+		if err == nil {
+			if existing.PayloadHash != payloadHash {
+				return ErrIdempotencyConflict
+			}
+			return nil
 		}
-		for _, fill := range accepted.Fills() {
-			intentMetadata := intent.Metadata()
-			quantity, err := accounting.Parse(fill.Quantity.Decimal().String())
-			if err != nil {
+		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+		account := "primary"
+		if len(plan) > 0 {
+			account = plan[0].intent.AccountID.String()
+		}
+		if err := tx.Create(&database.BrokerOutcomeIngestion{ID: identity, AccountID: account, PayloadHash: payloadHash, CreatedAt: adapter.service.now()}).Error; err != nil {
+			return err
+		}
+		for _, item := range plan {
+			zero := accounting.Zero()
+			requestedPrice := 0.0
+			if reference, ok := item.intent.ReferencePrice.Get(); ok {
+				requestedPrice = reference.Decimal().Float64()
+			} else if limit, ok := item.intent.LimitPrice.Get(); ok {
+				requestedPrice = limit.Decimal().Float64()
+			}
+			clientID := item.intent.IdempotencyKey.String()
+			providerID := item.accepted.ProviderOrderID
+			order := database.Order{AccountID: item.intent.AccountID.String(), OrderType: string(item.intent.Side), Symbol: item.symbol, Status: string(tradingcore.BrokerAccepted), ExecutionMode: string(item.intent.ExecutionMode), RequestedQuantityExact: &item.requested, ExecutedQuantityExact: &zero, RemainingQuantityExact: &item.requested, AmountCryptoExact: &zero, AmountUsdtExact: &zero, FeeExact: &zero, AmountCrypto: 0, AmountUsdt: 0, RequestedPrice: &requestedPrice, ClientOrderID: &clientID, ExchangeOrderID: &providerID, SubmittedAt: &item.accepted.AcceptedAt, ExecutedAt: item.accepted.AcceptedAt, PolicyVersion: item.intent.Versions.Policy, ModelVersion: item.intent.Versions.Model}
+			if err := tx.Create(&order).Error; err != nil {
 				return err
 			}
-			fillPrice, err := accounting.Parse(fill.Price.Decimal().String())
-			if err != nil {
-				return err
-			}
-			requested := fillPrice
-			if reference, present := intent.ReferencePrice.Get(); present {
-				requested, err = accounting.Parse(reference.Decimal().String())
-				if err != nil {
+			child := *adapter.service
+			child.DB = tx
+			for _, command := range item.commands {
+				command.ExistingOrderID = order.ID
+				if _, err := child.ApplyFill(ctx, command); err != nil {
 					return err
 				}
 			}
-			fee, err := accounting.Parse(fill.Fee.Decimal().String())
-			if err != nil {
-				return err
+			executed := item.requested.Sub(item.remaining)
+			updates := map[string]interface{}{"status": string(item.accepted.Status), "requested_quantity_exact": item.requested, "executed_quantity_exact": executed, "remaining_quantity_exact": item.remaining}
+			if item.accepted.Status == tradingcore.BrokerFilled {
+				updates["filled_at"] = item.accepted.AcceptedAt
 			}
-			mode := string(intent.ExecutionMode)
-			if mode == string(tradingcore.ExecutionLimitedLive) || mode == string(tradingcore.ExecutionFullLive) {
-				return ErrExchangeExecutionFenced
-			}
-			if mode != string(tradingcore.ExecutionPaper) {
-				mode = "paper"
-			}
-			stopPrice, _ := metadataFloat(intentMetadata, "stop_price")
-			takeProfit, _ := metadataFloat(intentMetadata, "take_profit_price")
-			atr, hasATR := metadataFloat(intentMetadata, "atr_value")
-			trailingMult, hasMult := metadataFloat(intentMetadata, "atr_trailing_mult")
-			var trailing *float64
-			if hasATR && hasMult {
-				candidate := fillPrice.Float64() - *atr**trailingMult
-				if candidate > 0 {
-					trailing = &candidate
-				}
-			}
-			maxBars, _ := metadataInt(intentMetadata, "max_bars_held")
-			symbol := strings.TrimSuffix(strings.ToUpper(intent.Instrument.VenueSymbol), strings.ToUpper(intent.Instrument.QuoteAsset.String()))
-			_, err = adapter.service.ApplyFill(ctx, FillCommand{IdempotencyKey: intent.IdempotencyKey.String() + ":" + fill.ProviderFillID, AccountID: intent.AccountID.String(), Symbol: symbol, Side: string(intent.Side), Quantity: quantity, RequestedPrice: requested, FillPrice: fillPrice, Fee: fee, FeeType: EventTradingFee, Currency: intent.Instrument.QuoteAsset.String(), ExecutionMode: mode, ProviderFillID: fill.ProviderFillID, ProviderOrderID: accepted.ProviderOrderID, OrderStatus: string(accepted.Status), OccurredAt: fill.FilledAt, Actor: fill.Provenance.Source, Reason: intent.Reason, StrategyVersion: intent.Versions.Strategy, PolicyVersion: intent.Versions.Policy, Metadata: map[string]interface{}{"horizon": intent.Horizon, "broker_policy_version": fill.Versions.Policy}, StopPrice: stopPrice, TakeProfitPrice: takeProfit, TrailingStopPrice: trailing, LastAtrValue: atr, MaxBarsHeld: maxBars, EntrySource: "auto_trend", DecisionTimeframe: intent.Horizon, ModelVersion: intent.Versions.Model, RolloutState: intentMetadata["rollout_state"]})
-			if err != nil {
+			if err := tx.Model(&database.Order{}).Where("id = ?", order.ID).Updates(updates).Error; err != nil {
 				return err
 			}
 		}
+		return nil
+	})
+	if err != nil {
+		// A concurrent retry may have raced the insert. It is successful only when
+		// the complete durable outcome with the identical payload is now present.
+		var existing database.BrokerOutcomeIngestion
+		if lookupErr := adapter.service.DB.WithContext(ctx).First(&existing, "id = ?", identity).Error; lookupErr == nil && existing.PayloadHash == payloadHash {
+			return nil
+		}
 	}
-	return nil
+	return normalizePersistenceError(err)
+}
+
+type outcomePlan struct {
+	intent               tradingcore.OrderIntent
+	accepted             tradingcore.AcceptedOrder
+	requested, remaining accounting.Decimal
+	symbol               string
+	commands             []FillCommand
+}
+
+func validateBrokerOutcome(approved tradingcore.DecisionBatch, outcome tradingcore.BrokerBatchOutcome) ([]outcomePlan, string, string, error) {
+	if outcome.Completeness() != tradingcore.OutcomeComplete {
+		return nil, "", "", newError(KindIndeterminate, "broker_outcome_indeterminate", "broker outcome must be recovered before ledger ingestion", nil)
+	}
+	intents := map[tradingcore.OrderID]tradingcore.OrderIntent{}
+	seen := map[tradingcore.OrderID]bool{}
+	providerFills := map[string]bool{}
+	identityValues := []string{}
+	for _, intent := range approved.Intents() {
+		if err := requirePrimaryAccount(intent.AccountID.String()); err != nil {
+			return nil, "", "", err
+		}
+		if intent.ExecutionMode != tradingcore.ExecutionPaper && intent.ExecutionMode != tradingcore.ExecutionLimitedLive && intent.ExecutionMode != tradingcore.ExecutionFullLive {
+			return nil, "", "", fmt.Errorf("execution mode %s cannot produce an economic broker outcome", intent.ExecutionMode)
+		}
+		intents[intent.ID] = intent
+		identityValues = append(identityValues, intent.IdempotencyKey.String())
+	}
+	plans := []outcomePlan{}
+	payload := []map[string]interface{}{}
+	for _, accepted := range outcome.Accepted() {
+		intent, ok := intents[accepted.OrderID]
+		if !ok || seen[accepted.OrderID] {
+			return nil, "", "", fmt.Errorf("accepted order %s is not a unique approved intent", accepted.OrderID.String())
+		}
+		seen[accepted.OrderID] = true
+		if intent.ExecutionMode == tradingcore.ExecutionLimitedLive || intent.ExecutionMode == tradingcore.ExecutionFullLive {
+			return nil, "", "", ErrExchangeExecutionFenced
+		}
+		requested, _ := accounting.Parse(intent.Quantity.Decimal().String())
+		executed := accounting.Zero()
+		commands := []FillCommand{}
+		metadata := intent.Metadata()
+		if metadata["cost_policy_version"] == "" {
+			return nil, "", "", fmt.Errorf("approved intent %s lacks execution cost reservation version", intent.ID.String())
+		}
+		symbol := intent.Instrument.BaseAsset.String()
+		for _, fill := range accepted.Fills() {
+			if fill.Instrument.ID != intent.Instrument.ID || fill.Side != intent.Side || fill.FeeAsset != intent.Instrument.QuoteAsset {
+				return nil, "", "", fmt.Errorf("fill %s dimensions do not match approved intent", fill.ID.String())
+			}
+			if providerFills[fill.ProviderFillID] {
+				return nil, "", "", fmt.Errorf("duplicate provider fill id %s", fill.ProviderFillID)
+			}
+			providerFills[fill.ProviderFillID] = true
+			if fill.CostModelVersion != metadata["cost_policy_version"] {
+				return nil, "", "", fmt.Errorf("fill cost model version does not match approved reservation")
+			}
+			quantity, _ := accounting.Parse(fill.Quantity.Decimal().String())
+			executed = executed.Add(quantity)
+			fillPrice, _ := accounting.Parse(fill.Price.Decimal().String())
+			requestedPrice := fillPrice
+			if reference, ok := intent.ReferencePrice.Get(); ok {
+				requestedPrice, _ = accounting.Parse(reference.Decimal().String())
+			}
+			fee, _ := accounting.Parse(fill.Fee.Decimal().String())
+			stop, _ := metadataFloat(metadata, "stop_price")
+			target, _ := metadataFloat(metadata, "take_profit_price")
+			atr, hasATR := metadataFloat(metadata, "atr_value")
+			mult, hasMult := metadataFloat(metadata, "atr_trailing_mult")
+			var trailing *float64
+			if hasATR && hasMult {
+				value := fillPrice.Float64() - *atr**mult
+				if value > 0 {
+					trailing = &value
+				}
+			}
+			maxBars, _ := metadataInt(metadata, "max_bars_held")
+			eventMetadata := map[string]interface{}{"horizon": intent.Horizon, "risk_policy_version": intent.Versions.Policy, "cost_model_version": fill.CostModelVersion}
+			commands = append(commands, FillCommand{IdempotencyKey: intent.IdempotencyKey.String() + ":" + fill.ProviderFillID, AccountID: intent.AccountID.String(), Symbol: symbol, Side: string(intent.Side), Quantity: quantity, RequestedPrice: requestedPrice, FillPrice: fillPrice, Fee: fee, FeeType: EventTradingFee, Currency: intent.Instrument.QuoteAsset.String(), ExecutionMode: string(intent.ExecutionMode), VenueID: intent.Instrument.Venue.String(), ProviderFillID: fill.ProviderFillID, ProviderOrderID: accepted.ProviderOrderID, OrderStatus: string(accepted.Status), OccurredAt: fill.FilledAt, Actor: fill.Provenance.Source, Reason: intent.Reason, StrategyVersion: intent.Versions.Strategy, PolicyVersion: intent.Versions.Policy, CostModelVersion: fill.CostModelVersion, Metadata: eventMetadata, StopPrice: stop, TakeProfitPrice: target, TrailingStopPrice: trailing, LastAtrValue: atr, MaxBarsHeld: maxBars, EntrySource: "auto_trend", DecisionTimeframe: intent.Horizon, ModelVersion: intent.Versions.Model, RolloutState: metadata["rollout_state"]})
+		}
+		remaining := requested.Sub(executed)
+		if value, ok := accepted.Remaining.Get(); ok {
+			remaining, _ = accounting.Parse(value.Decimal().String())
+		}
+		if executed.Add(remaining).Cmp(requested) != 0 || remaining.Sign() < 0 {
+			return nil, "", "", fmt.Errorf("accepted order %s quantities do not reconcile", accepted.OrderID.String())
+		}
+		if accepted.Status == tradingcore.BrokerFilled && remaining.Sign() != 0 {
+			return nil, "", "", fmt.Errorf("filled order has remaining quantity")
+		}
+		plans = append(plans, outcomePlan{intent: intent, accepted: accepted, requested: requested, remaining: remaining, symbol: symbol, commands: commands})
+		payload = append(payload, map[string]interface{}{"intent": intent.IdempotencyKey.String(), "provider_order": accepted.ProviderOrderID, "status": accepted.Status, "requested": requested.String(), "executed": executed.String(), "remaining": remaining.String(), "fills": commands})
+	}
+	for _, rejected := range outcome.Rejected() {
+		if _, ok := intents[rejected.OrderID]; !ok || seen[rejected.OrderID] {
+			return nil, "", "", fmt.Errorf("rejected order %s is not a unique approved intent", rejected.OrderID.String())
+		}
+		seen[rejected.OrderID] = true
+		payload = append(payload, map[string]interface{}{"intent": intents[rejected.OrderID].IdempotencyKey.String(), "rejection": rejected.Code})
+	}
+	if len(seen) != len(intents) {
+		return nil, "", "", fmt.Errorf("complete broker outcome does not resolve every approved intent")
+	}
+	identityJSON, _ := json.Marshal(identityValues)
+	identitySum := sha256.Sum256(identityJSON)
+	identity := "outcome-" + hex.EncodeToString(identitySum[:])
+	payloadJSON, _ := json.Marshal(payload)
+	payloadSum := sha256.Sum256(payloadJSON)
+	return plans, identity, hex.EncodeToString(payloadSum[:]), nil
 }
 
 func metadataFloat(values map[string]string, key string) (*float64, bool) {

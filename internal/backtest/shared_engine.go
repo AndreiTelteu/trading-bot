@@ -11,21 +11,34 @@ import (
 	"trading-go/internal/tradingcore"
 )
 
-func runSharedBacktestEntry(config BacktestConfig, candidate entryCandidate, indicator barContext, universe backtestUniverseSelection, positions map[string]*positionState, states map[string]*symbolState, cash float64, at time.Time, referencePrice float64) (*tradingcore.Fill, error) {
-	instrument, err := backtestInstrument(candidate.Symbol)
+type backtestDecisionSource struct {
+	snapshot tradingcore.DecisionContext
+	policy   tradingcore.RiskPolicy
+}
+
+func (source backtestDecisionSource) DecisionContext(context.Context) (tradingcore.DecisionContext, tradingcore.RiskPolicy, error) {
+	return source.snapshot, source.policy, nil
+}
+
+func runSharedBacktestEntry(ledger *backtestMemoryLedger, config BacktestConfig, candidate entryCandidate, indicator barContext, universe backtestUniverseSelection, positions map[string]*positionState, states map[string]*symbolState, cash float64, at time.Time, referencePrice float64) (tradingcore.RunResult, error) {
+	instrument, err := backtestInstrument(config, candidate.Symbol)
 	if err != nil {
-		return nil, err
+		return tradingcore.RunResult{}, err
 	}
 	price, err := corePrice(referencePrice)
 	if err != nil {
-		return nil, err
+		return tradingcore.RunResult{}, err
 	}
-	account, _ := tradingcore.NewAccountID("backtest")
+	accountName := config.AccountID
+	if accountName == "" {
+		accountName = "backtest"
+	}
+	account, _ := tradingcore.NewAccountID(accountName)
 	portfolioPositions := make([]tradingcore.Position, 0, len(positions))
 	for symbol, position := range positions {
-		currentInstrument, conversionErr := backtestInstrument(symbol)
+		currentInstrument, conversionErr := backtestInstrument(config, symbol)
 		if conversionErr != nil {
-			return nil, conversionErr
+			return tradingcore.RunResult{}, conversionErr
 		}
 		mark := position.EntryPrice
 		if state := states[symbol]; state != nil && state.lastPrice > 0 {
@@ -33,14 +46,14 @@ func runSharedBacktestEntry(config BacktestConfig, candidate entryCandidate, ind
 		}
 		portfolioPositions = append(portfolioPositions, tradingcore.Position{ID: mustPositionID(symbol), Instrument: currentInstrument, Quantity: mustQuantity(position.Size), AveragePrice: mustPrice(position.EntryPrice), MarkPrice: mustPrice(mark), OpenedAt: position.EntryTime, RealizedPnL: mustAmount(0)})
 	}
-	portfolio, err := tradingcore.NewPortfolioSnapshot(at, account, tradingcore.ExecutionPaper, map[tradingcore.AssetID]tradingcore.SignedAmount{instrument.QuoteAsset: mustAmount(cash)}, portfolioPositions, nil, tradingcore.RiskState{})
+	portfolio, err := tradingcore.NewPortfolioSnapshot(at, account, tradingcore.ExecutionPaper, map[tradingcore.AssetID]tradingcore.SignedAmount{instrument.QuoteAsset: mustAmount(cash)}, portfolioPositions, nil, ledger.riskState())
 	if err != nil {
-		return nil, err
+		return tradingcore.RunResult{}, err
 	}
 	score, _ := tradingcore.ParseDecimal(decimalString(indicator.Rating))
 	snapshotUniverse, err := tradingcore.NewUniverseSnapshot(at, "backtest-universe-v1", string(config.UniverseMode), []tradingcore.UniverseCandidate{{Instrument: instrument, Rank: maxInt(1, candidate.Rank), Score: score, Eligible: true}})
 	if err != nil {
-		return nil, err
+		return tradingcore.RunResult{}, err
 	}
 	rolloutState := config.ModelPolicy.RolloutState
 	if rolloutState == "" {
@@ -50,56 +63,234 @@ func runSharedBacktestEntry(config BacktestConfig, candidate entryCandidate, ind
 	if fallbackMode == "" {
 		fallbackMode = services.ModelFallbackRuleBased
 	}
-	policyVersion := config.Governance.PolicyVersions.CompositeVersion
-	if policyVersion == "" {
-		policyVersion = "backtest-risk-v1"
-	}
+	policyVersion := backtestPolicyVersion(config)
 	settings := map[string]string{"auto_trade_enabled": "true", "entry_percent": decimalString(config.EntryPercent), "signal." + instrument.ID.String(): indicator.Signal, "rating." + instrument.ID.String(): decimalString(indicator.Rating), "min_confidence_to_buy": decimalString(config.MinConfidenceToBuy), "buy_only_strong": fmt.Sprint(config.BuyOnlyStrong), "max_positions": fmt.Sprint(config.MaxPositions), "model_rollout_state": rolloutState, "model_fallback_mode": fallbackMode, "model_available": fmt.Sprint(config.ModelArtifact != nil), "model_selected." + instrument.ID.String(): fmt.Sprint(candidate.Prediction != nil), "model_floor_ok." + instrument.ID.String(): fmt.Sprint(candidate.Prediction != nil), "universe_risk_off": fmt.Sprint(universe.RegimeState == services.UniverseRegimeRiskOff)}
 	portfolioValue := cash + currentPositionsValue(positions, states)
 	_, desiredSize, _, _, sizeErr := determinePositionSize(config, indicator.Atr, referencePrice, cash, portfolioValue)
 	if sizeErr == nil {
 		settings["requested_quantity."+instrument.ID.String()] = decimalString(desiredSize)
+		_, _, stop, target, _ := determinePositionSize(config, indicator.Atr, referencePrice, cash, portfolioValue)
+		if stop != nil {
+			settings["stop_price."+instrument.ID.String()] = decimalString(*stop)
+		}
+		if target != nil {
+			settings["take_profit_price."+instrument.ID.String()] = decimalString(*target)
+		}
+		if config.TimeStopBars > 0 {
+			settings["max_bars_held."+instrument.ID.String()] = strconv.Itoa(config.TimeStopBars)
+		}
+	}
+	settings["entry_rank."+instrument.ID.String()] = strconv.Itoa(candidate.Rank)
+	settings["regime_state."+instrument.ID.String()] = universe.RegimeState
+	settings["breadth_ratio."+instrument.ID.String()] = decimalString(universe.BreadthRatio)
+	settings["model_version."+instrument.ID.String()] = modelVersionForCandidate(candidate)
+	if value := predictionProbability(candidate.Prediction); value != nil {
+		settings["predicted_probability."+instrument.ID.String()] = decimalString(*value)
+	}
+	if value := predictionExpectedValue(candidate.Prediction); value != nil {
+		settings["predicted_ev."+instrument.ID.String()] = decimalString(*value)
 	}
 	quote := tradingcore.Quote{Instrument: instrument, Bid: price, Ask: price, Last: price, ObservedAt: at}
 	snapshot, err := tradingcore.NewDecisionContext(tradingcore.DecisionContextInput{MarketObservedAt: at, SignalAt: at, DecisionAt: at, Quotes: map[tradingcore.InstrumentID]tradingcore.Quote{instrument.ID: quote}, Universe: snapshotUniverse, Portfolio: portfolio, Settings: settings, Versions: tradingcore.VersionContext{Strategy: tradingcore.LegacyStrategyVersion, Settings: "backtest-config", Policy: policyVersion, Model: config.Governance.ModelVersion}})
 	if err != nil {
-		return nil, err
-	}
-	strategyResult, err := (tradingcore.LegacyRuleStrategy{IDs: tradingcore.NewSequenceIDGenerator(candidate.Symbol+fmt.Sprint(at.UnixMilli()), 1)}).Decide(context.Background(), snapshot)
-	if err != nil {
-		return nil, err
-	}
-	if len(strategyResult.Intents().Intents()) == 0 {
-		return nil, nil
+		return tradingcore.RunResult{}, err
 	}
 	maxGross := mustAmount(portfolioValue)
 	maxPosition := mustAmount(config.MaxPositionValue)
 	if config.MaxPositionValue <= 0 {
 		maxPosition = mustAmount(0)
 	}
-	policy := tradingcore.RiskPolicy{Version: policyVersion, MaxPositions: config.MaxPositions, MaxGrossExposure: maxGross, MaxPositionValue: maxPosition, MaxTurnover: maxGross, CashReserve: mustAmount(0), MaxConcurrentOrders: config.MaxPositions, LotSize: mustQuantity(.00000001)}
-	risk, err := (tradingcore.PortfolioRiskEngine{}).Evaluate(context.Background(), strategyResult.Intents(), portfolio, policy)
-	if err != nil {
-		return nil, err
-	}
-	if len(risk.Approved().Intents()) == 0 {
-		return nil, nil
-	}
+	policy := tradingcore.RiskPolicy{Version: policyVersion, MaxPositions: config.MaxPositions, MaxGrossExposure: maxGross, MaxPositionValue: maxPosition, MaxTurnover: mustAmount(0), CashReserve: mustAmount(0), MaxConcurrentOrders: config.MaxPositions, LotSize: mustQuantity(.00000001), ExecutionCosts: tradingcore.ExecutionCostPolicy{Version: "backtest-cost-v1", FeeBPS: int64(config.FeeBps), AdverseSlippageBPS: int64(config.SlippageBps)}}
 	broker := tradingcore.NewBacktestBroker(tradingcore.NewFixedClock(at), tradingcore.NewSequenceIDGenerator(candidate.Symbol+fmt.Sprint(at.UnixMilli())+"fill", 1), tradingcore.CostModel{FeeBPS: int64(config.FeeBps), SlippageBPS: int64(config.SlippageBps), Version: "backtest-cost-v1"})
-	outcome, err := broker.Submit(context.Background(), risk.Approved())
-	if err != nil {
-		return nil, err
-	}
-	if len(outcome.Accepted()) == 0 {
-		return nil, nil
-	}
-	fill := outcome.Accepted()[0].Fills()[0]
-	return &fill, nil
+	runner := tradingcore.Orchestrator{Source: backtestDecisionSource{snapshot, policy}, Strategy: tradingcore.LegacyRuleStrategy{}, Risk: tradingcore.PortfolioRiskEngine{}, Broker: broker, Ledger: ledger, Observer: ledger}
+	return runner.Run(context.Background())
 }
 
-func backtestInstrument(symbol string) (tradingcore.Instrument, error) {
+type backtestLedgerEvent struct {
+	Side, Symbol, Quantity, Price, Fee, CostVersion string
+	At                                              time.Time
+}
+type backtestMemoryLedger struct {
+	cash         float64
+	positions    map[string]*positionState
+	trades       []Trade
+	events       []backtestLedgerEvent
+	turnover     float64
+	runs         int
+	observations []tradingcore.Observation
+	config       BacktestConfig
+}
+
+func newBacktestMemoryLedger(config BacktestConfig) *backtestMemoryLedger {
+	return &backtestMemoryLedger{cash: config.InitialBalance, positions: map[string]*positionState{}, config: config}
+}
+func (ledger *backtestMemoryLedger) Observe(_ context.Context, value tradingcore.Observation) error {
+	value.Metadata = cloneBacktestStrings(value.Metadata)
+	ledger.observations = append(ledger.observations, value)
+	return nil
+}
+func cloneBacktestStrings(values map[string]string) map[string]string {
+	result := map[string]string{}
+	for key, value := range values {
+		result[key] = value
+	}
+	return result
+}
+func (ledger *backtestMemoryLedger) riskState() tradingcore.RiskState {
+	state, _ := tradingcore.NewRiskStateWithTurnover(mustAmount(currentPositionsValue(ledger.positions, map[string]*symbolState{})), mustAmount(0), mustAmount(0), mustAmount(0), mustAmount(ledger.turnover))
+	return state
+}
+func (ledger *backtestMemoryLedger) RecordBrokerOutcome(_ context.Context, approved tradingcore.DecisionBatch, outcome tradingcore.BrokerBatchOutcome) error {
+	ledger.runs++
+	if outcome.Completeness() != tradingcore.OutcomeComplete {
+		return fmt.Errorf("incomplete backtest broker outcome")
+	}
+	intents := map[tradingcore.OrderID]tradingcore.OrderIntent{}
+	for _, intent := range approved.Intents() {
+		intents[intent.ID] = intent
+	}
+	seen := map[tradingcore.OrderID]bool{}
+	type action struct {
+		intent tradingcore.OrderIntent
+		fill   tradingcore.Fill
+	}
+	actions := []action{}
+	cash := ledger.cash
+	quantities := map[string]float64{}
+	for symbol, pos := range ledger.positions {
+		quantities[symbol] = pos.Size
+	}
+	for _, accepted := range outcome.Accepted() {
+		intent, ok := intents[accepted.OrderID]
+		if !ok {
+			return fmt.Errorf("unapproved backtest order")
+		}
+		if seen[accepted.OrderID] {
+			return fmt.Errorf("duplicate backtest order outcome")
+		}
+		seen[accepted.OrderID] = true
+		for _, fill := range accepted.Fills() {
+			quantity, price, fee := fill.Quantity.Decimal().Float64(), fill.Price.Decimal().Float64(), fill.Fee.Decimal().Float64()
+			symbol := fill.Instrument.VenueSymbol
+			if intent.Side == tradingcore.Buy {
+				cash -= quantity*price + fee
+				if cash < -1e-9 {
+					return fmt.Errorf("backtest ledger insufficient cash")
+				}
+				quantities[symbol] += quantity
+			} else {
+				if quantities[symbol]+1e-12 < quantity {
+					return fmt.Errorf("backtest ledger insufficient asset")
+				}
+				cash += quantity*price - fee
+				quantities[symbol] -= quantity
+			}
+			actions = append(actions, action{intent, fill})
+		}
+	}
+	for _, rejected := range outcome.Rejected() {
+		if _, ok := intents[rejected.OrderID]; !ok || seen[rejected.OrderID] {
+			return fmt.Errorf("invalid backtest order rejection")
+		}
+		seen[rejected.OrderID] = true
+	}
+	if len(seen) != len(intents) {
+		return fmt.Errorf("complete backtest outcome did not resolve approved batch")
+	}
+	for _, action := range actions {
+		intent, fill := action.intent, action.fill
+		quantity, price, fee := fill.Quantity.Decimal().Float64(), fill.Price.Decimal().Float64(), fill.Fee.Decimal().Float64()
+		symbol := fill.Instrument.VenueSymbol
+		metadata := intent.Metadata()
+		ledger.turnover += quantity * price
+		ledger.events = append(ledger.events, backtestLedgerEvent{string(intent.Side), symbol, fill.Quantity.Decimal().String(), fill.Price.Decimal().String(), fill.Fee.Decimal().String(), fill.CostModelVersion, fill.FilledAt})
+		if intent.Side == tradingcore.Buy {
+			ledger.cash -= quantity*price + fee
+			ledger.positions[symbol] = &positionState{Symbol: symbol, EntryPrice: price, Size: quantity, StopPrice: metadataFloat64(metadata, "stop_price"), TakeProfit: metadataFloat64(metadata, "take_profit_price"), HighestPrice: price, EntryTime: fill.FilledAt, EntryFee: fee, EntryRank: metadataIntValue(metadata, "entry_rank"), RegimeState: metadata["regime_state"], BreadthRatio: metadataFloatValue(metadata, "breadth_ratio"), ModelVersion: metadata["model_version"], PredictedProb: metadataFloat64(metadata, "predicted_probability"), PredictedEV: metadataFloat64(metadata, "predicted_ev")}
+		} else {
+			pos := ledger.positions[symbol]
+			ledger.cash += quantity*price - fee
+			pnl := (price-pos.EntryPrice)*quantity - pos.EntryFee - fee
+			ledger.trades = append(ledger.trades, Trade{Symbol: symbol, EntryTime: pos.EntryTime, ExitTime: fill.FilledAt, EntryPrice: pos.EntryPrice, ExitPrice: price, Size: quantity, Pnl: pnl, PnlPercent: pnl / (pos.EntryPrice * quantity) * 100, Reason: intent.Reason, HoldBars: pos.BarsHeld, EntryRank: pos.EntryRank, RegimeState: pos.RegimeState, BreadthRatio: pos.BreadthRatio, UniverseMode: ledger.config.UniverseMode, PolicyVersion: intent.Versions.Policy, RolloutState: ledger.config.Governance.RolloutState, ExperimentID: ledger.config.Governance.ExperimentID, ModelVersion: pos.ModelVersion, PredictedProbability: cloneFloat64Ptr(pos.PredictedProb), PredictedEV: cloneFloat64Ptr(pos.PredictedEV)})
+			delete(ledger.positions, symbol)
+		}
+	}
+	return nil
+}
+func metadataFloat64(values map[string]string, key string) *float64 {
+	raw := values[key]
+	if raw == "" {
+		return nil
+	}
+	value, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return nil
+	}
+	return &value
+}
+func metadataFloatValue(values map[string]string, key string) float64 {
+	value := metadataFloat64(values, key)
+	if value == nil {
+		return 0
+	}
+	return *value
+}
+func metadataIntValue(values map[string]string, key string) int {
+	value, _ := strconv.Atoi(values[key])
+	return value
+}
+
+func runSharedBacktestExit(ledger *backtestMemoryLedger, config BacktestConfig, pos *positionState, rawPrice float64, at time.Time, reason string) error {
+	instrument, err := backtestInstrument(config, pos.Symbol)
+	if err != nil {
+		return err
+	}
+	price, err := corePrice(rawPrice)
+	if err != nil {
+		return err
+	}
+	accountName := config.AccountID
+	if accountName == "" {
+		accountName = "backtest"
+	}
+	account, _ := tradingcore.NewAccountID(accountName)
+	corePosition := tradingcore.Position{ID: mustPositionID(pos.Symbol), Instrument: instrument, Quantity: mustQuantity(pos.Size), AveragePrice: mustPrice(pos.EntryPrice), MarkPrice: price, OpenedAt: pos.EntryTime, RealizedPnL: mustAmount(0)}
+	portfolio, err := tradingcore.NewPortfolioSnapshot(at, account, tradingcore.ExecutionPaper, map[tradingcore.AssetID]tradingcore.SignedAmount{instrument.QuoteAsset: mustAmount(ledger.cash)}, []tradingcore.Position{corePosition}, nil, ledger.riskState())
+	if err != nil {
+		return err
+	}
+	universe, _ := tradingcore.NewUniverseSnapshot(at, "backtest-universe-v1", string(config.UniverseMode), nil)
+	policyVersion := backtestPolicyVersion(config)
+	snapshot, err := tradingcore.NewDecisionContext(tradingcore.DecisionContextInput{MarketObservedAt: at, SignalAt: at, DecisionAt: at, Universe: universe, Portfolio: portfolio, Versions: tradingcore.VersionContext{Strategy: tradingcore.LegacyStrategyVersion, Policy: policyVersion}})
+	if err != nil {
+		return err
+	}
+	id, _ := tradingcore.NewOrderID("exit-" + strings.ToLower(pos.Symbol) + "-" + strconv.FormatInt(at.UnixMilli(), 10))
+	key, _ := tradingcore.NewIdempotencyKey("exit-" + strings.ToLower(pos.Symbol) + "-" + strconv.FormatInt(at.UnixMilli(), 10))
+	intent, _ := tradingcore.NewOrderIntent(tradingcore.OrderIntent{ID: id, IdempotencyKey: key, AccountID: account, Instrument: instrument, Side: tradingcore.Sell, Type: tradingcore.MarketOrder, Quantity: mustQuantity(pos.Size), ReferencePrice: tradingcore.SomePrice(price), SignalAt: at, DecisionAt: at, CreatedAt: at, ExecutionMode: tradingcore.ExecutionPaper, QuantitySemantics: tradingcore.QuantityExitAll, Priority: 1, Reason: reason, Horizon: "15m", Versions: snapshot.Versions()}, nil)
+	batch, _ := tradingcore.NewDecisionBatch([]tradingcore.OrderIntent{intent})
+	result := tradingcore.NewStrategyResult(batch, nil)
+	limit := mustAmount(999999999999)
+	policy := tradingcore.RiskPolicy{Version: policyVersion, MaxPositions: config.MaxPositions, MaxGrossExposure: limit, MaxPositionValue: limit, MaxTurnover: mustAmount(0), CashReserve: mustAmount(0), MaxConcurrentOrders: config.MaxPositions, LotSize: mustQuantity(.00000001), ExecutionCosts: tradingcore.ExecutionCostPolicy{Version: "backtest-cost-v1", FeeBPS: int64(config.FeeBps), AdverseSlippageBPS: int64(config.SlippageBps)}}
+	broker := tradingcore.NewBacktestBroker(tradingcore.NewFixedClock(at), tradingcore.NewSequenceIDGenerator("exit-fill", uint64(len(ledger.events)+1)), tradingcore.CostModel{FeeBPS: int64(config.FeeBps), SlippageBPS: int64(config.SlippageBps), Version: "backtest-cost-v1"})
+	runner := tradingcore.Orchestrator{Source: backtestDecisionSource{snapshot, policy}, Strategy: tradingcore.FixedStrategy{Result: result}, Risk: tradingcore.PortfolioRiskEngine{}, Broker: broker, Ledger: ledger, Observer: ledger}
+	_, err = runner.Run(context.Background())
+	return err
+}
+
+func backtestPolicyVersion(config BacktestConfig) string {
+	if value := config.Governance.PolicyVersions.CompositeVersion; value != "" {
+		return value
+	}
+	return "backtest-risk-v1"
+}
+
+func backtestInstrument(config BacktestConfig, symbol string) (tradingcore.Instrument, error) {
 	normalized := strings.ToUpper(symbol)
-	quoteName := "USDT"
+	quoteName := strings.ToUpper(config.SettlementCurrency)
+	if quoteName == "" {
+		quoteName = "USDT"
+	}
 	baseName := strings.TrimSuffix(normalized, quoteName)
 	id, err := tradingcore.NewInstrumentID(strings.ToLower(baseName + "-" + quoteName))
 	if err != nil {
@@ -107,7 +298,11 @@ func backtestInstrument(symbol string) (tradingcore.Instrument, error) {
 	}
 	base, _ := tradingcore.NewAssetID(baseName)
 	quote, _ := tradingcore.NewAssetID(quoteName)
-	venue, _ := tradingcore.NewVenueID("binance")
+	venueName := config.VenueID
+	if venueName == "" {
+		venueName = "binance"
+	}
+	venue, _ := tradingcore.NewVenueID(venueName)
 	return tradingcore.NewInstrument(id, base, quote, venue, normalized)
 }
 func mustAmount(value float64) tradingcore.SignedAmount {

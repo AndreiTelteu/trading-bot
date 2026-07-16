@@ -62,7 +62,7 @@ func TestFixtureParityAcrossBacktestPaperAndFencedLive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(requests) != 1 || requests[0].ClientOrderID != "intent-decision-1" || requests[0].Quantity != riskResult.Approved().Intents()[0].Quantity.Decimal().String() || requests[0].PolicyVersion != fixture.PolicyVersion {
+	if len(requests) != 1 || requests[0].ClientOrderID != riskResult.Approved().Intents()[0].IdempotencyKey.String() || requests[0].Quantity != riskResult.Approved().Intents()[0].Quantity.Decimal().String() || requests[0].PolicyVersion != fixture.PolicyVersion {
 		t.Fatalf("live request = %+v", requests)
 	}
 	liveOutcome, err := live.Submit(context.Background(), riskResult.Approved())
@@ -143,7 +143,7 @@ func TestRiskScenarioOrderingCapsPyramidingAndPendingConflict(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(decision.Approved().Intents()) != 1 || decision.Approved().Intents()[0].Quantity.Decimal().String() != "0.350000000000000000" {
+	if len(decision.Approved().Intents()) != 1 || decision.Approved().Intents()[0].Quantity.Decimal().String() != "0.349000000000000000" {
 		t.Fatalf("cash cap = %+v rejected=%v", decision.Approved().Intents(), decision.Rejected())
 	}
 
@@ -220,7 +220,7 @@ func TestCommonBrokerOutcomeRepresentsRejectionAndPartialFill(t *testing.T) {
 		t.Fatal(err)
 	}
 	clock := tradingcore.NewFixedClock(mustTime(t, fixture.DecisionAt).Add(time.Second))
-	partial := tradingcore.NewPaperBroker(clock, tradingcore.NewSequenceIDGenerator("partial", 1), tradingcore.CostModel{FillBPS: 4000, Version: "partial-v1"})
+	partial := tradingcore.NewPaperBroker(clock, tradingcore.NewSequenceIDGenerator("partial", 1), tradingcore.CostModel{FillBPS: 4000, FeeBPS: fixture.FeeBPS, SlippageBPS: fixture.SlippageBPS, Version: "cost-v1"})
 	outcome, err := partial.Submit(context.Background(), risk.Approved())
 	if err != nil {
 		t.Fatal(err)
@@ -234,7 +234,7 @@ func TestCommonBrokerOutcomeRepresentsRejectionAndPartialFill(t *testing.T) {
 		t.Fatalf("remaining = %s, %v", remaining.Decimal().String(), ok)
 	}
 
-	rejecting := tradingcore.NewPaperBroker(clock, tradingcore.NewSequenceIDGenerator("reject", 1), tradingcore.CostModel{RejectCode: "venue_rejected", Version: "reject-v1"})
+	rejecting := tradingcore.NewPaperBroker(clock, tradingcore.NewSequenceIDGenerator("reject", 1), tradingcore.CostModel{RejectCode: "venue_rejected", FeeBPS: fixture.FeeBPS, SlippageBPS: fixture.SlippageBPS, Version: "cost-v1"})
 	outcome, err = rejecting.Submit(context.Background(), risk.Approved())
 	if err != nil {
 		t.Fatal(err)
@@ -330,7 +330,7 @@ func parityContextWith(t *testing.T, fixture parityFixture, mode tradingcore.Exe
 	return snapshot
 }
 func parityPolicy(t *testing.T, fixture parityFixture) tradingcore.RiskPolicy {
-	return tradingcore.RiskPolicy{Version: fixture.PolicyVersion, MaxPositions: 5, MaxGrossExposure: mustAmount2(t, "1000"), MaxPositionValue: mustAmount2(t, "500"), MaxTurnover: mustAmount2(t, "1000"), CashReserve: mustAmount2(t, "0"), MaxConcurrentOrders: 5, LotSize: mustQuantity2(t, "0.001")}
+	return tradingcore.RiskPolicy{Version: fixture.PolicyVersion, MaxPositions: 5, MaxGrossExposure: mustAmount2(t, "1000"), MaxPositionValue: mustAmount2(t, "500"), MaxTurnover: mustAmount2(t, "1000"), CashReserve: mustAmount2(t, "0"), MaxConcurrentOrders: 5, LotSize: mustQuantity2(t, "0.001"), ExecutionCosts: tradingcore.ExecutionCostPolicy{Version: "cost-v1", FeeBPS: fixture.FeeBPS, AdverseSlippageBPS: fixture.SlippageBPS}}
 }
 func mustTime(t *testing.T, v string) time.Time {
 	x, e := time.Parse(time.RFC3339, v)

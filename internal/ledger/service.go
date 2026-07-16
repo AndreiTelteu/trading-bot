@@ -82,6 +82,7 @@ type FillCommand struct {
 	OccurredAt                                                  time.Time
 	Actor, Reason                                               string
 	StrategyVersion, PolicyVersion                              string
+	CostModelVersion                                            string
 	Metadata                                                    map[string]interface{}
 	EntrySource, DecisionTimeframe                              string
 	ModelVersion, UniverseMode, RolloutState                    string
@@ -103,6 +104,9 @@ type FillResult struct {
 func (s *Service) ApplyFill(ctx context.Context, command FillCommand) (FillResult, error) {
 	if err := requirePrimaryAccount(command.AccountID); err != nil {
 		return FillResult{}, err
+	}
+	if command.CostModelVersion == "" {
+		command.CostModelVersion = "legacy-cost-v1"
 	}
 	if err := validateFill(command); err != nil {
 		return FillResult{}, err
@@ -212,6 +216,7 @@ func (s *Service) ApplyFill(ctx context.Context, command FillCommand) (FillResul
 			FeeAmount: command.Fee, FeeType: command.FeeType, FeeCurrency: command.FeeCurrency,
 			ExecutionMode: command.ExecutionMode, StrategyVersion: command.StrategyVersion,
 			PolicyVersion: command.PolicyVersion, OccurredAt: command.OccurredAt, CreatedAt: recordedAt,
+			CostModelVersion: command.CostModelVersion,
 		}
 		if err := tx.Create(&fill).Error; err != nil {
 			return err
@@ -277,6 +282,9 @@ func validateFill(command FillCommand) error {
 	}
 	if command.Currency == "" || command.ExecutionMode == "" || command.FeeType == "" {
 		return validation("invalid_dimensions", "currency, execution mode, and fee type are required")
+	}
+	if command.CostModelVersion == "" {
+		return validation("invalid_cost_model_version", "cost model version is required")
 	}
 	return nil
 }
@@ -412,6 +420,17 @@ func upsertFilledOrder(tx *gorm.DB, command FillCommand, position database.Posit
 	order.OrderType, order.Symbol, order.Status, order.ExecutionMode = command.Side, command.Symbol, orderStatus, command.ExecutionMode
 	order.AmountCrypto, order.AmountUsdt, order.Price, order.Fee = qty, totalGross.Float64(), fill, fee
 	order.AmountCryptoExact, order.AmountUsdtExact, order.FeeExact = decimalPtr(totalQuantity), decimalPtr(totalGross), decimalPtr(totalFee)
+	order.ExecutedQuantityExact = decimalPtr(totalQuantity)
+	if order.RequestedQuantityExact == nil && command.OrderStatus == "filled" {
+		order.RequestedQuantityExact = decimalPtr(totalQuantity)
+	}
+	if order.RequestedQuantityExact != nil {
+		remaining := order.RequestedQuantityExact.Sub(totalQuantity)
+		if remaining.Sign() < 0 {
+			return order, conflict("order_overfill", "executed quantity exceeds requested quantity", nil)
+		}
+		order.RemainingQuantityExact = decimalPtr(remaining)
+	}
 	order.RequestedPrice, order.FillPrice, order.ExecutedQty, order.ExchangeFee = &requested, &fill, &qty, &fee
 	order.ModelVersion, order.PolicyVersion = command.ModelVersion, command.PolicyVersion
 	order.UniverseMode, order.RolloutState = command.UniverseMode, command.RolloutState

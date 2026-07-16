@@ -187,7 +187,7 @@ func TestBrokerAndAtomicLedgerOutcomesAreTypedOrderedAndIsolated(t *testing.T) {
 	instrument := testInstrument(t, "btc-usdt")
 	orderID, _ := tradingcore.NewOrderID("order-a")
 	fillID, _ := tradingcore.NewFillID("fill-a")
-	fill := tradingcore.Fill{ID: fillID, OrderID: orderID, ProviderFillID: "provider-fill-a", Instrument: instrument, Side: tradingcore.Buy, Quantity: mustQuantity(t, "0.5"), Price: mustPrice(t, "100.00"), Fee: mustAmount(t, "0.10"), FeeAsset: instrument.QuoteAsset, OrderedAt: at, SubmittedAt: at.Add(time.Second), AcceptedAt: at.Add(2 * time.Second), FilledAt: at.Add(3 * time.Second)}
+	fill := tradingcore.Fill{ID: fillID, OrderID: orderID, ProviderFillID: "provider-fill-a", Instrument: instrument, Side: tradingcore.Buy, Quantity: mustQuantity(t, "0.5"), Price: mustPrice(t, "100.00"), Fee: mustAmount(t, "0.10"), FeeAsset: instrument.QuoteAsset, OrderedAt: at, SubmittedAt: at.Add(time.Second), AcceptedAt: at.Add(2 * time.Second), FilledAt: at.Add(3 * time.Second), CostModelVersion: "cost-v1"}
 	accepted, err := tradingcore.NewAcceptedOrder(tradingcore.AcceptedOrder{OrderID: orderID, ProviderOrderID: "provider-order-a", Status: tradingcore.BrokerPartiallyFilled, AcceptedAt: fill.AcceptedAt, Remaining: tradingcore.SomeQuantity(mustQuantity(t, "0.5"))}, []tradingcore.Fill{fill})
 	if err != nil {
 		t.Fatal(err)

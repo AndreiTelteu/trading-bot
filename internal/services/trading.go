@@ -1,6 +1,7 @@
 package services
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 	"strings"
@@ -159,29 +160,42 @@ func createPortfolioSnapshot() (database.PortfolioSnapshot, database.Wallet, []d
 }
 
 func ExecuteBuy(req BuyRequest) (interface{}, error) {
-	_, _ = BuildFencedLiveRequest("buy", req.Symbol, req.Amount, req.Price, req.IdempotencyKey)
+	_, _ = buildApplicationFencedLiveRequest("buy", req.Symbol, req.Amount, req.Price, req.IdempotencyKey)
 	return nil, ledgerpkg.ErrExchangeExecutionFenced
 }
 func ExecuteSell(req SellRequest) (interface{}, error) {
-	_, _ = BuildFencedLiveRequest("sell", req.Symbol, req.Amount, req.Price, req.IdempotencyKey)
+	_, _ = buildApplicationFencedLiveRequest("sell", req.Symbol, req.Amount, req.Price, req.IdempotencyKey)
 	return nil, ledgerpkg.ErrExchangeExecutionFenced
 }
 
 // BuildFencedLiveRequest exposes deterministic Stage 02 request construction
 // without making exchange submission reachable.
-func BuildFencedLiveRequest(side, symbol string, amount, price float64, idempotency string) (tradingcore.LiveOrderRequest, error) {
-	normalized := strings.ToUpper(strings.ReplaceAll(strings.TrimSpace(symbol), "/", ""))
-	if !strings.HasSuffix(normalized, "USDT") {
-		normalized += "USDT"
-	}
-	baseName := strings.TrimSuffix(normalized, "USDT")
-	instrumentID, err := tradingcore.NewInstrumentID(strings.ToLower(baseName + "-usdt"))
+type FencedLiveRequestConfig struct {
+	AccountID, SettlementCurrency, VenueID, VenueSymbol, BaseAsset string
+	Portfolio                                                      tradingcore.PortfolioSnapshot
+	Policy                                                         tradingcore.RiskPolicy
+	At                                                             time.Time
+}
+type manualDecisionSource struct {
+	snapshot tradingcore.DecisionContext
+	policy   tradingcore.RiskPolicy
+}
+
+func (source manualDecisionSource) DecisionContext(context.Context) (tradingcore.DecisionContext, tradingcore.RiskPolicy, error) {
+	return source.snapshot, source.policy, nil
+}
+
+func BuildApprovedFencedLiveRequest(ctx context.Context, side string, amount, price float64, idempotency string, config FencedLiveRequestConfig) (tradingcore.LiveOrderRequest, error) {
+	normalized := strings.ToUpper(config.VenueSymbol)
+	baseName := strings.ToUpper(config.BaseAsset)
+	settlement := strings.ToUpper(config.SettlementCurrency)
+	instrumentID, err := tradingcore.NewInstrumentID(strings.ToLower(baseName + "-" + settlement))
 	if err != nil {
 		return tradingcore.LiveOrderRequest{}, err
 	}
 	base, _ := tradingcore.NewAssetID(baseName)
-	quote, _ := tradingcore.NewAssetID("USDT")
-	venue, _ := tradingcore.NewVenueID("binance")
+	quote, _ := tradingcore.NewAssetID(settlement)
+	venue, _ := tradingcore.NewVenueID(config.VenueID)
 	instrument, err := tradingcore.NewInstrument(instrumentID, base, quote, venue, normalized)
 	if err != nil {
 		return tradingcore.LiveOrderRequest{}, err
@@ -202,13 +216,16 @@ func BuildFencedLiveRequest(side, symbol string, amount, price float64, idempote
 		return tradingcore.LiveOrderRequest{}, err
 	}
 	orderID, _ := tradingcore.NewOrderID("request-" + idempotency)
-	account, _ := tradingcore.NewAccountID("primary")
+	account, _ := tradingcore.NewAccountID(config.AccountID)
 	orderSide := tradingcore.Buy
 	if strings.EqualFold(side, "sell") {
 		orderSide = tradingcore.Sell
 	}
-	now := time.Now().UTC()
-	intent := tradingcore.OrderIntent{ID: orderID, IdempotencyKey: key, AccountID: account, Instrument: instrument, Side: orderSide, Type: tradingcore.MarketOrder, Quantity: quantity, SignalAt: now, DecisionAt: now, CreatedAt: now, ExecutionMode: tradingcore.ExecutionFullLive, QuantitySemantics: tradingcore.QuantityExact, Reason: "manual_exchange_request", Versions: tradingcore.VersionContext{Strategy: "manual", Policy: "live-fenced-v1"}}
+	now := config.At.UTC()
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	intent := tradingcore.OrderIntent{ID: orderID, IdempotencyKey: key, AccountID: account, Instrument: instrument, Side: orderSide, Type: tradingcore.MarketOrder, Quantity: quantity, SignalAt: now, DecisionAt: now, CreatedAt: now, ExecutionMode: tradingcore.ExecutionFullLive, QuantitySemantics: tradingcore.QuantityExact, Priority: 1, Reason: "manual_exchange_request", Versions: tradingcore.VersionContext{Strategy: "manual", Policy: config.Policy.Version}}
 	if price > 0 {
 		priceDecimal, parseErr := tradingcore.ParseDecimal(strconv.FormatFloat(price, 'f', -1, 64))
 		if parseErr != nil {
@@ -228,11 +245,88 @@ func BuildFencedLiveRequest(side, symbol string, amount, price float64, idempote
 	if err != nil {
 		return tradingcore.LiveOrderRequest{}, err
 	}
-	requests, err := (tradingcore.LiveBroker{}).BuildRequests(batch)
+	strategyResult := tradingcore.NewStrategyResult(batch, nil)
+	universe, _ := tradingcore.NewUniverseSnapshot(now, "manual-live-universe-v1", "manual", nil)
+	snapshot, err := tradingcore.NewDecisionContext(tradingcore.DecisionContextInput{MarketObservedAt: now, SignalAt: now, DecisionAt: now, Universe: universe, Portfolio: config.Portfolio, Settings: map[string]string{}, Versions: intent.Versions})
+	if err != nil {
+		return tradingcore.LiveOrderRequest{}, err
+	}
+	runner := tradingcore.Orchestrator{Source: manualDecisionSource{snapshot, config.Policy}, Strategy: tradingcore.FixedStrategy{Result: strategyResult}, Risk: tradingcore.PortfolioRiskEngine{}, Broker: tradingcore.LiveBroker{}, Ledger: discardOutcomeLedger{}}
+	result, err := runner.Run(ctx)
+	if err != nil {
+		return tradingcore.LiveOrderRequest{}, err
+	}
+	approved := result.Risk.Approved()
+	if len(approved.Intents()) != 1 {
+		return tradingcore.LiveOrderRequest{}, fmt.Errorf("live request was not approved: %+v", result.Risk.Rejected())
+	}
+	requests, err := (tradingcore.LiveBroker{}).BuildRequests(approved)
 	if err != nil {
 		return tradingcore.LiveOrderRequest{}, err
 	}
 	return requests[0], nil
+}
+
+func buildApplicationFencedLiveRequest(side, symbol string, amount, price float64, idempotency string) (tradingcore.LiveOrderRequest, error) {
+	if database.DB == nil {
+		return tradingcore.LiveOrderRequest{}, fmt.Errorf("database unavailable")
+	}
+	var wallet database.Wallet
+	if err := database.DB.First(&wallet).Error; err != nil {
+		return tradingcore.LiveOrderRequest{}, err
+	}
+	settlement := strings.ToUpper(wallet.Currency)
+	venueSymbol := strings.ToUpper(strings.ReplaceAll(symbol, "/", ""))
+	if !strings.HasSuffix(venueSymbol, settlement) {
+		venueSymbol += settlement
+	}
+	base := strings.TrimSuffix(venueSymbol, settlement)
+	instrumentID, _ := tradingcore.NewInstrumentID(strings.ToLower(base + "-" + settlement))
+	baseAsset, _ := tradingcore.NewAssetID(base)
+	quote, _ := tradingcore.NewAssetID(settlement)
+	venueName := getSettingString(GetAllSettings(), "exchange_venue_id", "binance")
+	venue, _ := tradingcore.NewVenueID(venueName)
+	instrument, _ := tradingcore.NewInstrument(instrumentID, baseAsset, quote, venue, venueSymbol)
+	at := time.Now().UTC()
+	if wallet.BalanceExact == nil {
+		return tradingcore.LiveOrderRequest{}, ledgerpkg.ErrProjectionUnavailable
+	}
+	cash := mustCoreAmount(wallet.BalanceExact.String())
+	positions := []tradingcore.Position{}
+	var rows []database.Position
+	if err := database.DB.Where("status = ?", "open").Find(&rows).Error; err != nil {
+		return tradingcore.LiveOrderRequest{}, err
+	}
+	for _, row := range rows {
+		rowSymbol := PositionPairSymbol(row.Symbol, settlement)
+		if rowSymbol != venueSymbol || row.AmountExact == nil {
+			continue
+		}
+		mark := price
+		if mark <= 0 {
+			mark = positionPriceForExecution(row)
+		}
+		positions = append(positions, tradingcore.Position{ID: mustCorePositionID(row.ID), Instrument: instrument, Quantity: mustCoreQuantity(row.AmountExact.String()), AveragePrice: mustCorePrice(mark), MarkPrice: mustCorePrice(mark), OpenedAt: row.OpenedAt, RealizedPnL: mustCoreAmount("0")})
+	}
+	account, _ := tradingcore.NewAccountID(wallet.AccountID)
+	portfolio, err := tradingcore.NewPortfolioSnapshot(at, account, tradingcore.ExecutionFullLive, map[tradingcore.AssetID]tradingcore.SignedAmount{quote: cash}, positions, nil, tradingcore.RiskState{})
+	if err != nil {
+		return tradingcore.LiveOrderRequest{}, err
+	}
+	limit := mustCoreAmount("999999999999")
+	policy := tradingcore.RiskPolicy{Version: "live-fenced-risk-v1", MaxPositions: 100, MaxGrossExposure: limit, MaxPositionValue: limit, MaxTurnover: limit, CashReserve: mustCoreAmount("0"), MaxConcurrentOrders: 100, LotSize: mustCoreQuantity("0.00000001"), ExecutionCosts: tradingcore.ExecutionCostPolicy{Version: "live-request-cost-v1"}}
+	return BuildApprovedFencedLiveRequest(context.Background(), side, amount, price, idempotency, FencedLiveRequestConfig{AccountID: wallet.AccountID, SettlementCurrency: settlement, VenueID: venueName, VenueSymbol: venueSymbol, BaseAsset: base, Portfolio: portfolio, Policy: policy, At: at})
+}
+func mustCorePositionID(id uint) tradingcore.PositionID {
+	value, _ := tradingcore.NewPositionID(fmt.Sprint(id))
+	return value
+}
+func mustCorePrice(value float64) tradingcore.Price {
+	result, err := corePrice(value)
+	if err != nil {
+		panic(err)
+	}
+	return result
 }
 func UpdatePositionsPrices() (interface{}, error) {
 	settings := GetAllSettings()

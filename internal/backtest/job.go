@@ -298,13 +298,13 @@ func WriteBacktestOutputs(summary BacktestRunSummary, outputBase string) (string
 			"diagnostics":     summary.VolSizing.Diagnostics,
 		},
 		"validation": map[string]interface{}{
-			"window_summaries":        summary.Validation.WindowSummaries,
-			"promotion_readiness":     summary.Validation.PromotionReadiness,
-			"baseline_regime_slices":  summary.Validation.BaselineRegimeSlices,
-			"vol_regime_slices":       summary.Validation.VolSizingRegimeSlices,
-			"baseline_symbol_cohorts":  summary.Validation.BaselineSymbolCohorts,
-			"vol_symbol_cohorts":       summary.Validation.VolSizingSymbolCohorts,
-			"baseline_decile_metrics":  summary.Validation.BaselineDecileMetrics,
+			"window_summaries":          summary.Validation.WindowSummaries,
+			"promotion_readiness":       summary.Validation.PromotionReadiness,
+			"baseline_regime_slices":    summary.Validation.BaselineRegimeSlices,
+			"vol_regime_slices":         summary.Validation.VolSizingRegimeSlices,
+			"baseline_symbol_cohorts":   summary.Validation.BaselineSymbolCohorts,
+			"vol_symbol_cohorts":        summary.Validation.VolSizingSymbolCohorts,
+			"baseline_decile_metrics":   summary.Validation.BaselineDecileMetrics,
 			"vol_sizing_decile_metrics": summary.Validation.VolSizingDecileMetrics,
 		},
 	}, "", "  ")
@@ -467,10 +467,10 @@ func prepareBacktestInputsWithSettings(settings map[string]string) (BacktestConf
 	fetchExecution := getSettingBool(settings, "backtest_execution_1m", false)
 
 	type fetchResult struct {
-		symbol    string
-		candles   []services.OHLCV
-		exec1m    []services.OHLCV
-		err       error
+		symbol  string
+		candles []services.OHLCV
+		exec1m  []services.OHLCV
+		err     error
 	}
 
 	workers := runtime.NumCPU()
@@ -540,8 +540,13 @@ func prepareBacktestInputsWithSettings(settings map[string]string) (BacktestConf
 		return BacktestConfig{}, nil, err
 	}
 
+	engineMode := EngineMode(getSettingString(settings, "trading_engine_mode", "legacy"))
+	if engineMode == EngineMode("shadow_compare") {
+		engineMode = EngineShared
+	}
 	config := BacktestConfig{
-		EngineMode:              EngineMode(getSettingString(settings, "trading_engine_mode", "legacy")),
+		EngineMode: engineMode,
+		AccountID:  "backtest", SettlementCurrency: getSettingString(settings, "backtest_settlement_currency", "USDT"), VenueID: getSettingString(settings, "backtest_venue_id", "binance"),
 		BacktestMode:            resolveBacktestMode(universeMode, modelArtifact != nil),
 		ExecutionSeries:         executionSeries,
 		ExecutionTimeframe:      "1m",

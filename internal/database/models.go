@@ -55,37 +55,40 @@ type Position struct {
 }
 
 type Order struct {
-	ID                  uint                `json:"id" gorm:"primaryKey;autoIncrement"`
-	OrderType           string              `json:"order_type" gorm:"size:10;not null"`
-	AccountID           string              `json:"account_id" gorm:"size:100;not null;default:primary;index"`
-	Symbol              string              `json:"symbol" gorm:"size:20;not null"`
-	AmountCrypto        float64             `json:"amount_crypto"`
-	AmountUsdt          float64             `json:"amount_usdt"`
-	AmountCryptoExact   *accounting.Decimal `json:"amount_crypto_exact,omitempty" gorm:"type:numeric(38,18)"`
-	AmountUsdtExact     *accounting.Decimal `json:"amount_usdt_exact,omitempty" gorm:"type:numeric(38,18)"`
-	Price               float64             `json:"price"`
-	Fee                 float64             `json:"fee" gorm:"default:0"`
-	FeeExact            *accounting.Decimal `json:"fee_exact,omitempty" gorm:"type:numeric(38,18)"`
-	LedgerBatchID       *string             `json:"ledger_batch_id,omitempty" gorm:"size:100;index"`
-	ExchangeOrderID     *string             `json:"exchange_order_id" gorm:"size:100;index"`
-	ClientOrderID       *string             `json:"client_order_id" gorm:"size:100;index"`
-	Status              string              `json:"status" gorm:"size:20;default:filled;index"`
-	ExecutionMode       string              `json:"execution_mode" gorm:"size:20;default:paper;index"`
-	ModelVersion        string              `json:"model_version" gorm:"size:100;index"`
-	PolicyVersion       string              `json:"policy_version" gorm:"size:100;index"`
-	UniverseMode        string              `json:"universe_mode" gorm:"size:40;index"`
-	RolloutState        string              `json:"rollout_state" gorm:"size:20;index"`
-	ExperimentID        *string             `json:"experiment_id" gorm:"size:100;index"`
-	PredictionLogID     *uint               `json:"prediction_log_id" gorm:"index"`
-	DecisionContextJSON string              `json:"decision_context_json" gorm:"type:text"`
-	TriggerReason       *string             `json:"trigger_reason" gorm:"size:50;index"`
-	RequestedPrice      *float64            `json:"requested_price"`
-	FillPrice           *float64            `json:"fill_price"`
-	ExecutedQty         *float64            `json:"executed_qty"`
-	ExchangeFee         *float64            `json:"exchange_fee"`
-	SubmittedAt         *time.Time          `json:"submitted_at"`
-	FilledAt            *time.Time          `json:"filled_at"`
-	ExecutedAt          time.Time           `json:"executed_at" gorm:"index"`
+	ID                     uint                `json:"id" gorm:"primaryKey;autoIncrement"`
+	OrderType              string              `json:"order_type" gorm:"size:10;not null"`
+	AccountID              string              `json:"account_id" gorm:"size:100;not null;default:primary;index"`
+	Symbol                 string              `json:"symbol" gorm:"size:20;not null"`
+	AmountCrypto           float64             `json:"amount_crypto"`
+	AmountUsdt             float64             `json:"amount_usdt"`
+	AmountCryptoExact      *accounting.Decimal `json:"amount_crypto_exact,omitempty" gorm:"type:numeric(38,18)"`
+	RequestedQuantityExact *accounting.Decimal `json:"requested_quantity_exact,omitempty" gorm:"type:numeric(38,18)"`
+	ExecutedQuantityExact  *accounting.Decimal `json:"executed_quantity_exact,omitempty" gorm:"type:numeric(38,18)"`
+	RemainingQuantityExact *accounting.Decimal `json:"remaining_quantity_exact,omitempty" gorm:"type:numeric(38,18)"`
+	AmountUsdtExact        *accounting.Decimal `json:"amount_usdt_exact,omitempty" gorm:"type:numeric(38,18)"`
+	Price                  float64             `json:"price"`
+	Fee                    float64             `json:"fee" gorm:"default:0"`
+	FeeExact               *accounting.Decimal `json:"fee_exact,omitempty" gorm:"type:numeric(38,18)"`
+	LedgerBatchID          *string             `json:"ledger_batch_id,omitempty" gorm:"size:100;index"`
+	ExchangeOrderID        *string             `json:"exchange_order_id" gorm:"size:100;index"`
+	ClientOrderID          *string             `json:"client_order_id" gorm:"size:100;index"`
+	Status                 string              `json:"status" gorm:"size:20;default:filled;index"`
+	ExecutionMode          string              `json:"execution_mode" gorm:"size:20;default:paper;index"`
+	ModelVersion           string              `json:"model_version" gorm:"size:100;index"`
+	PolicyVersion          string              `json:"policy_version" gorm:"size:100;index"`
+	UniverseMode           string              `json:"universe_mode" gorm:"size:40;index"`
+	RolloutState           string              `json:"rollout_state" gorm:"size:20;index"`
+	ExperimentID           *string             `json:"experiment_id" gorm:"size:100;index"`
+	PredictionLogID        *uint               `json:"prediction_log_id" gorm:"index"`
+	DecisionContextJSON    string              `json:"decision_context_json" gorm:"type:text"`
+	TriggerReason          *string             `json:"trigger_reason" gorm:"size:50;index"`
+	RequestedPrice         *float64            `json:"requested_price"`
+	FillPrice              *float64            `json:"fill_price"`
+	ExecutedQty            *float64            `json:"executed_qty"`
+	ExchangeFee            *float64            `json:"exchange_fee"`
+	SubmittedAt            *time.Time          `json:"submitted_at"`
+	FilledAt               *time.Time          `json:"filled_at"`
+	ExecutedAt             time.Time           `json:"executed_at" gorm:"index"`
 }
 
 // LedgerBatch is the idempotency boundary for one atomic economic command.
@@ -97,28 +100,36 @@ type LedgerBatch struct {
 	CreatedAt   time.Time `json:"created_at" gorm:"not null"`
 }
 
+type BrokerOutcomeIngestion struct {
+	ID          string    `gorm:"primaryKey;size:100"`
+	AccountID   string    `gorm:"size:100;not null;index"`
+	PayloadHash string    `gorm:"size:64;not null"`
+	CreatedAt   time.Time `gorm:"not null"`
+}
+
 type Fill struct {
-	ID              string             `json:"id" gorm:"primaryKey;size:100"`
-	LedgerBatchID   string             `json:"ledger_batch_id" gorm:"size:100;not null;uniqueIndex"`
-	AccountID       string             `json:"account_id" gorm:"size:100;not null;index"`
-	OrderID         uint               `json:"order_id" gorm:"not null;index"`
-	VenueID         string             `json:"venue_id" gorm:"size:50;not null;default:internal;index"`
-	ProviderFillID  *string            `json:"provider_fill_id,omitempty" gorm:"size:100"`
-	PositionID      uint               `json:"position_id" gorm:"not null;index"`
-	Symbol          string             `json:"symbol" gorm:"size:30;not null;index"`
-	Side            string             `json:"side" gorm:"size:10;not null"`
-	Quantity        accounting.Decimal `json:"quantity" gorm:"type:numeric(38,18);not null"`
-	RequestedPrice  accounting.Decimal `json:"requested_price" gorm:"type:numeric(38,18);not null"`
-	FillPrice       accounting.Decimal `json:"fill_price" gorm:"type:numeric(38,18);not null"`
-	GrossAmount     accounting.Decimal `json:"gross_amount" gorm:"type:numeric(38,18);not null"`
-	FeeAmount       accounting.Decimal `json:"fee_amount" gorm:"type:numeric(38,18);not null"`
-	FeeType         string             `json:"fee_type" gorm:"size:30;not null"`
-	FeeCurrency     string             `json:"fee_currency" gorm:"size:20;not null"`
-	ExecutionMode   string             `json:"execution_mode" gorm:"size:20;not null;index"`
-	StrategyVersion string             `json:"strategy_version" gorm:"size:100"`
-	PolicyVersion   string             `json:"policy_version" gorm:"size:100"`
-	OccurredAt      time.Time          `json:"occurred_at" gorm:"not null;index"`
-	CreatedAt       time.Time          `json:"created_at" gorm:"not null"`
+	ID               string             `json:"id" gorm:"primaryKey;size:100"`
+	LedgerBatchID    string             `json:"ledger_batch_id" gorm:"size:100;not null;uniqueIndex"`
+	AccountID        string             `json:"account_id" gorm:"size:100;not null;index"`
+	OrderID          uint               `json:"order_id" gorm:"not null;index"`
+	VenueID          string             `json:"venue_id" gorm:"size:50;not null;default:internal;index"`
+	ProviderFillID   *string            `json:"provider_fill_id,omitempty" gorm:"size:100"`
+	PositionID       uint               `json:"position_id" gorm:"not null;index"`
+	Symbol           string             `json:"symbol" gorm:"size:30;not null;index"`
+	Side             string             `json:"side" gorm:"size:10;not null"`
+	Quantity         accounting.Decimal `json:"quantity" gorm:"type:numeric(38,18);not null"`
+	RequestedPrice   accounting.Decimal `json:"requested_price" gorm:"type:numeric(38,18);not null"`
+	FillPrice        accounting.Decimal `json:"fill_price" gorm:"type:numeric(38,18);not null"`
+	GrossAmount      accounting.Decimal `json:"gross_amount" gorm:"type:numeric(38,18);not null"`
+	FeeAmount        accounting.Decimal `json:"fee_amount" gorm:"type:numeric(38,18);not null"`
+	FeeType          string             `json:"fee_type" gorm:"size:30;not null"`
+	FeeCurrency      string             `json:"fee_currency" gorm:"size:20;not null"`
+	ExecutionMode    string             `json:"execution_mode" gorm:"size:20;not null;index"`
+	StrategyVersion  string             `json:"strategy_version" gorm:"size:100"`
+	PolicyVersion    string             `json:"policy_version" gorm:"size:100"`
+	CostModelVersion string             `json:"cost_model_version" gorm:"size:100;not null;default:unknown"`
+	OccurredAt       time.Time          `json:"occurred_at" gorm:"not null;index"`
+	CreatedAt        time.Time          `json:"created_at" gorm:"not null"`
 }
 
 // LedgerEvent stores signed cash and asset postings together because every

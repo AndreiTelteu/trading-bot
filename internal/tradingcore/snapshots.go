@@ -183,18 +183,23 @@ type PendingOrder struct {
 type RiskState struct {
 	known                                 bool
 	grossExposure, realizedPnL, dailyLoss SignedAmount
-	openRisk                              SignedAmount
+	openRisk, turnover                    SignedAmount
 }
 
 func NewRiskState(grossExposure, realizedPnL, dailyLoss, openRisk SignedAmount) (RiskState, error) {
-	for _, value := range []SignedAmount{grossExposure, realizedPnL, dailyLoss, openRisk} {
+	zero, _ := NewSignedAmount(MustDecimal(0, 0))
+	return NewRiskStateWithTurnover(grossExposure, realizedPnL, dailyLoss, openRisk, zero)
+}
+func NewRiskStateWithTurnover(grossExposure, realizedPnL, dailyLoss, openRisk, turnover SignedAmount) (RiskState, error) {
+	for _, value := range []SignedAmount{grossExposure, realizedPnL, dailyLoss, openRisk, turnover} {
 		if !value.Valid() {
 			return RiskState{}, fmt.Errorf("risk values must be exact signed amounts")
 		}
 	}
-	return RiskState{known: true, grossExposure: grossExposure, realizedPnL: realizedPnL, dailyLoss: dailyLoss, openRisk: openRisk}, nil
+	return RiskState{known: true, grossExposure: grossExposure, realizedPnL: realizedPnL, dailyLoss: dailyLoss, openRisk: openRisk, turnover: turnover}, nil
 }
-func (state RiskState) Known() bool { return state.known }
+func (state RiskState) Turnover() SignedAmount { return state.turnover }
+func (state RiskState) Known() bool            { return state.known }
 func (state RiskState) Values() (SignedAmount, SignedAmount, SignedAmount, SignedAmount) {
 	return state.grossExposure, state.realizedPnL, state.dailyLoss, state.openRisk
 }

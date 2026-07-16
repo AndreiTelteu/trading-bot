@@ -69,6 +69,12 @@ type replaySnapshotEntry struct {
 }
 
 func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (BacktestResult, error) {
+	if config.EngineMode == "" {
+		config.EngineMode = EngineLegacy
+	}
+	if config.EngineMode != EngineLegacy && config.EngineMode != EngineShared {
+		return BacktestResult{}, fmt.Errorf("unknown backtest engine mode %q", config.EngineMode)
+	}
 	if config.InitialBalance <= 0 {
 		return BacktestResult{}, fmt.Errorf("initial balance must be > 0")
 	}
@@ -112,6 +118,12 @@ func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (Bac
 	equityBySymbol := map[string][]EquityPoint{}
 	var trades []Trade
 	var concurrentPositionCounts []int
+	var sharedLedger *backtestMemoryLedger
+	if config.EngineMode == EngineShared {
+		sharedLedger = newBacktestMemoryLedger(config)
+		cash = sharedLedger.cash
+		positions = sharedLedger.positions
+	}
 	for _, symbol := range symbols {
 		equityBySymbol[symbol] = []EquityPoint{}
 	}
@@ -206,6 +218,13 @@ func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (Bac
 			}
 
 			if intrabarExit != nil {
+				if config.EngineMode == EngineShared {
+					if err := runSharedBacktestExit(sharedLedger, config, pos, intrabarExit.Price, intrabarExit.Time, intrabarExit.Reason); err != nil {
+						return BacktestResult{}, fmt.Errorf("shared exit %s: %w", symbol, err)
+					}
+					cash, positions, trades = sharedLedger.cash, sharedLedger.positions, sharedLedger.trades
+					continue
+				}
 				// Intrabar protective exit triggered (stop-loss or take-profit from 1m data)
 				exitPrice := applySlippage(intrabarExit.Price, config.SlippageBps, false)
 				proceeds := pos.Size * exitPrice
@@ -255,6 +274,17 @@ func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (Bac
 			if decision.Reason == "" {
 				continue
 			}
+			if config.EngineMode == EngineShared {
+				rawExit := decision.TriggerPrice
+				if rawExit <= 0 {
+					rawExit = bar.Close
+				}
+				if err := runSharedBacktestExit(sharedLedger, config, pos, rawExit, time.UnixMilli(bar.CloseTime), decision.Reason); err != nil {
+					return BacktestResult{}, fmt.Errorf("shared exit %s: %w", symbol, err)
+				}
+				cash, positions, trades = sharedLedger.cash, sharedLedger.positions, sharedLedger.trades
+				continue
+			}
 			exitPrice := determineExitPrice(bar, decision, config)
 			proceeds := pos.Size * exitPrice
 			exitFee := proceeds * (config.FeeBps / 10000)
@@ -287,11 +317,11 @@ func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (Bac
 
 		entryCandidates := buildEntryCandidates(config, currentUniverse, states, positions, cash, currentTime, lookback)
 		for _, candidate := range entryCandidates {
-			if len(positions) >= config.MaxPositions {
+			if config.EngineMode != EngineShared && len(positions) >= config.MaxPositions {
 				break
 			}
 			symbol := candidate.Symbol
-			if positions[symbol] != nil {
+			if config.EngineMode != EngineShared && positions[symbol] != nil {
 				continue
 			}
 			bar, ok := currentBars[symbol]
@@ -313,6 +343,19 @@ func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (Bac
 					continue
 				}
 			}
+			if config.EngineMode == EngineShared {
+				rawEntryPrice := bar.Close
+				if has1mData {
+					if exec1mOpen := findNext1mOpen(execStates[symbol], bar.CloseTime); exec1mOpen > 0 {
+						rawEntryPrice = exec1mOpen
+					}
+				}
+				if _, err := runSharedBacktestEntry(sharedLedger, config, candidate, ctx, currentUniverse, positions, states, cash, currentTime, rawEntryPrice); err != nil {
+					return BacktestResult{}, fmt.Errorf("shared entry %s: %w", symbol, err)
+				}
+				cash, positions, trades = sharedLedger.cash, sharedLedger.positions, sharedLedger.trades
+				continue
+			}
 
 			portfolioValue := cash + currentPositionsValue(positions, states)
 			// Use next 1m bar open for entry when execution data is available
@@ -329,15 +372,6 @@ func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (Bac
 			}
 			entryCost := size * entryPrice
 			entryFee := entryCost * (config.FeeBps / 10000)
-			if config.EngineMode == EngineShared {
-				sharedFill, sharedErr := runSharedBacktestEntry(config, candidate, ctx, currentUniverse, positions, states, cash, currentTime, rawEntryPrice)
-				if sharedErr != nil || sharedFill == nil {
-					continue
-				}
-				entryPrice, size, entryFee = sharedFill.Price.Decimal().Float64(), sharedFill.Quantity.Decimal().Float64(), sharedFill.Fee.Decimal().Float64()
-				entryCost = size * entryPrice
-				amountUsdt = entryCost
-			}
 			if entryCost+entryFee > cash {
 				continue
 			}
@@ -395,7 +429,7 @@ func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (Bac
 	metrics := ComputeMetrics(equity, trades, config.TimeframeMinutes, config.AtrAnnualizationDays)
 	rankingMetrics := buildRankingMetrics(trades, config)
 	diagnostics := buildStrategyDiagnostics(trades, rankingMetrics, config, concurrentPositionCounts)
-	return BacktestResult{
+	result := BacktestResult{
 		Mode:           config.StrategyMode,
 		Metrics:        metrics,
 		ModelVersion:   config.Governance.ModelVersion,
@@ -407,7 +441,12 @@ func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (Bac
 		Equity:         equity,
 		EquityBySymbol: equityBySymbol,
 		Trades:         trades,
-	}, nil
+	}
+	if sharedLedger != nil {
+		result.SharedEngineRuns = sharedLedger.runs
+		result.SharedLedgerEvents = len(sharedLedger.events)
+	}
+	return result, nil
 }
 
 func buildBacktestUniverseSelection(config BacktestConfig, states map[string]*symbolState, currentBars map[string]services.OHLCV, lookback int, applyPolicy bool) backtestUniverseSelection {

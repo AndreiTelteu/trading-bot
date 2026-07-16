@@ -2,10 +2,12 @@ package tradingcore
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"math/big"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const LegacyStrategyVersion = "legacy-rule-v1"
@@ -14,11 +16,13 @@ const LegacyStrategyVersion = "legacy-rule-v1"
 // only immutable, point-in-time context. Indicator/model adapters publish their
 // observations in versioned settings; rollout policy alone decides authority.
 type LegacyRuleStrategy struct{ IDs IDGenerator }
+type FixedStrategy struct{ Result StrategyResult }
+
+func (strategy FixedStrategy) Decide(context.Context, DecisionContext) (StrategyResult, error) {
+	return strategy.Result, nil
+}
 
 func (strategy LegacyRuleStrategy) Decide(_ context.Context, snapshot DecisionContext) (StrategyResult, error) {
-	if strategy.IDs == nil {
-		return StrategyResult{}, fmt.Errorf("legacy strategy requires an id generator")
-	}
 	settings := snapshot.Settings()
 	portfolio := snapshot.Portfolio()
 	candidates := snapshot.Universe().Candidates()
@@ -60,19 +64,16 @@ func (strategy LegacyRuleStrategy) Decide(_ context.Context, snapshot DecisionCo
 			noActions = append(noActions, noAction(candidate, "invalid_position_size", err.Error()))
 			continue
 		}
-		rawID, err := strategy.IDs.NewID()
-		if err != nil {
-			return StrategyResult{}, err
-		}
+		rawID := stableStrategyIntentID(snapshot, portfolio.AccountID(), candidate.Instrument, Buy)
 		orderID, _ := NewOrderID("order-" + rawID)
 		key, _ := NewIdempotencyKey("intent-" + rawID)
 		metadata := map[string]string{"rank": strconv.Itoa(candidate.Rank), "rollout_state": value(settings, "model_rollout_state", "shadow")}
-		for _, key := range []string{"stop_price", "take_profit_price", "atr_value", "atr_trailing_mult", "max_bars_held"} {
+		for _, key := range []string{"stop_price", "take_profit_price", "atr_value", "atr_trailing_mult", "max_bars_held", "entry_rank", "regime_state", "breadth_ratio", "model_version", "predicted_probability", "predicted_ev"} {
 			if configured := strings.TrimSpace(settings[key+"."+id]); configured != "" {
 				metadata[key] = configured
 			}
 		}
-		intent, err := NewOrderIntent(OrderIntent{ID: orderID, IdempotencyKey: key, AccountID: portfolio.AccountID(), Instrument: candidate.Instrument, Side: Buy, Type: MarketOrder, Quantity: quantity, ReferencePrice: SomePrice(quote.Last), SignalAt: snapshot.SignalAt(), DecisionAt: snapshot.DecisionAt(), CreatedAt: snapshot.DecisionAt(), ExecutionMode: portfolio.ExecutionMode(), QuantitySemantics: QuantityCashCapped, Reason: "passed_gates", Horizon: value(settings, "strategy_horizon", "15m"), Versions: snapshot.Versions(), Provenance: Provenance{Source: "legacy_rule_strategy", Actor: LegacyStrategyVersion, Reason: "passed_gates"}}, metadata)
+		intent, err := NewOrderIntent(OrderIntent{ID: orderID, IdempotencyKey: key, AccountID: portfolio.AccountID(), Instrument: candidate.Instrument, Side: Buy, Type: MarketOrder, Quantity: quantity, ReferencePrice: SomePrice(quote.Last), SignalAt: snapshot.SignalAt(), DecisionAt: snapshot.DecisionAt(), CreatedAt: snapshot.DecisionAt(), ExecutionMode: portfolio.ExecutionMode(), QuantitySemantics: QuantityCashCapped, Priority: candidate.Rank, Reason: "passed_gates", Horizon: value(settings, "strategy_horizon", "15m"), Versions: snapshot.Versions(), Provenance: Provenance{Source: "legacy_rule_strategy", Actor: LegacyStrategyVersion, Reason: "passed_gates"}}, metadata)
 		if err != nil {
 			return StrategyResult{}, err
 		}
@@ -125,11 +126,17 @@ func legacyEntryGate(settings map[string]string, id string, portfolio PortfolioS
 		return "max_positions_reached"
 	}
 	for _, position := range portfolio.Positions() {
-		if position.Instrument.ID == instrument.ID && !boolSetting(settings, "pyramiding_enabled", false) {
+		if position.Instrument.ID == instrument.ID {
 			return "position_exists"
 		}
 	}
 	return ""
+}
+
+func stableStrategyIntentID(snapshot DecisionContext, account AccountID, instrument Instrument, side OrderSide) string {
+	payload := snapshot.DecisionAt().UTC().Format(time.RFC3339Nano) + "|" + account.String() + "|" + instrument.ID.String() + "|" + string(side) + "|" + snapshot.Versions().Strategy + "|" + snapshot.Versions().Policy
+	sum := sha256.Sum256([]byte(payload))
+	return fmt.Sprintf("%x", sum[:12])
 }
 
 func noAction(candidate UniverseCandidate, code, reason string) NoAction {

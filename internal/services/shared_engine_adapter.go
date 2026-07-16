@@ -28,6 +28,21 @@ func (discardOutcomeLedger) RecordBrokerOutcome(context.Context, tradingcore.Dec
 	return nil
 }
 
+type runtimeDecisionObserver struct{ observations []tradingcore.Observation }
+
+func (observer *runtimeDecisionObserver) Observe(_ context.Context, value tradingcore.Observation) error {
+	value.Metadata = cloneStringMap(value.Metadata)
+	observer.observations = append(observer.observations, value)
+	return nil
+}
+func cloneStringMap(values map[string]string) map[string]string {
+	result := map[string]string{}
+	for key, value := range values {
+		result[key] = value
+	}
+	return result
+}
+
 func executeShortlistTradesShared(analyses []AnalyzedCoin, universe *UniverseSelectionResult, settings map[string]string, mode tradingcore.ExecutionMode) ([]AnalyzedCoin, int, error) {
 	now := time.Now().UTC()
 	snapshot, policy, err := buildRuntimeDecisionContext(analyses, universe, settings, mode, now)
@@ -41,7 +56,8 @@ func executeShortlistTradesShared(analyses []AnalyzedCoin, universe *UniverseSel
 	if mode == tradingcore.ExecutionShadow {
 		ledger = discardOutcomeLedger{}
 	}
-	runner := tradingcore.Orchestrator{Source: runtimeDecisionSource{snapshot, policy}, Strategy: tradingcore.LegacyRuleStrategy{IDs: tradingcore.RandomIDGenerator{Prefix: "runtime-intent"}}, Risk: tradingcore.PortfolioRiskEngine{}, Broker: broker, Ledger: ledger}
+	observer := &runtimeDecisionObserver{}
+	runner := tradingcore.Orchestrator{Source: runtimeDecisionSource{snapshot, policy}, Strategy: tradingcore.LegacyRuleStrategy{}, Risk: tradingcore.PortfolioRiskEngine{}, Broker: broker, Ledger: ledger, Observer: observer}
 	result, err := runner.Run(context.Background())
 	if err != nil {
 		return analyses, 0, err
@@ -83,6 +99,19 @@ func executeShortlistTradesShared(analyses []AnalyzedCoin, universe *UniverseSel
 				opened++
 			}
 		}
+		if mode == tradingcore.ExecutionShadow {
+			analyses[i].Decision = "shadow_only"
+			if analyses[i].DecisionReason == "" {
+				analyses[i].DecisionReason = "shadow_observation"
+			}
+		}
+		decision := analyses[i].Decision
+		reason := analyses[i].DecisionReason
+		autoTrade := getSettingBool(settings, "auto_trade_enabled", false)
+		history := database.TrendAnalysisHistory{Symbol: analyses[i].Symbol, Timeframe: "15m", ModelVersion: analyses[i].ModelVersion, PolicyVersion: analyses[i].PolicyVersion, UniverseMode: analyses[i].UniverseMode, RolloutState: analyses[i].RolloutState, ExperimentID: stringPtr(analyses[i].ExperimentID), PredictionLogID: analyses[i].PredictionLogID, CurrentPrice: &analyses[i].Price, Change24h: &analyses[i].Change24h, FinalSignal: &analyses[i].Signal, FinalRating: &analyses[i].Rating, AutoTrade: &autoTrade, Decision: &decision, DecisionReason: &reason, DecisionContextJSON: string(result.Trace), AnalyzedAt: now}
+		if err := database.DB.Create(&history).Error; err != nil {
+			return analyses, opened, fmt.Errorf("persist shared decision history: %w", err)
+		}
 	}
 	if opened > 0 {
 		broadcastTradeUpdates()
@@ -104,7 +133,10 @@ func buildRuntimeDecisionContext(analyses []AnalyzedCoin, universe *UniverseSele
 	if err != nil {
 		return tradingcore.DecisionContext{}, tradingcore.RiskPolicy{}, err
 	}
-	venue, _ := tradingcore.NewVenueID("binance")
+	venue, err := tradingcore.NewVenueID(defaultString(settings["exchange_venue_id"], "binance"))
+	if err != nil {
+		return tradingcore.DecisionContext{}, tradingcore.RiskPolicy{}, err
+	}
 	cash, err := coreAmount(wallet.Balance)
 	if err != nil {
 		return tradingcore.DecisionContext{}, tradingcore.RiskPolicy{}, err
@@ -223,12 +255,12 @@ func buildRuntimeDecisionContext(analyses []AnalyzedCoin, universe *UniverseSele
 		gross = gross.Add(row.AmountExact.Mul(accounting.MustParse(strconv.FormatFloat(mark, 'f', -1, 64))))
 	}
 	var orderRows []database.Order
-	if err := database.DB.Where("status IN ?", []string{OrderStatusPending, OrderStatusSubmitted}).Find(&orderRows).Error; err != nil {
+	if err := database.DB.Where("status IN ?", []string{OrderStatusPending, OrderStatusSubmitted, string(tradingcore.BrokerAccepted), string(tradingcore.BrokerPartiallyFilled)}).Find(&orderRows).Error; err != nil {
 		return tradingcore.DecisionContext{}, tradingcore.RiskPolicy{}, err
 	}
 	pending := make([]tradingcore.PendingOrder, 0, len(orderRows))
 	for _, row := range orderRows {
-		if row.AmountCryptoExact == nil || row.AmountCryptoExact.Sign() <= 0 {
+		if row.RemainingQuantityExact == nil || row.RemainingQuantityExact.Sign() <= 0 {
 			return tradingcore.DecisionContext{}, tradingcore.RiskPolicy{}, ledgerpkg.ErrProjectionUnavailable
 		}
 		symbol := PositionPairSymbol(row.Symbol, wallet.Currency)
@@ -242,7 +274,7 @@ func buildRuntimeDecisionContext(analyses []AnalyzedCoin, universe *UniverseSele
 				return tradingcore.DecisionContext{}, tradingcore.RiskPolicy{}, err
 			}
 		}
-		quantity, quantityErr := coreQuantity(row.AmountCryptoExact.String())
+		quantity, quantityErr := coreQuantity(row.RemainingQuantityExact.String())
 		if quantityErr != nil {
 			return tradingcore.DecisionContext{}, tradingcore.RiskPolicy{}, quantityErr
 		}
@@ -257,7 +289,19 @@ func buildRuntimeDecisionContext(analyses []AnalyzedCoin, universe *UniverseSele
 		}
 		pending = append(pending, tradingcore.PendingOrder{ID: orderID, Instrument: instrument, Side: side, Remaining: quantity, SubmittedAt: submitted})
 	}
-	portfolio, err := tradingcore.NewPortfolioSnapshot(now, account, mode, map[tradingcore.AssetID]tradingcore.SignedAmount{quoteAsset: cash}, positions, pending, tradingcore.RiskState{})
+	var historicalFills []database.Fill
+	if err := database.DB.Where("account_id = ? AND occurred_at <= ?", account.String(), now).Find(&historicalFills).Error; err != nil {
+		return tradingcore.DecisionContext{}, tradingcore.RiskPolicy{}, err
+	}
+	turnover := accounting.Zero()
+	for _, fill := range historicalFills {
+		turnover = turnover.Add(fill.GrossAmount)
+	}
+	riskState, err := tradingcore.NewRiskStateWithTurnover(mustCoreAmount(gross.String()), mustCoreAmount("0"), mustCoreAmount("0"), mustCoreAmount("0"), mustCoreAmount(turnover.String()))
+	if err != nil {
+		return tradingcore.DecisionContext{}, tradingcore.RiskPolicy{}, err
+	}
+	portfolio, err := tradingcore.NewPortfolioSnapshot(now, account, mode, map[tradingcore.AssetID]tradingcore.SignedAmount{quoteAsset: cash}, positions, pending, riskState)
 	if err != nil {
 		return tradingcore.DecisionContext{}, tradingcore.RiskPolicy{}, err
 	}
@@ -267,7 +311,8 @@ func buildRuntimeDecisionContext(analyses []AnalyzedCoin, universe *UniverseSele
 	}
 	maxPosition := getSettingFloat(settings, "max_position_value", 0)
 	maxGross := wallet.Balance + gross.Float64()
-	policy := tradingcore.RiskPolicy{Version: policyVersion, MaxPositions: getSettingInt(settings, "max_positions", 5), MaxGrossExposure: mustCoreAmount(strconv.FormatFloat(maxGross, 'f', -1, 64)), MaxPositionValue: mustCoreAmount(strconv.FormatFloat(maxPosition, 'f', -1, 64)), MaxTurnover: mustCoreAmount(strconv.FormatFloat(maxGross, 'f', -1, 64)), CashReserve: mustCoreAmount("0"), MaxConcurrentOrders: getSettingInt(settings, "max_positions", 5), PyramidingEnabled: getSettingBool(settings, "pyramiding_enabled", false), MaxPyramidLayers: getSettingInt(settings, "max_pyramid_layers", 3), LotSize: mustCoreQuantity("0.00000001")}
+	maxTurnover := getSettingFloat(settings, "max_turnover", maxGross)
+	policy := tradingcore.RiskPolicy{Version: policyVersion, MaxPositions: getSettingInt(settings, "max_positions", 5), MaxGrossExposure: mustCoreAmount(strconv.FormatFloat(maxGross, 'f', -1, 64)), MaxPositionValue: mustCoreAmount(strconv.FormatFloat(maxPosition, 'f', -1, 64)), MaxTurnover: mustCoreAmount(strconv.FormatFloat(maxTurnover, 'f', -1, 64)), CashReserve: mustCoreAmount("0"), MaxConcurrentOrders: getSettingInt(settings, "max_positions", 5), PyramidingEnabled: getSettingBool(settings, "pyramiding_enabled", false), MaxPyramidLayers: getSettingInt(settings, "max_pyramid_layers", 3), LotSize: mustCoreQuantity("0.00000001"), ExecutionCosts: tradingcore.ExecutionCostPolicy{Version: "paper-cost-v1", FeeBPS: int64(getSettingInt(settings, "paper_fee_bps", 10)), AdverseSlippageBPS: int64(getSettingInt(settings, "paper_slippage_bps", 5))}}
 	return contextSnapshot, policy, nil
 }
 

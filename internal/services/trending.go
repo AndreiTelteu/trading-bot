@@ -149,7 +149,9 @@ func logActivity(logType, message string, details string) {
 	if details != "" {
 		log.Details = &details
 	}
-	database.DB.Create(&log)
+	if database.DB != nil {
+		database.DB.Create(&log)
+	}
 
 	// Broadcast via WebSocket
 	websocket.BroadcastActivityLogNew(log)
@@ -903,22 +905,47 @@ func AnalyzeShortlist(selection *UniverseSelectionResult, settings map[string]st
 }
 
 func ExecuteShortlistTrades(analyses []AnalyzedCoin, universe *UniverseSelectionResult, settings map[string]string) ([]AnalyzedCoin, int) {
+	return executeShortlistTradesRouted(analyses, universe, settings, executeShortlistTradesShared, func(values []AnalyzedCoin, selection *UniverseSelectionResult, config map[string]string) ([]AnalyzedCoin, int) {
+		return executeShortlistTradesWithRuntime(values, selection, config, productionShortlistRuntime{})
+	})
+}
+
+type sharedShortlistRunner func([]AnalyzedCoin, *UniverseSelectionResult, map[string]string, tradingcore.ExecutionMode) ([]AnalyzedCoin, int, error)
+type legacyShortlistRunner func([]AnalyzedCoin, *UniverseSelectionResult, map[string]string) ([]AnalyzedCoin, int)
+
+func executeShortlistTradesRouted(analyses []AnalyzedCoin, universe *UniverseSelectionResult, settings map[string]string, shared sharedShortlistRunner, legacy legacyShortlistRunner) ([]AnalyzedCoin, int) {
 	engineMode := strings.ToLower(strings.TrimSpace(getSettingString(settings, "trading_engine_mode", "legacy")))
+	if err := validateTradingEngineMode(engineMode); err != nil {
+		return markSharedEngineFailure(analyses, err), 0
+	}
 	if engineMode == "shared" {
-		results, opened, err := executeShortlistTradesShared(analyses, universe, settings, tradingcore.ExecutionPaper)
+		results, opened, err := shared(analyses, universe, settings, tradingcore.ExecutionPaper)
 		if err == nil {
 			return results, opened
 		}
-		if strings.ToLower(strings.TrimSpace(getSettingString(settings, "trading_engine_fallback", "legacy"))) != "legacy" {
+		if !allowLegacyEngineFallback(settings, err) {
 			return markSharedEngineFailure(analyses, err), 0
 		}
 		logActivity("error", "Shared trading engine failed; using explicit legacy fallback", err.Error())
 	} else if engineMode == "shadow_compare" {
-		if _, _, err := executeShortlistTradesShared(append([]AnalyzedCoin(nil), analyses...), universe, settings, tradingcore.ExecutionShadow); err != nil {
+		if _, _, err := shared(append([]AnalyzedCoin(nil), analyses...), universe, settings, tradingcore.ExecutionShadow); err != nil {
 			logActivity("error", "Shared trading engine shadow comparison failed", err.Error())
 		}
 	}
-	return executeShortlistTradesWithRuntime(analyses, universe, settings, productionShortlistRuntime{})
+	return legacy(analyses, universe, settings)
+}
+
+func validateTradingEngineMode(mode string) error {
+	switch mode {
+	case "legacy", "shared", "shadow_compare":
+		return nil
+	default:
+		return fmt.Errorf("unknown trading_engine_mode %q", mode)
+	}
+}
+
+func allowLegacyEngineFallback(settings map[string]string, err error) bool {
+	return strings.EqualFold(strings.TrimSpace(getSettingString(settings, "trading_engine_fallback", "disabled")), "legacy") && tradingcore.IsPreSubmissionFailure(err)
 }
 
 type shortlistMarketGatePolicy struct {

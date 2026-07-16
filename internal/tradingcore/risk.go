@@ -3,10 +3,12 @@ package tradingcore
 import (
 	"context"
 	"math/big"
+	"strconv"
 )
 
 const (
 	RiskExecutionNotAuthorized RejectionCode = "execution_not_authorized"
+	RiskMissingPrice           RejectionCode = "valuation_price_required"
 	RiskPendingConflict        RejectionCode = "pending_order_conflict"
 	RiskPositionExists         RejectionCode = "position_exists"
 	RiskPyramidLayers          RejectionCode = "max_pyramid_layers_reached"
@@ -26,79 +28,115 @@ func (PortfolioRiskEngine) Evaluate(_ context.Context, batch DecisionBatch, port
 	if err := policy.Validate(); err != nil {
 		return RiskDecision{}, err
 	}
-	approved := make([]OrderIntent, 0)
-	rejected := make([]OrderRejection, 0)
-	traces := make([]RiskTrace, 0)
-	positions := portfolio.Positions()
-	pending := portfolio.PendingOrders()
-	gross := big.NewRat(0, 1)
+	positions, pending := portfolio.Positions(), portfolio.PendingOrders()
+	gross := portfolioGross(positions)
 	turnover := big.NewRat(0, 1)
-	for _, position := range positions {
-		gross.Add(gross, notional(position.Quantity, position.MarkPrice))
+	if state := portfolio.RiskState(); state.Known() {
+		stateGross, _, _, _ := state.Values()
+		gross = decimalRat(stateGross.Decimal())
+		turnover = decimalRat(state.Turnover().Decimal())
 	}
+	cash := map[AssetID]*big.Rat{}
+	for asset, amount := range portfolio.Cash() {
+		available := decimalRat(amount.Decimal())
+		if policy.CashReserve.Valid() {
+			available.Sub(available, decimalRat(policy.CashReserve.Decimal()))
+		}
+		cash[asset] = available
+	}
+	approved := []OrderIntent{}
+	rejected := []OrderRejection{}
+	traces := []RiskTrace{}
 	for _, intent := range batch.Intents() {
+		requested := decimalRat(intent.Quantity.Decimal())
+		quantity := new(big.Rat).Set(requested)
+		preGross := new(big.Rat).Set(gross)
+		preTurnover := new(big.Rat).Set(turnover)
+		preCash := new(big.Rat)
+		if value := cash[intent.Instrument.QuoteAsset]; value != nil {
+			preCash.Set(value)
+		}
+		trace := RiskTrace{OrderID: intent.ID.String(), PolicyVersion: policy.Version, Priority: intent.Priority, CostPolicyVersion: policy.ExecutionCosts.Version, RequestedQuantity: intent.Quantity.Decimal().String(), PreCash: ratString(preCash), PreGrossExposure: ratString(preGross), PreTurnover: ratString(preTurnover)}
 		checks := []string{"execution_authority"}
-		requested := new(big.Rat).Set(decimalRat(intent.Quantity.Decimal()))
-		approvedQty := new(big.Rat).Set(requested)
-		price, hasPrice := intentPrice(intent, portfolio)
 		code := RejectionCode("")
-		if intent.ExecutionMode == ExecutionResearch || intent.ExecutionMode == ExecutionShadow {
+		price, hasPrice := intentPrice(intent, portfolio)
+		switch {
+		case intent.ExecutionMode == ExecutionResearch || intent.ExecutionMode == ExecutionShadow:
 			code = RiskExecutionNotAuthorized
-		} else if pendingConflict(pending, intent) {
+		case !hasPrice:
+			code = RiskMissingPrice
+		case pendingConflict(pending, intent):
 			checks = append(checks, "pending_conflict")
 			code = RiskPendingConflict
-		} else if intent.Side == Buy && existingCount(positions, intent.Instrument) > 0 && !policy.PyramidingEnabled {
+		case intent.Side == Buy && existingCount(positions, intent.Instrument) > 0 && !policy.PyramidingEnabled:
 			checks = append(checks, "pyramiding")
 			code = RiskPositionExists
-		} else if intent.Side == Buy && policy.PyramidingEnabled && policy.MaxPyramidLayers > 0 && pyramidLayers(positions, intent.Instrument) >= policy.MaxPyramidLayers {
+		case intent.Side == Buy && policy.PyramidingEnabled && policy.MaxPyramidLayers > 0 && pyramidLayers(positions, intent.Instrument) >= policy.MaxPyramidLayers:
 			checks = append(checks, "pyramid_layers")
 			code = RiskPyramidLayers
-		} else if policy.MaxConcurrentOrders > 0 && len(pending)+len(approved) >= policy.MaxConcurrentOrders {
+		case policy.MaxConcurrentOrders > 0 && len(pending)+len(approved) >= policy.MaxConcurrentOrders:
 			checks = append(checks, "concurrency")
 			code = RiskMaxConcurrency
-		} else if intent.Side == Buy && existingCount(positions, intent.Instrument) == 0 && policy.MaxPositions > 0 && len(positions)+countNewBuys(approved, positions) >= policy.MaxPositions {
+		case intent.Side == Buy && existingCount(positions, intent.Instrument) == 0 && policy.MaxPositions > 0 && len(positions)+countNewBuys(approved, positions) >= policy.MaxPositions:
 			checks = append(checks, "positions")
 			code = RiskMaxPositions
 		}
 		if code == "" {
-			normalized, err := normalizedQuantity(approvedQty, policy.LotSize)
+			checks = append(checks, "position_exposure", "gross_exposure", "turnover", "cash", "lot_size")
+			quantity, code = capIntent(quantity, intent, price, positions, gross, turnover, cash[intent.Instrument.QuoteAsset], policy)
+		}
+		if code == "" {
+			normalized, err := normalizedQuantity(quantity, policy.LotSize)
 			if err != nil {
 				code = RiskQuantityBelowLot
 			} else {
-				approvedQty = normalized
-				checks = append(checks, "lot_size")
+				quantity = normalized
 			}
 		}
-		requestedNotional, approvedNotional := "", ""
-		if code == "" && hasPrice {
-			requestedValue := new(big.Rat).Mul(requested, decimalRat(price.Decimal()))
-			approvedValue := new(big.Rat).Mul(approvedQty, decimalRat(price.Decimal()))
-			requestedNotional = ratString(requestedValue)
-			if intent.Side == Buy {
-				approvedQty, code = capBuyQuantity(approvedQty, price, gross, turnover, intent, portfolio, policy)
-				approvedValue = new(big.Rat).Mul(approvedQty, decimalRat(price.Decimal()))
-				if code == "" {
-					gross.Add(gross, approvedValue)
-					turnover.Add(turnover, approvedValue)
+		approvedNotional, reservedSlip, reservedFee := big.NewRat(0, 1), big.NewRat(0, 1), big.NewRat(0, 1)
+		if hasPrice && quantity.Sign() > 0 {
+			approvedNotional, reservedSlip, reservedFee = costReservation(quantity, price, intent.Side, policy.ExecutionCosts)
+			trace.RequestedNotional = ratString(new(big.Rat).Mul(requested, decimalRat(price.Decimal())))
+			trace.ApprovedNotional = ratString(approvedNotional)
+			trace.ReservedSlippage = ratString(reservedSlip)
+			trace.ReservedFee = ratString(reservedFee)
+		}
+		if code == "" {
+			approvedQuantity, err := quantityFromRat(quantity)
+			if err != nil {
+				code = RiskQuantityBelowLot
+			} else {
+				intent.Quantity = approvedQuantity
+				intent.Versions.Policy = policy.Version
+				metadata := intent.Metadata()
+				if metadata == nil {
+					metadata = map[string]string{}
 				}
-			} else if available := positionQuantity(positions, intent.Instrument); approvedQty.Cmp(available) > 0 {
-				code = RiskInsufficientAsset
+				metadata["cost_policy_version"] = policy.ExecutionCosts.Version
+				metadata["fee_bps"] = strconv.FormatInt(policy.ExecutionCosts.FeeBPS, 10)
+				metadata["slippage_bps"] = strconv.FormatInt(policy.ExecutionCosts.AdverseSlippageBPS, 10)
+				intent, _ = NewOrderIntent(intent, metadata)
+				approved = append(approved, intent)
+				turnover.Add(turnover, approvedNotional)
+				referenceNotional := new(big.Rat).Mul(quantity, decimalRat(price.Decimal()))
+				if intent.Side == Buy {
+					gross.Add(gross, referenceNotional)
+					reservedCash := new(big.Rat).Add(new(big.Rat).Set(approvedNotional), reservedFee)
+					cash[intent.Instrument.QuoteAsset].Sub(cash[intent.Instrument.QuoteAsset], reservedCash)
+				} else {
+					gross.Sub(gross, referenceNotional)
+				}
 			}
-			approvedNotional = ratString(approvedValue)
 		}
 		if code != "" {
 			rejected = append(rejected, OrderRejection{OrderID: intent.ID, Code: code, Message: string(code), EvaluatedAt: portfolio.AsOf(), PolicyVersion: policy.Version})
-		} else {
-			quantity, err := quantityFromRat(approvedQty)
-			if err != nil {
-				rejected = append(rejected, OrderRejection{OrderID: intent.ID, Code: RiskQuantityBelowLot, Message: string(RiskQuantityBelowLot), EvaluatedAt: portfolio.AsOf(), PolicyVersion: policy.Version})
-			} else {
-				intent.Quantity = quantity
-				intent.Versions.Policy = policy.Version
-				approved = append(approved, intent)
-			}
 		}
-		traces = append(traces, RiskTrace{OrderID: intent.ID, PolicyVersion: policy.Version, Checks: checks, RequestedQuantity: intent.Quantity.Decimal().String(), ApprovedQuantity: ratString(approvedQty), RequestedNotional: requestedNotional, ApprovedNotional: approvedNotional})
+		trace.Checks = checks
+		trace.ApprovedQuantity = ratString(quantity)
+		trace.PostCash = ratString(valueOrZero(cash[intent.Instrument.QuoteAsset], preCash))
+		trace.PostGrossExposure = ratString(gross)
+		trace.PostTurnover = ratString(turnover)
+		traces = append(traces, trace)
 	}
 	approvedBatch, err := NewDecisionBatch(approved)
 	if err != nil {
@@ -107,6 +145,91 @@ func (PortfolioRiskEngine) Evaluate(_ context.Context, batch DecisionBatch, port
 	return NewRiskDecisionWithTrace(approvedBatch, rejected, traces), nil
 }
 
+func capIntent(quantity *big.Rat, intent OrderIntent, price Price, positions []Position, gross, turnover, cash *big.Rat, policy RiskPolicy) (*big.Rat, RejectionCode) {
+	result := new(big.Rat).Set(quantity)
+	referencePrice := decimalRat(price.Decimal())
+	adverseBPS := int64(10000 + policy.ExecutionCosts.AdverseSlippageBPS)
+	if intent.Side == Sell {
+		adverseBPS = 10000 - policy.ExecutionCosts.AdverseSlippageBPS
+	}
+	adversePrice := new(big.Rat).Mul(referencePrice, big.NewRat(adverseBPS, 10000))
+	feeFactor := big.NewRat(10000+policy.ExecutionCosts.FeeBPS, 10000)
+	cashUnit := new(big.Rat).Mul(adversePrice, feeFactor)
+	capBy := func(limit SignedAmount, used, unit *big.Rat, code RejectionCode) RejectionCode {
+		if !limit.Valid() || limit.Decimal().Sign() == 0 {
+			return ""
+		}
+		remaining := new(big.Rat).Sub(decimalRat(limit.Decimal()), used)
+		if remaining.Sign() <= 0 {
+			return code
+		}
+		candidate := new(big.Rat).Quo(remaining, unit)
+		if result.Cmp(candidate) > 0 {
+			result.Set(candidate)
+		}
+		return ""
+	}
+	if intent.Side == Buy {
+		if code := capBy(policy.MaxPositionValue, instrumentExposure(positions, intent.Instrument), referencePrice, RiskPositionExposure); code != "" {
+			return result, code
+		}
+		if code := capBy(policy.MaxGrossExposure, gross, referencePrice, RiskTotalExposure); code != "" {
+			return result, code
+		}
+	}
+	if code := capBy(policy.MaxTurnover, turnover, adversePrice, RiskTurnover); code != "" {
+		return result, code
+	}
+	if intent.Side == Buy {
+		if cash == nil || cash.Sign() <= 0 {
+			return result, RiskInsufficientCash
+		}
+		candidate := new(big.Rat).Quo(cash, cashUnit)
+		if result.Cmp(candidate) > 0 {
+			result.Set(candidate)
+		}
+		if result.Sign() <= 0 {
+			return result, RiskInsufficientCash
+		}
+	} else {
+		available := positionQuantity(positions, intent.Instrument)
+		if result.Cmp(available) > 0 {
+			result.Set(available)
+		}
+		if result.Sign() <= 0 {
+			return result, RiskInsufficientAsset
+		}
+	}
+	return result, ""
+}
+
+func costReservation(quantity *big.Rat, price Price, side OrderSide, policy ExecutionCostPolicy) (gross, slippage, fee *big.Rat) {
+	reference := new(big.Rat).Mul(quantity, decimalRat(price.Decimal()))
+	adverseBPS := int64(10000 + policy.AdverseSlippageBPS)
+	if side == Sell {
+		adverseBPS = 10000 - policy.AdverseSlippageBPS
+	}
+	gross = new(big.Rat).Mul(reference, big.NewRat(adverseBPS, 10000))
+	slippage = new(big.Rat).Sub(new(big.Rat).Set(gross), reference)
+	if slippage.Sign() < 0 {
+		slippage.Neg(slippage)
+	}
+	fee = new(big.Rat).Mul(gross, big.NewRat(policy.FeeBPS, 10000))
+	return
+}
+func valueOrZero(value, fallback *big.Rat) *big.Rat {
+	if value == nil {
+		return new(big.Rat).Set(fallback)
+	}
+	return value
+}
+func portfolioGross(values []Position) *big.Rat {
+	total := big.NewRat(0, 1)
+	for _, value := range values {
+		total.Add(total, notional(value.Quantity, value.MarkPrice))
+	}
+	return total
+}
 func intentPrice(intent OrderIntent, portfolio PortfolioSnapshot) (Price, bool) {
 	if p, ok := intent.ReferencePrice.Get(); ok {
 		return p, true
@@ -170,58 +293,6 @@ func countNewBuys(intents []OrderIntent, positions []Position) int {
 	return count
 }
 func ratString(value *big.Rat) string { decimal, _ := ratDecimal(value); return decimal.String() }
-
-func capBuyQuantity(quantity *big.Rat, price Price, gross, turnover *big.Rat, intent OrderIntent, portfolio PortfolioSnapshot, policy RiskPolicy) (*big.Rat, RejectionCode) {
-	priceRat := decimalRat(price.Decimal())
-	capQty := new(big.Rat).Set(quantity)
-	capByAmount := func(limit SignedAmount, used *big.Rat, rejection RejectionCode) RejectionCode {
-		if !limit.Valid() || limit.Decimal().Sign() == 0 {
-			return ""
-		}
-		remaining := new(big.Rat).Sub(decimalRat(limit.Decimal()), used)
-		if remaining.Sign() <= 0 {
-			return rejection
-		}
-		maxQty := new(big.Rat).Quo(remaining, priceRat)
-		if capQty.Cmp(maxQty) > 0 {
-			capQty.Set(maxQty)
-		}
-		return ""
-	}
-	if code := capByAmount(policy.MaxPositionValue, instrumentExposure(portfolio.Positions(), intent.Instrument), RiskPositionExposure); code != "" {
-		return capQty, code
-	}
-	if code := capByAmount(policy.MaxGrossExposure, gross, RiskTotalExposure); code != "" {
-		return capQty, code
-	}
-	if code := capByAmount(policy.MaxTurnover, turnover, RiskTurnover); code != "" {
-		return capQty, code
-	}
-	cash, ok := portfolio.CashAmount(intent.Instrument.QuoteAsset)
-	if !ok {
-		return capQty, RiskInsufficientCash
-	}
-	available := decimalRat(cash.Decimal())
-	if policy.CashReserve.Valid() {
-		available.Sub(available, decimalRat(policy.CashReserve.Decimal()))
-	}
-	if available.Sign() <= 0 {
-		return capQty, RiskInsufficientCash
-	}
-	cashQty := new(big.Rat).Quo(available, priceRat)
-	if capQty.Cmp(cashQty) > 0 {
-		capQty.Set(cashQty)
-	}
-	if capQty.Sign() <= 0 {
-		return capQty, RiskInsufficientCash
-	}
-	normalized, err := normalizedQuantity(capQty, policy.LotSize)
-	if err != nil {
-		return capQty, RiskQuantityBelowLot
-	}
-	return normalized, ""
-}
-
 func instrumentExposure(values []Position, instrument Instrument) *big.Rat {
 	total := big.NewRat(0, 1)
 	for _, value := range values {

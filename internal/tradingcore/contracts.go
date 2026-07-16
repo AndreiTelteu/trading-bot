@@ -60,6 +60,7 @@ type OrderIntent struct {
 	SignalAt, DecisionAt, CreatedAt time.Time
 	ExecutionMode                   ExecutionMode
 	QuantitySemantics               QuantitySemantics
+	Priority                        int
 	Reason, Horizon                 string
 	Versions                        VersionContext
 	Provenance                      Provenance
@@ -100,6 +101,9 @@ func (intent OrderIntent) Validate() error {
 	if !intent.Quantity.Valid() {
 		return fmt.Errorf("positive quantity is required")
 	}
+	if intent.Priority < 0 {
+		return fmt.Errorf("order priority cannot be negative")
+	}
 	switch intent.QuantitySemantics {
 	case "", QuantityExact, QuantityCashCapped, QuantityExitAll:
 	default:
@@ -130,7 +134,18 @@ func NewDecisionBatch(intents []OrderIntent) (DecisionBatch, error) {
 			return DecisionBatch{}, err
 		}
 	}
-	sort.SliceStable(copyValues, func(i, j int) bool { return copyValues[i].ID.String() < copyValues[j].ID.String() })
+	sort.SliceStable(copyValues, func(i, j int) bool {
+		if copyValues[i].Priority != copyValues[j].Priority {
+			return copyValues[i].Priority < copyValues[j].Priority
+		}
+		if copyValues[i].Instrument.ID != copyValues[j].Instrument.ID {
+			return copyValues[i].Instrument.ID.String() < copyValues[j].Instrument.ID.String()
+		}
+		if copyValues[i].Side != copyValues[j].Side {
+			return copyValues[i].Side < copyValues[j].Side
+		}
+		return copyValues[i].ID.String() < copyValues[j].ID.String()
+	})
 	return DecisionBatch{copyValues}, nil
 }
 func (batch DecisionBatch) Intents() []OrderIntent {
@@ -174,6 +189,22 @@ type RiskPolicy struct {
 	PyramidingEnabled                  bool
 	MaxPyramidLayers                   int
 	LotSize                            Quantity
+	ExecutionCosts                     ExecutionCostPolicy
+}
+
+type ExecutionCostPolicy struct {
+	Version                    string
+	FeeBPS, AdverseSlippageBPS int64
+}
+
+func (policy ExecutionCostPolicy) Validate() error {
+	if policy.Version == "" {
+		return fmt.Errorf("execution cost policy version is required")
+	}
+	if policy.FeeBPS < 0 || policy.AdverseSlippageBPS < 0 || policy.FeeBPS+policy.AdverseSlippageBPS >= 10000 {
+		return fmt.Errorf("invalid execution cost basis points")
+	}
+	return nil
 }
 
 func (policy RiskPolicy) Validate() error {
@@ -188,6 +219,9 @@ func (policy RiskPolicy) Validate() error {
 	}
 	if policy.MaxConcurrentOrders < 0 || policy.MaxPyramidLayers < 0 {
 		return fmt.Errorf("concurrency and pyramid limits cannot be negative")
+	}
+	if err := policy.ExecutionCosts.Validate(); err != nil {
+		return err
 	}
 	return nil
 }
@@ -207,13 +241,23 @@ type RiskDecision struct {
 }
 
 type RiskTrace struct {
-	OrderID           OrderID  `json:"order_id"`
+	OrderID           string   `json:"order_id"`
 	PolicyVersion     string   `json:"policy_version"`
 	Checks            []string `json:"checks"`
 	RequestedQuantity string   `json:"requested_quantity"`
 	ApprovedQuantity  string   `json:"approved_quantity"`
 	RequestedNotional string   `json:"requested_notional"`
 	ApprovedNotional  string   `json:"approved_notional"`
+	Priority          int      `json:"priority"`
+	CostPolicyVersion string   `json:"cost_policy_version"`
+	ReservedFee       string   `json:"reserved_fee"`
+	ReservedSlippage  string   `json:"reserved_slippage"`
+	PreCash           string   `json:"pre_cash"`
+	PostCash          string   `json:"post_cash"`
+	PreGrossExposure  string   `json:"pre_gross_exposure"`
+	PostGrossExposure string   `json:"post_gross_exposure"`
+	PreTurnover       string   `json:"pre_turnover"`
+	PostTurnover      string   `json:"post_turnover"`
 }
 
 func NewRiskDecision(approved DecisionBatch, rejected []OrderRejection) RiskDecision {
@@ -223,8 +267,7 @@ func NewRiskDecision(approved DecisionBatch, rejected []OrderRejection) RiskDeci
 }
 func NewRiskDecisionWithTrace(approved DecisionBatch, rejected []OrderRejection, trace []RiskTrace) RiskDecision {
 	result := NewRiskDecision(approved, rejected)
-	result.trace = append([]RiskTrace(nil), trace...)
-	sort.SliceStable(result.trace, func(i, j int) bool { return result.trace[i].OrderID.String() < result.trace[j].OrderID.String() })
+	result.trace = cloneRiskTraces(trace)
 	return result
 }
 func (decision RiskDecision) Approved() DecisionBatch {
@@ -234,7 +277,14 @@ func (decision RiskDecision) Approved() DecisionBatch {
 func (decision RiskDecision) Rejected() []OrderRejection {
 	return append([]OrderRejection(nil), decision.rejected...)
 }
-func (decision RiskDecision) Trace() []RiskTrace { return append([]RiskTrace(nil), decision.trace...) }
+func (decision RiskDecision) Trace() []RiskTrace { return cloneRiskTraces(decision.trace) }
+func cloneRiskTraces(values []RiskTrace) []RiskTrace {
+	result := append([]RiskTrace(nil), values...)
+	for i := range result {
+		result[i].Checks = append([]string(nil), values[i].Checks...)
+	}
+	return result
+}
 
 type RiskEngine interface {
 	Evaluate(context.Context, DecisionBatch, PortfolioSnapshot, RiskPolicy) (RiskDecision, error)
@@ -253,6 +303,7 @@ type Fill struct {
 	OrderedAt, SubmittedAt, AcceptedAt, FilledAt time.Time
 	Versions                                     VersionContext
 	Provenance                                   Provenance
+	CostModelVersion                             string
 }
 
 func (fill Fill) Validate() error {
@@ -264,6 +315,9 @@ func (fill Fill) Validate() error {
 	}
 	if !fill.Quantity.Valid() || !fill.Price.Valid() || !fill.Fee.Valid() || fill.FeeAsset.String() == "" {
 		return fmt.Errorf("fill quantity, price, and fee must be exact valid values")
+	}
+	if fill.CostModelVersion == "" {
+		return fmt.Errorf("fill cost model version is required")
 	}
 	if fill.OrderedAt.IsZero() || fill.SubmittedAt.Before(fill.OrderedAt) || fill.AcceptedAt.Before(fill.SubmittedAt) || fill.FilledAt.Before(fill.AcceptedAt) {
 		return fmt.Errorf("fill timestamps must be ordered order <= submit <= accept <= fill")

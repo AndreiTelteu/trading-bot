@@ -11,6 +11,7 @@ func schemaModels() []interface{} {
 		&Position{},
 		&Order{},
 		&LedgerBatch{},
+		&BrokerOutcomeIngestion{},
 		&Fill{},
 		&LedgerEvent{},
 		&LedgerMigrationState{},
@@ -281,6 +282,26 @@ func RunMigrations(db *gorm.DB) error {
 			},
 			Rollback: func(tx *gorm.DB) error {
 				return tx.Exec(`DROP TRIGGER IF EXISTS ledger_batches_immutable ON ledger_batches; DROP TRIGGER IF EXISTS positions_economic_guard ON positions; DROP TRIGGER IF EXISTS wallets_economic_guard ON wallets; DROP FUNCTION IF EXISTS guard_position_economics(); DROP FUNCTION IF EXISTS guard_wallet_economics();`).Error
+			},
+		},
+		{
+			ID:      "202607170200_shared_broker_outcomes",
+			Migrate: func(tx *gorm.DB) error { return migrateSchema(tx) },
+			Rollback: func(tx *gorm.DB) error {
+				if err := tx.Migrator().DropTable(&BrokerOutcomeIngestion{}); err != nil {
+					return err
+				}
+				for _, column := range []string{"RequestedQuantityExact", "ExecutedQuantityExact", "RemainingQuantityExact"} {
+					if tx.Migrator().HasColumn(&Order{}, column) {
+						if err := tx.Migrator().DropColumn(&Order{}, column); err != nil {
+							return err
+						}
+					}
+				}
+				if tx.Migrator().HasColumn(&Fill{}, "CostModelVersion") {
+					return tx.Migrator().DropColumn(&Fill{}, "CostModelVersion")
+				}
+				return nil
 			},
 		},
 	})
