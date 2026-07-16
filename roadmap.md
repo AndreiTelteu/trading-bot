@@ -40,14 +40,14 @@ Detailed plan: [`docs/reimplementation/stage-00-architecture-contracts.md`](docs
 
 Detailed plan: [`docs/reimplementation/stage-01-immutable-ledger.md`](docs/reimplementation/stage-01-immutable-ledger.md)
 
-- [ ] Add immutable ledger schema and typed entry model
-- [ ] Route fills, fees, and capital adjustments through atomic ledger transactions
-- [ ] Derive/reconcile wallet and position projections from ledger events
-- [ ] Eliminate or fence direct close/delete paths that bypass accounting
-- [ ] Add reconciliation reports and migration/backfill controls
-- [ ] Add paper fee/slippage accounting
-- [ ] Pass invariant, concurrency, rollback, API, and migration tests
-- [ ] Complete independent review and one feedback pass
+- [x] Add immutable ledger schema and typed entry model
+- [x] Route fills, fees, and capital adjustments through atomic ledger transactions
+- [x] Derive/reconcile wallet and position projections from ledger events
+- [x] Eliminate or fence direct close/delete paths that bypass accounting
+- [x] Add reconciliation reports and migration/backfill controls
+- [x] Add paper fee/slippage accounting
+- [x] Pass invariant, concurrency, rollback, API, and migration tests
+- [x] Complete independent review and one feedback pass
 
 ## Stage 02 — Shared strategy, risk, and broker engine
 
