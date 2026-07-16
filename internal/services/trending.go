@@ -581,6 +581,25 @@ func computeFixedPositionSize(balance float64, price float64, entryPercent float
 	return amountUsdt, amountUsdt / price, nil
 }
 
+func applyAutoBuyAddition(position *database.Position, addedQuantity, fillPrice float64) {
+	oldAmount := position.Amount
+	position.AvgPrice = ((oldAmount * position.AvgPrice) + (addedQuantity * fillPrice)) / (oldAmount + addedQuantity)
+	position.Amount = oldAmount + addedQuantity
+}
+
+func resetClosedPositionForAutoBuy(position *database.Position, quantity, price float64, openedAt time.Time) {
+	position.Amount = quantity
+	position.AvgPrice = price
+	position.EntryPrice = &price
+	position.CurrentPrice = &price
+	position.Pnl = 0
+	position.PnlPercent = 0
+	position.Status = "open"
+	position.OpenedAt = openedAt
+	position.ClosedAt = nil
+	position.CloseReason = nil
+}
+
 func computeProbUp(features FeatureVector, beta0 float64, beta1 float64, beta2 float64, beta3 float64, beta4 float64, beta5 float64, beta6 float64) float64 {
 	z := beta0 +
 		beta1*features.RSI +
@@ -883,22 +902,84 @@ func AnalyzeShortlist(selection *UniverseSelectionResult, settings map[string]st
 }
 
 func ExecuteShortlistTrades(analyses []AnalyzedCoin, universe *UniverseSelectionResult, settings map[string]string) ([]AnalyzedCoin, int) {
+	return executeShortlistTradesWithRuntime(analyses, universe, settings, productionShortlistRuntime{})
+}
+
+type shortlistMarketGatePolicy struct {
+	Enabled                  bool
+	RegimeTimeframe          string
+	RegimeEMAFast, EMASlow   int
+	VolATRPeriod             int
+	VolRatioMin, VolRatioMax float64
+}
+
+type shortlistTradeRuntime interface {
+	CountOpenPositions() (int64, error)
+	MarketGates(*AnalyzedCoin, *UniverseSelectionResult, shortlistMarketGatePolicy) (bool, bool)
+	LookupOpenPosition(string) (bool, error)
+	ExecuteBuy(AnalyzedCoin) (bool, error)
+	PersistHistory(database.TrendAnalysisHistory) error
+	Log(string, string, string)
+	BroadcastTradeUpdates()
+	Now() time.Time
+}
+
+type productionShortlistRuntime struct{}
+
+func (productionShortlistRuntime) CountOpenPositions() (int64, error) {
+	var count int64
+	err := database.DB.Model(&database.Position{}).Where("status = ?", "open").Count(&count).Error
+	return count, err
+}
+func (productionShortlistRuntime) MarketGates(analysis *AnalyzedCoin, universe *UniverseSelectionResult, policy shortlistMarketGatePolicy) (bool, bool) {
+	regimeOK := universe == nil || universe.RegimeState != UniverseRegimeRiskOff
+	volOK := true
+	if policy.Enabled && analysis.Error == "" {
+		candles15m, candleErr := fetchCandles(analysis.Symbol, "15m", 200)
+		if candleErr != nil {
+			return false, false
+		}
+		candlesHigher, regimeErr := fetchCandles(analysis.Symbol, policy.RegimeTimeframe, 200)
+		if regimeErr != nil {
+			regimeOK = false
+		} else {
+			regimeOK = regimeOK && computeRegimeGate(candlesHigher, policy.RegimeEMAFast, policy.EMASlow)
+		}
+		volOK = computeVolGate(candles15m, analysis.Price, policy.VolATRPeriod, policy.VolRatioMin, policy.VolRatioMax)
+	}
+	return regimeOK, volOK
+}
+func (productionShortlistRuntime) LookupOpenPosition(symbol string) (bool, error) {
+	var position database.Position
+	err := database.DB.Where("symbol = ? AND status = ?", symbol, "open").First(&position).Error
+	return err == nil, err
+}
+func (productionShortlistRuntime) ExecuteBuy(analysis AnalyzedCoin) (bool, error) {
+	return executeBuyFromTrendingWithContext(analysis.Symbol, buildTradeDecisionContext(analysis))
+}
+func (productionShortlistRuntime) PersistHistory(history database.TrendAnalysisHistory) error {
+	return database.DB.Create(&history).Error
+}
+func (productionShortlistRuntime) Log(logType, message, details string) {
+	logActivity(logType, message, details)
+}
+func (productionShortlistRuntime) BroadcastTradeUpdates() { broadcastTradeUpdates() }
+func (productionShortlistRuntime) Now() time.Time         { return time.Now() }
+
+func executeShortlistTradesWithRuntime(analyses []AnalyzedCoin, universe *UniverseSelectionResult, settings map[string]string, runtime shortlistTradeRuntime) ([]AnalyzedCoin, int) {
 	autoTradeEnabled := getSettingBool(settings, "auto_trade_enabled", false)
 	maxPositions := getSettingInt(settings, "max_positions", 5)
 	buyOnlyStrong := getSettingBool(settings, "buy_only_strong", true)
 	minConfidenceToBuy := getSettingFloat(settings, "min_confidence_to_buy", 4.0)
 	modelPolicy := GetModelSelectionPolicy(settings)
 	useModelEntries := modelPolicy.UseForLiveEntries() && hasModelRankings(analyses)
-	regimeGateEnabled := getSettingBool(settings, "regime_gate_enabled", true)
-	regimeTimeframe := getSettingString(settings, "regime_timeframe", "1h")
-	regimeEmaFast := getSettingInt(settings, "regime_ema_fast", 50)
-	regimeEmaSlow := getSettingInt(settings, "regime_ema_slow", 200)
-	volAtrPeriod := getSettingInt(settings, "vol_atr_period", 14)
-	volRatioMin := getSettingFloat(settings, "vol_ratio_min", 0.002)
-	volRatioMax := getSettingFloat(settings, "vol_ratio_max", 0.02)
+	marketPolicy := shortlistMarketGatePolicy{
+		Enabled: getSettingBool(settings, "regime_gate_enabled", true), RegimeTimeframe: getSettingString(settings, "regime_timeframe", "1h"),
+		RegimeEMAFast: getSettingInt(settings, "regime_ema_fast", 50), EMASlow: getSettingInt(settings, "regime_ema_slow", 200),
+		VolATRPeriod: getSettingInt(settings, "vol_atr_period", 14), VolRatioMin: getSettingFloat(settings, "vol_ratio_min", 0.002), VolRatioMax: getSettingFloat(settings, "vol_ratio_max", 0.02),
+	}
 
-	var currentOpenCount int64
-	database.DB.Model(&database.Position{}).Where("status = ?", "open").Count(&currentOpenCount)
+	currentOpenCount, _ := runtime.CountOpenPositions() // Current behavior ignores count errors and proceeds with zero/count output.
 	tradesOpened := 0
 
 	for i := range analyses {
@@ -919,23 +1000,9 @@ func ExecuteShortlistTrades(analyses []AnalyzedCoin, universe *UniverseSelection
 			confidenceQualifies = probOk
 		}
 
-		regimeOk := universe == nil || universe.RegimeState != UniverseRegimeRiskOff
-		volOk := true
-		if regimeGateEnabled && analysis.Error == "" {
-			candles15m, candleErr := fetchCandles(analysis.Symbol, "15m", 200)
-			if candleErr != nil {
-				regimeOk = false
-				volOk = false
-			} else {
-				candlesHigher, regimeErr := fetchCandles(analysis.Symbol, regimeTimeframe, 200)
-				if regimeErr != nil {
-					regimeOk = false
-				} else {
-					regimeOk = regimeOk && computeRegimeGate(candlesHigher, regimeEmaFast, regimeEmaSlow)
-				}
-				volOk = computeVolGate(candles15m, analysis.Price, volAtrPeriod, volRatioMin, volRatioMax)
-			}
-		}
+		// This intentionally occurs before decision classification, including when
+		// auto trading is disabled or the universe is already risk-off.
+		regimeOk, volOk := runtime.MarketGates(analysis, universe, marketPolicy)
 
 		decision, decisionReason := classifyEntryDecision(entryDecisionInput{
 			AnalysisError: analysis.Error != "", AutoTradeEnabled: autoTradeEnabled,
@@ -946,24 +1013,23 @@ func ExecuteShortlistTrades(analyses []AnalyzedCoin, universe *UniverseSelection
 			AtPositionLimit: (int(currentOpenCount) + tradesOpened) >= maxPositions,
 		})
 
-		if autoTradeEnabled && analysis.Error == "" && signalQualifies && confidenceQualifies && regimeOk && volOk &&
-			(universe == nil || universe.RegimeState != UniverseRegimeRiskOff) &&
-			(int(currentOpenCount)+tradesOpened) < maxPositions {
-
+		if decision == "buy_candidate" {
 			cleanSymbol := strings.ReplaceAll(analysis.Symbol, "USDT", "")
-			var existingPosition database.Position
-			hasExisting := database.DB.Where("symbol = ? AND status = ?", cleanSymbol, "open").First(&existingPosition).Error == nil
+			hasExisting, lookupErr := runtime.LookupOpenPosition(cleanSymbol)
+			if lookupErr != nil {
+				hasExisting = false // Current behavior treats every lookup error as no open position.
+			}
 
 			if !hasExisting {
-				success, buyErr := executeBuyFromTrendingWithContext(analysis.Symbol, buildTradeDecisionContext(*analysis))
+				success, buyErr := runtime.ExecuteBuy(*analysis)
 				if success {
 					tradesOpened++
 					trueVal := true
 					analysis.TradeExecuted = &trueVal
 					decision = "buy"
 					decisionReason = "order_executed"
-					logActivity("trade", fmt.Sprintf("Bought %s", analysis.Symbol), fmt.Sprintf("At $%.2f", analysis.Price))
-					broadcastTradeUpdates()
+					runtime.Log("trade", fmt.Sprintf("Bought %s", analysis.Symbol), fmt.Sprintf("At $%.2f", analysis.Price))
+					runtime.BroadcastTradeUpdates()
 				} else {
 					falseVal := false
 					analysis.TradeExecuted = &falseVal
@@ -973,12 +1039,12 @@ func ExecuteShortlistTrades(analyses []AnalyzedCoin, universe *UniverseSelection
 						decisionReason = "buy_failed"
 					}
 					decision = "buy_failed"
-					logActivity("trade", fmt.Sprintf("Failed to buy %s", analysis.Symbol), decisionReason)
+					runtime.Log("trade", fmt.Sprintf("Failed to buy %s", analysis.Symbol), decisionReason)
 				}
 			} else {
 				decision = "skip"
 				decisionReason = "position_exists"
-				logActivity("trade", fmt.Sprintf("Skipped %s - position already exists", analysis.Symbol), "")
+				runtime.Log("trade", fmt.Sprintf("Skipped %s - position already exists", analysis.Symbol), "")
 			}
 		}
 
@@ -1012,9 +1078,9 @@ func ExecuteShortlistTrades(analyses []AnalyzedCoin, universe *UniverseSelection
 			DecisionReason:      &decisionReason,
 			IndicatorsJSON:      string(indicatorsJSON),
 			DecisionContextJSON: defaultDecisionContextJSON(decisionContext),
-			AnalyzedAt:          time.Now(),
+			AnalyzedAt:          runtime.Now(),
 		}
-		database.DB.Create(&history)
+		_ = runtime.PersistHistory(history) // Current behavior attempts persistence and ignores its error.
 	}
 
 	return analyses, tradesOpened
@@ -1143,11 +1209,8 @@ func executeBuyFromTrendingWithContext(symbol string, decisionContext TradeDecis
 		}
 
 		if hasExisting && existingPosition.Status == "open" {
-			oldAmount := existingPosition.Amount
-			oldAvg := existingPosition.AvgPrice
-			newAvg := ((oldAmount * oldAvg) + (cryptoAmount * currentPrice)) / (oldAmount + cryptoAmount)
-			existingPosition.Amount += cryptoAmount
-			existingPosition.AvgPrice = newAvg
+			applyAutoBuyAddition(&existingPosition, cryptoAmount, currentPrice)
+			newAvg := existingPosition.AvgPrice
 			existingPosition.ExecutionMode = ExecutionModePaper
 			existingPosition.EntrySource = EntrySourceAutoTrend
 			existingPosition.ExitPending = false
@@ -1200,10 +1263,7 @@ func executeBuyFromTrendingWithContext(symbol string, decisionContext TradeDecis
 				lastAtrValue = &atr
 			}
 			if hasExisting {
-				existingPosition.Amount = cryptoAmount
-				existingPosition.AvgPrice = currentPrice
-				existingPosition.EntryPrice = &currentPrice
-				existingPosition.CurrentPrice = &currentPrice
+				resetClosedPositionForAutoBuy(&existingPosition, cryptoAmount, currentPrice, now)
 				existingPosition.ExecutionMode = ExecutionModePaper
 				existingPosition.EntrySource = EntrySourceAutoTrend
 				existingPosition.ExitPending = false
@@ -1223,12 +1283,6 @@ func executeBuyFromTrendingWithContext(symbol string, decisionContext TradeDecis
 				existingPosition.TrailingStopPrice = trailingStopPrice
 				existingPosition.LastAtrValue = lastAtrValue
 				existingPosition.MaxBarsHeld = maxBarsHeld
-				existingPosition.Pnl = 0
-				existingPosition.PnlPercent = 0
-				existingPosition.Status = "open"
-				existingPosition.OpenedAt = now
-				existingPosition.ClosedAt = nil
-				existingPosition.CloseReason = nil
 				if err := tx.Save(&existingPosition).Error; err != nil {
 					return fmt.Errorf("failed to reopen position for %s: %w", cleanSymbol, err)
 				}

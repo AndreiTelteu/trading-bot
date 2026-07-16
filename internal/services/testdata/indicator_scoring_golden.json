@@ -1,8 +1,18 @@
 [
   {"name":"upper clamp","indicators":[{"name":"RSI","signal":"buy","rating":5},{"name":"MACD","signal":"buy","rating":5}],"weights":{"rsi":1,"macd":1},"rating":5,"signal":"STRONG_BUY"},
   {"name":"lower clamp","indicators":[{"name":"RSI","signal":"sell","rating":5},{"name":"MACD","signal":"sell","rating":5}],"weights":{"rsi":1,"macd":1},"rating":1,"signal":"STRONG_SELL"},
-  {"name":"strong buy boundary","indicators":[{"name":"RSI","signal":"buy","rating":1},{"name":"MACD","signal":"buy","rating":2}],"weights":{"rsi":1,"macd":1},"rating":4.5,"signal":"STRONG_BUY"},
-  {"name":"strong sell boundary","indicators":[{"name":"RSI","signal":"sell","rating":1},{"name":"MACD","signal":"sell","rating":2}],"weights":{"rsi":1,"macd":1},"rating":1.5,"signal":"STRONG_SELL"},
+  {"name":"just below strong buy rounds to boundary","indicators":[{"name":"A","signal":"buy","rating":1},{"name":"B","signal":"buy","rating":2}],"weights":{"a":1.01,"b":1},"rating":4.5,"signal":"BUY"},
+  {"name":"exact strong buy boundary","indicators":[{"name":"A","signal":"buy","rating":1},{"name":"B","signal":"buy","rating":2}],"weights":{"a":1,"b":1},"rating":4.5,"signal":"STRONG_BUY"},
+  {"name":"just above strong buy boundary","indicators":[{"name":"A","signal":"buy","rating":1},{"name":"B","signal":"buy","rating":2}],"weights":{"a":0.99,"b":1},"rating":4.5,"signal":"STRONG_BUY"},
+  {"name":"just below buy boundary","indicators":[{"name":"A","signal":"buy","rating":1},{"name":"B","signal":"neutral","rating":3}],"weights":{"a":1,"b":0.01},"rating":3.99,"signal":"NEUTRAL"},
+  {"name":"exact buy boundary","indicators":[{"name":"A","signal":"buy","rating":1}],"weights":{"a":1},"rating":4,"signal":"BUY"},
+  {"name":"just above buy boundary","indicators":[{"name":"A","signal":"buy","rating":2},{"name":"B","signal":"neutral","rating":3}],"weights":{"a":1,"b":0.99},"rating":4.01,"signal":"BUY"},
+  {"name":"just above sell boundary","indicators":[{"name":"A","signal":"sell","rating":1},{"name":"B","signal":"neutral","rating":3}],"weights":{"a":1,"b":0.01},"rating":2.01,"signal":"NEUTRAL"},
+  {"name":"exact sell boundary","indicators":[{"name":"A","signal":"sell","rating":1}],"weights":{"a":1},"rating":2,"signal":"SELL"},
+  {"name":"just below sell boundary","indicators":[{"name":"A","signal":"sell","rating":2},{"name":"B","signal":"neutral","rating":3}],"weights":{"a":1,"b":0.99},"rating":1.99,"signal":"SELL"},
+  {"name":"just above strong sell rounds to boundary","indicators":[{"name":"A","signal":"sell","rating":1},{"name":"B","signal":"sell","rating":2}],"weights":{"a":1.01,"b":1},"rating":1.5,"signal":"SELL"},
+  {"name":"exact strong sell boundary","indicators":[{"name":"A","signal":"sell","rating":1},{"name":"B","signal":"sell","rating":2}],"weights":{"a":1,"b":1},"rating":1.5,"signal":"STRONG_SELL"},
+  {"name":"just below strong sell boundary","indicators":[{"name":"A","signal":"sell","rating":1},{"name":"B","signal":"sell","rating":2}],"weights":{"a":0.99,"b":1},"rating":1.5,"signal":"STRONG_SELL"},
   {"name":"unknown indicator uses unit weight","indicators":[{"name":"Custom","signal":"buy","rating":1}],"weights":{},"rating":4,"signal":"BUY"},
   {"name":"zero total weight","indicators":[{"name":"RSI","signal":"buy","rating":5}],"weights":{"rsi":0},"rating":3,"signal":"NEUTRAL"}
 ]

@@ -1,4 +1,4 @@
-.PHONY: run build test test-db-up test-db-down clean tidy install build-front production run-prod build-all docker-build docker-run
+.PHONY: run build test test-stage00-integration test-db-up test-db-down clean tidy install build-front production run-prod build-all docker-build docker-run
 
 TEST_DATABASE_URL ?= postgres://postgres:postgres@localhost:5433/trading_bot_test?sslmode=disable
 
@@ -11,6 +11,11 @@ build:
 
 test:
 	TEST_DATABASE_URL=$(TEST_DATABASE_URL) go test -v ./...
+
+# Required Stage 00 accounting-bypass contract. TEST_DATABASE_URL is set
+# explicitly so an unavailable database fails instead of triggering test skips.
+test-stage00-integration:
+	TEST_DATABASE_URL=$(TEST_DATABASE_URL) go test -v ./internal/testing -run 'TestCharacterization(DirectClose|Delete)'
 
 test-db-up:
 	docker compose --profile test up -d postgres-test

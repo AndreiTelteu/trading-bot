@@ -124,16 +124,9 @@ func ClosePosition(c *fiber.Ctx) error {
 			return err
 		}
 
-		if position.Status != "open" {
-			return fiber.NewError(fiber.StatusBadRequest, "Position is already closed")
-		}
-
 		now := time.Now()
-		position.Status = "closed"
-		position.ExitPending = false
-		position.ClosedAt = &now
-		if req.CloseReason != nil {
-			position.CloseReason = req.CloseReason
+		if err := applyDirectCloseProjection(&position, req.CloseReason, now); err != nil {
+			return err
 		}
 
 		return tx.Save(&position).Error
@@ -158,15 +151,26 @@ func ClosePosition(c *fiber.Ctx) error {
 	return c.JSON(position)
 }
 
+func applyDirectCloseProjection(position *database.Position, reason *string, closedAt time.Time) error {
+	if position.Status != "open" {
+		return fiber.NewError(fiber.StatusBadRequest, "Position is already closed")
+	}
+	position.Status = "closed"
+	position.ExitPending = false
+	position.ClosedAt = &closedAt
+	if reason != nil {
+		position.CloseReason = reason
+	}
+	return nil
+}
+
 func DeletePosition(c *fiber.Ctx) error {
 	symbol := c.Params("symbol")
-
-	var position database.Position
-	if err := database.DB.Where("symbol = ?", symbol).First(&position).Error; err != nil {
+	_, err := performDirectPositionDelete(gormDirectPositionStore{}, symbol)
+	if err != nil && !errors.Is(err, errDirectPositionDelete) {
 		return c.Status(404).JSON(fiber.Map{"error": "Position not found"})
 	}
-
-	if err := database.DB.Delete(&position).Error; err != nil {
+	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "Failed to delete position"})
 	}
 
@@ -179,6 +183,35 @@ func DeletePosition(c *fiber.Ctx) error {
 	services.NotifyPositionChanged()
 
 	return c.JSON(fiber.Map{"message": "Position deleted successfully"})
+}
+
+var errDirectPositionDelete = errors.New("direct position delete failed")
+
+type directPositionStore interface {
+	FindBySymbol(string) (database.Position, error)
+	Delete(database.Position) error
+}
+
+type gormDirectPositionStore struct{}
+
+func (gormDirectPositionStore) FindBySymbol(symbol string) (database.Position, error) {
+	var position database.Position
+	err := database.DB.Where("symbol = ?", symbol).First(&position).Error
+	return position, err
+}
+func (gormDirectPositionStore) Delete(position database.Position) error {
+	return database.DB.Delete(&position).Error
+}
+
+func performDirectPositionDelete(store directPositionStore, symbol string) (database.Position, error) {
+	position, err := store.FindBySymbol(symbol)
+	if err != nil {
+		return database.Position{}, err
+	}
+	if err := store.Delete(position); err != nil {
+		return database.Position{}, fmt.Errorf("%w: %v", errDirectPositionDelete, err)
+	}
+	return position, nil
 }
 
 // ExecuteOpenTrade simulates a buy order and creates a position (paper trading)

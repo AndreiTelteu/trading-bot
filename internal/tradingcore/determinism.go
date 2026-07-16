@@ -48,6 +48,9 @@ type SequenceIDGenerator struct {
 	next   uint64
 }
 
+// NewSequenceIDGenerator is reproducible for serial fixture construction. Calls
+// are race-safe, but concurrent callers must not attach meaning to which goroutine
+// receives which number; domain batches impose deterministic identity ordering.
 func NewSequenceIDGenerator(prefix string, first uint64) *SequenceIDGenerator {
 	return &SequenceIDGenerator{prefix: prefix, next: first}
 }

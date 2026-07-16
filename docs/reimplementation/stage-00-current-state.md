@@ -21,6 +21,10 @@ live/backtest parity claim.
    selected, signal, confidence/model floors, per-symbol regime gate, volatility
    gate, then maximum positions. An existing position is checked only after all
    those gates and is reported as `position_exists`.
+   Before that classification, the current path evaluates per-symbol market
+   gates. Consequently, 15m/higher-timeframe network fetches can still occur
+   when auto trading is disabled or the universe is already risk-off. Analysis
+   errors are the exception: their market fetch is skipped.
 5. In rule mode, signal and rating control entry. In model mode, policy selection
    plus probability and expected-value floors control entry. Model mode is used
    only when the rollout policy allows model entries and at least one analysis has
@@ -35,9 +39,25 @@ live/backtest parity claim.
    filled order, and subtracts cash. Although the low-level function can add to
    an open row, `ExecuteShortlistTrades` skips an existing open symbol, so normal
    shortlist execution does not pyramid.
-8. The analysis decision/history and trade records are persisted. Activity,
-   trending, wallet, position, and completion messages are broadcast through the
-   global WebSocket broadcaster.
+8. Analysis-history insertion is attempted for every analyzed candidate, after
+   its final decision/reason is assigned. The returned database error is ignored,
+   so a decision reported in memory or over WebSocket may have no history row.
+   Successful trade records are written inside the purchase transaction.
+   Activity, trending, wallet, position, and completion messages are broadcast
+   through the global WebSocket broadcaster.
+
+The initial open-position `COUNT` ignores its database error and continues with
+the returned count (normally zero on failure). The later existing-open lookup
+treats every error—not only record-not-found—as “no position” and attempts the
+purchase. These behaviors are characterized defects, not recommended adapter
+semantics.
+
+Shortlist runs are not serialized as a unit. Two concurrent runs can both pass
+the initial count and existing-position check before either purchase commits.
+The lower transaction rechecks the symbol, but wallet reads are not explicitly
+row-locked and creation races can surface as constraint/purchase failures or
+produce stale count decisions. `tradesOpened` and maximum-position enforcement
+are local to one run; they do not form a cross-run invariant.
 
 There are also separate paths: `/api/trading/buy|sell` submits exchange requests
 and mutates wallet/position/order projections; `/api/positions-trade/open|close`
@@ -157,10 +177,18 @@ later data/parity stages are complete.
 
 ## Target package and dependency direction
 
-`internal/tradingcore` contains transport- and persistence-free value types plus
+`internal/tradingcore` contains transport- and persistence-free exact scaled
+decimal values, stable account/asset/instrument/venue identities, immutable
+decision/portfolio/universe snapshots, explicit timestamp/version/provenance
+contexts, deterministically ordered batches and outcomes, plus
 the `Clock`, `IDGenerator`, `MarketDataSource`, `UniverseProvider`, `Strategy`,
 `RiskEngine`, `Broker`, and `Ledger` contracts. `internal/tradingcore/testkit`
 supplies deterministic clocks, IDs, settings, observations, and portfolio state.
+
+Broker outcomes distinguish accepted, rejected, partially filled, filled, and
+indeterminate batches. Ledger append is specified as atomic and idempotent, with
+explicit appended/already-applied/rejected/indeterminate outcomes. These are
+contracts only: Stage 00 does not add a broker adapter or ledger persistence.
 
 The intended dependency direction is:
 
