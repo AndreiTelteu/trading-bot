@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"gorm.io/gorm"
+	"strconv"
+	"strings"
 	"time"
 	"trading-go/internal/accounting"
 	"trading-go/internal/database"
@@ -15,6 +17,95 @@ type ContractAdapter struct{ service *Service }
 func NewContractAdapter(db *gorm.DB) *ContractAdapter { return &ContractAdapter{service: New(db)} }
 
 var _ tradingcore.Ledger = (*ContractAdapter)(nil)
+var _ tradingcore.FillLedger = (*ContractAdapter)(nil)
+
+// RecordBrokerOutcome is the only economic mutation port used by the shared
+// orchestrator. Brokers themselves never update projections.
+func (adapter *ContractAdapter) RecordBrokerOutcome(ctx context.Context, approved tradingcore.DecisionBatch, outcome tradingcore.BrokerBatchOutcome) error {
+	if outcome.Completeness() != tradingcore.OutcomeComplete {
+		return newError(KindIndeterminate, "broker_outcome_indeterminate", "broker outcome must be recovered before ledger ingestion", nil)
+	}
+	intents := make(map[tradingcore.OrderID]tradingcore.OrderIntent, len(approved.Intents()))
+	for _, intent := range approved.Intents() {
+		intents[intent.ID] = intent
+	}
+	for _, accepted := range outcome.Accepted() {
+		intent, ok := intents[accepted.OrderID]
+		if !ok {
+			return fmt.Errorf("accepted order %s has no approved intent", accepted.OrderID.String())
+		}
+		for _, fill := range accepted.Fills() {
+			intentMetadata := intent.Metadata()
+			quantity, err := accounting.Parse(fill.Quantity.Decimal().String())
+			if err != nil {
+				return err
+			}
+			fillPrice, err := accounting.Parse(fill.Price.Decimal().String())
+			if err != nil {
+				return err
+			}
+			requested := fillPrice
+			if reference, present := intent.ReferencePrice.Get(); present {
+				requested, err = accounting.Parse(reference.Decimal().String())
+				if err != nil {
+					return err
+				}
+			}
+			fee, err := accounting.Parse(fill.Fee.Decimal().String())
+			if err != nil {
+				return err
+			}
+			mode := string(intent.ExecutionMode)
+			if mode == string(tradingcore.ExecutionLimitedLive) || mode == string(tradingcore.ExecutionFullLive) {
+				return ErrExchangeExecutionFenced
+			}
+			if mode != string(tradingcore.ExecutionPaper) {
+				mode = "paper"
+			}
+			stopPrice, _ := metadataFloat(intentMetadata, "stop_price")
+			takeProfit, _ := metadataFloat(intentMetadata, "take_profit_price")
+			atr, hasATR := metadataFloat(intentMetadata, "atr_value")
+			trailingMult, hasMult := metadataFloat(intentMetadata, "atr_trailing_mult")
+			var trailing *float64
+			if hasATR && hasMult {
+				candidate := fillPrice.Float64() - *atr**trailingMult
+				if candidate > 0 {
+					trailing = &candidate
+				}
+			}
+			maxBars, _ := metadataInt(intentMetadata, "max_bars_held")
+			symbol := strings.TrimSuffix(strings.ToUpper(intent.Instrument.VenueSymbol), strings.ToUpper(intent.Instrument.QuoteAsset.String()))
+			_, err = adapter.service.ApplyFill(ctx, FillCommand{IdempotencyKey: intent.IdempotencyKey.String() + ":" + fill.ProviderFillID, AccountID: intent.AccountID.String(), Symbol: symbol, Side: string(intent.Side), Quantity: quantity, RequestedPrice: requested, FillPrice: fillPrice, Fee: fee, FeeType: EventTradingFee, Currency: intent.Instrument.QuoteAsset.String(), ExecutionMode: mode, ProviderFillID: fill.ProviderFillID, ProviderOrderID: accepted.ProviderOrderID, OrderStatus: string(accepted.Status), OccurredAt: fill.FilledAt, Actor: fill.Provenance.Source, Reason: intent.Reason, StrategyVersion: intent.Versions.Strategy, PolicyVersion: intent.Versions.Policy, Metadata: map[string]interface{}{"horizon": intent.Horizon, "broker_policy_version": fill.Versions.Policy}, StopPrice: stopPrice, TakeProfitPrice: takeProfit, TrailingStopPrice: trailing, LastAtrValue: atr, MaxBarsHeld: maxBars, EntrySource: "auto_trend", DecisionTimeframe: intent.Horizon, ModelVersion: intent.Versions.Model, RolloutState: intentMetadata["rollout_state"]})
+			if err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func metadataFloat(values map[string]string, key string) (*float64, bool) {
+	raw, ok := values[key]
+	if !ok {
+		return nil, false
+	}
+	value, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return nil, false
+	}
+	return &value, true
+}
+func metadataInt(values map[string]string, key string) (*int, bool) {
+	raw, ok := values[key]
+	if !ok {
+		return nil, false
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil {
+		return nil, false
+	}
+	return &value, true
+}
 
 func (adapter *ContractAdapter) AppendAtomic(ctx context.Context, batch tradingcore.LedgerBatch) (tradingcore.LedgerAppendOutcome, error) {
 	events := batch.Events()

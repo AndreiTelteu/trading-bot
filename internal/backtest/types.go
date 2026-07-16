@@ -8,6 +8,7 @@ import (
 type StrategyMode string
 type BacktestMode string
 type UniverseMode string
+type EngineMode string
 
 const (
 	StrategyBaseline         StrategyMode = "baseline"
@@ -19,9 +20,12 @@ const (
 	UniverseStatic           UniverseMode = "static"
 	UniverseDynamicRecompute UniverseMode = "dynamic_recompute"
 	UniverseDynamicReplay    UniverseMode = "dynamic_replay"
+	EngineLegacy             EngineMode   = "legacy"
+	EngineShared             EngineMode   = "shared"
 )
 
 type BacktestConfig struct {
+	EngineMode              EngineMode
 	BacktestMode            BacktestMode
 	Symbols                 []string
 	UniverseMode            UniverseMode

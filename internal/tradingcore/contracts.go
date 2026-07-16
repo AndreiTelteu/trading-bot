@@ -56,11 +56,36 @@ type OrderIntent struct {
 	Type                            OrderType
 	Quantity                        Quantity
 	LimitPrice                      OptionalPrice
+	ReferencePrice                  OptionalPrice
 	SignalAt, DecisionAt, CreatedAt time.Time
 	ExecutionMode                   ExecutionMode
+	QuantitySemantics               QuantitySemantics
+	Reason, Horizon                 string
 	Versions                        VersionContext
 	Provenance                      Provenance
+	metadata                        map[string]string
 }
+
+type QuantitySemantics string
+
+const (
+	QuantityExact      QuantitySemantics = "exact_quantity"
+	QuantityCashCapped QuantitySemantics = "cash_capped"
+	QuantityExitAll    QuantitySemantics = "exit_all"
+)
+
+func NewOrderIntent(intent OrderIntent, metadata map[string]string) (OrderIntent, error) {
+	intent.metadata = cloneStrings(metadata)
+	if intent.QuantitySemantics == "" {
+		intent.QuantitySemantics = QuantityExact
+	}
+	if err := intent.Validate(); err != nil {
+		return OrderIntent{}, err
+	}
+	return intent, nil
+}
+
+func (intent OrderIntent) Metadata() map[string]string { return cloneStrings(intent.metadata) }
 
 func (intent OrderIntent) Validate() error {
 	if intent.ID.String() == "" || intent.IdempotencyKey.String() == "" || intent.AccountID.String() == "" || intent.Instrument.ID.String() == "" {
@@ -74,6 +99,11 @@ func (intent OrderIntent) Validate() error {
 	}
 	if !intent.Quantity.Valid() {
 		return fmt.Errorf("positive quantity is required")
+	}
+	switch intent.QuantitySemantics {
+	case "", QuantityExact, QuantityCashCapped, QuantityExitAll:
+	default:
+		return fmt.Errorf("unsupported quantity semantics %q", intent.QuantitySemantics)
 	}
 	switch intent.ExecutionMode {
 	case ExecutionResearch, ExecutionShadow, ExecutionPaper, ExecutionLimitedLive, ExecutionFullLive:
@@ -107,14 +137,43 @@ func (batch DecisionBatch) Intents() []OrderIntent {
 	return append([]OrderIntent(nil), batch.intents...)
 }
 
+type NoAction struct {
+	Instrument    Instrument
+	Code, Reason  string
+	ObservedScore Decimal
+}
+
+type StrategyResult struct {
+	intents   DecisionBatch
+	noActions []NoAction
+}
+
+func NewStrategyResult(intents DecisionBatch, noActions []NoAction) StrategyResult {
+	values := append([]NoAction(nil), noActions...)
+	sort.SliceStable(values, func(i, j int) bool { return values[i].Instrument.ID.String() < values[j].Instrument.ID.String() })
+	return StrategyResult{intents: intents, noActions: values}
+}
+func (result StrategyResult) Intents() DecisionBatch {
+	batch, _ := NewDecisionBatch(result.intents.Intents())
+	return batch
+}
+func (result StrategyResult) NoActions() []NoAction {
+	return append([]NoAction(nil), result.noActions...)
+}
+
 type Strategy interface {
-	Decide(context.Context, DecisionContext) (DecisionBatch, error)
+	Decide(context.Context, DecisionContext) (StrategyResult, error)
 }
 
 type RiskPolicy struct {
 	Version                            string
 	MaxPositions                       int
 	MaxGrossExposure, MaxPositionValue SignedAmount
+	MaxTurnover, CashReserve           SignedAmount
+	MaxConcurrentOrders                int
+	PyramidingEnabled                  bool
+	MaxPyramidLayers                   int
+	LotSize                            Quantity
 }
 
 func (policy RiskPolicy) Validate() error {
@@ -123,6 +182,12 @@ func (policy RiskPolicy) Validate() error {
 	}
 	if !policy.MaxGrossExposure.Valid() || !policy.MaxPositionValue.Valid() || policy.MaxGrossExposure.Decimal().Sign() < 0 || policy.MaxPositionValue.Decimal().Sign() < 0 {
 		return fmt.Errorf("risk limits must be valid non-negative exact amounts")
+	}
+	if policy.MaxTurnover.Valid() && policy.MaxTurnover.Decimal().Sign() < 0 || policy.CashReserve.Valid() && policy.CashReserve.Decimal().Sign() < 0 {
+		return fmt.Errorf("turnover and cash reserve must be non-negative")
+	}
+	if policy.MaxConcurrentOrders < 0 || policy.MaxPyramidLayers < 0 {
+		return fmt.Errorf("concurrency and pyramid limits cannot be negative")
 	}
 	return nil
 }
@@ -138,12 +203,29 @@ type OrderRejection struct {
 type RiskDecision struct {
 	approved DecisionBatch
 	rejected []OrderRejection
+	trace    []RiskTrace
+}
+
+type RiskTrace struct {
+	OrderID           OrderID  `json:"order_id"`
+	PolicyVersion     string   `json:"policy_version"`
+	Checks            []string `json:"checks"`
+	RequestedQuantity string   `json:"requested_quantity"`
+	ApprovedQuantity  string   `json:"approved_quantity"`
+	RequestedNotional string   `json:"requested_notional"`
+	ApprovedNotional  string   `json:"approved_notional"`
 }
 
 func NewRiskDecision(approved DecisionBatch, rejected []OrderRejection) RiskDecision {
 	values := append([]OrderRejection(nil), rejected...)
 	sort.SliceStable(values, func(i, j int) bool { return values[i].OrderID.String() < values[j].OrderID.String() })
 	return RiskDecision{approved: approved, rejected: values}
+}
+func NewRiskDecisionWithTrace(approved DecisionBatch, rejected []OrderRejection, trace []RiskTrace) RiskDecision {
+	result := NewRiskDecision(approved, rejected)
+	result.trace = append([]RiskTrace(nil), trace...)
+	sort.SliceStable(result.trace, func(i, j int) bool { return result.trace[i].OrderID.String() < result.trace[j].OrderID.String() })
+	return result
 }
 func (decision RiskDecision) Approved() DecisionBatch {
 	batch, _ := NewDecisionBatch(decision.approved.Intents())
@@ -152,6 +234,7 @@ func (decision RiskDecision) Approved() DecisionBatch {
 func (decision RiskDecision) Rejected() []OrderRejection {
 	return append([]OrderRejection(nil), decision.rejected...)
 }
+func (decision RiskDecision) Trace() []RiskTrace { return append([]RiskTrace(nil), decision.trace...) }
 
 type RiskEngine interface {
 	Evaluate(context.Context, DecisionBatch, PortfolioSnapshot, RiskPolicy) (RiskDecision, error)

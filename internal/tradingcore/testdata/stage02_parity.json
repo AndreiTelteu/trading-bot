@@ -1,0 +1,12 @@
+{
+  "decision_at": "2026-01-02T03:04:00Z",
+  "symbol": "BTCUSDT",
+  "price": "100.00",
+  "cash": "1000.00",
+  "entry_percent": "10",
+  "signal": "STRONG_BUY",
+  "rating": "2.5",
+  "policy_version": "risk-fixture-v1",
+  "fee_bps": 10,
+  "slippage_bps": 5
+}

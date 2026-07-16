@@ -159,6 +159,7 @@ type Position struct {
 	AveragePrice, MarkPrice Price
 	OpenedAt                time.Time
 	RealizedPnL             SignedAmount
+	PyramidLayers           int
 }
 
 type ExecutionMode string
@@ -230,7 +231,7 @@ func NewPortfolioSnapshot(asOf time.Time, accountID AccountID, mode ExecutionMod
 	copyPositions := append([]Position(nil), positions...)
 	copyPending := append([]PendingOrder(nil), pending...)
 	for _, position := range copyPositions {
-		if position.ID.String() == "" || position.Instrument.Validate() != nil || !position.Quantity.Valid() || !position.AveragePrice.Valid() || !position.MarkPrice.Valid() || position.OpenedAt.IsZero() {
+		if position.ID.String() == "" || position.Instrument.Validate() != nil || !position.Quantity.Valid() || !position.AveragePrice.Valid() || !position.MarkPrice.Valid() || position.OpenedAt.IsZero() || position.PyramidLayers < 0 {
 			return PortfolioSnapshot{}, fmt.Errorf("position contains invalid identity, value, or time")
 		}
 	}

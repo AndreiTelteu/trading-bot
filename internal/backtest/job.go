@@ -541,6 +541,7 @@ func prepareBacktestInputsWithSettings(settings map[string]string) (BacktestConf
 	}
 
 	config := BacktestConfig{
+		EngineMode:              EngineMode(getSettingString(settings, "trading_engine_mode", "legacy")),
 		BacktestMode:            resolveBacktestMode(universeMode, modelArtifact != nil),
 		ExecutionSeries:         executionSeries,
 		ExecutionTimeframe:      "1m",
@@ -639,6 +640,13 @@ func getSettingBool(settings map[string]string, key string, defaultVal bool) boo
 		return defaultVal
 	}
 	return strings.ToLower(val) == "true"
+}
+
+func getSettingString(settings map[string]string, key, defaultVal string) string {
+	if value, ok := settings[key]; ok && strings.TrimSpace(value) != "" {
+		return value
+	}
+	return defaultVal
 }
 
 func getSettingInt(settings map[string]string, key string, defaultVal int) int {

@@ -44,7 +44,10 @@
 // evaluation cycle can retry.
 package services
 
-import "time"
+import (
+	"time"
+	"trading-go/internal/tradingcore"
+)
 
 const (
 	CloseReasonStopLoss      = "stop_loss"
@@ -171,38 +174,35 @@ func RatchetATRTrailingStop(existing *float64, currentPrice float64, entryPrice 
 func EvaluateProtectiveExit(input ExitEvaluationInput, policy ExitPolicy) ExitDecision {
 	high := normalizedHigh(input)
 	low := normalizedLow(input)
-
-	if input.StopPrice != nil && low <= *input.StopPrice {
-		return ExitDecision{Reason: CloseReasonStopLoss, TriggerPrice: *input.StopPrice, Protective: true}
+	fallbackStop, fallbackTarget := 0.0, 0.0
+	if input.EntryPrice > 0 && input.StopPrice == nil && policy.StopLossPercent > 0 {
+		fallbackStop = input.EntryPrice * (1 - policy.StopLossPercent/100)
 	}
-	if input.TakeProfitPrice != nil && high >= *input.TakeProfitPrice {
-		return ExitDecision{Reason: CloseReasonTakeProfit, TriggerPrice: *input.TakeProfitPrice, Protective: true}
+	if input.EntryPrice > 0 && input.TakeProfitPrice == nil && policy.TakeProfitPercent > 0 {
+		fallbackTarget = input.EntryPrice * (1 + policy.TakeProfitPercent/100)
 	}
-	if policy.ATRTrailingEnabled && input.TrailingStopPrice != nil && low <= *input.TrailingStopPrice {
-		return ExitDecision{Reason: CloseReasonATRTrailing, TriggerPrice: *input.TrailingStopPrice, Protective: true}
-	}
-	if policy.TrailingStopEnabled && input.TrailingStopPrice != nil && low <= *input.TrailingStopPrice {
-		return ExitDecision{Reason: CloseReasonTrailingStop, TriggerPrice: *input.TrailingStopPrice, Protective: true}
-	}
-
-	if input.EntryPrice <= 0 {
+	shared := tradingcore.EvaluateExitLifecycle(tradingcore.ExitTriggerInput{HardStop: input.StopPrice != nil && low <= *input.StopPrice, TakeProfit: input.TakeProfitPrice != nil && high >= *input.TakeProfitPrice, ATRTrailing: policy.ATRTrailingEnabled && input.TrailingStopPrice != nil && low <= *input.TrailingStopPrice, PercentTrailing: policy.TrailingStopEnabled && input.TrailingStopPrice != nil && low <= *input.TrailingStopPrice, FallbackStop: fallbackStop > 0 && low <= fallbackStop, FallbackTakeProfit: fallbackTarget > 0 && high >= fallbackTarget})
+	if !shared.Exit {
 		return ExitDecision{}
 	}
-
-	if input.StopPrice == nil && policy.StopLossPercent > 0 {
-		fallbackStop := input.EntryPrice * (1 - (policy.StopLossPercent / 100))
-		if fallbackStop > 0 && low <= fallbackStop {
-			return ExitDecision{Reason: CloseReasonStopLoss, TriggerPrice: fallbackStop, Protective: true}
+	trigger := input.CurrentPrice
+	switch shared.Reason {
+	case CloseReasonStopLoss:
+		if input.StopPrice != nil {
+			trigger = *input.StopPrice
+		} else {
+			trigger = fallbackStop
 		}
-	}
-	if input.TakeProfitPrice == nil && policy.TakeProfitPercent > 0 {
-		fallbackTarget := input.EntryPrice * (1 + (policy.TakeProfitPercent / 100))
-		if fallbackTarget > 0 && high >= fallbackTarget {
-			return ExitDecision{Reason: CloseReasonTakeProfit, TriggerPrice: fallbackTarget, Protective: true}
+	case CloseReasonTakeProfit:
+		if input.TakeProfitPrice != nil {
+			trigger = *input.TakeProfitPrice
+		} else {
+			trigger = fallbackTarget
 		}
+	case CloseReasonATRTrailing, CloseReasonTrailingStop:
+		trigger = *input.TrailingStopPrice
 	}
-
-	return ExitDecision{}
+	return ExitDecision{Reason: shared.Reason, TriggerPrice: trigger, Protective: true}
 }
 
 // EvaluateBarCloseExit is called on 15m bar boundaries. It first re-evaluates protective exits,
@@ -216,17 +216,15 @@ func EvaluateBarCloseExit(input ExitEvaluationInput, policy ExitPolicy) ExitDeci
 	if input.MaxBarsHeld != nil {
 		maxBars = *input.MaxBarsHeld
 	}
-	if maxBars > 0 && input.BarsHeld >= maxBars && discretionaryExitAllowed(input, policy) {
-		return ExitDecision{Reason: CloseReasonTimeStop, TriggerPrice: input.CurrentPrice}
+	decision := tradingcore.EvaluateExitLifecycle(tradingcore.ExitTriggerInput{TimeStop: maxBars > 0 && input.BarsHeld >= maxBars, Signal: policy.SellOnSignal && (input.Signal == "SELL" || input.Signal == "STRONG_SELL") && input.SignalRating <= policy.MinConfidenceToSell, AtLoss: input.EntryPrice > 0 && input.CurrentPrice < input.EntryPrice, AllowSellAtLoss: policy.AllowSellAtLoss})
+	if !decision.Exit {
+		return ExitDecision{}
 	}
-
-	if policy.SellOnSignal && discretionaryExitAllowed(input, policy) {
-		if (input.Signal == "SELL" || input.Signal == "STRONG_SELL") && input.SignalRating <= policy.MinConfidenceToSell {
-			return ExitDecision{Reason: CloseReasonSellSignal, TriggerPrice: input.CurrentPrice}
-		}
+	reason := decision.Reason
+	if reason == "signal_exit" {
+		reason = CloseReasonSellSignal
 	}
-
-	return ExitDecision{}
+	return ExitDecision{Reason: reason, TriggerPrice: input.CurrentPrice}
 }
 
 // discretionaryExitAllowed returns true if a discretionary exit (time_stop, sell_signal)

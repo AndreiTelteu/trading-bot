@@ -126,6 +126,11 @@ func (value Decimal) String() string {
 	return digits
 }
 
+func (value Decimal) Float64() float64 {
+	result, _ := strconv.ParseFloat(value.String(), 64)
+	return result
+}
+
 type Quantity struct{ value Decimal }
 type Price struct{ value Decimal }
 type SignedAmount struct{ value Decimal }

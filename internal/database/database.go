@@ -87,6 +87,8 @@ func SeedDataWithDefaults(defaultBalance float64, defaultCurrency string) error 
 		{Key: "max_pyramid_layers", Value: "3", Category: strPtr("trading")},
 		{Key: "position_scale_percent", Value: "50.0", Category: strPtr("trading")},
 		{Key: "auto_trade_enabled", Value: "false", Category: strPtr("trading")},
+		{Key: "trading_engine_mode", Value: "legacy", Category: strPtr("migration")},
+		{Key: "trading_engine_fallback", Value: "legacy", Category: strPtr("migration")},
 		{Key: "trending_coins_to_analyze", Value: "5", Category: strPtr("trading")},
 		{Key: "regime_gate_enabled", Value: "true", Category: strPtr("trading")},
 		{Key: "regime_timeframe", Value: "1h", Category: strPtr("trading")},

@@ -7,6 +7,7 @@ import (
 	"time"
 	"trading-go/internal/database"
 	ledgerpkg "trading-go/internal/ledger"
+	"trading-go/internal/tradingcore"
 	"trading-go/internal/websocket"
 
 	"github.com/gofiber/fiber/v2"
@@ -158,10 +159,80 @@ func createPortfolioSnapshot() (database.PortfolioSnapshot, database.Wallet, []d
 }
 
 func ExecuteBuy(req BuyRequest) (interface{}, error) {
+	_, _ = BuildFencedLiveRequest("buy", req.Symbol, req.Amount, req.Price, req.IdempotencyKey)
 	return nil, ledgerpkg.ErrExchangeExecutionFenced
 }
 func ExecuteSell(req SellRequest) (interface{}, error) {
+	_, _ = BuildFencedLiveRequest("sell", req.Symbol, req.Amount, req.Price, req.IdempotencyKey)
 	return nil, ledgerpkg.ErrExchangeExecutionFenced
+}
+
+// BuildFencedLiveRequest exposes deterministic Stage 02 request construction
+// without making exchange submission reachable.
+func BuildFencedLiveRequest(side, symbol string, amount, price float64, idempotency string) (tradingcore.LiveOrderRequest, error) {
+	normalized := strings.ToUpper(strings.ReplaceAll(strings.TrimSpace(symbol), "/", ""))
+	if !strings.HasSuffix(normalized, "USDT") {
+		normalized += "USDT"
+	}
+	baseName := strings.TrimSuffix(normalized, "USDT")
+	instrumentID, err := tradingcore.NewInstrumentID(strings.ToLower(baseName + "-usdt"))
+	if err != nil {
+		return tradingcore.LiveOrderRequest{}, err
+	}
+	base, _ := tradingcore.NewAssetID(baseName)
+	quote, _ := tradingcore.NewAssetID("USDT")
+	venue, _ := tradingcore.NewVenueID("binance")
+	instrument, err := tradingcore.NewInstrument(instrumentID, base, quote, venue, normalized)
+	if err != nil {
+		return tradingcore.LiveOrderRequest{}, err
+	}
+	quantityDecimal, err := tradingcore.ParseDecimal(strconv.FormatFloat(amount, 'f', -1, 64))
+	if err != nil {
+		return tradingcore.LiveOrderRequest{}, err
+	}
+	quantity, err := tradingcore.NewQuantity(quantityDecimal)
+	if err != nil {
+		return tradingcore.LiveOrderRequest{}, err
+	}
+	if strings.TrimSpace(idempotency) == "" {
+		idempotency = "fenced-live-" + strings.ToLower(side) + "-" + strings.ToLower(normalized)
+	}
+	key, err := tradingcore.NewIdempotencyKey(idempotency)
+	if err != nil {
+		return tradingcore.LiveOrderRequest{}, err
+	}
+	orderID, _ := tradingcore.NewOrderID("request-" + idempotency)
+	account, _ := tradingcore.NewAccountID("primary")
+	orderSide := tradingcore.Buy
+	if strings.EqualFold(side, "sell") {
+		orderSide = tradingcore.Sell
+	}
+	now := time.Now().UTC()
+	intent := tradingcore.OrderIntent{ID: orderID, IdempotencyKey: key, AccountID: account, Instrument: instrument, Side: orderSide, Type: tradingcore.MarketOrder, Quantity: quantity, SignalAt: now, DecisionAt: now, CreatedAt: now, ExecutionMode: tradingcore.ExecutionFullLive, QuantitySemantics: tradingcore.QuantityExact, Reason: "manual_exchange_request", Versions: tradingcore.VersionContext{Strategy: "manual", Policy: "live-fenced-v1"}}
+	if price > 0 {
+		priceDecimal, parseErr := tradingcore.ParseDecimal(strconv.FormatFloat(price, 'f', -1, 64))
+		if parseErr != nil {
+			return tradingcore.LiveOrderRequest{}, parseErr
+		}
+		reference, priceErr := tradingcore.NewPrice(priceDecimal)
+		if priceErr != nil {
+			return tradingcore.LiveOrderRequest{}, priceErr
+		}
+		intent.ReferencePrice = tradingcore.SomePrice(reference)
+	}
+	validated, err := tradingcore.NewOrderIntent(intent, nil)
+	if err != nil {
+		return tradingcore.LiveOrderRequest{}, err
+	}
+	batch, err := tradingcore.NewDecisionBatch([]tradingcore.OrderIntent{validated})
+	if err != nil {
+		return tradingcore.LiveOrderRequest{}, err
+	}
+	requests, err := (tradingcore.LiveBroker{}).BuildRequests(batch)
+	if err != nil {
+		return tradingcore.LiveOrderRequest{}, err
+	}
+	return requests[0], nil
 }
 func UpdatePositionsPrices() (interface{}, error) {
 	settings := GetAllSettings()

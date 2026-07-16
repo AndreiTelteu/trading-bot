@@ -12,6 +12,7 @@ import (
 	"trading-go/internal/accounting"
 	"trading-go/internal/database"
 	ledgerpkg "trading-go/internal/ledger"
+	"trading-go/internal/tradingcore"
 	"trading-go/internal/websocket"
 )
 
@@ -902,6 +903,21 @@ func AnalyzeShortlist(selection *UniverseSelectionResult, settings map[string]st
 }
 
 func ExecuteShortlistTrades(analyses []AnalyzedCoin, universe *UniverseSelectionResult, settings map[string]string) ([]AnalyzedCoin, int) {
+	engineMode := strings.ToLower(strings.TrimSpace(getSettingString(settings, "trading_engine_mode", "legacy")))
+	if engineMode == "shared" {
+		results, opened, err := executeShortlistTradesShared(analyses, universe, settings, tradingcore.ExecutionPaper)
+		if err == nil {
+			return results, opened
+		}
+		if strings.ToLower(strings.TrimSpace(getSettingString(settings, "trading_engine_fallback", "legacy"))) != "legacy" {
+			return markSharedEngineFailure(analyses, err), 0
+		}
+		logActivity("error", "Shared trading engine failed; using explicit legacy fallback", err.Error())
+	} else if engineMode == "shadow_compare" {
+		if _, _, err := executeShortlistTradesShared(append([]AnalyzedCoin(nil), analyses...), universe, settings, tradingcore.ExecutionShadow); err != nil {
+			logActivity("error", "Shared trading engine shadow comparison failed", err.Error())
+		}
+	}
 	return executeShortlistTradesWithRuntime(analyses, universe, settings, productionShortlistRuntime{})
 }
 

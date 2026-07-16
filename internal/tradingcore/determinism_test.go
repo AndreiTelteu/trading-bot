@@ -291,13 +291,14 @@ func validIntent(t *testing.T, id string) tradingcore.OrderIntent {
 
 type strategyStub struct{}
 
-func (strategyStub) Decide(context.Context, tradingcore.DecisionContext) (tradingcore.DecisionBatch, error) {
-	return tradingcore.NewDecisionBatch(nil)
+func (strategyStub) Decide(context.Context, tradingcore.DecisionContext) (tradingcore.StrategyResult, error) {
+	batch, err := tradingcore.NewDecisionBatch(nil)
+	return tradingcore.NewStrategyResult(batch, nil), err
 }
 
 type strategyMutationProbe struct{}
 
-func (strategyMutationProbe) Decide(_ context.Context, snapshot tradingcore.DecisionContext) (tradingcore.DecisionBatch, error) {
+func (strategyMutationProbe) Decide(_ context.Context, snapshot tradingcore.DecisionContext) (tradingcore.StrategyResult, error) {
 	settings := snapshot.Settings()
 	settings["entry_percent"] = "999"
 	for id := range snapshot.Quotes() {
@@ -315,7 +316,8 @@ func (strategyMutationProbe) Decide(_ context.Context, snapshot tradingcore.Deci
 	if len(universe) > 0 {
 		universe[0].Eligible = false
 	}
-	return tradingcore.NewDecisionBatch(nil)
+	batch, err := tradingcore.NewDecisionBatch(nil)
+	return tradingcore.NewStrategyResult(batch, nil), err
 }
 
 type riskStub struct{}

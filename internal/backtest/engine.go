@@ -302,7 +302,7 @@ func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (Bac
 			if !ok {
 				continue
 			}
-			if config.ModelArtifact == nil {
+			if config.EngineMode != EngineShared && config.ModelArtifact == nil {
 				if config.BuyOnlyStrong && ctx.Signal != "STRONG_BUY" {
 					continue
 				}
@@ -329,6 +329,15 @@ func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (Bac
 			}
 			entryCost := size * entryPrice
 			entryFee := entryCost * (config.FeeBps / 10000)
+			if config.EngineMode == EngineShared {
+				sharedFill, sharedErr := runSharedBacktestEntry(config, candidate, ctx, currentUniverse, positions, states, cash, currentTime, rawEntryPrice)
+				if sharedErr != nil || sharedFill == nil {
+					continue
+				}
+				entryPrice, size, entryFee = sharedFill.Price.Decimal().Float64(), sharedFill.Quantity.Decimal().Float64(), sharedFill.Fee.Decimal().Float64()
+				entryCost = size * entryPrice
+				amountUsdt = entryCost
+			}
 			if entryCost+entryFee > cash {
 				continue
 			}
@@ -478,7 +487,8 @@ func buildEntryCandidates(config BacktestConfig, selection backtestUniverseSelec
 		return nil
 	}
 
-	if config.ModelArtifact == nil {
+	modelAuthority := services.GetModelSelectionPolicy(map[string]string{"active_model_version": config.ModelPolicy.ActiveModelVersion, "model_rollout_state": config.ModelPolicy.RolloutState, "model_fallback_mode": config.ModelPolicy.FallbackMode}).UseForLiveEntries()
+	if config.ModelArtifact == nil || (config.EngineMode == EngineShared && !modelAuthority) {
 		entries := make([]entryCandidate, 0, len(candidateUniverse))
 		for _, candidate := range candidateUniverse {
 			entries = append(entries, entryCandidate{Symbol: candidate.Symbol})
