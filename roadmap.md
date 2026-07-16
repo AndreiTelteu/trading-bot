@@ -53,14 +53,14 @@ Detailed plan: [`docs/reimplementation/stage-01-immutable-ledger.md`](docs/reimp
 
 Detailed plan: [`docs/reimplementation/stage-02-shared-engine.md`](docs/reimplementation/stage-02-shared-engine.md)
 
-- [ ] Introduce common strategy decision and order-intent contracts
-- [ ] Introduce a shared portfolio risk engine and explicit rejection reasons
-- [ ] Add broker adapters for backtest, paper, and live
-- [ ] Extract legacy rules behind a `LegacyRuleStrategy`
-- [ ] Route all execution modes through one orchestrator
-- [ ] Honor rollout/fallback state consistently
-- [ ] Add fixture-based parity and deterministic replay tests
-- [ ] Complete independent review and one feedback pass
+- [x] Introduce common strategy decision and order-intent contracts
+- [x] Introduce a shared portfolio risk engine and explicit rejection reasons
+- [x] Add broker adapters for backtest, paper, and live
+- [x] Extract legacy rules behind a `LegacyRuleStrategy`
+- [x] Route all execution modes through one orchestrator
+- [x] Honor rollout/fallback state consistently
+- [x] Add fixture-based parity and deterministic replay tests
+- [x] Complete independent review and one feedback pass
 
 ## Stage 03 — Deterministic and realistic backtesting
 
