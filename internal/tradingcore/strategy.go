@@ -73,7 +73,15 @@ func (strategy LegacyRuleStrategy) Decide(_ context.Context, snapshot DecisionCo
 				metadata[key] = configured
 			}
 		}
-		intent, err := NewOrderIntent(OrderIntent{ID: orderID, IdempotencyKey: key, AccountID: portfolio.AccountID(), Instrument: candidate.Instrument, Side: Buy, Type: MarketOrder, Quantity: quantity, ReferencePrice: SomePrice(quote.Last), SignalAt: snapshot.SignalAt(), DecisionAt: snapshot.DecisionAt(), CreatedAt: snapshot.DecisionAt(), ExecutionMode: portfolio.ExecutionMode(), QuantitySemantics: QuantityCashCapped, Priority: candidate.Rank, Reason: "passed_gates", Horizon: value(settings, "strategy_horizon", "15m"), Versions: snapshot.Versions(), Provenance: Provenance{Source: "legacy_rule_strategy", Actor: LegacyStrategyVersion, Reason: "passed_gates"}}, metadata)
+		createdAt := snapshot.DecisionAt()
+		if configured := strings.TrimSpace(settings["order_created_at"]); configured != "" {
+			parsed, parseErr := time.Parse(time.RFC3339Nano, configured)
+			if parseErr != nil || parsed.Before(snapshot.DecisionAt()) {
+				return StrategyResult{}, fmt.Errorf("invalid order_created_at")
+			}
+			createdAt = parsed
+		}
+		intent, err := NewOrderIntent(OrderIntent{ID: orderID, IdempotencyKey: key, AccountID: portfolio.AccountID(), Instrument: candidate.Instrument, Side: Buy, Type: MarketOrder, Quantity: quantity, ReferencePrice: SomePrice(quote.Last), SignalAt: snapshot.SignalAt(), DecisionAt: snapshot.DecisionAt(), CreatedAt: createdAt, ExecutionMode: portfolio.ExecutionMode(), QuantitySemantics: QuantityCashCapped, Priority: candidate.Rank, Reason: "passed_gates", Horizon: value(settings, "strategy_horizon", "15m"), Versions: snapshot.Versions(), Provenance: Provenance{Source: "legacy_rule_strategy", Actor: LegacyStrategyVersion, Reason: "passed_gates"}}, metadata)
 		if err != nil {
 			return StrategyResult{}, err
 		}

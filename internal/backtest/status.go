@@ -9,6 +9,9 @@ import (
 )
 
 type BacktestJobStrategySummary struct {
+	Classification RunClassification   `json:"classification,omitempty"`
+	Coverage       CoverageReport      `json:"coverage,omitempty"`
+	Manifest       RunManifest         `json:"manifest,omitempty"`
 	Mode           StrategyMode        `json:"mode"`
 	Metrics        Metrics             `json:"metrics"`
 	RankingMetrics *RankingMetrics     `json:"ranking_metrics,omitempty"`
@@ -152,12 +155,18 @@ func BuildBacktestJobSummary(summary BacktestRunSummary) BacktestJobSummary {
 		UniverseMode:  summary.UniverseMode,
 		PolicyContext: summary.PolicyContext,
 		Baseline: BacktestJobStrategySummary{
+			Classification: summary.Baseline.Classification,
+			Coverage:       summary.Baseline.Coverage,
+			Manifest:       summary.Baseline.Manifest,
 			Mode:           summary.Baseline.Mode,
 			Metrics:        summary.Baseline.Metrics,
 			RankingMetrics: summary.Baseline.RankingMetrics,
 			Diagnostics:    summary.Baseline.Diagnostics,
 		},
 		VolSizing: BacktestJobStrategySummary{
+			Classification: summary.VolSizing.Classification,
+			Coverage:       summary.VolSizing.Coverage,
+			Manifest:       summary.VolSizing.Manifest,
 			Mode:           summary.VolSizing.Mode,
 			Metrics:        summary.VolSizing.Metrics,
 			RankingMetrics: summary.VolSizing.RankingMetrics,

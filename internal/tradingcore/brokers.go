@@ -14,6 +14,8 @@ type CostModel struct {
 	FillBPS             int64
 	RejectCode          RejectionCode
 	Version             string
+	ExecutionPrice      OptionalPrice
+	PriceTick           string
 }
 
 type SimulationBroker struct {
@@ -47,7 +49,10 @@ func (broker SimulationBroker) Submit(_ context.Context, batch DecisionBatch) (B
 			rejected = append(rejected, OrderRejection{OrderID: intent.ID, Code: broker.Costs.RejectCode, Message: string(broker.Costs.RejectCode), EvaluatedAt: broker.Clock.Now().UTC(), PolicyVersion: intent.Versions.Policy})
 			continue
 		}
-		price, ok := intent.ReferencePrice.Get()
+		price, ok := broker.Costs.ExecutionPrice.Get()
+		if !ok {
+			price, ok = intent.ReferencePrice.Get()
+		}
 		if !ok {
 			price, ok = intent.LimitPrice.Get()
 		}
@@ -57,6 +62,12 @@ func (broker SimulationBroker) Submit(_ context.Context, batch DecisionBatch) (B
 		fillPrice, err := applyBPS(price, broker.Costs.SlippageBPS, intent.Side == Buy)
 		if err != nil {
 			return BrokerBatchOutcome{}, err
+		}
+		if broker.Costs.PriceTick != "" {
+			fillPrice, err = roundPriceDown(fillPrice, broker.Costs.PriceTick)
+			if err != nil {
+				return BrokerBatchOutcome{}, err
+			}
 		}
 		fillBPS := broker.Costs.FillBPS
 		if fillBPS == 0 {
@@ -100,6 +111,23 @@ func (broker SimulationBroker) Submit(_ context.Context, batch DecisionBatch) (B
 		accepted = append(accepted, order)
 	}
 	return NewBrokerBatchOutcome(OutcomeComplete, accepted, rejected)
+}
+
+func roundPriceDown(price Price, tickRaw string) (Price, error) {
+	tick, err := ParseDecimal(tickRaw)
+	if err != nil || tick.Sign() <= 0 {
+		return Price{}, fmt.Errorf("invalid price tick %q", tickRaw)
+	}
+	value := decimalRat(price.Decimal())
+	quantum := decimalRat(tick)
+	ratio := new(big.Rat).Quo(value, quantum)
+	units := new(big.Int)
+	units.Quo(ratio.Num(), ratio.Denom())
+	rounded, err := ratDecimal(new(big.Rat).Mul(new(big.Rat).SetInt(units), quantum))
+	if err != nil {
+		return Price{}, err
+	}
+	return NewPrice(rounded)
 }
 
 type LiveOrderRequest struct{ ClientOrderID, Symbol, Side, Type, Quantity, LimitPrice, PolicyVersion string }

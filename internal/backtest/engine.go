@@ -78,6 +78,32 @@ func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (Bac
 	if config.InitialBalance <= 0 {
 		return BacktestResult{}, fmt.Errorf("initial balance must be > 0")
 	}
+	if config.EngineMode == EngineShared {
+		defaultStage03Policies(&config)
+		if err := validateRealismPolicy(config); err != nil {
+			return BacktestResult{}, err
+		}
+	}
+	var replaySnapshots []replaySnapshotEntry
+	if config.UniverseMode == UniverseDynamicReplay {
+		if config.ReplaySnapshotsProvided || len(config.ReplaySnapshots) > 0 {
+			replaySnapshots = fixtureReplaySnapshots(config.ReplaySnapshots)
+		} else {
+			var err error
+			replaySnapshots, err = loadReplaySnapshots(config.Start, config.End)
+			if err != nil {
+				return BacktestResult{}, fmt.Errorf("failed to load replay snapshots: %w", err)
+			}
+		}
+	}
+	if config.EngineMode == EngineShared {
+		coverage := validateCoverage(config, series, replaySnapshots)
+		hash := datasetManifestHash(config, series, replaySnapshots)
+		if !coverage.Passed {
+			result := BacktestResult{Classification: RunCoverageFailed, Coverage: coverage, Manifest: buildManifest(config, coverage, RunCoverageFailed, hash)}
+			return result, &CoverageError{Report: coverage}
+		}
+	}
 	indicatorConfig := config.IndicatorConfig
 	if indicatorConfig == (services.IndicatorConfig{}) {
 		indicatorConfig = services.GetIndicatorSettings()
@@ -93,6 +119,11 @@ func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (Bac
 
 	symbols := sortedSymbols(prepared)
 	states := buildSymbolStates(prepared)
+	var benchmarkState *symbolState
+	if config.BenchmarkRequired {
+		benchmarkStates := buildSymbolStates(map[string][]services.OHLCV{"benchmark": config.BenchmarkSeries})
+		benchmarkState = benchmarkStates["benchmark"]
+	}
 	timeline := buildTimeline(prepared)
 	if len(timeline) == 0 {
 		return BacktestResult{}, fmt.Errorf("no data available")
@@ -132,18 +163,9 @@ func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (Bac
 	execStates := buildExecutionSymbolStates(config.ExecutionSeries)
 	has1mData := len(execStates) > 0
 
-	// Load replay snapshots for dynamic_replay mode
-	var replaySnapshots []replaySnapshotEntry
-	if config.UniverseMode == UniverseDynamicReplay {
-		var err error
-		replaySnapshots, err = loadReplaySnapshots(config.Start, config.End)
-		if err != nil {
-			return BacktestResult{}, fmt.Errorf("failed to load replay snapshots: %w", err)
-		}
-	}
-
 	currentUniverse := backtestUniverseSelection{}
 	lastRebalance := time.Time{}
+	liquidationWindowClosed := map[string]bool{}
 
 	for _, ts := range timeline {
 		currentTime := time.UnixMilli(ts)
@@ -168,11 +190,25 @@ func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (Bac
 			rating, signal := services.AnalyzeCandlesWithConfig(window, indicatorConfig, indicatorWeights)
 			contexts[symbol] = barContext{Rating: rating, Signal: signal, Atr: computeAtr(window, config)}
 		}
+		if benchmarkState != nil {
+			availableAt := int64(0)
+			for i, candidate := range benchmarkState.series {
+				if candidate.CloseTime <= currentTime.UnixMilli() {
+					availableAt = int64(i + 1)
+				} else {
+					break
+				}
+			}
+			if availableAt > 0 {
+				benchmarkState.lastIndex = int(availableAt - 1)
+				benchmarkState.lastPrice = benchmarkState.series[benchmarkState.lastIndex].Close
+			}
+		}
 
 		switch config.UniverseMode {
 		case UniverseDynamicRecompute:
 			if lastRebalance.IsZero() || currentTime.Sub(lastRebalance) >= config.UniversePolicy.RebalanceInterval {
-				currentUniverse = buildBacktestUniverseSelection(config, states, currentBars, lookback, true)
+				currentUniverse = buildBacktestUniverseSelection(config, states, benchmarkState, currentBars, lookback, true)
 				lastRebalance = currentTime
 			}
 		case UniverseDynamicReplay:
@@ -181,7 +217,7 @@ func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (Bac
 				lastRebalance = currentTime
 			}
 		default:
-			currentUniverse = buildBacktestUniverseSelection(config, states, currentBars, lookback, false)
+			currentUniverse = buildBacktestUniverseSelection(config, states, benchmarkState, currentBars, lookback, false)
 		}
 
 		for _, symbol := range symbols {
@@ -219,7 +255,8 @@ func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (Bac
 
 			if intrabarExit != nil {
 				if config.EngineMode == EngineShared {
-					if err := runSharedBacktestExit(sharedLedger, config, pos, intrabarExit.Price, intrabarExit.Time, intrabarExit.Reason); err != nil {
+					decisionAt := intrabarExit.Time.Add(time.Nanosecond)
+					if err := runSharedBacktestExit(sharedLedger, config, pos, intrabarExit.Price, intrabarExit.Price, intrabarExit.Time, decisionAt, intrabarExit.Time.Add(3*time.Nanosecond), intrabarExit.Reason); err != nil {
 						return BacktestResult{}, fmt.Errorf("shared exit %s: %w", symbol, err)
 					}
 					cash, positions, trades = sharedLedger.cash, sharedLedger.positions, sharedLedger.trades
@@ -275,11 +312,12 @@ func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (Bac
 				continue
 			}
 			if config.EngineMode == EngineShared {
-				rawExit := decision.TriggerPrice
-				if rawExit <= 0 {
-					rawExit = bar.Close
+				signalAt := time.UnixMilli(bar.CloseTime)
+				execBar, fillAt, executable := nextExecutable(config, states[symbol], symbol, signalAt)
+				if !executable || !config.End.IsZero() && fillAt.After(config.End) {
+					continue
 				}
-				if err := runSharedBacktestExit(sharedLedger, config, pos, rawExit, time.UnixMilli(bar.CloseTime), decision.Reason); err != nil {
+				if err := runSharedBacktestExit(sharedLedger, config, pos, bar.Close, execBar.Open, signalAt, signalAt.Add(time.Nanosecond), fillAt, decision.Reason); err != nil {
 					return BacktestResult{}, fmt.Errorf("shared exit %s: %w", symbol, err)
 				}
 				cash, positions, trades = sharedLedger.cash, sharedLedger.positions, sharedLedger.trades
@@ -315,12 +353,38 @@ func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (Bac
 			delete(positions, symbol)
 		}
 
+		if config.EngineMode == EngineShared {
+			for _, symbol := range symbols {
+				bar, ok := currentBars[symbol]
+				if !ok || !isLastLiquidationOpportunity(config, states[symbol], symbol, bar) {
+					continue
+				}
+				liquidationWindowClosed[symbol] = true
+				pos := positions[symbol]
+				if pos == nil {
+					continue
+				}
+				signalAt := time.UnixMilli(bar.CloseTime)
+				execBar, fillAt, executable := nextExecutable(config, states[symbol], symbol, signalAt)
+				if !executable || !config.End.IsZero() && fillAt.After(config.End) {
+					continue
+				}
+				if err := runSharedBacktestExit(sharedLedger, config, pos, bar.Close, execBar.Open, signalAt, signalAt.Add(time.Nanosecond), fillAt, "final_liquidation"); err != nil {
+					return BacktestResult{}, fmt.Errorf("shared final liquidation %s: %w", symbol, err)
+				}
+				cash, positions, trades = sharedLedger.cash, sharedLedger.positions, sharedLedger.trades
+			}
+		}
+
 		entryCandidates := buildEntryCandidates(config, currentUniverse, states, positions, cash, currentTime, lookback)
 		for _, candidate := range entryCandidates {
 			if config.EngineMode != EngineShared && len(positions) >= config.MaxPositions {
 				break
 			}
 			symbol := candidate.Symbol
+			if config.EngineMode == EngineShared && liquidationWindowClosed[symbol] {
+				continue
+			}
 			if config.EngineMode != EngineShared && positions[symbol] != nil {
 				continue
 			}
@@ -344,13 +408,12 @@ func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (Bac
 				}
 			}
 			if config.EngineMode == EngineShared {
-				rawEntryPrice := bar.Close
-				if has1mData {
-					if exec1mOpen := findNext1mOpen(execStates[symbol], bar.CloseTime); exec1mOpen > 0 {
-						rawEntryPrice = exec1mOpen
-					}
+				signalAt := time.UnixMilli(bar.CloseTime)
+				execBar, fillAt, executable := nextExecutable(config, states[symbol], symbol, signalAt)
+				if !executable || !config.End.IsZero() && fillAt.After(config.End) {
+					continue
 				}
-				if _, err := runSharedBacktestEntry(sharedLedger, config, candidate, ctx, currentUniverse, positions, states, cash, currentTime, rawEntryPrice); err != nil {
+				if _, err := runSharedBacktestEntry(sharedLedger, config, candidate, ctx, currentUniverse, positions, states, cash, signalAt, signalAt.Add(time.Nanosecond), fillAt, bar.Close, execBar.Open); err != nil {
 					return BacktestResult{}, fmt.Errorf("shared entry %s: %w", symbol, err)
 				}
 				cash, positions, trades = sharedLedger.cash, sharedLedger.positions, sharedLedger.trades
@@ -411,7 +474,18 @@ func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (Bac
 		}
 
 		totalValue := cash + currentPositionsValue(positions, states)
-		equity = append(equity, EquityPoint{Time: currentTime, Value: totalValue})
+		equityTime := currentTime
+		if sharedLedger != nil {
+			for _, bar := range currentBars {
+				if closeAt := time.UnixMilli(bar.CloseTime); closeAt.After(equityTime) {
+					equityTime = closeAt
+				}
+			}
+			if len(sharedLedger.events) > 0 && sharedLedger.events[len(sharedLedger.events)-1].At.After(equityTime) {
+				equityTime = sharedLedger.events[len(sharedLedger.events)-1].At
+			}
+		}
+		equity = append(equity, EquityPoint{Time: equityTime, Value: totalValue})
 		concurrentPositionCounts = append(concurrentPositionCounts, len(positions))
 		for _, symbol := range symbols {
 			value := 0.0
@@ -422,7 +496,7 @@ func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (Bac
 				}
 				value = pos.Size * markPrice
 			}
-			equityBySymbol[symbol] = append(equityBySymbol[symbol], EquityPoint{Time: currentTime, Value: value})
+			equityBySymbol[symbol] = append(equityBySymbol[symbol], EquityPoint{Time: equityTime, Value: value})
 		}
 	}
 
@@ -445,11 +519,15 @@ func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (Bac
 	if sharedLedger != nil {
 		result.SharedEngineRuns = sharedLedger.runs
 		result.SharedLedgerEvents = len(sharedLedger.events)
+		result.Coverage = validateCoverage(config, series, replaySnapshots)
+		result.Classification = classifySharedRun(sharedLedger, len(currentUniverse.Shortlist))
+		result.Artifacts = buildBacktestArtifacts(sharedLedger, positions, states, timeline)
+		result.Manifest = buildManifest(config, result.Coverage, result.Classification, datasetManifestHash(config, series, replaySnapshots))
 	}
 	return result, nil
 }
 
-func buildBacktestUniverseSelection(config BacktestConfig, states map[string]*symbolState, currentBars map[string]services.OHLCV, lookback int, applyPolicy bool) backtestUniverseSelection {
+func buildBacktestUniverseSelection(config BacktestConfig, states map[string]*symbolState, benchmarkState *symbolState, currentBars map[string]services.OHLCV, lookback int, applyPolicy bool) backtestUniverseSelection {
 	barsPerDay := maxInt(1, (24*60)/maxInt(1, config.TimeframeMinutes))
 	barsPerHour := maxInt(1, 60/maxInt(1, config.TimeframeMinutes))
 	windowSize := maxInt(lookback, barsPerDay*14)
@@ -457,7 +535,11 @@ func buildBacktestUniverseSelection(config BacktestConfig, states map[string]*sy
 	btcReturn7D := 0.0
 	btcHigherTrend := false
 	btcDailyTrend := false
-	if btcState, ok := states["BTCUSDT"]; ok && btcState.lastIndex >= barsPerDay {
+	btcState := benchmarkState
+	if btcState == nil {
+		btcState = states["BTCUSDT"]
+	}
+	if btcState != nil && btcState.lastIndex >= barsPerDay {
 		window := recentWindow(btcState.series, btcState.lastIndex, windowSize)
 		daily := aggregateOHLCVByBars(window, barsPerDay)
 		hourly := aggregateOHLCVByBars(window, barsPerHour)

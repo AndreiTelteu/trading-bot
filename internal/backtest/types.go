@@ -9,19 +9,31 @@ type StrategyMode string
 type BacktestMode string
 type UniverseMode string
 type EngineMode string
+type RunClassification string
+type ExecutionTiming string
+type LiquidityPolicy string
 
 const (
-	StrategyBaseline         StrategyMode = "baseline"
-	StrategyVolSizing        StrategyMode = "vol_sizing"
-	BacktestModeLegacyStatic BacktestMode = "legacy_static"
-	BacktestModeDynamicRule  BacktestMode = "dynamic_universe_rule_rank"
-	BacktestModeDynamicModel BacktestMode = "dynamic_universe_model_rank"
-	BacktestModePaperReplay  BacktestMode = "paper_replay"
-	UniverseStatic           UniverseMode = "static"
-	UniverseDynamicRecompute UniverseMode = "dynamic_recompute"
-	UniverseDynamicReplay    UniverseMode = "dynamic_replay"
-	EngineLegacy             EngineMode   = "legacy"
-	EngineShared             EngineMode   = "shared"
+	StrategyBaseline         StrategyMode      = "baseline"
+	StrategyVolSizing        StrategyMode      = "vol_sizing"
+	BacktestModeLegacyStatic BacktestMode      = "legacy_static"
+	BacktestModeDynamicRule  BacktestMode      = "dynamic_universe_rule_rank"
+	BacktestModeDynamicModel BacktestMode      = "dynamic_universe_model_rank"
+	BacktestModePaperReplay  BacktestMode      = "paper_replay"
+	UniverseStatic           UniverseMode      = "static"
+	UniverseDynamicRecompute UniverseMode      = "dynamic_recompute"
+	UniverseDynamicReplay    UniverseMode      = "dynamic_replay"
+	EngineLegacy             EngineMode        = "legacy"
+	EngineShared             EngineMode        = "shared"
+	RunCoverageFailed        RunClassification = "coverage_failed"
+	RunGatingZeroTrades      RunClassification = "gating_zero_trades"
+	RunStrategyZeroTrades    RunClassification = "strategy_zero_trades"
+	RunSuccessfulExecution   RunClassification = "successful_execution"
+	ExecutionNextExecutable  ExecutionTiming   = "next_executable"
+	ExecutionMarketOnClose   ExecutionTiming   = "market_on_close"
+	LiquidityFullFillOHLCV   LiquidityPolicy   = "full_fill_ohlcv"
+	LiquidityVolumeCapped    LiquidityPolicy   = "volume_capped"
+	LiquidityPartialFill     LiquidityPolicy   = "partial_fill"
 )
 
 type BacktestConfig struct {
@@ -66,8 +78,185 @@ type BacktestConfig struct {
 	TrailingStopEnabled                    bool
 	TrailingStopPercent                    float64
 	ExecutionSeries                        map[string][]services.OHLCV // 1m candle data for execution replay
-	ExecutionTimeframe                     string                      // e.g. "1m"
-	ExecutionTimeframeMins                 int                         // e.g. 1
+	ExecutionSeriesRequired                bool
+	ExecutionTimeframe                     string // e.g. "1m"
+	ExecutionTimeframeMins                 int    // e.g. 1
+	CoveragePolicy                         CoveragePolicy
+	ExecutionPolicy                        ExecutionPolicy
+	BenchmarkSymbol                        string
+	BenchmarkSeries                        []services.OHLCV
+	BenchmarkRequired                      bool
+	ReplaySnapshots                        []ReplaySnapshot
+	ReplaySnapshotsProvided                bool
+	RequiredModelFeatures                  map[string]map[int64]float64
+	CodeRevision                           string
+	ConfigVersion                          string
+	StrategyVersion                        string
+	Seed                                   int64
+}
+
+type CoveragePolicy struct {
+	Version                string        `json:"version"`
+	DecisionInterval       time.Duration `json:"decision_interval"`
+	ExecutionInterval      time.Duration `json:"execution_interval"`
+	MaxMissingIntervals    int           `json:"max_missing_intervals"`
+	RequireRequestedBounds bool          `json:"require_requested_bounds"`
+	RequiredReplayMembers  int           `json:"required_replay_members"`
+	RequiredModelFeatures  []string      `json:"required_model_features,omitempty"`
+}
+
+type ExecutionPolicy struct {
+	Version     string                       `json:"version"`
+	Timing      ExecutionTiming              `json:"timing"`
+	Liquidity   LiquidityPolicy              `json:"liquidity"`
+	CostVersion string                       `json:"cost_version"`
+	Constraints map[string]SymbolConstraints `json:"constraints,omitempty"`
+}
+
+type SymbolConstraints struct {
+	QuantityStep float64 `json:"quantity_step"`
+	PriceTick    float64 `json:"price_tick"`
+	MinQuantity  float64 `json:"min_quantity,omitempty"`
+}
+
+type ReplaySnapshot struct {
+	Timestamp time.Time `json:"timestamp"`
+	Members   []string  `json:"members"`
+}
+
+type CoverageReason string
+
+const (
+	CoverageMissingSeries      CoverageReason = "missing_series"
+	CoverageEmptySeries        CoverageReason = "empty_series"
+	CoverageDuplicateTimestamp CoverageReason = "duplicate_timestamp"
+	CoverageNonMonotonic       CoverageReason = "non_monotonic_timestamp"
+	CoverageInternalGap        CoverageReason = "internal_gap"
+	CoverageBounds             CoverageReason = "requested_bounds_not_covered"
+	CoverageReplayEmpty        CoverageReason = "replay_snapshots_empty"
+	CoverageReplayMembersEmpty CoverageReason = "replay_members_insufficient"
+	CoverageBenchmarkMissing   CoverageReason = "benchmark_missing"
+	CoverageFeatureMissing     CoverageReason = "model_feature_missing"
+)
+
+type CoverageDiagnostic struct {
+	Dataset string         `json:"dataset"`
+	Symbol  string         `json:"symbol,omitempty"`
+	Status  string         `json:"status"`
+	Reason  CoverageReason `json:"reason,omitempty"`
+	Count   int            `json:"count"`
+	First   string         `json:"first,omitempty"`
+	Last    string         `json:"last,omitempty"`
+	Gaps    int            `json:"gaps,omitempty"`
+}
+
+type CoverageReport struct {
+	SchemaVersion string               `json:"schema_version"`
+	PolicyVersion string               `json:"policy_version"`
+	Passed        bool                 `json:"passed"`
+	Reasons       []CoverageReason     `json:"reasons,omitempty"`
+	Diagnostics   []CoverageDiagnostic `json:"diagnostics"`
+}
+
+type ArtifactRefs struct {
+	SchemaVersion string `json:"schema_version"`
+	Manifest      string `json:"manifest"`
+	Decisions     string `json:"decisions"`
+	Orders        string `json:"orders"`
+	Fills         string `json:"fills"`
+	Trades        string `json:"trades"`
+	Ledger        string `json:"ledger"`
+	Equity        string `json:"equity"`
+	Metrics       string `json:"metrics"`
+}
+
+type RunManifest struct {
+	SchemaVersion       string            `json:"schema_version"`
+	Classification      RunClassification `json:"classification"`
+	CodeRevision        string            `json:"code_revision"`
+	ConfigVersion       string            `json:"config_version"`
+	StrategyVersion     string            `json:"strategy_version"`
+	PolicyVersion       string            `json:"policy_version"`
+	CostVersion         string            `json:"cost_version"`
+	DatasetManifestHash string            `json:"dataset_manifest_hash"`
+	UniverseMode        UniverseMode      `json:"universe_mode"`
+	BenchmarkSymbol     string            `json:"benchmark_symbol,omitempty"`
+	Seed                int64             `json:"seed"`
+	FeeBPS              float64           `json:"fee_bps"`
+	SlippageBPS         float64           `json:"slippage_bps"`
+	CoveragePolicy      CoveragePolicy    `json:"coverage_policy"`
+	ExecutionPolicy     ExecutionPolicy   `json:"execution_policy"`
+	Start               string            `json:"start"`
+	End                 string            `json:"end"`
+	Coverage            CoverageReport    `json:"coverage"`
+	Limitations         []string          `json:"limitations,omitempty"`
+	Artifacts           ArtifactRefs      `json:"artifacts"`
+}
+
+type DecisionArtifact struct {
+	SignalAt   string `json:"signal_at"`
+	DecisionAt string `json:"decision_at"`
+	Symbol     string `json:"symbol"`
+	Code       string `json:"code"`
+}
+type OrderArtifact struct {
+	SignalAt   string `json:"signal_at"`
+	DecisionAt string `json:"decision_at"`
+	OrderAt    string `json:"order_at"`
+	Symbol     string `json:"symbol"`
+	Side       string `json:"side"`
+	Quantity   string `json:"quantity"`
+	Reason     string `json:"reason,omitempty"`
+}
+type FillArtifact struct {
+	SignalAt    string `json:"signal_at"`
+	DecisionAt  string `json:"decision_at"`
+	OrderAt     string `json:"order_at"`
+	FillAt      string `json:"fill_at"`
+	Symbol      string `json:"symbol"`
+	Side        string `json:"side"`
+	Quantity    string `json:"quantity"`
+	Price       string `json:"price"`
+	Fee         string `json:"fee"`
+	CostVersion string `json:"cost_version"`
+}
+type LedgerArtifact struct {
+	At        string `json:"at"`
+	Symbol    string `json:"symbol"`
+	Side      string `json:"side"`
+	Quantity  string `json:"quantity"`
+	Price     string `json:"price"`
+	Fee       string `json:"fee"`
+	CashAfter string `json:"cash_after"`
+}
+type ExposureArtifact struct {
+	At        string `json:"at"`
+	Symbol    string `json:"symbol"`
+	Quantity  string `json:"quantity"`
+	MarkPrice string `json:"mark_price"`
+	Value     string `json:"value"`
+	Status    string `json:"status"`
+}
+
+type BacktestArtifacts struct {
+	SchemaVersion string             `json:"schema_version"`
+	Decisions     []DecisionArtifact `json:"decisions"`
+	Orders        []OrderArtifact    `json:"orders"`
+	Fills         []FillArtifact     `json:"fills"`
+	Ledger        []LedgerArtifact   `json:"ledger"`
+	Exposure      []ExposureArtifact `json:"exposure"`
+}
+
+type ArtifactBytes struct {
+	Manifest  []byte
+	Decisions []byte
+	Orders    []byte
+	Fills     []byte
+	Trades    []byte
+	Ledger    []byte
+	Exposure  []byte
+	Equity    []byte
+	Metrics   []byte
 }
 
 type Trade struct {
@@ -181,6 +370,10 @@ type RankingMetrics struct {
 }
 
 type BacktestResult struct {
+	Classification     RunClassification        `json:"classification"`
+	Coverage           CoverageReport           `json:"coverage"`
+	Manifest           RunManifest              `json:"manifest"`
+	Artifacts          BacktestArtifacts        `json:"-"`
 	SharedEngineRuns   int                      `json:"shared_engine_runs,omitempty"`
 	SharedLedgerEvents int                      `json:"shared_ledger_events,omitempty"`
 	Mode               StrategyMode             `json:"mode"`

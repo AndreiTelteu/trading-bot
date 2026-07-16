@@ -111,10 +111,10 @@ func (runner Orchestrator) observe(ctx context.Context, observation Observation)
 	}
 }
 
-type traceIntent struct{ ID, Symbol, Side, Quantity, Reason, Policy string }
+type traceIntent struct{ ID, Symbol, Side, Quantity, Reason, Policy, SignalAt, DecisionAt, OrderAt string }
 type traceRejection struct{ ID, Code, Policy string }
 type traceNoAction struct{ Symbol, Code, Reason, Score string }
-type traceFill struct{ ID, OrderID, ProviderFillID, Quantity, Price, Fee, FeeAsset, CostModelVersion string }
+type traceFill struct{ ID, OrderID, ProviderFillID, Quantity, Price, Fee, FeeAsset, CostModelVersion, OrderedAt, SubmittedAt, AcceptedAt, FilledAt string }
 type traceAccepted struct {
 	OrderID, ProviderOrderID, Status, Remaining string
 	Fills                                       []traceFill
@@ -151,7 +151,7 @@ func stableRunTrace(snapshot DecisionContext, strategy StrategyResult, risk Risk
 			item.Remaining = remaining.Decimal().String()
 		}
 		for _, fill := range accepted.Fills() {
-			item.Fills = append(item.Fills, traceFill{fill.ID.String(), fill.OrderID.String(), fill.ProviderFillID, fill.Quantity.Decimal().String(), fill.Price.Decimal().String(), fill.Fee.Decimal().String(), fill.FeeAsset.String(), fill.CostModelVersion})
+			item.Fills = append(item.Fills, traceFill{fill.ID.String(), fill.OrderID.String(), fill.ProviderFillID, fill.Quantity.Decimal().String(), fill.Price.Decimal().String(), fill.Fee.Decimal().String(), fill.FeeAsset.String(), fill.CostModelVersion, fill.OrderedAt.UTC().Format(time.RFC3339Nano), fill.SubmittedAt.UTC().Format(time.RFC3339Nano), fill.AcceptedAt.UTC().Format(time.RFC3339Nano), fill.FilledAt.UTC().Format(time.RFC3339Nano)})
 		}
 		result.BrokerAccepted = append(result.BrokerAccepted, item)
 	}
@@ -161,5 +161,5 @@ func stableRunTrace(snapshot DecisionContext, strategy StrategyResult, risk Risk
 	return json.Marshal(result)
 }
 func intentTrace(intent OrderIntent) traceIntent {
-	return traceIntent{intent.ID.String(), intent.Instrument.VenueSymbol, string(intent.Side), intent.Quantity.Decimal().String(), intent.Reason, intent.Versions.Policy}
+	return traceIntent{intent.ID.String(), intent.Instrument.VenueSymbol, string(intent.Side), intent.Quantity.Decimal().String(), intent.Reason, intent.Versions.Policy, intent.SignalAt.UTC().Format(time.RFC3339Nano), intent.DecisionAt.UTC().Format(time.RFC3339Nano), intent.CreatedAt.UTC().Format(time.RFC3339Nano)}
 }

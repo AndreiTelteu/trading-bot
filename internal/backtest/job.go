@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -143,14 +144,13 @@ func runBacktestJob(jobID uint) {
 		return
 	}
 
-	summaryJSON, _ := json.Marshal(summary)
 	compactSummaryJSON, err := MarshalBacktestJobSummary(summary)
 	if err != nil {
 		failBacktestJob(jobID, err)
 		return
 	}
 	finalMessage := fmt.Sprintf("Backtest completed (%s)", outputDir)
-	updateBacktestJobWithSummary(jobID, "completed", 1.0, finalMessage, string(summaryJSON), compactSummaryJSON)
+	updateBacktestJobWithSummary(jobID, "completed", 1.0, finalMessage, compactSummaryJSON, compactSummaryJSON)
 	websocket.BroadcastBacktestComplete(jobID, "completed", BuildBacktestJobSummary(summary))
 	logActivity("system", "Backtest completed", fmt.Sprintf("Job %d completed", jobID))
 }
@@ -249,7 +249,7 @@ func WriteBacktestOutputs(summary BacktestRunSummary, outputBase string) (string
 		return "", err
 	}
 
-	summaryBytes, err := json.MarshalIndent(summary, "", "  ")
+	summaryBytes, err := json.MarshalIndent(BuildBacktestJobSummary(summary), "", "  ")
 	if err != nil {
 		return "", err
 	}
@@ -328,8 +328,46 @@ func WriteBacktestOutputs(summary BacktestRunSummary, outputBase string) (string
 	if err := writeEquityBySymbol(outputDir, "vol_sizing", summary.VolSizing.EquityBySymbol); err != nil {
 		return "", err
 	}
+	if err := writeVersionedArtifacts(outputDir, "baseline", summary.Baseline); err != nil {
+		return "", err
+	}
+	if err := writeVersionedArtifacts(outputDir, "vol_sizing", summary.VolSizing); err != nil {
+		return "", err
+	}
 
 	return outputDir, nil
+}
+
+func writeVersionedArtifacts(outputDir, prefix string, result BacktestResult) error {
+	if result.Manifest.SchemaVersion == "" {
+		return nil
+	}
+	artifacts, err := MarshalArtifactBytes(result)
+	if err != nil {
+		return err
+	}
+	files := map[string][]byte{
+		"manifest.json": artifacts.Manifest, "decisions.json": artifacts.Decisions,
+		"orders.json": artifacts.Orders, "fills.json": artifacts.Fills,
+		"trades.json": artifacts.Trades,
+		"ledger.json": artifacts.Ledger, "exposure.json": artifacts.Exposure,
+		"equity.json": artifacts.Equity, "metrics.json": artifacts.Metrics,
+	}
+	names := make([]string, 0, len(files))
+	for name := range files {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	dir := filepath.Join(outputDir, prefix+"_artifacts")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	for _, name := range names {
+		if err := os.WriteFile(filepath.Join(dir, name), files[name], 0o644); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func writeEquityBySymbol(outputDir string, prefix string, equityBySymbol map[string][]EquityPoint) error {
@@ -520,6 +558,19 @@ func prepareBacktestInputsWithSettings(settings map[string]string) (BacktestConf
 			executionSeries[res.symbol] = res.exec1m
 		}
 	}
+	engineMode := EngineMode(getSettingString(settings, "trading_engine_mode", "legacy"))
+	if engineMode == EngineMode("shadow_compare") {
+		engineMode = EngineShared
+	}
+	benchmarkSymbol := strings.ToUpper(getSettingString(settings, "backtest_benchmark_symbol", "BTCUSDT"))
+	benchmarkRequired := engineMode == EngineShared
+	var benchmarkSeries []services.OHLCV
+	if benchmarkRequired {
+		benchmarkSeries, err = ex.FetchOHLCVRange(benchmarkSymbol, timeframe, start, end)
+		if err != nil {
+			return BacktestConfig{}, nil, fmt.Errorf("fetch independent benchmark %s: %w", benchmarkSymbol, err)
+		}
+	}
 	if start.IsZero() || end.IsZero() {
 		rangeStart, rangeEnd := seriesTimeRange(series)
 		if start.IsZero() {
@@ -540,17 +591,21 @@ func prepareBacktestInputsWithSettings(settings map[string]string) (BacktestConf
 		return BacktestConfig{}, nil, err
 	}
 
-	engineMode := EngineMode(getSettingString(settings, "trading_engine_mode", "legacy"))
-	if engineMode == EngineMode("shadow_compare") {
-		engineMode = EngineShared
-	}
 	config := BacktestConfig{
-		EngineMode: engineMode,
-		AccountID:  "backtest", SettlementCurrency: getSettingString(settings, "backtest_settlement_currency", "USDT"), VenueID: getSettingString(settings, "backtest_venue_id", "binance"),
+		EngineMode:      engineMode,
+		CodeRevision:    getSettingString(settings, "backtest_code_revision", "unknown"),
+		ConfigVersion:   getSettingString(settings, "backtest_config_version", "backtest-config-v1"),
+		StrategyVersion: "legacy-rule-strategy-v1",
+		Seed:            int64(getSettingInt(settings, "backtest_seed", 0)),
+		AccountID:       "backtest", SettlementCurrency: getSettingString(settings, "backtest_settlement_currency", "USDT"), VenueID: getSettingString(settings, "backtest_venue_id", "binance"),
 		BacktestMode:            resolveBacktestMode(universeMode, modelArtifact != nil),
 		ExecutionSeries:         executionSeries,
+		ExecutionSeriesRequired: fetchExecution,
 		ExecutionTimeframe:      "1m",
 		ExecutionTimeframeMins:  1,
+		BenchmarkSymbol:         benchmarkSymbol,
+		BenchmarkSeries:         benchmarkSeries,
+		BenchmarkRequired:       benchmarkRequired,
 		Symbols:                 symbols,
 		UniverseMode:            universeMode,
 		UniversePolicy:          policy,
