@@ -52,6 +52,26 @@ func SetupPostgresDB(t *testing.T) *gorm.DB {
 	return db
 }
 
+func OpenPostgresDB(t *testing.T) *gorm.DB {
+	t.Helper()
+	dsn := os.Getenv("TEST_DATABASE_URL")
+	if dsn == "" {
+		dsn = defaultTestDatabaseURL
+	}
+	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	if err != nil {
+		t.Fatalf("Failed to connect to PostgreSQL test database: %v", err)
+	}
+	return db
+}
+
+func ResetPublicSchema(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	if err := db.Exec("DROP SCHEMA public CASCADE; CREATE SCHEMA public").Error; err != nil {
+		t.Fatalf("reset public schema: %v", err)
+	}
+}
+
 func truncatePublicTables(db *gorm.DB) error {
 	var tables []string
 	if err := db.Raw(`

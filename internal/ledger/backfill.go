@@ -33,11 +33,14 @@ type BackfillReport struct {
 // Backfill records only the observed cutover cash balance. Legacy positions and
 // orders remain unresolved because mutable rows are not evidence of fills.
 func (s *Service) Backfill(ctx context.Context, options BackfillOptions) (BackfillReport, error) {
+	if err := requirePrimaryAccount(options.AccountID); err != nil {
+		return BackfillReport{}, err
+	}
 	if options.AccountID == "" {
 		options.AccountID = DefaultAccountID
 	}
 	var wallet database.Wallet
-	if err := s.DB.WithContext(ctx).First(&wallet).Error; err != nil {
+	if err := s.DB.WithContext(ctx).Where("account_id = ?", options.AccountID).First(&wallet).Error; err != nil {
 		return BackfillReport{}, err
 	}
 	balance, err := accounting.FromFloat(wallet.Balance)
@@ -45,10 +48,10 @@ func (s *Service) Backfill(ctx context.Context, options BackfillOptions) (Backfi
 		return BackfillReport{}, err
 	}
 	report := BackfillReport{DryRun: !options.Apply, WouldOpenCash: balance.String(), Currency: wallet.Currency, LegacyPositionIDs: []uint{}, LegacyOrderIDs: []uint{}, Unresolved: []string{}}
-	if err := s.DB.WithContext(ctx).Model(&database.Position{}).Pluck("id", &report.LegacyPositionIDs).Error; err != nil {
+	if err := s.DB.WithContext(ctx).Model(&database.Position{}).Where("account_id = ? AND status = ?", options.AccountID, "open").Pluck("id", &report.LegacyPositionIDs).Error; err != nil {
 		return report, err
 	}
-	if err := s.DB.WithContext(ctx).Model(&database.Order{}).Pluck("id", &report.LegacyOrderIDs).Error; err != nil {
+	if err := s.DB.WithContext(ctx).Model(&database.Order{}).Where("account_id = ?", options.AccountID).Pluck("id", &report.LegacyOrderIDs).Error; err != nil {
 		return report, err
 	}
 	if len(report.LegacyPositionIDs) > 0 {
@@ -61,11 +64,14 @@ func (s *Service) Backfill(ctx context.Context, options BackfillOptions) (Backfi
 		return report, nil
 	}
 	if options.Approval != BackfillApproval || options.ApprovedBy == "" {
-		return report, fmt.Errorf("explicit approval %q and approved-by are required", BackfillApproval)
+		return report, validation("backfill_approval_required", fmt.Sprintf("explicit approval %q and approved-by are required", BackfillApproval))
 	}
 
 	now := s.now()
 	err = s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := allowLedgerProjectionWrites(tx); err != nil {
+			return err
+		}
 		if err := lockAccount(tx, options.AccountID); err != nil {
 			return err
 		}
@@ -74,13 +80,24 @@ func (s *Service) Backfill(ctx context.Context, options BackfillOptions) (Backfi
 			return err
 		}
 		if state.Status == "ready" {
-			return fmt.Errorf("ledger backfill already applied")
+			return conflict("backfill_already_applied", "ledger backfill already applied", nil)
 		}
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&wallet).Error; err != nil {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("account_id = ?", options.AccountID).First(&wallet).Error; err != nil {
 			return err
 		}
+		lockedBalance, parseErr := accounting.FromFloat(wallet.Balance)
+		if parseErr != nil {
+			return parseErr
+		}
+		balance = lockedBalance
+		report.WouldOpenCash = balance.String()
+		report.Currency = wallet.Currency
 		wallet.BalanceExact = decimalPtr(balance)
 		if err := tx.Save(&wallet).Error; err != nil {
+			return err
+		}
+		zero := accounting.Zero()
+		if err := tx.Model(&database.Position{}).Where("account_id = ? AND status <> ?", options.AccountID, "open").Updates(map[string]interface{}{"amount_exact": zero, "cost_basis_exact": zero, "realized_pn_l_exact": zero, "fees_exact": zero}).Error; err != nil {
 			return err
 		}
 		batchID := "legacy-opening-" + options.AccountID
@@ -90,17 +107,21 @@ func (s *Service) Backfill(ctx context.Context, options BackfillOptions) (Backfi
 		}
 		eventID := stableID("event-opening", batchID)
 		metadata, _ := json.Marshal(map[string]interface{}{"legacy_cutover": true, "unresolved": report.Unresolved})
-		event := database.LedgerEvent{ID: eventID, LedgerBatchID: batchID, Sequence: 1, IdempotencyKey: batchID + ":capital", EventType: EventCapitalDeposit, AccountID: options.AccountID, Currency: wallet.Currency, CashDelta: balance, AssetDelta: accounting.Zero(), ExecutionMode: "administrative", Actor: options.ApprovedBy, Reason: "approved legacy cutover opening cash balance", RealizedPnL: accounting.Zero(), MetadataJSON: string(metadata), OccurredAt: now, RecordedAt: now}
+		event := database.LedgerEvent{ID: eventID, LedgerBatchID: batchID, Sequence: 1, IdempotencyKey: batchID + ":capital", EventType: EventCapitalDeposit, AccountID: options.AccountID, VenueID: "internal", Currency: wallet.Currency, CashDelta: balance, AssetDelta: accounting.Zero(), ExecutionMode: "administrative", Actor: options.ApprovedBy, Reason: "approved legacy cutover opening cash balance", RealizedPnL: accounting.Zero(), CostBasisDelta: accounting.Zero(), FeeDelta: accounting.Zero(), MetadataJSON: string(metadata), OccurredAt: now, RecordedAt: now}
 		if err := tx.Create(&event).Error; err != nil {
 			return err
 		}
 		unresolved, _ := json.Marshal(report.Unresolved)
-		state = database.LedgerMigrationState{AccountID: options.AccountID, Status: "ready", OpeningEventID: &eventID, UnresolvedJSON: string(unresolved), ApprovedBy: &options.ApprovedBy, ApprovedAt: &now, CreatedAt: now, UpdatedAt: now}
+		status := "ready"
+		if len(report.LegacyPositionIDs) > 0 {
+			status = "pending_resolution"
+		}
+		state = database.LedgerMigrationState{AccountID: options.AccountID, Status: status, OpeningEventID: &eventID, UnresolvedJSON: string(unresolved), ApprovedBy: &options.ApprovedBy, ApprovedAt: &now, CreatedAt: now, UpdatedAt: now}
 		return tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "account_id"}}, DoUpdates: clause.AssignmentColumns([]string{"status", "opening_event_id", "unresolved_json", "approved_by", "approved_at", "updated_at"})}).Create(&state).Error
 	})
 	if err == nil {
 		report.Applied = true
 		report.DryRun = false
 	}
-	return report, err
+	return report, normalizePersistenceError(err)
 }

@@ -31,8 +31,8 @@ func TestStage01DirectCloseFailsClosedWithoutExactLedgerProjection(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if response.StatusCode != http.StatusConflict {
-		t.Fatalf("direct close status = %d, want 409", response.StatusCode)
+	if response.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("direct close status = %d, want 503", response.StatusCode)
 	}
 
 	var refreshed database.Position
@@ -53,8 +53,8 @@ func TestStage01DirectCloseFailsClosedWithoutExactLedgerProjection(t *testing.T)
 	if err := database.DB.Where("symbol = ? AND order_type = ?", position.Symbol, "sell").Find(&orders).Error; err != nil {
 		t.Fatal(err)
 	}
-	if len(orders) != 1 || orders[0].Status != "failed" {
-		t.Fatalf("expected one failed audit order, got %+v", orders)
+	if len(orders) != 0 {
+		t.Fatalf("failed precondition created audit orders: %+v", orders)
 	}
 }
 

@@ -31,11 +31,13 @@ const (
 )
 
 var (
-	ErrUnreconciledLegacyState = errors.New("ledger migration approval required")
-	ErrInsufficientCash        = errors.New("insufficient cash")
-	ErrInsufficientAsset       = errors.New("insufficient position quantity")
-	ErrIdempotencyConflict     = errors.New("idempotency key reused with different payload")
-	ErrProjectionUnavailable   = errors.New("exact ledger projection unavailable")
+	ErrUnreconciledLegacyState             = unavailable("ledger_not_ready", "ledger migration or exposure resolution required")
+	ErrInsufficientCash                    = conflict("insufficient_cash", "insufficient cash", nil)
+	ErrInsufficientAsset                   = conflict("insufficient_asset", "insufficient position quantity", nil)
+	ErrIdempotencyConflict                 = conflict("idempotency_conflict", "idempotency key reused with different payload", nil)
+	ErrProjectionUnavailable               = unavailable("projection_unavailable", "exact ledger projection unavailable")
+	ErrExchangeExecutionFenced             = unavailable("exchange_execution_fenced", "exchange execution is disabled until durable Stage 02 broker recovery is available")
+	ErrHistoricalReconciliationUnsupported = validation("historical_reconciliation_unsupported", "historical as_of reconciliation is not supported by current projections")
 )
 
 type Service struct {
@@ -47,6 +49,9 @@ type Service struct {
 func New(db *gorm.DB) *Service { return &Service{DB: db, Now: time.Now} }
 
 func (s *Service) CheckReady(ctx context.Context, account string) error {
+	if err := requirePrimaryAccount(account); err != nil {
+		return err
+	}
 	if account == "" {
 		account = DefaultAccountID
 	}
@@ -55,7 +60,7 @@ func (s *Service) CheckReady(ctx context.Context, account string) error {
 		return ErrUnreconciledLegacyState
 	}
 	var wallet database.Wallet
-	if err := s.DB.WithContext(ctx).First(&wallet).Error; err != nil {
+	if err := s.DB.WithContext(ctx).Where("account_id = ?", account).First(&wallet).Error; err != nil {
 		return err
 	}
 	if wallet.BalanceExact == nil {
@@ -70,6 +75,8 @@ type FillCommand struct {
 	FeeType, Currency, ExecutionMode                            string
 	ProviderFillID                                              string
 	ProviderOrderID                                             string
+	VenueID                                                     string
+	FeeCurrency                                                 string
 	OrderStatus                                                 string
 	ExistingOrderID                                             uint
 	OccurredAt                                                  time.Time
@@ -94,14 +101,33 @@ type FillResult struct {
 }
 
 func (s *Service) ApplyFill(ctx context.Context, command FillCommand) (FillResult, error) {
+	if err := requirePrimaryAccount(command.AccountID); err != nil {
+		return FillResult{}, err
+	}
 	if err := validateFill(command); err != nil {
 		return FillResult{}, err
 	}
 	if command.AccountID == "" {
 		command.AccountID = DefaultAccountID
 	}
+	if command.VenueID == "" {
+		command.VenueID = "internal"
+	}
+	if command.FeeCurrency == "" {
+		command.FeeCurrency = command.Currency
+	}
+	if command.FeeCurrency != command.Currency {
+		return FillResult{}, validation("unsupported_fee_asset", "fees must use the settlement currency")
+	}
+	if command.ExecutionMode == "exchange" && (command.VenueID == "internal" || command.ProviderFillID == "" || command.ProviderOrderID == "") {
+		return FillResult{}, validation("provider_identity_required", "exchange fills require venue, provider order id, and genuine provider fill id")
+	}
 	if command.OccurredAt.IsZero() {
 		command.OccurredAt = s.now()
+	}
+	recordedAt := s.now()
+	if command.OccurredAt.After(recordedAt) {
+		return FillResult{}, validation("future_occurred_at", "occurred_at must be no later than recorded_at")
 	}
 	payloadHash, metadataJSON, err := hashPayload(command)
 	if err != nil {
@@ -109,6 +135,9 @@ func (s *Service) ApplyFill(ctx context.Context, command FillCommand) (FillResul
 	}
 	var result FillResult
 	err = s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := allowLedgerProjectionWrites(tx); err != nil {
+			return err
+		}
 		if err := lockAccount(tx, command.AccountID); err != nil {
 			return err
 		}
@@ -137,7 +166,7 @@ func (s *Service) ApplyFill(ctx context.Context, command FillCommand) (FillResul
 			return ErrProjectionUnavailable
 		}
 		if !strings.EqualFold(wallet.Currency, command.Currency) {
-			return fmt.Errorf("fill currency %s does not match wallet currency %s", command.Currency, wallet.Currency)
+			return validation("unsupported_currency", fmt.Sprintf("fill currency %s does not match wallet currency %s", command.Currency, wallet.Currency))
 		}
 
 		gross := command.Quantity.Mul(command.FillPrice)
@@ -153,7 +182,7 @@ func (s *Service) ApplyFill(ctx context.Context, command FillCommand) (FillResul
 			return ErrInsufficientCash
 		}
 
-		position, realized, err := applyPosition(tx, command, gross)
+		position, realized, basisDelta, err := applyPosition(tx, command, gross)
 		if err != nil {
 			return err
 		}
@@ -176,13 +205,13 @@ func (s *Service) ApplyFill(ctx context.Context, command FillCommand) (FillResul
 		fillID := stableID("fill", command.IdempotencyKey)
 		providerFillID := stringPtrOrNil(command.ProviderFillID)
 		fill := database.Fill{
-			ID: fillID, LedgerBatchID: command.IdempotencyKey, AccountID: command.AccountID,
+			ID: fillID, LedgerBatchID: command.IdempotencyKey, AccountID: command.AccountID, VenueID: command.VenueID,
 			OrderID: order.ID, ProviderFillID: providerFillID, PositionID: position.ID,
 			Symbol: command.Symbol, Side: command.Side, Quantity: command.Quantity,
 			RequestedPrice: command.RequestedPrice, FillPrice: command.FillPrice, GrossAmount: gross,
-			FeeAmount: command.Fee, FeeType: command.FeeType, FeeCurrency: command.Currency,
+			FeeAmount: command.Fee, FeeType: command.FeeType, FeeCurrency: command.FeeCurrency,
 			ExecutionMode: command.ExecutionMode, StrategyVersion: command.StrategyVersion,
-			PolicyVersion: command.PolicyVersion, OccurredAt: command.OccurredAt, CreatedAt: s.now(),
+			PolicyVersion: command.PolicyVersion, OccurredAt: command.OccurredAt, CreatedAt: recordedAt,
 		}
 		if err := tx.Create(&fill).Error; err != nil {
 			return err
@@ -199,13 +228,13 @@ func (s *Service) ApplyFill(ctx context.Context, command FillCommand) (FillResul
 		events := []database.LedgerEvent{{
 			ID: stableID("event-fill", command.IdempotencyKey), LedgerBatchID: command.IdempotencyKey,
 			Sequence: 1, IdempotencyKey: command.IdempotencyKey + ":fill", EventType: fillEventType,
-			AccountID: command.AccountID, Currency: command.Currency, Symbol: command.Symbol,
+			AccountID: command.AccountID, VenueID: command.VenueID, Currency: command.Currency, Symbol: command.Symbol,
 			CashDelta: cashDelta, AssetDelta: assetDelta, OrderID: &orderID, FillID: &fillID,
 			PositionID: &positionID, ExecutionMode: command.ExecutionMode,
 			StrategyVersion: command.StrategyVersion, PolicyVersion: command.PolicyVersion,
 			Actor: nonempty(command.Actor, "execution_adapter"), Reason: command.Reason,
-			RealizedPnL: realized, MetadataJSON: metadataJSON,
-			OccurredAt: command.OccurredAt, RecordedAt: s.now(),
+			RealizedPnL: realized, CostBasisDelta: basisDelta, FeeDelta: accounting.Zero(), MetadataJSON: metadataJSON,
+			OccurredAt: command.OccurredAt, RecordedAt: recordedAt,
 		}}
 		if command.Fee.Sign() > 0 {
 			feeType := EventTradingFee
@@ -215,13 +244,13 @@ func (s *Service) ApplyFill(ctx context.Context, command FillCommand) (FillResul
 			events = append(events, database.LedgerEvent{
 				ID: stableID("event-fee", command.IdempotencyKey), LedgerBatchID: command.IdempotencyKey,
 				Sequence: 2, IdempotencyKey: command.IdempotencyKey + ":fee", EventType: feeType,
-				AccountID: command.AccountID, Currency: command.Currency, Symbol: command.Symbol,
+				AccountID: command.AccountID, VenueID: command.VenueID, Currency: command.Currency, Symbol: command.Symbol,
 				CashDelta: command.Fee.Neg(), AssetDelta: accounting.Zero(), OrderID: &orderID,
 				FillID: &fillID, PositionID: &positionID, ExecutionMode: command.ExecutionMode,
 				StrategyVersion: command.StrategyVersion, PolicyVersion: command.PolicyVersion,
 				Actor: nonempty(command.Actor, "execution_adapter"), Reason: command.Reason,
-				RealizedPnL: command.Fee.Neg(), MetadataJSON: metadataJSON,
-				OccurredAt: command.OccurredAt, RecordedAt: s.now(),
+				RealizedPnL: command.Fee.Neg(), CostBasisDelta: accounting.Zero(), FeeDelta: command.Fee, MetadataJSON: metadataJSON,
+				OccurredAt: command.OccurredAt, RecordedAt: recordedAt,
 			})
 		}
 		if err := tx.Create(&events).Error; err != nil {
@@ -233,45 +262,43 @@ func (s *Service) ApplyFill(ctx context.Context, command FillCommand) (FillResul
 		result = FillResult{Wallet: wallet, Position: position, Order: order, Fill: fill}
 		return nil
 	})
-	return result, err
+	return result, normalizePersistenceError(err)
 }
 
 func validateFill(command FillCommand) error {
 	if strings.TrimSpace(command.IdempotencyKey) == "" || strings.TrimSpace(command.Symbol) == "" {
-		return fmt.Errorf("idempotency key and symbol are required")
+		return validation("invalid_fill", "idempotency key and symbol are required")
 	}
 	if command.Side != "buy" && command.Side != "sell" {
-		return fmt.Errorf("side must be buy or sell")
+		return validation("invalid_side", "side must be buy or sell")
 	}
 	if command.Quantity.Sign() <= 0 || command.RequestedPrice.Sign() <= 0 || command.FillPrice.Sign() <= 0 || command.Fee.Sign() < 0 {
-		return fmt.Errorf("quantity/prices must be positive and fee non-negative")
+		return validation("invalid_amount", "quantity/prices must be positive and fee non-negative")
 	}
 	if command.Currency == "" || command.ExecutionMode == "" || command.FeeType == "" {
-		return fmt.Errorf("currency, execution mode, and fee type are required")
+		return validation("invalid_dimensions", "currency, execution mode, and fee type are required")
 	}
 	return nil
 }
 
-func applyPosition(tx *gorm.DB, command FillCommand, gross accounting.Decimal) (database.Position, accounting.Decimal, error) {
+func applyPosition(tx *gorm.DB, command FillCommand, gross accounting.Decimal) (database.Position, accounting.Decimal, accounting.Decimal, error) {
 	var position database.Position
-	err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("symbol = ?", command.Symbol).First(&position).Error
+	err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("account_id = ? AND symbol = ?", command.AccountID, command.Symbol).First(&position).Error
 	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
-		return position, accounting.Decimal{}, err
+		return position, accounting.Decimal{}, accounting.Decimal{}, err
 	}
 	now := command.OccurredAt
 	if command.Side == "buy" {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			position = database.Position{Symbol: command.Symbol, Status: "open", OpenedAt: now}
+			position = database.Position{AccountID: command.AccountID, Symbol: command.Symbol, Status: "open", OpenedAt: now}
 		} else if position.Status != "open" {
 			if position.AmountExact == nil || position.CostBasisExact == nil {
-				return position, accounting.Decimal{}, ErrProjectionUnavailable
+				return position, accounting.Decimal{}, accounting.Decimal{}, ErrProjectionUnavailable
 			}
 			position.Status, position.OpenedAt, position.ClosedAt, position.CloseReason = "open", now, nil, nil
 			position.AmountExact, position.CostBasisExact = nil, nil
-			position.RealizedPnLExact, position.FeesExact = decimalPtr(accounting.Zero()), decimalPtr(accounting.Zero())
-			position.Pnl, position.PnlPercent = 0, 0
 		} else if position.AmountExact == nil || position.CostBasisExact == nil {
-			return position, accounting.Decimal{}, ErrProjectionUnavailable
+			return position, accounting.Decimal{}, accounting.Decimal{}, ErrProjectionUnavailable
 		}
 		oldQuantity, oldBasis := accounting.Zero(), accounting.Zero()
 		if position.AmountExact != nil {
@@ -313,15 +340,15 @@ func applyPosition(tx *gorm.DB, command FillCommand, gross accounting.Decimal) (
 		} else {
 			err = tx.Save(&position).Error
 		}
-		return position, accounting.Zero(), err
+		return position, accounting.Zero(), gross, err
 	}
 
 	if errors.Is(err, gorm.ErrRecordNotFound) || position.Status != "open" || position.AmountExact == nil || position.CostBasisExact == nil {
-		return position, accounting.Decimal{}, ErrProjectionUnavailable
+		return position, accounting.Decimal{}, accounting.Decimal{}, ErrProjectionUnavailable
 	}
 	oldQuantity, oldBasis := *position.AmountExact, *position.CostBasisExact
 	if command.Quantity.Cmp(oldQuantity) > 0 {
-		return position, accounting.Decimal{}, ErrInsufficientAsset
+		return position, accounting.Decimal{}, accounting.Decimal{}, ErrInsufficientAsset
 	}
 	releasedBasis, _ := oldBasis.MulDiv(command.Quantity, oldQuantity)
 	realized := gross.Sub(releasedBasis)
@@ -354,7 +381,7 @@ func applyPosition(tx *gorm.DB, command FillCommand, gross accounting.Decimal) (
 		position.AvgPrice = average.Float64()
 	}
 	err = tx.Save(&position).Error
-	return position, realized, err
+	return position, realized, releasedBasis.Neg(), err
 }
 
 func upsertFilledOrder(tx *gorm.DB, command FillCommand, position database.Position, gross accounting.Decimal) (database.Order, error) {
@@ -363,9 +390,12 @@ func upsertFilledOrder(tx *gorm.DB, command FillCommand, position database.Posit
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&order, command.ExistingOrderID).Error; err != nil {
 			return order, err
 		}
+		if order.AccountID != command.AccountID || order.Symbol != command.Symbol || order.OrderType != command.Side {
+			return order, conflict("order_fill_mismatch", "fill does not match reserved order dimensions", nil)
+		}
 	} else {
 		batch := command.IdempotencyKey
-		order = database.Order{LedgerBatchID: &batch, OrderType: command.Side, Symbol: command.Symbol, ExecutedAt: command.OccurredAt}
+		order = database.Order{AccountID: command.AccountID, LedgerBatchID: &batch, OrderType: command.Side, Symbol: command.Symbol, ExecutedAt: command.OccurredAt}
 	}
 	totalQuantity, totalGross, totalFee := command.Quantity, gross, command.Fee
 	if order.AmountCryptoExact != nil && order.AmountUsdtExact != nil && order.FeeExact != nil {
@@ -380,13 +410,18 @@ func upsertFilledOrder(tx *gorm.DB, command FillCommand, position database.Posit
 		orderStatus = "filled"
 	}
 	order.OrderType, order.Symbol, order.Status, order.ExecutionMode = command.Side, command.Symbol, orderStatus, command.ExecutionMode
-	order.AmountCrypto, order.AmountUsdt, order.Price, order.Fee = qty, gross.Float64(), fill, fee
+	order.AmountCrypto, order.AmountUsdt, order.Price, order.Fee = qty, totalGross.Float64(), fill, fee
 	order.AmountCryptoExact, order.AmountUsdtExact, order.FeeExact = decimalPtr(totalQuantity), decimalPtr(totalGross), decimalPtr(totalFee)
 	order.RequestedPrice, order.FillPrice, order.ExecutedQty, order.ExchangeFee = &requested, &fill, &qty, &fee
 	order.ModelVersion, order.PolicyVersion = command.ModelVersion, command.PolicyVersion
 	order.UniverseMode, order.RolloutState = command.UniverseMode, command.RolloutState
 	order.ExperimentID, order.PredictionLogID, order.DecisionContextJSON = command.ExperimentID, command.PredictionLogID, command.DecisionContextJSON
-	order.TriggerReason, order.SubmittedAt, order.FilledAt = stringPtrOrNil(command.Reason), &command.OccurredAt, &command.OccurredAt
+	order.TriggerReason, order.SubmittedAt = stringPtrOrNil(command.Reason), &command.OccurredAt
+	if orderStatus == "filled" {
+		order.FilledAt = &command.OccurredAt
+	} else {
+		order.FilledAt = nil
+	}
 	if command.ProviderOrderID != "" {
 		order.ExchangeOrderID = &command.ProviderOrderID
 	}
@@ -443,6 +478,10 @@ func lockAccount(tx *gorm.DB, account string) error {
 	return tx.Exec("SELECT pg_advisory_xact_lock(hashtext(?))", "ledger:"+account).Error
 }
 
+func allowLedgerProjectionWrites(tx *gorm.DB) error {
+	return tx.Exec("SET LOCAL trading_bot.ledger_write = 'on'").Error
+}
+
 func hashPayload(value interface{}) (string, string, error) {
 	switch typed := value.(type) {
 	case FillCommand:
@@ -452,6 +491,9 @@ func hashPayload(value interface{}) (string, string, error) {
 		typed.OccurredAt = time.Time{}
 		value = typed
 	case ReversalCommand:
+		typed.OccurredAt = time.Time{}
+		value = typed
+	case AssetCorrectionCommand:
 		typed.OccurredAt = time.Time{}
 		value = typed
 	}
@@ -507,7 +549,7 @@ func (s *Service) fail(stage string) error {
 // slipped gross amount.
 func CostedPaperFill(side string, quantity, requested accounting.Decimal, feeBPS, slippageBPS int64) (accounting.Decimal, accounting.Decimal, error) {
 	if feeBPS < 0 || slippageBPS < 0 {
-		return accounting.Decimal{}, accounting.Decimal{}, fmt.Errorf("basis points must be non-negative")
+		return accounting.Decimal{}, accounting.Decimal{}, validation("invalid_fee_bps", "basis points must be non-negative")
 	}
 	bps := accounting.MustParse("10000")
 	slip, _ := accounting.MustParse(fmt.Sprint(slippageBPS)).Div(bps)

@@ -66,7 +66,7 @@ func (a *AuthManager) FrontendRouteGuard(c *fiber.Ctx) error {
 }
 
 func (a *AuthManager) RequireAuth(c *fiber.Ctx) error {
-	authenticated, _, err := a.sessionState(c)
+	authenticated, username, err := a.sessionState(c)
 	if err != nil {
 		return err
 	}
@@ -75,7 +75,13 @@ func (a *AuthManager) RequireAuth(c *fiber.Ctx) error {
 			"error": "authentication required",
 		})
 	}
+	c.Locals("authenticated_actor", username)
 	return c.Next()
+}
+
+func AuthenticatedActor(c *fiber.Ctx) (string, bool) {
+	value, ok := c.Locals("authenticated_actor").(string)
+	return value, ok && strings.TrimSpace(value) != ""
 }
 
 func (a *AuthManager) HandleLogin(c *fiber.Ctx) error {

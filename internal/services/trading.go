@@ -1,13 +1,10 @@
 package services
 
 import (
-	"context"
-	"errors"
 	"fmt"
 	"strconv"
 	"strings"
 	"time"
-	"trading-go/internal/accounting"
 	"trading-go/internal/database"
 	ledgerpkg "trading-go/internal/ledger"
 	"trading-go/internal/websocket"
@@ -67,10 +64,6 @@ func markPositionPrice(position *database.Position, price float64, at time.Time)
 	position.CurrentPrice = floatPtr(price)
 	position.LastMarkPrice = floatPtr(price)
 	position.LastMarkAt = &at
-	position.Pnl = (price - position.AvgPrice) * position.Amount
-	if position.AvgPrice > 0 {
-		position.PnlPercent = ((price - position.AvgPrice) / position.AvgPrice) * 100
-	}
 }
 
 func resolveCloseReason(currentPrice float64, pnlPercent float64, stopPrice *float64, takeProfitPrice *float64, atrTrailingEnabled bool, trailingStopPrice *float64, trailingStopEnabled bool, entryPrice *float64, trailingStopPercent float64, stopLossPercent float64, takeProfitPercent float64) string {
@@ -127,10 +120,7 @@ func createPortfolioSnapshot() (database.PortfolioSnapshot, database.Wallet, []d
 				count++
 				continue
 			}
-			symbol := pos.Symbol
-			if !strings.HasSuffix(symbol, "USDT") {
-				symbol += "USDT"
-			}
+			symbol := PositionPairSymbol(pos.Symbol, wallet.Currency)
 			candles, err := fetchCandles(symbol, "15m", 200)
 			if err != nil {
 				continue
@@ -168,198 +158,11 @@ func createPortfolioSnapshot() (database.PortfolioSnapshot, database.Wallet, []d
 }
 
 func ExecuteBuy(req BuyRequest) (interface{}, error) {
-	if err := ledgerpkg.New(database.DB).CheckReady(context.Background(), ""); err != nil {
-		return nil, fiber.NewError(409, err.Error())
-	}
-	var wallet database.Wallet
-	if err := database.DB.First(&wallet).Error; err != nil {
-		return nil, fiber.NewError(500, "Failed to fetch wallet")
-	}
-
-	symbol := req.Symbol
-	amount := req.Amount
-	price := req.Price
-
-	if price <= 0 {
-		ticker, err := exchange.FetchTickerPrice(symbol)
-		if err != nil {
-			return nil, fiber.NewError(500, "Failed to fetch price")
-		}
-		p, _ := strconv.ParseFloat(ticker.LastPrice, 64)
-		price = p
-	}
-	approvedQuantity, quantityErr := accounting.FromFloat(amount)
-	approvedPrice, approvedPriceErr := accounting.FromFloat(price)
-	if quantityErr != nil || approvedPriceErr != nil || wallet.BalanceExact == nil {
-		return nil, fiber.NewError(409, "Exact ledger cash projection is unavailable")
-	}
-	if approvedQuantity.Mul(approvedPrice).Cmp(*wallet.BalanceExact) > 0 {
-		return nil, fiber.NewError(400, "Insufficient balance")
-	}
-
-	orderResp, err := exchange.ExecuteBuy(symbol, amount, 0)
-	if err != nil {
-		return nil, fiber.NewError(500, "Failed to place buy order")
-	}
-
-	executed := orderResp.ExecutedQty
-	if executed <= 0 && strings.EqualFold(orderResp.Status, "filled") {
-		executed = amount
-	}
-	if executed <= 0 {
-		return fiber.Map{"success": true, "order_id": orderResp.OrderID, "status": normalizeOrderStatus(orderResp.Status), "message": "order accepted without a reported fill; no economic projection changed"}, nil
-	}
-	fillPrice := orderResp.Price
-	if fillPrice <= 0 {
-		fillPrice = price
-	}
-	quantityExact, qErr := accounting.FromFloat(executed)
-	requestedExact, pErr := accounting.FromFloat(price)
-	fillExact, fErr := accounting.FromFloat(fillPrice)
-	if qErr != nil || pErr != nil || fErr != nil {
-		return nil, fiber.NewError(500, "Exchange fill precision is invalid")
-	}
-	key := req.IdempotencyKey
-	if key == "" {
-		key = fmt.Sprintf("exchange-fill-%d-%s", orderResp.OrderID, quantityExact.String())
-	}
-	now := time.Now().UTC()
-	providerID := ""
-	providerOrderID := ""
-	if orderResp.OrderID > 0 {
-		providerOrderID = strconv.FormatInt(orderResp.OrderID, 10)
-		providerID = providerOrderID + ":" + quantityExact.String()
-	}
-	fillResult, err := ledgerpkg.New(database.DB).ApplyFill(context.Background(), ledgerpkg.FillCommand{IdempotencyKey: key, Symbol: symbol, Side: "buy", Quantity: quantityExact, RequestedPrice: requestedExact, FillPrice: fillExact, Fee: accounting.Zero(), FeeType: ledgerpkg.EventExchangeFee, Currency: wallet.Currency, ExecutionMode: ExecutionModeExchange, ProviderFillID: providerID, ProviderOrderID: providerOrderID, OrderStatus: normalizeOrderStatus(orderResp.Status), OccurredAt: now, Actor: "binance_adapter", Reason: "manual exchange buy", EntrySource: EntrySourceManual, DecisionTimeframe: DecisionTimeframeDefault, Metadata: map[string]interface{}{"exchange_fee_status": "unavailable_from_order_response"}})
-	if err != nil {
-		if errors.Is(err, ledgerpkg.ErrInsufficientCash) {
-			return nil, fiber.NewError(400, err.Error())
-		}
-		return nil, fiber.NewError(409, err.Error())
-	}
-	wallet, position := fillResult.Wallet, fillResult.Position
-
-	// Calculate total value for broadcast (wallet + open positions)
-	totalValue := wallet.Balance
-	var currentPositions []database.Position
-	database.DB.Where("status = ?", "open").Find(&currentPositions)
-	for _, p := range currentPositions {
-		if p.CurrentPrice != nil {
-			totalValue += p.Amount * (*p.CurrentPrice)
-		} else {
-			totalValue += p.Amount * p.AvgPrice
-		}
-	}
-
-	// Broadcast updates via WebSocket
-	websocket.BroadcastTradeExecuted("buy", symbol, amount, price, wallet.Balance)
-	websocket.BroadcastWalletUpdate(wallet.Balance, wallet.Currency, totalValue)
-	websocket.BroadcastPositionUpdate(position)
-	NotifyPositionChanged()
-
-	return fiber.Map{
-		"success":     true,
-		"order_id":    orderResp.OrderID,
-		"position":    position,
-		"new_balance": wallet.Balance,
-	}, nil
+	return nil, ledgerpkg.ErrExchangeExecutionFenced
 }
-
 func ExecuteSell(req SellRequest) (interface{}, error) {
-	if err := ledgerpkg.New(database.DB).CheckReady(context.Background(), ""); err != nil {
-		return nil, fiber.NewError(409, err.Error())
-	}
-	var position database.Position
-	if err := database.DB.Where("symbol = ? AND status = ?", req.Symbol, "open").First(&position).Error; err != nil {
-		return nil, fiber.NewError(404, "Position not found")
-	}
-
-	if req.Amount > position.Amount {
-		return nil, fiber.NewError(400, "Insufficient position amount")
-	}
-	if position.AmountExact == nil {
-		return nil, fiber.NewError(409, ledgerpkg.ErrProjectionUnavailable.Error())
-	}
-
-	symbol := req.Symbol
-	amount := req.Amount
-	price := req.Price
-
-	if price <= 0 {
-		ticker, err := exchange.FetchTickerPrice(symbol)
-		if err != nil {
-			return nil, fiber.NewError(500, "Failed to fetch price")
-		}
-		p, _ := strconv.ParseFloat(ticker.LastPrice, 64)
-		price = p
-	}
-
-	orderResp, err := exchange.ExecuteSell(symbol, amount, 0)
-	if err != nil {
-		return nil, fiber.NewError(500, "Failed to place sell order")
-	}
-
-	executed := orderResp.ExecutedQty
-	if executed <= 0 && strings.EqualFold(orderResp.Status, "filled") {
-		executed = amount
-	}
-	if executed <= 0 {
-		return fiber.Map{"success": true, "order_id": orderResp.OrderID, "status": normalizeOrderStatus(orderResp.Status), "message": "order accepted without a reported fill; no economic projection changed"}, nil
-	}
-	fillPrice := orderResp.Price
-	if fillPrice <= 0 {
-		fillPrice = price
-	}
-	quantityExact, qErr := accounting.FromFloat(executed)
-	requestedExact, pErr := accounting.FromFloat(price)
-	fillExact, fErr := accounting.FromFloat(fillPrice)
-	if qErr != nil || pErr != nil || fErr != nil {
-		return nil, fiber.NewError(500, "Exchange fill precision is invalid")
-	}
-	key := req.IdempotencyKey
-	if key == "" {
-		key = fmt.Sprintf("exchange-fill-%d-%s", orderResp.OrderID, quantityExact.String())
-	}
-	now := time.Now().UTC()
-	providerID := ""
-	providerOrderID := ""
-	if orderResp.OrderID > 0 {
-		providerOrderID = strconv.FormatInt(orderResp.OrderID, 10)
-		providerID = providerOrderID + ":" + quantityExact.String()
-	}
-	var wallet database.Wallet
-	fillResult, err := ledgerpkg.New(database.DB).ApplyFill(context.Background(), ledgerpkg.FillCommand{IdempotencyKey: key, Symbol: symbol, Side: "sell", Quantity: quantityExact, RequestedPrice: requestedExact, FillPrice: fillExact, Fee: accounting.Zero(), FeeType: ledgerpkg.EventExchangeFee, Currency: "USDT", ExecutionMode: ExecutionModeExchange, ProviderFillID: providerID, ProviderOrderID: providerOrderID, OrderStatus: normalizeOrderStatus(orderResp.Status), OccurredAt: now, Actor: "binance_adapter", Reason: "manual_sell", Metadata: map[string]interface{}{"exchange_fee_status": "unavailable_from_order_response"}})
-	if err != nil {
-		return nil, fiber.NewError(409, err.Error())
-	}
-	wallet, position = fillResult.Wallet, fillResult.Position
-
-	// Calculate total value for broadcast (wallet + open positions)
-	portfolioTotalValue := wallet.Balance
-	var currentPositions []database.Position
-	database.DB.Where("status = ?", "open").Find(&currentPositions)
-	for _, p := range currentPositions {
-		if p.CurrentPrice != nil {
-			portfolioTotalValue += p.Amount * (*p.CurrentPrice)
-		} else {
-			portfolioTotalValue += p.Amount * p.AvgPrice
-		}
-	}
-
-	// Broadcast updates via WebSocket
-	websocket.BroadcastTradeExecuted("sell", symbol, amount, price, wallet.Balance)
-	websocket.BroadcastWalletUpdate(wallet.Balance, wallet.Currency, portfolioTotalValue)
-	websocket.BroadcastPositionUpdate(position)
-	NotifyPositionChanged()
-
-	return fiber.Map{
-		"success":     true,
-		"order_id":    orderResp.OrderID,
-		"position":    position,
-		"new_balance": wallet.Balance,
-	}, nil
+	return nil, ledgerpkg.ErrExchangeExecutionFenced
 }
-
 func UpdatePositionsPrices() (interface{}, error) {
 	settings := GetAllSettings()
 	policy := BuildExitPolicy(settings)
@@ -367,6 +170,10 @@ func UpdatePositionsPrices() (interface{}, error) {
 	var positions []database.Position
 	if err := database.DB.Where("status = ?", "open").Find(&positions).Error; err != nil {
 		return nil, fiber.NewError(500, "Failed to fetch positions")
+	}
+	var settlement database.Wallet
+	if err := database.DB.First(&settlement).Error; err != nil {
+		return nil, fiber.NewError(500, "Failed to fetch wallet")
 	}
 
 	if len(positions) == 0 {
@@ -382,11 +189,7 @@ func UpdatePositionsPrices() (interface{}, error) {
 
 	symbols := make([]string, len(positions))
 	for i, pos := range positions {
-		symbol := pos.Symbol
-		if !strings.HasSuffix(symbol, "USDT") {
-			symbol += "USDT"
-		}
-		symbols[i] = symbol
+		symbols[i] = PositionPairSymbol(pos.Symbol, settlement.Currency)
 	}
 
 	tickers, err := GetExchange().FetchMultipleTickerPrices(symbols)
@@ -398,10 +201,7 @@ func UpdatePositionsPrices() (interface{}, error) {
 	coordinator := GetExecutionCoordinator()
 	supervisor := GetStreamSupervisor()
 	for i := range positions {
-		tickerKey := positions[i].Symbol
-		if !strings.HasSuffix(tickerKey, "USDT") {
-			tickerKey += "USDT"
-		}
+		tickerKey := PositionPairSymbol(positions[i].Symbol, settlement.Currency)
 
 		if ticker, ok := tickers[tickerKey]; ok {
 			currentPrice, _ := strconv.ParseFloat(ticker.LastPrice, 64)
@@ -419,8 +219,12 @@ func UpdatePositionsPrices() (interface{}, error) {
 				positions[i].TrailingStopPrice = RatchetPercentTrailingStop(positions[i].TrailingStopPrice, currentPrice, entryPrice, policy.TrailingStopPercent)
 			}
 
-			if err := database.DB.Save(&positions[i]).Error; err != nil {
+			updated, err := updatePositionOperational(positions[i].ID, now, map[string]interface{}{"current_price": currentPrice, "last_mark_price": currentPrice, "trailing_stop_price": positions[i].TrailingStopPrice})
+			if err != nil {
 				return nil, fiber.NewError(500, "Failed to update position price")
+			}
+			if !updated {
+				continue
 			}
 			updatedCount++
 

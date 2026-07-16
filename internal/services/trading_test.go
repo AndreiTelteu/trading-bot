@@ -140,6 +140,9 @@ func TestUpdatePositionsPricesAtrTrailingStopRatchet(t *testing.T) {
 	if math.Abs(*updatedBTC.TrailingStopPrice-130.0) > 0.0001 {
 		t.Errorf("BTC trailing stop = %v, want 130", *updatedBTC.TrailingStopPrice)
 	}
+	if math.Abs(updatedBTC.Pnl-50.0) > 0.0001 || math.Abs(updatedBTC.PnlPercent-50.0) > 0.0001 {
+		t.Errorf("BTC operational pnl = %v (%v%%), want 50 (50%%)", updatedBTC.Pnl, updatedBTC.PnlPercent)
+	}
 
 	var updatedETH database.Position
 	if err := database.DB.Where("symbol = ?", "ETH").First(&updatedETH).Error; err != nil {

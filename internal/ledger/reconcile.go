@@ -2,6 +2,7 @@ package ledger
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -9,6 +10,8 @@ import (
 	"time"
 	"trading-go/internal/accounting"
 	"trading-go/internal/database"
+
+	"gorm.io/gorm"
 )
 
 type Difference struct {
@@ -29,34 +32,59 @@ type ReconciliationReport struct {
 	RealizedPnLByCurrency map[string]string `json:"realized_pnl_by_currency"`
 	Differences           []Difference      `json:"differences"`
 	OrphanOrderIDs        []uint            `json:"orphan_order_ids"`
+	PendingOrderIDs       []uint            `json:"pending_order_ids"`
 	OrphanFillIDs         []string          `json:"orphan_fill_ids"`
 	OrphanEventIDs        []string          `json:"orphan_event_ids"`
 	RecordIssues          []string          `json:"record_issues"`
 	Unresolved            []string          `json:"unresolved"`
+	ExpectedIssues        []string          `json:"expected_issues"`
+	ActionableIssues      []string          `json:"actionable_issues"`
+	UnrealizedPnLBySymbol map[string]string `json:"unrealized_pnl_by_symbol"`
 }
 
 func (s *Service) Reconcile(ctx context.Context, account string, asOf time.Time) (ReconciliationReport, error) {
+	if err := requirePrimaryAccount(account); err != nil {
+		return ReconciliationReport{}, err
+	}
+	if !asOf.IsZero() {
+		return ReconciliationReport{}, ErrHistoricalReconciliationUnsupported
+	}
 	if account == "" {
 		account = DefaultAccountID
 	}
-	if asOf.IsZero() {
-		asOf = s.now()
-	}
-	report := ReconciliationReport{AsOf: asOf, AccountID: account, Balanced: true, CashByCurrency: map[string]string{}, AssetsBySymbol: map[string]string{}, FeesByCurrency: map[string]string{}, RealizedPnLByCurrency: map[string]string{}, Differences: []Difference{}, OrphanOrderIDs: []uint{}, OrphanFillIDs: []string{}, OrphanEventIDs: []string{}, RecordIssues: []string{}, Unresolved: []string{}}
+	var report ReconciliationReport
+	err := s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		snapshot := *s
+		snapshot.DB = tx
+		var reconcileErr error
+		report, reconcileErr = snapshot.reconcileCurrent(ctx, account)
+		return reconcileErr
+	}, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+	return report, err
+}
+
+func (s *Service) reconcileCurrent(ctx context.Context, account string) (ReconciliationReport, error) {
+	asOf := s.now()
+	report := ReconciliationReport{AsOf: asOf, AccountID: account, Balanced: true, CashByCurrency: map[string]string{}, AssetsBySymbol: map[string]string{}, FeesByCurrency: map[string]string{}, RealizedPnLByCurrency: map[string]string{}, Differences: []Difference{}, OrphanOrderIDs: []uint{}, PendingOrderIDs: []uint{}, OrphanFillIDs: []string{}, OrphanEventIDs: []string{}, RecordIssues: []string{}, Unresolved: []string{}, ExpectedIssues: []string{}, ActionableIssues: []string{}, UnrealizedPnLBySymbol: map[string]string{}}
 	var events []database.LedgerEvent
 	if err := s.DB.WithContext(ctx).Where("account_id = ? AND occurred_at <= ?", account, asOf).Order("occurred_at, recorded_at, id").Find(&events).Error; err != nil {
 		return report, err
 	}
-	cash, assets, fees, pnl := map[string]accounting.Decimal{}, map[string]accounting.Decimal{}, map[string]accounting.Decimal{}, map[string]accounting.Decimal{}
+	cash, assets, feesCurrency, pnlCurrency, basis, feesSymbol, pnlSymbol := map[string]accounting.Decimal{}, map[string]accounting.Decimal{}, map[string]accounting.Decimal{}, map[string]accounting.Decimal{}, map[string]accounting.Decimal{}, map[string]accounting.Decimal{}, map[string]accounting.Decimal{}
 	for _, event := range events {
 		cash[event.Currency] = cash[event.Currency].Add(event.CashDelta)
 		if event.Symbol != "" {
 			assets[event.Symbol] = assets[event.Symbol].Add(event.AssetDelta)
 		}
 		if event.EventType == EventTradingFee || event.EventType == EventExchangeFee {
-			fees[event.Currency] = fees[event.Currency].Add(event.CashDelta.Neg())
+			feesCurrency[event.Currency] = feesCurrency[event.Currency].Add(event.CashDelta.Neg())
 		}
-		pnl[event.Currency] = pnl[event.Currency].Add(event.RealizedPnL)
+		pnlCurrency[event.Currency] = pnlCurrency[event.Currency].Add(event.RealizedPnL)
+		if event.Symbol != "" {
+			feesSymbol[event.Symbol] = feesSymbol[event.Symbol].Add(event.FeeDelta)
+			pnlSymbol[event.Symbol] = pnlSymbol[event.Symbol].Add(event.RealizedPnL)
+			basis[event.Symbol] = basis[event.Symbol].Add(event.CostBasisDelta)
+		}
 	}
 	for key, value := range cash {
 		report.CashByCurrency[key] = value.String()
@@ -64,15 +92,15 @@ func (s *Service) Reconcile(ctx context.Context, account string, asOf time.Time)
 	for key, value := range assets {
 		report.AssetsBySymbol[key] = value.String()
 	}
-	for key, value := range fees {
+	for key, value := range feesCurrency {
 		report.FeesByCurrency[key] = value.String()
 	}
-	for key, value := range pnl {
+	for key, value := range pnlCurrency {
 		report.RealizedPnLByCurrency[key] = value.String()
 	}
 
 	var wallet database.Wallet
-	if err := s.DB.WithContext(ctx).First(&wallet).Error; err != nil {
+	if err := s.DB.WithContext(ctx).Where("account_id = ?", account).First(&wallet).Error; err != nil {
 		return report, err
 	}
 	ledgerCash := cash[wallet.Currency]
@@ -83,8 +111,13 @@ func (s *Service) Reconcile(ctx context.Context, account string, asOf time.Time)
 		projection, difference := wallet.BalanceExact.String(), wallet.BalanceExact.Sub(ledgerCash).String()
 		report.Differences = append(report.Differences, Difference{Dimension: "cash", Key: wallet.Currency, Ledger: ledgerCash.String(), Projection: &projection, Difference: &difference})
 	}
+	for currency, amount := range cash {
+		if currency != wallet.Currency && amount.Sign() != 0 {
+			report.Differences = append(report.Differences, Difference{Dimension: "unsupported_currency", Key: currency, Ledger: amount.String()})
+		}
+	}
 	var positions []database.Position
-	if err := s.DB.WithContext(ctx).Where("status = ?", "open").Find(&positions).Error; err != nil {
+	if err := s.DB.WithContext(ctx).Where("account_id = ?", account).Find(&positions).Error; err != nil {
 		return report, err
 	}
 	seen := map[string]bool{}
@@ -98,6 +131,23 @@ func (s *Service) Reconcile(ctx context.Context, account string, asOf time.Time)
 			projection, difference := position.AmountExact.String(), position.AmountExact.Sub(ledgerAmount).String()
 			report.Differences = append(report.Differences, Difference{Dimension: "asset", Key: position.Symbol, Ledger: ledgerAmount.String(), Projection: &projection, Difference: &difference})
 		}
+		compareExact := func(dimension string, projection *accounting.Decimal, ledgerValue accounting.Decimal) {
+			if projection == nil {
+				report.Differences = append(report.Differences, Difference{Dimension: dimension, Key: position.Symbol, Ledger: ledgerValue.String()})
+				return
+			}
+			if projection.Cmp(ledgerValue) != 0 {
+				p, delta := projection.String(), projection.Sub(ledgerValue).String()
+				report.Differences = append(report.Differences, Difference{Dimension: dimension, Key: position.Symbol, Ledger: ledgerValue.String(), Projection: &p, Difference: &delta})
+			}
+		}
+		compareExact("cost_basis", position.CostBasisExact, basis[position.Symbol])
+		compareExact("fees", position.FeesExact, feesSymbol[position.Symbol])
+		compareExact("realized_pnl", position.RealizedPnLExact, pnlSymbol[position.Symbol])
+		if position.AmountExact != nil && position.CostBasisExact != nil && position.LastMarkPrice != nil {
+			mark, _ := accounting.FromFloat(*position.LastMarkPrice)
+			report.UnrealizedPnLBySymbol[position.Symbol] = position.AmountExact.Mul(mark).Sub(*position.CostBasisExact).String()
+		}
 	}
 	for symbol, amount := range assets {
 		if !seen[symbol] && amount.Sign() != 0 {
@@ -105,13 +155,19 @@ func (s *Service) Reconcile(ctx context.Context, account string, asOf time.Time)
 		}
 	}
 
-	if err := s.DB.WithContext(ctx).Raw(`SELECT o.id FROM orders o LEFT JOIN fills f ON f.order_id=o.id WHERE f.id IS NULL ORDER BY o.id`).Scan(&report.OrphanOrderIDs).Error; err != nil {
+	if err := s.DB.WithContext(ctx).Raw(`SELECT o.id FROM orders o LEFT JOIN fills f ON f.order_id=o.id WHERE o.account_id=? AND f.id IS NULL AND o.status='filled' ORDER BY o.id`, account).Scan(&report.OrphanOrderIDs).Error; err != nil {
 		return report, err
 	}
-	if err := s.DB.WithContext(ctx).Raw(`SELECT f.id FROM fills f LEFT JOIN ledger_events e ON e.fill_id=f.id AND e.event_type IN ('buy_fill','sell_fill') WHERE e.id IS NULL ORDER BY f.id`).Scan(&report.OrphanFillIDs).Error; err != nil {
+	if err := s.DB.WithContext(ctx).Raw(`SELECT o.id FROM orders o LEFT JOIN fills f ON f.order_id=o.id WHERE o.account_id=? AND f.id IS NULL AND o.status IN ('pending','failed') ORDER BY o.id`, account).Scan(&report.PendingOrderIDs).Error; err != nil {
 		return report, err
 	}
-	if err := s.DB.WithContext(ctx).Raw(`SELECT e.id FROM ledger_events e LEFT JOIN fills f ON f.id=e.fill_id WHERE e.fill_id IS NOT NULL AND f.id IS NULL ORDER BY e.id`).Scan(&report.OrphanEventIDs).Error; err != nil {
+	for _, id := range report.PendingOrderIDs {
+		report.ExpectedIssues = append(report.ExpectedIssues, fmt.Sprintf("non-filled audit order %d has no fill", id))
+	}
+	if err := s.DB.WithContext(ctx).Raw(`SELECT f.id FROM fills f LEFT JOIN ledger_events e ON e.fill_id=f.id AND e.event_type IN ('buy_fill','sell_fill') WHERE f.account_id=? AND e.id IS NULL ORDER BY f.id`, account).Scan(&report.OrphanFillIDs).Error; err != nil {
+		return report, err
+	}
+	if err := s.DB.WithContext(ctx).Raw(`SELECT e.id FROM ledger_events e LEFT JOIN fills f ON f.id=e.fill_id WHERE e.account_id=? AND e.fill_id IS NOT NULL AND f.id IS NULL ORDER BY e.id`, account).Scan(&report.OrphanEventIDs).Error; err != nil {
 		return report, err
 	}
 	var fills []database.Fill
@@ -177,16 +233,37 @@ func (s *Service) Reconcile(ctx context.Context, account string, asOf time.Time)
 		var unresolved []string
 		if json.Unmarshal([]byte(state.UnresolvedJSON), &unresolved) == nil {
 			report.Unresolved = append(report.Unresolved, unresolved...)
+			if state.Status == "ready" {
+				report.ExpectedIssues = append(report.ExpectedIssues, unresolved...)
+			} else {
+				report.ActionableIssues = append(report.ActionableIssues, unresolved...)
+			}
 		}
 	} else if err != nil {
 		report.Unresolved = append(report.Unresolved, "ledger migration state is absent")
+		report.ActionableIssues = append(report.ActionableIssues, "ledger migration state is absent")
 	}
 	sort.Slice(report.Differences, func(i, j int) bool {
 		return report.Differences[i].Dimension+report.Differences[i].Key < report.Differences[j].Dimension+report.Differences[j].Key
 	})
 	sort.Strings(report.Unresolved)
 	sort.Strings(report.RecordIssues)
-	report.Balanced = len(report.Differences) == 0 && len(report.OrphanOrderIDs) == 0 && len(report.OrphanFillIDs) == 0 && len(report.OrphanEventIDs) == 0 && len(report.RecordIssues) == 0 && len(report.Unresolved) == 0
+	for _, d := range report.Differences {
+		report.ActionableIssues = append(report.ActionableIssues, "exact "+d.Dimension+" difference for "+d.Key)
+	}
+	for _, id := range report.OrphanOrderIDs {
+		report.ActionableIssues = append(report.ActionableIssues, fmt.Sprintf("filled order %d has no fill", id))
+	}
+	for _, id := range report.OrphanFillIDs {
+		report.ActionableIssues = append(report.ActionableIssues, "fill "+id+" has no economic fill event")
+	}
+	for _, id := range report.OrphanEventIDs {
+		report.ActionableIssues = append(report.ActionableIssues, "event "+id+" references a missing fill")
+	}
+	report.ActionableIssues = append(report.ActionableIssues, report.RecordIssues...)
+	sort.Strings(report.ExpectedIssues)
+	sort.Strings(report.ActionableIssues)
+	report.Balanced = len(report.ActionableIssues) == 0
 	return report, nil
 }
 

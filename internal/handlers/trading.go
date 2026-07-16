@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	ledgerpkg "trading-go/internal/ledger"
 	"trading-go/internal/services"
 
 	"github.com/gofiber/fiber/v2"
@@ -25,6 +26,9 @@ func ExecuteBuy(c *fiber.Ctx) error {
 
 	result, err := services.ExecuteBuy(req)
 	if err != nil {
+		if _, code := ledgerpkg.ErrorDetails(err); code != "internal_error" {
+			return writeLedgerError(c, err)
+		}
 		if fiberErr, ok := err.(*fiber.Error); ok {
 			return c.Status(fiberErr.Code).JSON(fiber.Map{"error": fiberErr.Message})
 		}
@@ -53,6 +57,9 @@ func ExecuteSell(c *fiber.Ctx) error {
 
 	result, err := services.ExecuteSell(req)
 	if err != nil {
+		if _, code := ledgerpkg.ErrorDetails(err); code != "internal_error" {
+			return writeLedgerError(c, err)
+		}
 		if fiberErr, ok := err.(*fiber.Error); ok {
 			return c.Status(fiberErr.Code).JSON(fiber.Map{"error": fiberErr.Message})
 		}

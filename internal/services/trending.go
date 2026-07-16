@@ -1134,11 +1134,10 @@ func executeBuyFromTrendingWithContext(symbol string, decisionContext TradeDecis
 		return false, fmt.Errorf("no wallet found")
 	}
 
-	// Clean symbol for position/order storage (e.g., "ETHUSDT" not "ETH/USDT")
-	cleanSymbol := strings.ReplaceAll(symbol, "/", "")
-	cleanSymbol = strings.ReplaceAll(cleanSymbol, "USDT", "")
-	// For Binance API we need the full pair symbol
-	pairSymbol := cleanSymbol + "USDT"
+	// Keep the persisted position in base-asset form and use the configured
+	// settlement currency for provider market-data lookup.
+	pairSymbol := PositionPairSymbol(symbol, wallet.Currency)
+	cleanSymbol := strings.TrimSuffix(pairSymbol, strings.ToUpper(wallet.Currency))
 
 	// Get current price
 	ex := GetExchange()
@@ -1147,7 +1146,8 @@ func executeBuyFromTrendingWithContext(symbol string, decisionContext TradeDecis
 		return false, fmt.Errorf("failed to fetch price for %s: %w", pairSymbol, err)
 	}
 	currentPrice, _ := strconv.ParseFloat(ticker.LastPrice, 64)
-	if currentPrice <= 0 {
+	providerPriceExact, providerPriceErr := accounting.Parse(ticker.LastPrice)
+	if currentPrice <= 0 || providerPriceErr != nil {
 		return false, fmt.Errorf("invalid price for %s", pairSymbol)
 	}
 
@@ -1193,8 +1193,8 @@ func executeBuyFromTrendingWithContext(symbol string, decisionContext TradeDecis
 	}
 
 	quantityExact, quantityErr := accounting.FromFloat(cryptoAmount)
-	requestedExact, priceErr := accounting.FromFloat(currentPrice)
-	if quantityErr != nil || priceErr != nil {
+	requestedExact := providerPriceExact
+	if quantityErr != nil {
 		return false, fmt.Errorf("invalid paper fill precision")
 	}
 	feeBPS := int64(getSettingInt(settings, "paper_fee_bps", 10))

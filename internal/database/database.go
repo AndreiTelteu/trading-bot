@@ -47,7 +47,7 @@ func Initialize(cfg *config.Config) error {
 		return err
 	}
 
-	if err := SeedData(); err != nil {
+	if err := SeedDataWithDefaults(cfg.DefaultBalance, cfg.DefaultCurrency); err != nil {
 		return err
 	}
 
@@ -60,6 +60,10 @@ func AutoMigrate() error {
 }
 
 func SeedData() error {
+	return SeedDataWithDefaults(400, "USDT")
+}
+
+func SeedDataWithDefaults(defaultBalance float64, defaultCurrency string) error {
 	settings := []Setting{
 		{Key: "entry_percent", Value: "5.0", Category: strPtr("trading")},
 		{Key: "stop_loss_percent", Value: "5.0", Category: strPtr("trading")},
@@ -175,7 +179,7 @@ func SeedData() error {
 	}
 
 	return DB.Transaction(func(tx *gorm.DB) error {
-		wallet := Wallet{ID: 1, Balance: 400.0, Currency: "USDT"}
+		wallet := Wallet{ID: 1, Balance: defaultBalance, Currency: defaultCurrency, AccountID: primaryLedgerAccount}
 		walletResult := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&wallet)
 		if err := walletResult.Error; err != nil {
 			return err

@@ -9,17 +9,12 @@ import (
 )
 
 func GetLedgerReconciliation(c *fiber.Ctx) error {
-	asOf := time.Now().UTC()
-	if value := c.Query("as_of"); value != "" {
-		parsed, err := time.Parse(time.RFC3339Nano, value)
-		if err != nil {
-			return c.Status(400).JSON(fiber.Map{"error": "as_of must be RFC3339"})
-		}
-		asOf = parsed
+	if c.Query("as_of") != "" {
+		return writeLedgerError(c, ledgerpkg.ErrHistoricalReconciliationUnsupported)
 	}
-	report, err := ledgerpkg.New(database.DB).Reconcile(c.UserContext(), ledgerpkg.DefaultAccountID, asOf)
+	report, err := ledgerpkg.New(database.DB).Reconcile(c.UserContext(), ledgerpkg.DefaultAccountID, time.Time{})
 	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+		return writeLedgerError(c, err)
 	}
 	return c.JSON(report)
 }

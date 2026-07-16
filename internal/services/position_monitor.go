@@ -149,10 +149,6 @@ func (m *PositionMonitor) processPriceEvent(symbol string, event PriceEvent) err
 	position.CurrentPrice = floatPtr(markPrice)
 	position.LastMarkPrice = floatPtr(markPrice)
 	position.LastMarkAt = &event.Timestamp
-	position.Pnl = (markPrice - position.AvgPrice) * position.Amount
-	if position.AvgPrice > 0 {
-		position.PnlPercent = ((markPrice - position.AvgPrice) / position.AvgPrice) * 100
-	}
 
 	entryPrice := position.AvgPrice
 	if position.EntryPrice != nil && *position.EntryPrice > 0 {
@@ -165,8 +161,12 @@ func (m *PositionMonitor) processPriceEvent(symbol string, event PriceEvent) err
 		position.TrailingStopPrice = RatchetPercentTrailingStop(position.TrailingStopPrice, markPrice, entryPrice, policy.TrailingStopPercent)
 	}
 
-	if err := database.DB.Save(&position).Error; err != nil {
+	updated, err := updatePositionOperational(position.ID, event.Timestamp, map[string]interface{}{"current_price": markPrice, "last_mark_price": markPrice, "trailing_stop_price": position.TrailingStopPrice})
+	if err != nil {
 		return err
+	}
+	if !updated {
+		return nil
 	}
 
 	if position.ExitPending {
@@ -188,7 +188,7 @@ func (m *PositionMonitor) processPriceEvent(symbol string, event PriceEvent) err
 		return nil
 	}
 
-	_, err := m.coordinator.RequestClose(CloseRequest{
+	_, err = m.coordinator.RequestClose(CloseRequest{
 		PositionID:     position.ID,
 		Reason:         decision.Reason,
 		RequestedPrice: decision.TriggerPrice,

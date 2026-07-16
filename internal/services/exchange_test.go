@@ -1,10 +1,31 @@
 package services
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 )
+
+func TestOrderResponsePreservesBinanceDecimalStrings(t *testing.T) {
+	var response OrderResponse
+	payload := []byte(`{"orderId":42,"symbol":"BTCUSDT","side":"BUY","type":"MARKET","status":"PARTIALLY_FILLED","origQty":"0.123456789123456789","price":"64123.000000000000000001","executedQty":"0.023456789123456789","transactionTime":1700000000000}`)
+	if err := json.Unmarshal(payload, &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.QuantityExact.String() != "0.123456789123456789" || response.PriceExact.String() != "64123.000000000000000001" || response.ExecutedQtyExact.String() != "0.023456789123456789" {
+		t.Fatalf("lost precision: qty=%s price=%s executed=%s", response.QuantityExact.String(), response.PriceExact.String(), response.ExecutedQtyExact.String())
+	}
+}
+
+func TestPositionPairSymbolUsesConfiguredSettlementCurrency(t *testing.T) {
+	if got := PositionPairSymbol("eth", "EUR"); got != "ETHEUR" {
+		t.Fatalf("pair=%s", got)
+	}
+	if got := PositionPairSymbol("ETH/EUR", "EUR"); got != "ETHEUR" {
+		t.Fatalf("normalized pair=%s", got)
+	}
+}
 
 func TestNewExchangeService(t *testing.T) {
 	es := NewExchangeService("test-key", "test-secret")

@@ -8,7 +8,9 @@ import (
 	"log"
 	"os"
 	"time"
+	"trading-go/internal/accounting"
 	"trading-go/internal/config"
+	"trading-go/internal/database"
 	ledgerpkg "trading-go/internal/ledger"
 
 	"gorm.io/driver/postgres"
@@ -22,6 +24,12 @@ func main() {
 	dryRun := flag.Bool("dry-run", true, "inspect backfill without mutation (default true)")
 	approval := flag.String("approval", "", "required approval phrase when dry-run=false")
 	approvedBy := flag.String("approved-by", "", "human/operator approving a backfill")
+	symbol := flag.String("symbol", "", "asset symbol for an approved correction")
+	quantity := flag.String("quantity", "", "exact asset quantity")
+	costBasis := flag.String("cost-basis", "", "exact settlement-currency cost basis")
+	reason := flag.String("reason", "", "required correction/reversal reason")
+	idempotencyKey := flag.String("idempotency-key", "", "stable command idempotency key")
+	originalEvent := flag.String("original-event", "", "event id to reverse")
 	flag.Parse()
 
 	cfg := config.Load()
@@ -36,14 +44,19 @@ func main() {
 	service := ledgerpkg.New(db)
 	ctx := context.Background()
 	var output interface{}
+	exitCode := 0
 	switch *action {
 	case "reconcile":
 		report, runErr := service.Reconcile(ctx, ledgerpkg.DefaultAccountID, time.Time{})
 		if runErr != nil {
 			log.Fatal(runErr)
 		}
+		exitCode = reconciliationExitCode(report.Balanced)
 		if !*jsonOutput {
 			fmt.Print(report.String())
+			if exitCode != 0 {
+				os.Exit(exitCode)
+			}
 			return
 		}
 		output = report
@@ -53,8 +66,38 @@ func main() {
 			log.Fatal(runErr)
 		}
 		output = report
+	case "asset-correction":
+		if *approval != "APPROVE_LEDGER_ASSET_CORRECTION" || *approvedBy == "" {
+			log.Fatal("asset correction requires approval APPROVE_LEDGER_ASSET_CORRECTION and approved-by")
+		}
+		qty, parseErr := accounting.Parse(*quantity)
+		if parseErr != nil {
+			log.Fatal(parseErr)
+		}
+		basis, parseErr := accounting.Parse(*costBasis)
+		if parseErr != nil {
+			log.Fatal(parseErr)
+		}
+		var wallet database.Wallet
+		if queryErr := db.First(&wallet).Error; queryErr != nil {
+			log.Fatal(queryErr)
+		}
+		event, runErr := service.ApplyAssetCorrection(ctx, ledgerpkg.AssetCorrectionCommand{IdempotencyKey: *idempotencyKey, Symbol: *symbol, Quantity: qty, CostBasis: basis, Currency: wallet.Currency, Actor: *approvedBy, Reason: *reason, Evidence: map[string]interface{}{"operator_approval": *approval}})
+		if runErr != nil {
+			log.Fatal(runErr)
+		}
+		output = event
+	case "reverse":
+		if *approvedBy == "" {
+			log.Fatal("reversal requires approved-by")
+		}
+		event, runErr := service.ReverseCashEvent(ctx, ledgerpkg.ReversalCommand{IdempotencyKey: *idempotencyKey, OriginalEventID: *originalEvent, Actor: *approvedBy, Reason: *reason})
+		if runErr != nil {
+			log.Fatal(runErr)
+		}
+		output = event
 	default:
-		fmt.Fprintln(os.Stderr, "action must be reconcile or backfill")
+		fmt.Fprintln(os.Stderr, "action must be reconcile, backfill, asset-correction, or reverse")
 		os.Exit(2)
 	}
 	encoded, err := json.MarshalIndent(output, "", "  ")
@@ -62,4 +105,14 @@ func main() {
 		log.Fatal(err)
 	}
 	fmt.Println(string(encoded))
+	if exitCode != 0 {
+		os.Exit(exitCode)
+	}
+}
+
+func reconciliationExitCode(balanced bool) int {
+	if balanced {
+		return 0
+	}
+	return 2
 }

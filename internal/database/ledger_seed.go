@@ -16,6 +16,9 @@ const primaryLedgerAccount = "primary"
 // seedLedgerBoundary distinguishes a genuinely new default wallet from an
 // upgrade. Only the former receives an automatic opening-capital event.
 func seedLedgerBoundary(tx *gorm.DB, wallet Wallet, walletCreated bool) error {
+	if err := tx.Exec("SET LOCAL trading_bot.ledger_write = 'on'").Error; err != nil {
+		return err
+	}
 	var existing LedgerMigrationState
 	if err := tx.First(&existing, "account_id = ?", primaryLedgerAccount).Error; err == nil {
 		return nil
@@ -37,9 +40,9 @@ func seedLedgerBoundary(tx *gorm.DB, wallet Wallet, walletCreated bool) error {
 		}
 		if err := tx.Create(&LedgerEvent{
 			ID: eventID, LedgerBatchID: batchID, Sequence: 1, IdempotencyKey: batchID + ":capital",
-			EventType: "capital_deposit", AccountID: primaryLedgerAccount, Currency: wallet.Currency,
+			EventType: "capital_deposit", AccountID: primaryLedgerAccount, VenueID: "internal", Currency: wallet.Currency,
 			CashDelta: balance, AssetDelta: accounting.Zero(), ExecutionMode: "administrative",
-			Actor: "system_seed", Reason: "fresh install opening balance", RealizedPnL: accounting.Zero(),
+			Actor: "system_seed", Reason: "fresh install opening balance", RealizedPnL: accounting.Zero(), CostBasisDelta: accounting.Zero(), FeeDelta: accounting.Zero(),
 			MetadataJSON: `{"source":"configured_default_balance"}`, OccurredAt: now, RecordedAt: now,
 		}).Error; err != nil {
 			return err

@@ -176,17 +176,65 @@ func TestWalletEndpoint(t *testing.T) {
 	}
 }
 
-func TestCreateOrderIntegration(t *testing.T) {
+func TestWalletAdjustmentUsesAuthenticatedActorAndStableMapping(t *testing.T) {
+	SetupTestDB(t)
+	app := SetupTestApp()
+	cookie := loginCookie(t, app)
+	body := bytes.NewBufferString(`{"type":"capital_deposit","amount":"10.123456789123456789","reason":"operator funding","actor":"spoofed","idempotency_key":"wallet-auth-actor"}`)
+	request := httptest.NewRequest(http.MethodPut, "/api/wallet", body)
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Cookie", cookie)
+	response, err := app.Test(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusOK {
+		payload, _ := io.ReadAll(response.Body)
+		t.Fatalf("status=%d body=%s", response.StatusCode, payload)
+	}
+	var event database.LedgerEvent
+	if err := database.DB.Where("ledger_batch_id = ?", "wallet-auth-actor").First(&event).Error; err != nil {
+		t.Fatal(err)
+	}
+	if event.Actor != "admin" {
+		t.Fatalf("actor=%s", event.Actor)
+	}
+	if event.CashDelta.String() != "10.123456789123456789" {
+		t.Fatalf("amount=%s", event.CashDelta.String())
+	}
+}
+
+func TestPaperTradeEndpointPreservesExactClientDecimals(t *testing.T) {
+	SetupTestDB(t)
+	app := SetupTestApp()
+	cookie := loginCookie(t, app)
+	body := bytes.NewBufferString(`{"symbol":"PREC","amount":"0.123456789123456789","price":"10.000000000000000001","order_type":"limit","idempotency_key":"paper-precision"}`)
+	request := httptest.NewRequest(http.MethodPost, "/api/positions-trade/open", body)
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Cookie", cookie)
+	response, err := app.Test(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusOK {
+		payload, _ := io.ReadAll(response.Body)
+		t.Fatalf("status=%d body=%s", response.StatusCode, payload)
+	}
+	var fill database.Fill
+	if err := database.DB.Where("ledger_batch_id = ?", "paper-precision").First(&fill).Error; err != nil {
+		t.Fatal(err)
+	}
+	if fill.Quantity.String() != "0.123456789123456789" || fill.RequestedPrice.String() != "10.000000000000000001" {
+		t.Fatalf("fill quantity=%s price=%s", fill.Quantity.String(), fill.RequestedPrice.String())
+	}
+}
+
+func TestExchangeOrderIntegrationFailsClosed(t *testing.T) {
 	SetupTestDB(t)
 	app := SetupTestApp()
 	cookie := loginCookie(t, app)
 
 	services.InitTradingService("", "")
-
-	wallet := database.Wallet{}
-	database.DB.First(&wallet)
-	wallet.Balance = 1000.0
-	database.DB.Save(&wallet)
 
 	orderReq := map[string]interface{}{
 		"symbol": "BNBUSDT",
@@ -201,11 +249,10 @@ func TestCreateOrderIntegration(t *testing.T) {
 	resp, err := app.Test(req)
 
 	if err != nil {
-		t.Logf("Expected error due to no real exchange: %v", err)
+		t.Fatal(err)
 	}
-
-	if resp != nil && resp.StatusCode != http.StatusOK {
-		t.Logf("Expected 200 or error due to mock exchange, got %d", resp.StatusCode)
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d want 503", resp.StatusCode)
 	}
 }
 

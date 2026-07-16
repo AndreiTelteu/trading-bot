@@ -3,7 +3,6 @@ package services
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 	"trading-go/internal/accounting"
@@ -81,29 +80,7 @@ func (c *ExecutionCoordinator) RequestClose(req CloseRequest) (*CloseResult, err
 	var executedQty *float64
 
 	if normalizeExecutionMode(position.ExecutionMode) == ExecutionModeExchange {
-		if c.exchange == nil {
-			return nil, c.failClose(position.ID, order.ID, fmt.Errorf("exchange executor unavailable"))
-		}
-		resp, execErr := c.exchange.ExecuteSell(positionPairSymbol(position.Symbol), position.Amount, 0)
-		if execErr != nil {
-			return nil, c.failClose(position.ID, order.ID, execErr)
-		}
-
-		status = normalizeOrderStatus(resp.Status)
-		if fillPrice <= 0 {
-			fillPrice = resp.Price
-		}
-		if fillPrice <= 0 {
-			fillPrice = positionPriceForExecution(position)
-		}
-		if resp.OrderID > 0 {
-			value := strconv.FormatInt(resp.OrderID, 10)
-			exchangeOrderID = &value
-		}
-		if resp.ExecutedQty > 0 {
-			qty := resp.ExecutedQty
-			executedQty = &qty
-		}
+		return nil, c.failClose(position.ID, order.ID, ledgerpkg.ErrExchangeExecutionFenced)
 	}
 
 	if fillPrice <= 0 {
@@ -155,32 +132,58 @@ func (c *ExecutionCoordinator) markExitPending(req CloseRequest) (database.Posit
 		if price <= 0 {
 			price = positionPriceForExecution(position)
 		}
+		triggeredAt := req.TriggeredAt
+		updates := map[string]interface{}{"exit_pending": true, "last_mark_at": triggeredAt}
+		if price > 0 {
+			updates["current_price"] = price
+			updates["last_mark_price"] = price
+		}
+		result := tx.Model(&database.Position{}).Where("id = ? AND status = ? AND exit_pending = ?", position.ID, "open", false).Updates(updates)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return nil
+		}
 		position.ExitPending = true
+		position.LastMarkAt = &triggeredAt
 		if price > 0 {
 			position.CurrentPrice = floatPtr(price)
 			position.LastMarkPrice = floatPtr(price)
 		}
-		triggeredAt := req.TriggeredAt
-		position.LastMarkAt = &triggeredAt
-		if err := tx.Save(&position).Error; err != nil {
-			return err
+		if position.AmountExact == nil {
+			return ledgerpkg.ErrProjectionUnavailable
 		}
+		if position.AmountExact.Sign() <= 0 {
+			return ledgerpkg.ErrInsufficientAsset
+		}
+		priceExact, priceErr := accounting.FromFloat(price)
+		if priceErr != nil {
+			return priceErr
+		}
+		amountExact := *position.AmountExact
+		grossExact := amountExact.Mul(priceExact)
+		zero := accounting.Zero()
 
 		requestedPrice := price
 		clientOrderID := clientOrderID(position.Symbol, req.TriggeredAt)
 		order = database.Order{
-			OrderType:      "sell",
-			Symbol:         position.Symbol,
-			AmountCrypto:   position.Amount,
-			AmountUsdt:     position.Amount * price,
-			Price:          price,
-			Status:         OrderStatusPending,
-			ExecutionMode:  normalizeExecutionMode(position.ExecutionMode),
-			TriggerReason:  stringPtr(req.Reason),
-			RequestedPrice: &requestedPrice,
-			ClientOrderID:  &clientOrderID,
-			SubmittedAt:    &triggeredAt,
-			ExecutedAt:     triggeredAt,
+			AccountID:         position.AccountID,
+			OrderType:         "sell",
+			Symbol:            position.Symbol,
+			AmountCrypto:      amountExact.Float64(),
+			AmountUsdt:        grossExact.Float64(),
+			AmountCryptoExact: &amountExact,
+			AmountUsdtExact:   &grossExact,
+			FeeExact:          &zero,
+			Price:             price,
+			Status:            OrderStatusPending,
+			ExecutionMode:     normalizeExecutionMode(position.ExecutionMode),
+			TriggerReason:     stringPtr(req.Reason),
+			RequestedPrice:    &requestedPrice,
+			ClientOrderID:     &clientOrderID,
+			SubmittedAt:       &triggeredAt,
+			ExecutedAt:        triggeredAt,
 		}
 		return tx.Create(&order).Error
 	})
@@ -195,11 +198,14 @@ func (c *ExecutionCoordinator) markExitPending(req CloseRequest) (database.Posit
 }
 
 func (c *ExecutionCoordinator) completeClose(position database.Position, order database.Order, fillPrice float64, status string, exchangeOrderID *string, executedQty *float64, req CloseRequest) (*CloseResult, error) {
-	quantity := position.Amount
-	if executedQty != nil && *executedQty > 0 {
-		quantity = *executedQty
+	if position.AmountExact == nil {
+		return nil, ledgerpkg.ErrProjectionUnavailable
 	}
-	quantityExact, qErr := accounting.FromFloat(quantity)
+	quantityExact := *position.AmountExact
+	var qErr error
+	if executedQty != nil && *executedQty > 0 {
+		quantityExact, qErr = accounting.FromFloat(*executedQty)
+	}
 	requestedExact, pErr := accounting.FromFloat(order.Price)
 	fillExact, fErr := accounting.FromFloat(fillPrice)
 	if qErr != nil || pErr != nil || fErr != nil {
@@ -217,6 +223,10 @@ func (c *ExecutionCoordinator) completeClose(position database.Position, order d
 	if mode == ExecutionModeShadow {
 		return nil, fmt.Errorf("shadow position close requires a separate shadow account ledger adapter")
 	}
+	var settlement database.Wallet
+	if err := database.DB.First(&settlement).Error; err != nil {
+		return nil, err
+	}
 	fee := accounting.Zero()
 	feeType := ledgerpkg.EventExchangeFee
 	metadata := map[string]interface{}{"exchange_fee_status": "unavailable_from_order_response", "broker_status": status}
@@ -231,7 +241,7 @@ func (c *ExecutionCoordinator) completeClose(position database.Position, order d
 		fillExact, fee, feeType = costedFill, costedFee, ledgerpkg.EventTradingFee
 		metadata = map[string]interface{}{"fee_bps": feeBPS, "slippage_bps": slippageBPS, "broker_status": status}
 	}
-	fillResult, err := ledgerpkg.New(database.DB).ApplyFill(context.Background(), ledgerpkg.FillCommand{IdempotencyKey: key, Symbol: position.Symbol, Side: "sell", Quantity: quantityExact, RequestedPrice: requestedExact, FillPrice: fillExact, Fee: fee, FeeType: feeType, Currency: "USDT", ExecutionMode: mode, ProviderFillID: providerID, ProviderOrderID: providerID, OrderStatus: status, ExistingOrderID: order.ID, OccurredAt: req.TriggeredAt, Actor: nonemptySource(req.Source), Reason: req.Reason, StrategyVersion: position.ModelVersion, PolicyVersion: position.PolicyVersion, Metadata: metadata})
+	fillResult, err := ledgerpkg.New(database.DB).ApplyFill(context.Background(), ledgerpkg.FillCommand{IdempotencyKey: key, AccountID: position.AccountID, Symbol: position.Symbol, Side: "sell", Quantity: quantityExact, RequestedPrice: requestedExact, FillPrice: fillExact, Fee: fee, FeeType: feeType, Currency: settlement.Currency, ExecutionMode: mode, ProviderFillID: providerID, ProviderOrderID: providerID, OrderStatus: status, ExistingOrderID: order.ID, OccurredAt: req.TriggeredAt, Actor: nonemptySource(req.Source), Reason: req.Reason, StrategyVersion: position.ModelVersion, PolicyVersion: position.PolicyVersion, Metadata: metadata})
 	if err != nil {
 		return nil, err
 	}
@@ -288,10 +298,11 @@ func clientOrderID(symbol string, when time.Time) string {
 	return fmt.Sprintf("%s-%d", clean, when.UnixMilli())
 }
 
-func positionPairSymbol(symbol string) string {
-	pair := strings.ToUpper(strings.TrimSpace(symbol))
-	if !strings.HasSuffix(pair, "USDT") {
-		pair += "USDT"
+func PositionPairSymbol(symbol, settlementCurrency string) string {
+	pair := strings.ToUpper(strings.ReplaceAll(strings.TrimSpace(symbol), "/", ""))
+	quote := strings.ToUpper(strings.TrimSpace(settlementCurrency))
+	if quote != "" && !strings.HasSuffix(pair, quote) {
+		pair += quote
 	}
 	return pair
 }

@@ -10,6 +10,7 @@ type Wallet struct {
 	Balance      float64             `json:"balance" gorm:"default:400.0"`
 	BalanceExact *accounting.Decimal `json:"balance_exact,omitempty" gorm:"type:numeric(38,18)"`
 	Currency     string              `json:"currency" gorm:"size:20;default:USDT"`
+	AccountID    string              `json:"account_id" gorm:"size:100;not null;default:primary;index"`
 	CreatedAt    time.Time           `json:"created_at"`
 	UpdatedAt    time.Time           `json:"updated_at"`
 }
@@ -17,6 +18,7 @@ type Wallet struct {
 type Position struct {
 	ID                  uint                `json:"id" gorm:"primaryKey;autoIncrement"`
 	Symbol              string              `json:"symbol" gorm:"size:20;uniqueIndex;index:idx_positions_symbol_status,priority:1"`
+	AccountID           string              `json:"account_id" gorm:"size:100;not null;default:primary;index"`
 	Amount              float64             `json:"amount"`
 	AmountExact         *accounting.Decimal `json:"amount_exact,omitempty" gorm:"type:numeric(38,18)"`
 	CostBasisExact      *accounting.Decimal `json:"cost_basis_exact,omitempty" gorm:"type:numeric(38,18)"`
@@ -55,6 +57,7 @@ type Position struct {
 type Order struct {
 	ID                  uint                `json:"id" gorm:"primaryKey;autoIncrement"`
 	OrderType           string              `json:"order_type" gorm:"size:10;not null"`
+	AccountID           string              `json:"account_id" gorm:"size:100;not null;default:primary;index"`
 	Symbol              string              `json:"symbol" gorm:"size:20;not null"`
 	AmountCrypto        float64             `json:"amount_crypto"`
 	AmountUsdt          float64             `json:"amount_usdt"`
@@ -99,7 +102,8 @@ type Fill struct {
 	LedgerBatchID   string             `json:"ledger_batch_id" gorm:"size:100;not null;uniqueIndex"`
 	AccountID       string             `json:"account_id" gorm:"size:100;not null;index"`
 	OrderID         uint               `json:"order_id" gorm:"not null;index"`
-	ProviderFillID  *string            `json:"provider_fill_id,omitempty" gorm:"size:100;uniqueIndex"`
+	VenueID         string             `json:"venue_id" gorm:"size:50;not null;default:internal;index"`
+	ProviderFillID  *string            `json:"provider_fill_id,omitempty" gorm:"size:100"`
 	PositionID      uint               `json:"position_id" gorm:"not null;index"`
 	Symbol          string             `json:"symbol" gorm:"size:30;not null;index"`
 	Side            string             `json:"side" gorm:"size:10;not null"`
@@ -127,6 +131,7 @@ type LedgerEvent struct {
 	IdempotencyKey  string             `json:"idempotency_key" gorm:"size:140;not null;uniqueIndex"`
 	EventType       string             `json:"event_type" gorm:"size:40;not null;index"`
 	AccountID       string             `json:"account_id" gorm:"size:100;not null;index"`
+	VenueID         string             `json:"venue_id" gorm:"size:50;not null;default:internal;index"`
 	Currency        string             `json:"currency" gorm:"size:20;not null;index"`
 	Symbol          string             `json:"symbol" gorm:"size:30;index"`
 	CashDelta       accounting.Decimal `json:"cash_delta" gorm:"type:numeric(38,18);not null"`
@@ -141,6 +146,8 @@ type LedgerEvent struct {
 	Reason          string             `json:"reason" gorm:"size:500"`
 	ReversesEventID *string            `json:"reverses_event_id,omitempty" gorm:"size:100;uniqueIndex"`
 	RealizedPnL     accounting.Decimal `json:"realized_pnl" gorm:"type:numeric(38,18);not null"`
+	CostBasisDelta  accounting.Decimal `json:"cost_basis_delta" gorm:"type:numeric(38,18);not null;default:0"`
+	FeeDelta        accounting.Decimal `json:"fee_delta" gorm:"type:numeric(38,18);not null;default:0"`
 	MetadataJSON    string             `json:"metadata" gorm:"column:metadata_json;type:jsonb;not null;default:'{}'"`
 	OccurredAt      time.Time          `json:"occurred_at" gorm:"not null;index"`
 	RecordedAt      time.Time          `json:"recorded_at" gorm:"not null;index"`

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"trading-go/internal/database"
 
 	fastws "github.com/fasthttp/websocket"
 )
@@ -53,9 +54,13 @@ func NewBinanceTickerStream() *BinanceTickerStream {
 }
 
 func (s *BinanceTickerStream) Subscribe(symbol string) (<-chan PriceEvent, func(), error) {
+	var wallet database.Wallet
+	if err := database.DB.First(&wallet).Error; err != nil {
+		return nil, nil, err
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	out := make(chan PriceEvent, 32)
-	go s.run(ctx, positionPairSymbol(symbol), out)
+	go s.run(ctx, PositionPairSymbol(symbol, wallet.Currency), out)
 	return out, cancel, nil
 }
 

@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"trading-go/internal/accounting"
 )
 
 type ExchangeService struct {
@@ -48,16 +49,58 @@ type OrderRequest struct {
 }
 
 type OrderResponse struct {
-	OrderID         int64   `json:"orderId"`
-	Symbol          string  `json:"symbol"`
-	Side            string  `json:"side"`
-	Type            string  `json:"type"`
-	Quantity        float64 `json:"origQty"`
-	Price           float64 `json:"price"`
-	Status          string  `json:"status"`
-	ExecutedQty     float64 `json:"executedQty"`
-	Time            int64   `json:"time"`
-	TransactionTime int64   `json:"transactionTime"`
+	OrderID          int64              `json:"orderId"`
+	Symbol           string             `json:"symbol"`
+	Side             string             `json:"side"`
+	Type             string             `json:"type"`
+	Quantity         float64            `json:"origQty"`
+	Price            float64            `json:"price"`
+	Status           string             `json:"status"`
+	ExecutedQty      float64            `json:"executedQty"`
+	Time             int64              `json:"time"`
+	TransactionTime  int64              `json:"transactionTime"`
+	QuantityExact    accounting.Decimal `json:"-"`
+	PriceExact       accounting.Decimal `json:"-"`
+	ExecutedQtyExact accounting.Decimal `json:"-"`
+}
+
+func (response *OrderResponse) UnmarshalJSON(data []byte) error {
+	var provider struct {
+		OrderID         int64           `json:"orderId"`
+		Symbol          string          `json:"symbol"`
+		Side            string          `json:"side"`
+		Type            string          `json:"type"`
+		Status          string          `json:"status"`
+		Quantity        json.RawMessage `json:"origQty"`
+		Price           json.RawMessage `json:"price"`
+		Executed        json.RawMessage `json:"executedQty"`
+		Time            int64           `json:"time"`
+		TransactionTime int64           `json:"transactionTime"`
+	}
+	if err := json.Unmarshal(data, &provider); err != nil {
+		return err
+	}
+	parse := func(value json.RawMessage) (accounting.Decimal, error) {
+		text := strings.Trim(string(value), "\"")
+		if text == "" || text == "null" {
+			return accounting.Zero(), nil
+		}
+		return accounting.Parse(text)
+	}
+	quantity, err := parse(provider.Quantity)
+	if err != nil {
+		return fmt.Errorf("invalid provider origQty: %w", err)
+	}
+	price, err := parse(provider.Price)
+	if err != nil {
+		return fmt.Errorf("invalid provider price: %w", err)
+	}
+	executed, err := parse(provider.Executed)
+	if err != nil {
+		return fmt.Errorf("invalid provider executedQty: %w", err)
+	}
+	*response = OrderResponse{OrderID: provider.OrderID, Symbol: provider.Symbol, Side: provider.Side, Type: provider.Type, Status: provider.Status, Quantity: quantity.Float64(), Price: price.Float64(), ExecutedQty: executed.Float64(), Time: provider.Time, TransactionTime: provider.TransactionTime, QuantityExact: quantity, PriceExact: price, ExecutedQtyExact: executed}
+	return nil
 }
 
 type AccountBalance struct {

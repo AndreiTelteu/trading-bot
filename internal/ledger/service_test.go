@@ -1,7 +1,9 @@
 package ledger
 
 import (
+	"context"
 	"testing"
+	"time"
 	"trading-go/internal/accounting"
 )
 
@@ -20,5 +22,17 @@ func TestCostedPaperFillUsesExactBasisPoints(t *testing.T) {
 	sell, _, err := CostedPaperFill("sell", accounting.MustParse("1"), accounting.MustParse("100"), 0, 5)
 	if err != nil || sell.String() != "99.95" {
 		t.Fatalf("sell = %s, err=%v", sell.String(), err)
+	}
+}
+
+func TestHistoricalReconciliationFailsExplicitly(t *testing.T) {
+	service := New(nil)
+	_, err := service.Reconcile(context.Background(), DefaultAccountID, time.Now().Add(-time.Hour))
+	if err == nil {
+		t.Fatal("historical reconciliation was accepted")
+	}
+	kind, code := ErrorDetails(err)
+	if kind != KindValidation || code != "historical_reconciliation_unsupported" {
+		t.Fatalf("kind=%s code=%s", kind, code)
 	}
 }

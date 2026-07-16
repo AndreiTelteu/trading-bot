@@ -8,6 +8,7 @@ import (
 	"trading-go/internal/accounting"
 	"trading-go/internal/database"
 	ledgerpkg "trading-go/internal/ledger"
+	"trading-go/internal/middleware"
 	ws "trading-go/internal/websocket"
 
 	"github.com/gofiber/fiber/v2"
@@ -31,7 +32,6 @@ func UpdateWallet(c *fiber.Ctx) error {
 		Type           string          `json:"type"`
 		Amount         json.RawMessage `json:"amount"`
 		Reason         string          `json:"reason"`
-		Actor          string          `json:"actor"`
 		IdempotencyKey string          `json:"idempotency_key"`
 		Balance        *float64        `json:"balance"`
 		Currency       *string         `json:"currency"`
@@ -50,13 +50,13 @@ func UpdateWallet(c *fiber.Ctx) error {
 	if err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": fmt.Sprintf("Invalid exact amount: %v", err)})
 	}
-	result, err := ledgerpkg.New(database.DB).ApplyAdjustment(c.UserContext(), ledgerpkg.AdjustmentCommand{IdempotencyKey: req.IdempotencyKey, Type: req.Type, Amount: amount, Currency: wallet.Currency, Actor: req.Actor, Reason: req.Reason})
+	actor, ok := middleware.AuthenticatedActor(c)
+	if !ok {
+		return c.Status(401).JSON(fiber.Map{"error": "authenticated operator identity required"})
+	}
+	result, err := ledgerpkg.New(database.DB).ApplyAdjustment(c.UserContext(), ledgerpkg.AdjustmentCommand{IdempotencyKey: req.IdempotencyKey, Type: req.Type, Amount: amount, Currency: wallet.Currency, Actor: actor, Reason: req.Reason})
 	if err != nil {
-		status := fiber.StatusBadRequest
-		if ledgerpkg.IsConflict(err) {
-			status = fiber.StatusConflict
-		}
-		return c.Status(status).JSON(fiber.Map{"error": err.Error()})
+		return writeLedgerError(c, err)
 	}
 	wallet = result.Wallet
 

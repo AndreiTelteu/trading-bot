@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -56,7 +57,10 @@ func ClosePosition(c *fiber.Ctx) error {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return c.Status(404).JSON(fiber.Map{"error": "Position not found"})
 		}
-		return c.Status(409).JSON(fiber.Map{"error": err.Error()})
+		if _, code := ledgerpkg.ErrorDetails(err); code != "internal_error" {
+			return writeLedgerError(c, err)
+		}
+		return c.Status(500).JSON(fiber.Map{"error": "close request failed"})
 	}
 	if result.Duplicate {
 		return c.Status(409).JSON(fiber.Map{"error": "Position is already closed or closing"})
@@ -113,11 +117,11 @@ func performDirectPositionDelete(store directPositionStore, symbol string) (data
 // ExecuteOpenTrade simulates a buy order and creates a position (paper trading)
 func ExecuteOpenTrade(c *fiber.Ctx) error {
 	type OpenTradeRequest struct {
-		Symbol         string  `json:"symbol"`
-		Amount         float64 `json:"amount"`
-		Price          float64 `json:"price"`      // 0 for market order
-		OrderType      string  `json:"order_type"` // "market" or "limit"
-		IdempotencyKey string  `json:"idempotency_key"`
+		Symbol         string          `json:"symbol"`
+		Amount         json.RawMessage `json:"amount"`
+		Price          json.RawMessage `json:"price"`      // 0 for market order
+		OrderType      string          `json:"order_type"` // "market" or "limit"
+		IdempotencyKey string          `json:"idempotency_key"`
 	}
 
 	var req OpenTradeRequest
@@ -129,30 +133,33 @@ func ExecuteOpenTrade(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "Symbol is required"})
 	}
 
-	if req.Amount <= 0 {
+	quantityExact, quantityErr := parseExactJSON(req.Amount, "amount", false)
+	if quantityErr != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "Amount must be greater than 0"})
 	}
 
-	// Format symbol for price lookup
-	symbol := strings.ToUpper(req.Symbol)
-	if !strings.HasSuffix(symbol, "USDT") {
-		symbol = symbol + "USDT"
+	var wallet database.Wallet
+	if err := database.DB.First(&wallet).Error; err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "Failed to fetch wallet"})
 	}
+
+	// Format symbol for price lookup in the configured settlement currency.
+	symbol := services.PositionPairSymbol(req.Symbol, wallet.Currency)
 
 	// Fetch current price (for paper trading, we still need current market price)
 	exchange := services.GetExchange()
-	var price float64 = req.Price
-	if req.OrderType == "market" || req.Price <= 0 {
+	requestedExact, _ := parseExactJSON(req.Price, "price", true)
+	if req.OrderType == "market" || requestedExact.Sign() <= 0 {
 		ticker, err := exchange.FetchTickerPrice(symbol)
 		if err != nil {
 			return c.Status(500).JSON(fiber.Map{"error": fmt.Sprintf("Failed to fetch price: %v", err)})
 		}
-		price, _ = strconv.ParseFloat(ticker.LastPrice, 64)
+		requestedExact, quantityErr = accounting.Parse(ticker.LastPrice)
+		if quantityErr != nil {
+			return c.Status(502).JSON(fiber.Map{"error": "Provider returned an invalid exact price"})
+		}
 	}
-
-	quantityExact, quantityErr := accounting.FromFloat(req.Amount)
-	requestedExact, priceErr := accounting.FromFloat(price)
-	if quantityErr != nil || priceErr != nil {
+	if requestedExact.Sign() <= 0 {
 		return c.Status(400).JSON(fiber.Map{"error": "Amount and price must be exact finite decimals"})
 	}
 	feeBPS, slippageBPS := paperCostBPS()
@@ -164,13 +171,8 @@ func ExecuteOpenTrade(c *fiber.Ctx) error {
 	totalCost := totalCostExact.Float64()
 
 	// Check wallet balance
-	var wallet database.Wallet
-	if err := database.DB.First(&wallet).Error; err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "Failed to fetch wallet"})
-	}
-
-	if totalCost > wallet.Balance {
-		return c.Status(400).JSON(fiber.Map{"error": fmt.Sprintf("Insufficient balance. Required: %.2f USDT, Available: %.2f USDT", totalCost, wallet.Balance)})
+	if wallet.BalanceExact == nil || totalCostExact.Cmp(*wallet.BalanceExact) > 0 {
+		return c.Status(400).JSON(fiber.Map{"error": fmt.Sprintf("Insufficient balance. Required: %.2f %s, Available: %.2f %s", totalCost, wallet.Currency, wallet.Balance, wallet.Currency)})
 	}
 
 	now := time.Now().UTC()
@@ -180,14 +182,11 @@ func ExecuteOpenTrade(c *fiber.Ctx) error {
 	}
 	fillResult, err := ledgerpkg.New(database.DB).ApplyFill(c.UserContext(), ledgerpkg.FillCommand{IdempotencyKey: key, Symbol: req.Symbol, Side: "buy", Quantity: quantityExact, RequestedPrice: requestedExact, FillPrice: fillExact, Fee: feeExact, FeeType: ledgerpkg.EventTradingFee, Currency: wallet.Currency, ExecutionMode: services.ExecutionModePaper, OccurredAt: now, Actor: "paper_trade_api", Reason: "manual paper buy", EntrySource: services.EntrySourcePaperTest, DecisionTimeframe: services.DecisionTimeframeDefault, Metadata: map[string]interface{}{"fee_bps": feeBPS, "slippage_bps": slippageBPS}})
 	if err != nil {
-		status := fiber.StatusBadRequest
-		if ledgerpkg.IsConflict(err) {
-			status = fiber.StatusConflict
-		}
-		return c.Status(status).JSON(fiber.Map{"error": err.Error()})
+		return writeLedgerError(c, err)
 	}
 	wallet, position := fillResult.Wallet, fillResult.Position
-	price = fillExact.Float64()
+	price := fillExact.Float64()
+	amount := quantityExact.Float64()
 
 	// Broadcast updates
 	if wsHub != nil {
@@ -196,7 +195,7 @@ func ExecuteOpenTrade(c *fiber.Ctx) error {
 			Payload: fiber.Map{
 				"type":        "buy",
 				"symbol":      req.Symbol,
-				"amount":      req.Amount,
+				"amount":      amount,
 				"price":       price,
 				"total_cost":  totalCost,
 				"new_balance": wallet.Balance,
@@ -217,7 +216,7 @@ func ExecuteOpenTrade(c *fiber.Ctx) error {
 		"success":     true,
 		"order_id":    fillResult.Order.ID,
 		"symbol":      req.Symbol,
-		"amount":      req.Amount,
+		"amount":      amount,
 		"price":       price,
 		"total_cost":  totalCost,
 		"new_balance": wallet.Balance,
@@ -230,10 +229,10 @@ func ExecuteCloseTrade(c *fiber.Ctx) error {
 	id := c.Params("id")
 
 	type CloseTradeRequest struct {
-		CloseReason    string  `json:"close_reason"` // manual, take_profit, stop_loss
-		Price          float64 `json:"price"`        // 0 for market order
-		OrderType      string  `json:"order_type"`   // "market" or "limit"
-		IdempotencyKey string  `json:"idempotency_key"`
+		CloseReason    string          `json:"close_reason"` // manual, take_profit, stop_loss
+		Price          json.RawMessage `json:"price"`        // 0 for market order
+		OrderType      string          `json:"order_type"`   // "market" or "limit"
+		IdempotencyKey string          `json:"idempotency_key"`
 	}
 
 	var req CloseTradeRequest
@@ -259,32 +258,32 @@ func ExecuteCloseTrade(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "Position has no symbol"})
 	}
 
-	// Format symbol for price lookup
-	symbol := strings.ToUpper(position.Symbol)
-	if !strings.HasSuffix(symbol, "USDT") {
-		symbol = symbol + "USDT"
-	}
-
-	// Fetch current price (for paper trading, we still need current market price)
-	exchange := services.GetExchange()
-	var price float64 = req.Price
-	if req.OrderType == "market" || req.Price <= 0 {
-		ticker, err := exchange.FetchTickerPrice(symbol)
-		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": fmt.Sprintf("Failed to fetch price: %v", err)})
-		}
-		price, _ = strconv.ParseFloat(ticker.LastPrice, 64)
-	}
-
 	var wallet database.Wallet
 	if err := database.DB.First(&wallet).Error; err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "Failed to fetch wallet"})
 	}
+
+	// Format symbol for price lookup in the configured settlement currency.
+	symbol := services.PositionPairSymbol(position.Symbol, wallet.Currency)
+
+	// Fetch current price (for paper trading, we still need current market price)
+	exchange := services.GetExchange()
+	requestedExact, _ := parseExactJSON(req.Price, "price", true)
+	if req.OrderType == "market" || requestedExact.Sign() <= 0 {
+		ticker, err := exchange.FetchTickerPrice(symbol)
+		if err != nil {
+			return c.Status(500).JSON(fiber.Map{"error": fmt.Sprintf("Failed to fetch price: %v", err)})
+		}
+		requestedExact, err = accounting.Parse(ticker.LastPrice)
+		if err != nil {
+			return c.Status(502).JSON(fiber.Map{"error": "Provider returned an invalid exact price"})
+		}
+	}
+
 	if position.AmountExact == nil {
 		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": ledgerpkg.ErrProjectionUnavailable.Error()})
 	}
-	requestedExact, priceErr := accounting.FromFloat(price)
-	if priceErr != nil {
+	if requestedExact.Sign() <= 0 {
 		return c.Status(400).JSON(fiber.Map{"error": "Invalid price"})
 	}
 	feeBPS, slippageBPS := paperCostBPS()
@@ -299,14 +298,10 @@ func ExecuteCloseTrade(c *fiber.Ctx) error {
 	}
 	fillResult, err := ledgerpkg.New(database.DB).ApplyFill(c.UserContext(), ledgerpkg.FillCommand{IdempotencyKey: key, Symbol: position.Symbol, Side: "sell", Quantity: *position.AmountExact, RequestedPrice: requestedExact, FillPrice: fillExact, Fee: feeExact, FeeType: ledgerpkg.EventTradingFee, Currency: wallet.Currency, ExecutionMode: services.ExecutionModePaper, OccurredAt: now, Actor: "paper_trade_api", Reason: req.CloseReason, Metadata: map[string]interface{}{"fee_bps": feeBPS, "slippage_bps": slippageBPS}})
 	if err != nil {
-		status := fiber.StatusBadRequest
-		if ledgerpkg.IsConflict(err) {
-			status = fiber.StatusConflict
-		}
-		return c.Status(status).JSON(fiber.Map{"error": err.Error()})
+		return writeLedgerError(c, err)
 	}
 	wallet, position = fillResult.Wallet, fillResult.Position
-	price = fillExact.Float64()
+	price := fillExact.Float64()
 	closedQuantity := fillResult.Fill.Quantity.Float64()
 	totalValue := position.Amount * price
 	// Amount is zero after a full close; use the immutable fill gross instead.
@@ -385,4 +380,26 @@ func paperCostBPS() (int64, int64) {
 		}
 	}
 	return values["paper_fee_bps"], values["paper_slippage_bps"]
+}
+
+func parseExactJSON(raw json.RawMessage, field string, allowZero bool) (accounting.Decimal, error) {
+	if len(raw) == 0 {
+		return accounting.Zero(), nil
+	}
+	text := strings.TrimSpace(string(raw))
+	if strings.HasPrefix(text, "\"") {
+		var value string
+		if err := json.Unmarshal(raw, &value); err != nil {
+			return accounting.Decimal{}, err
+		}
+		text = value
+	}
+	value, err := accounting.Parse(text)
+	if err != nil {
+		return accounting.Decimal{}, fmt.Errorf("invalid %s: %w", field, err)
+	}
+	if value.Sign() < 0 || (!allowZero && value.Sign() == 0) {
+		return accounting.Decimal{}, fmt.Errorf("%s must be positive", field)
+	}
+	return value, nil
 }

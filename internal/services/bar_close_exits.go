@@ -16,6 +16,10 @@ func EvaluateOpenPositionsOnBarClose() (int, error) {
 	if err := database.DB.Where("status = ?", "open").Find(&positions).Error; err != nil {
 		return 0, err
 	}
+	var wallet database.Wallet
+	if err := database.DB.First(&wallet).Error; err != nil {
+		return 0, err
+	}
 
 	closedCount := 0
 	coordinator := GetExecutionCoordinator()
@@ -24,7 +28,7 @@ func EvaluateOpenPositionsOnBarClose() (int, error) {
 			continue
 		}
 
-		pairSymbol := positionPairSymbol(position.Symbol)
+		pairSymbol := PositionPairSymbol(position.Symbol, wallet.Currency)
 		candles, err := fetchCandles(pairSymbol, DecisionTimeframeDefault, 200)
 		if err != nil || len(candles) == 0 {
 			continue
@@ -49,8 +53,13 @@ func EvaluateOpenPositionsOnBarClose() (int, error) {
 			position.TrailingStopPrice = RatchetPercentTrailingStop(position.TrailingStopPrice, currentPrice, entryPrice, policy.TrailingStopPercent)
 		}
 
-		if err := database.DB.Save(&position).Error; err != nil {
+		values := map[string]interface{}{"current_price": currentPrice, "last_mark_price": currentPrice, "trailing_stop_price": position.TrailingStopPrice, "last_atr_value": position.LastAtrValue}
+		updated, err := updatePositionOperational(position.ID, now, values)
+		if err != nil {
 			return closedCount, err
+		}
+		if !updated {
+			continue
 		}
 
 		analysis := analyzeSymbolFromCandles(pairSymbol, DecisionTimeframeDefault, candles)
