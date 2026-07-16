@@ -43,4 +43,5 @@ build/
 *.bak
 *.swp
 .cache/
+__pycache__
 backtest_results
