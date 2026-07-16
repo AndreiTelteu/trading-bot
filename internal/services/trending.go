@@ -570,6 +570,17 @@ func computePositionSize(atr float64, price float64, balance float64, portfolioV
 	return amountUsdt, cryptoAmount, stopPrice, takeProfitPrice, maxBarsHeld, nil
 }
 
+func computeFixedPositionSize(balance float64, price float64, entryPercent float64) (float64, float64, error) {
+	amountUsdt := balance * (entryPercent / 100)
+	if amountUsdt > balance {
+		return 0, 0, fmt.Errorf("insufficient balance")
+	}
+	if amountUsdt <= 0 {
+		return 0, 0, fmt.Errorf("calculated amount is 0")
+	}
+	return amountUsdt, amountUsdt / price, nil
+}
+
 func computeProbUp(features FeatureVector, beta0 float64, beta1 float64, beta2 float64, beta3 float64, beta4 float64, beta5 float64, beta6 float64) float64 {
 	z := beta0 +
 		beta1*features.RSI +
@@ -926,34 +937,14 @@ func ExecuteShortlistTrades(analyses []AnalyzedCoin, universe *UniverseSelection
 			}
 		}
 
-		decision := "skip"
-		decisionReason := ""
-		if analysis.Error != "" {
-			decisionReason = "analysis_error"
-		} else if !autoTradeEnabled {
-			decisionReason = "auto_trade_disabled"
-		} else if universe != nil && universe.RegimeState == UniverseRegimeRiskOff {
-			decisionReason = "universe_regime_risk_off"
-		} else if useModelEntries && !modelSelected {
-			decisionReason = defaultString(analysis.DecisionReason, "model_policy_not_selected")
-		} else if !signalQualifies {
-			decisionReason = "signal_not_qualified"
-		} else if !confidenceQualifies {
-			if useModelEntries {
-				decisionReason = "model_policy_floor_failed"
-			} else {
-				decisionReason = "confidence_not_qualified"
-			}
-		} else if !regimeOk {
-			decisionReason = "regime_gate_failed"
-		} else if !volOk {
-			decisionReason = "vol_gate_failed"
-		} else if (int(currentOpenCount) + tradesOpened) >= maxPositions {
-			decisionReason = "max_positions_reached"
-		} else {
-			decision = "buy_candidate"
-			decisionReason = "passed_gates"
-		}
+		decision, decisionReason := classifyEntryDecision(entryDecisionInput{
+			AnalysisError: analysis.Error != "", AutoTradeEnabled: autoTradeEnabled,
+			UniverseRiskOff: universe != nil && universe.RegimeState == UniverseRegimeRiskOff,
+			UseModelEntries: useModelEntries, ModelSelected: modelSelected,
+			ModelSelectionReason: analysis.DecisionReason, SignalQualifies: signalQualifies,
+			ConfidenceQualifies: confidenceQualifies, RegimeOK: regimeOk, VolOK: volOk,
+			AtPositionLimit: (int(currentOpenCount) + tradesOpened) >= maxPositions,
+		})
 
 		if autoTradeEnabled && analysis.Error == "" && signalQualifies && confidenceQualifies && regimeOk && volOk &&
 			(universe == nil || universe.RegimeState != UniverseRegimeRiskOff) &&
@@ -1029,6 +1020,41 @@ func ExecuteShortlistTrades(analyses []AnalyzedCoin, universe *UniverseSelection
 	return analyses, tradesOpened
 }
 
+type entryDecisionInput struct {
+	AnalysisError, AutoTradeEnabled, UniverseRiskOff bool
+	UseModelEntries, ModelSelected                   bool
+	ModelSelectionReason                             string
+	SignalQualifies, ConfidenceQualifies             bool
+	RegimeOK, VolOK, AtPositionLimit                 bool
+}
+
+func classifyEntryDecision(input entryDecisionInput) (string, string) {
+	switch {
+	case input.AnalysisError:
+		return "skip", "analysis_error"
+	case !input.AutoTradeEnabled:
+		return "skip", "auto_trade_disabled"
+	case input.UniverseRiskOff:
+		return "skip", "universe_regime_risk_off"
+	case input.UseModelEntries && !input.ModelSelected:
+		return "skip", defaultString(input.ModelSelectionReason, "model_policy_not_selected")
+	case !input.SignalQualifies:
+		return "skip", "signal_not_qualified"
+	case !input.ConfidenceQualifies && input.UseModelEntries:
+		return "skip", "model_policy_floor_failed"
+	case !input.ConfidenceQualifies:
+		return "skip", "confidence_not_qualified"
+	case !input.RegimeOK:
+		return "skip", "regime_gate_failed"
+	case !input.VolOK:
+		return "skip", "vol_gate_failed"
+	case input.AtPositionLimit:
+		return "skip", "max_positions_reached"
+	default:
+		return "buy_candidate", "passed_gates"
+	}
+}
+
 // executeBuyFromTrending performs a buy based on trending analysis (matching Python execute_buy logic)
 func executeBuyFromTrending(symbol string) (bool, error) {
 	return executeBuyFromTrendingWithContext(symbol, TradeDecisionContext{})
@@ -1094,17 +1120,10 @@ func executeBuyFromTrendingWithContext(symbol string, decisionContext TradeDecis
 		maxBarsHeld = maxBars
 	} else {
 		entryPercent := getSettingFloat(settings, "entry_percent", 5.0)
-		amountUsdt = wallet.Balance * (entryPercent / 100)
-
-		if amountUsdt > wallet.Balance {
-			return false, fmt.Errorf("insufficient balance")
+		amountUsdt, cryptoAmount, err = computeFixedPositionSize(wallet.Balance, currentPrice, entryPercent)
+		if err != nil {
+			return false, err
 		}
-
-		if amountUsdt <= 0 {
-			return false, fmt.Errorf("calculated amount is 0")
-		}
-
-		cryptoAmount = amountUsdt / currentPrice
 	}
 
 	if err := database.DB.Transaction(func(tx *gorm.DB) error {

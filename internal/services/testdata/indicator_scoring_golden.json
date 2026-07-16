@@ -1,0 +1,8 @@
+[
+  {"name":"upper clamp","indicators":[{"name":"RSI","signal":"buy","rating":5},{"name":"MACD","signal":"buy","rating":5}],"weights":{"rsi":1,"macd":1},"rating":5,"signal":"STRONG_BUY"},
+  {"name":"lower clamp","indicators":[{"name":"RSI","signal":"sell","rating":5},{"name":"MACD","signal":"sell","rating":5}],"weights":{"rsi":1,"macd":1},"rating":1,"signal":"STRONG_SELL"},
+  {"name":"strong buy boundary","indicators":[{"name":"RSI","signal":"buy","rating":1},{"name":"MACD","signal":"buy","rating":2}],"weights":{"rsi":1,"macd":1},"rating":4.5,"signal":"STRONG_BUY"},
+  {"name":"strong sell boundary","indicators":[{"name":"RSI","signal":"sell","rating":1},{"name":"MACD","signal":"sell","rating":2}],"weights":{"rsi":1,"macd":1},"rating":1.5,"signal":"STRONG_SELL"},
+  {"name":"unknown indicator uses unit weight","indicators":[{"name":"Custom","signal":"buy","rating":1}],"weights":{},"rating":4,"signal":"BUY"},
+  {"name":"zero total weight","indicators":[{"name":"RSI","signal":"buy","rating":5}],"weights":{"rsi":0},"rating":3,"signal":"NEUTRAL"}
+]
