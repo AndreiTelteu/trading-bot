@@ -8,36 +8,36 @@ Create a safe refactoring boundary before changing trading behavior. Capture wha
 
 ### Current-state characterization
 
-- [ ] Document the live flow from universe selection through analysis, entry qualification, sizing, execution, persistence, and broadcast.
-- [ ] Document the backtest flow and list every known parity difference.
-- [ ] Document exit precedence, including hard stop, take profit, trailing stop, signal exit, time stop, and end-of-period liquidation.
-- [ ] Document governance semantics for `research_only`, `shadow`, `paper`, `limited_live`, `full_live`, and rollback.
-- [ ] Record accounting invariants and explicitly mark current historical account metrics as unreconciled.
+- [x] Document the live flow from universe selection through analysis, entry qualification, sizing, execution, persistence, and broadcast.
+- [x] Document the backtest flow and list every known parity difference.
+- [x] Document exit precedence, including hard stop, take profit, trailing stop, signal exit, time stop, and end-of-period liquidation.
+- [x] Document governance semantics for `research_only`, `shadow`, `paper`, `limited_live`, `full_live`, and rollback.
+- [x] Record accounting invariants and explicitly mark current historical account metrics as unreconciled.
 
 ### Target contracts
 
 Define compile-time contracts without migrating all callers yet:
 
-- [ ] `Clock`: current time and deterministic test time.
-- [ ] `IDGenerator`: deterministic IDs for tests and unique IDs in production.
-- [ ] `MarketDataSource`: bars, quote/ticker, benchmark data, and coverage metadata.
-- [ ] `UniverseProvider`: point-in-time candidates and membership provenance.
-- [ ] `Strategy`: pure decision over immutable context.
-- [ ] `RiskEngine`: converts/rejects intents using portfolio and policy state.
-- [ ] `Broker`: accepts an approved intent and returns fills/rejections.
-- [ ] `Ledger`: appends immutable events and exposes reconciliation.
+- [x] `Clock`: current time and deterministic test time.
+- [x] `IDGenerator`: deterministic IDs for tests and unique IDs in production.
+- [x] `MarketDataSource`: bars, quote/ticker, benchmark data, and coverage metadata.
+- [x] `UniverseProvider`: point-in-time candidates and membership provenance.
+- [x] `Strategy`: pure decision over immutable context.
+- [x] `RiskEngine`: converts/rejects intents using portfolio and policy state.
+- [x] `Broker`: accepts an approved intent and returns fills/rejections.
+- [x] `Ledger`: appends immutable events and exposes reconciliation.
 
 Contracts must avoid importing HTTP handlers, global WebSocket state, or mutable global settings.
 
 ### Characterization tests
 
-- [ ] Add golden fixtures for indicator scoring and signal classification, including clamp boundaries.
-- [ ] Add characterization tests for rule-based entry qualification and exact rejection reason ordering.
-- [ ] Add characterization tests for model rollout behavior.
-- [ ] Add sizing fixtures for fixed, rebuy, pyramid, and ATR/volatility sizing.
-- [ ] Add exit precedence fixtures when several exit conditions are simultaneously true.
-- [ ] Add handler/service tests proving current direct close/delete behavior before Stage 01 changes it.
-- [ ] Add a test helper that supplies a fixed clock, deterministic IDs, settings, market observations, and portfolio state.
+- [x] Add golden fixtures for indicator scoring and signal classification, including clamp boundaries.
+- [x] Add characterization tests for rule-based entry qualification and exact rejection reason ordering.
+- [x] Add characterization tests for model rollout behavior.
+- [x] Add sizing fixtures for fixed, rebuy, pyramid, and ATR/volatility sizing.
+- [x] Add exit precedence fixtures when several exit conditions are simultaneously true.
+- [x] Add handler/service tests proving current direct close/delete behavior before Stage 01 changes it.
+- [x] Add a test helper that supplies a fixed clock, deterministic IDs, settings, market observations, and portfolio state.
 
 ## Implementation guidance
 
@@ -52,12 +52,12 @@ Contracts must avoid importing HTTP handlers, global WebSocket state, or mutable
 
 ### Must be testable now
 
-- [ ] New contract packages compile without cyclic imports.
-- [ ] Fixed-clock and deterministic-ID helpers are reproducible.
-- [ ] Characterization fixtures pass repeatedly.
-- [ ] Existing service and backtest tests still pass.
-- [ ] Full `go test ./...` passes.
-- [ ] Git diff contains no runtime behavior change except dependency injection seams proven equivalent by tests.
+- [x] New contract packages compile without cyclic imports.
+- [x] Fixed-clock and deterministic-ID helpers are reproducible.
+- [x] Characterization fixtures pass repeatedly.
+- [x] Existing service and backtest tests still pass.
+- [x] Full `go test ./...` passes.
+- [x] Git diff contains no runtime behavior change except dependency injection seams proven equivalent by tests.
 
 ### Cannot yet be proven in this stage
 
@@ -68,8 +68,8 @@ Contracts must avoid importing HTTP handlers, global WebSocket state, or mutable
 
 ## Acceptance criteria
 
-- [ ] Target contracts and package dependency direction are documented.
-- [ ] Current behavior has regression fixtures around every high-risk branch.
-- [ ] Later agents can implement against stable interfaces rather than editing handlers directly.
-- [ ] No current production path is removed.
-- [ ] Independent reviewer confirms that tests characterize behavior rather than assert implementation details unnecessarily.
+- [x] Target contracts and package dependency direction are documented.
+- [x] Current behavior has regression fixtures around every high-risk branch.
+- [x] Later agents can implement against stable interfaces rather than editing handlers directly.
+- [x] No current production path is removed.
+- [x] Independent reviewer confirms that tests characterize behavior rather than assert implementation details unnecessarily.

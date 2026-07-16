@@ -28,13 +28,13 @@ A stage is checked only after implementation, independent Codex review, one feed
 
 Detailed plan: [`docs/reimplementation/stage-00-architecture-contracts.md`](docs/reimplementation/stage-00-architecture-contracts.md)
 
-- [ ] Record current architecture, invariants, and known-invalid evidence boundaries
-- [ ] Add characterization tests around existing entry, exit, sizing, and rollout behavior
-- [ ] Introduce deterministic clock/ID seams needed by later stages
-- [ ] Define package contracts for strategy, risk, broker, market data, and ledger
-- [ ] Preserve current runtime behavior in this stage
-- [ ] Pass targeted and full repository verification
-- [ ] Complete independent review and one feedback pass
+- [x] Record current architecture, invariants, and known-invalid evidence boundaries
+- [x] Add characterization tests around existing entry, exit, sizing, and rollout behavior
+- [x] Introduce deterministic clock/ID seams needed by later stages
+- [x] Define package contracts for strategy, risk, broker, market data, and ledger
+- [x] Preserve current runtime behavior in this stage
+- [x] Pass targeted and full repository verification
+- [x] Complete independent review and one feedback pass
 
 ## Stage 01 — Immutable ledger and reconciliation
 
