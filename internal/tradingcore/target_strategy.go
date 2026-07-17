@@ -48,9 +48,9 @@ func (TargetAllocationStrategy) Decide(_ context.Context, snapshot DecisionConte
 		semantics := QuantityCashCapped
 		if action == "sell" {
 			side = Sell
-			semantics = QuantityExitAll
-			if position, ok := positions[instrument.ID]; !ok || position.Quantity.Decimal().String() != quantity.Decimal().String() {
-				return StrategyResult{}, fmt.Errorf("sell target for %s must equal the exact held quantity", key)
+			semantics = QuantityExact
+			if position, ok := positions[instrument.ID]; !ok || position.Quantity.Decimal().Float64()+1e-12 < quantity.Decimal().Float64() {
+				return StrategyResult{}, fmt.Errorf("sell target for %s exceeds the held quantity", key)
 			}
 		} else if action != "buy" {
 			return StrategyResult{}, fmt.Errorf("unsupported target action %q", action)
@@ -71,7 +71,7 @@ func (TargetAllocationStrategy) Decide(_ context.Context, snapshot DecisionConte
 		if reason == "" {
 			reason = "target_allocation"
 		}
-		intent, err := NewOrderIntent(OrderIntent{ID: orderID, IdempotencyKey: idempotency, AccountID: portfolio.AccountID(), Instrument: instrument, Side: side, Type: MarketOrder, Quantity: quantity, ReferencePrice: SomePrice(quote.Last), SignalAt: snapshot.SignalAt(), DecisionAt: snapshot.DecisionAt(), CreatedAt: snapshot.DecisionAt(), ExecutionMode: portfolio.ExecutionMode(), QuantitySemantics: semantics, Priority: priority, Reason: reason, Horizon: settings["strategy_horizon"], Versions: snapshot.Versions(), Provenance: Provenance{Source: "target_allocation", Actor: snapshot.Versions().Strategy, Reason: reason}}, map[string]string{"target_weight": settings["target_weight."+key], "regime_state": settings["target_regime."+key]})
+		intent, err := NewOrderIntent(OrderIntent{ID: orderID, IdempotencyKey: idempotency, AccountID: portfolio.AccountID(), Instrument: instrument, Side: side, Type: MarketOrder, Quantity: quantity, ReferencePrice: SomePrice(quote.Last), SignalAt: snapshot.SignalAt(), DecisionAt: snapshot.DecisionAt(), CreatedAt: snapshot.DecisionAt(), ExecutionMode: portfolio.ExecutionMode(), QuantitySemantics: semantics, Priority: priority, Reason: reason, Horizon: settings["strategy_horizon"], Versions: snapshot.Versions(), Provenance: Provenance{Source: "target_allocation", Actor: snapshot.Versions().Strategy, Reason: reason}}, map[string]string{"target_weight": settings["target_weight."+key], "regime_state": settings["target_regime."+key], "execution_reference_price": settings["execution_reference_price."+key]})
 		if err != nil {
 			return StrategyResult{}, err
 		}

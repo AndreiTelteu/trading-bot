@@ -2,10 +2,12 @@ package services
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math"
 	"net/http"
 	"sort"
@@ -157,7 +159,18 @@ type BacktestOptimizationPromptOptions struct {
 }
 
 func GenerateBacktestOptimizationProposals(input BacktestOptimizationInput) (interface{}, error) {
-	if err := requireBaselineRelativeOptimizationEvidence(input.SummaryJSON); err != nil {
+	if input.JobID == 0 {
+		return nil, fiber.NewError(409, "optimization_blocked: completed canonical Stage 05 job id is required")
+	}
+	var job database.BacktestJob
+	if err := database.DB.First(&job, input.JobID).Error; err != nil {
+		return nil, fiber.NewError(409, "optimization_blocked: canonical Stage 05 job not found")
+	}
+	if job.Status != "completed" || job.JobType != "stage05_comparison" || job.SummaryJSON == nil || job.ArtifactDigest == nil || job.DatasetManifestID == nil {
+		return nil, fiber.NewError(409, "optimization_blocked: completed canonical Stage 05 comparison evidence is required")
+	}
+	input.Status, input.CreatedAt, input.StartedAt, input.FinishedAt, input.SummaryJSON = job.Status, job.CreatedAt, job.StartedAt, job.FinishedAt, *job.SummaryJSON
+	if err := requireBaselineRelativeOptimizationEvidence(input.SummaryJSON, job); err != nil {
 		return nil, fiber.NewError(409, err.Error())
 	}
 	var llmConfig database.LLMConfig
@@ -300,7 +313,11 @@ func GenerateBacktestOptimizationProposals(input BacktestOptimizationInput) (int
 	}, nil
 }
 
-func requireBaselineRelativeOptimizationEvidence(summaryJSON string) error {
+func requireBaselineRelativeOptimizationEvidence(summaryJSON string, jobs ...database.BacktestJob) error {
+	if len(jobs) != 1 {
+		return fmt.Errorf("optimization_blocked: canonical completed job binding is required")
+	}
+	job := jobs[0]
 	if strings.TrimSpace(summaryJSON) == "" {
 		return fmt.Errorf("optimization_blocked: baseline-relative comparison evidence is missing")
 	}
@@ -312,20 +329,33 @@ func requireBaselineRelativeOptimizationEvidence(summaryJSON string) error {
 			DatasetManifestID string `json:"dataset_manifest_id"`
 		} `json:"normalized_assumptions"`
 		Rows []struct {
-			StrategyID       string `json:"strategy_id"`
-			ManifestIdentity string `json:"manifest_identity"`
-			Metrics          struct {
+			StrategyID        string            `json:"strategy_id"`
+			StrategyVersion   string            `json:"strategy_version"`
+			ManifestIdentity  string            `json:"manifest_identity"`
+			DatasetManifestID string            `json:"dataset_manifest_id"`
+			Parameters        map[string]string `json:"parameters"`
+			Descriptor        struct {
+				ID       string `json:"id"`
+				Version  string `json:"version"`
+				Baseline bool   `json:"baseline"`
+				Legacy   bool   `json:"legacy_compatibility"`
+			} `json:"descriptor"`
+			NormalizedRunManifest json.RawMessage `json:"normalized_run_manifest"`
+			Metrics               struct {
 				Reconciled  bool `json:"reconciled"`
 				TotalReturn struct {
-					Available bool `json:"available"`
+					Available bool     `json:"available"`
+					Value     *float64 `json:"value"`
 				} `json:"total_return"`
 			} `json:"metrics"`
 		} `json:"rows"`
 		Governance struct {
 			SchemaVersion       string   `json:"schema_version"`
 			OptimizationAllowed bool     `json:"optimization_allowed"`
+			PromotionAllowed    bool     `json:"promotion_allowed"`
 			Reasons             []string `json:"reasons"`
 		} `json:"governance"`
+		ArtifactDigest string `json:"artifact_digest"`
 	}
 	if err := json.Unmarshal([]byte(summaryJSON), &evidence); err != nil {
 		return fmt.Errorf("optimization_blocked: baseline-relative comparison evidence is invalid")
@@ -333,23 +363,74 @@ func requireBaselineRelativeOptimizationEvidence(summaryJSON string) error {
 	if evidence.SchemaVersion != "strategy-comparison-v1" || evidence.Governance.SchemaVersion != "baseline-governance-gate-v1" {
 		return fmt.Errorf("optimization_blocked: Stage 05 baseline-relative comparison evidence is required")
 	}
-	candidateID := strings.SplitN(evidence.Candidate, "@", 2)[0]
-	seenCash, seenMarket, seenCandidate := false, false, false
-	if evidence.ManifestID == "" || evidence.Assumptions.DatasetManifestID != evidence.ManifestID || candidateID == "" {
+	if evidence.Governance.PromotionAllowed {
+		return fmt.Errorf("optimization_blocked: Stage 05 promotion must remain pending Stage 07 validation")
+	}
+	var raw map[string]interface{}
+	if json.Unmarshal([]byte(summaryJSON), &raw) != nil {
+		return fmt.Errorf("optimization_blocked: artifact canonicalization failed")
+	}
+	delete(raw, "artifact_digest")
+	canonical, _ := json.Marshal(raw)
+	digest := fmt.Sprintf("%x", sha256.Sum256(canonical))
+	if job.ArtifactDigest == nil || evidence.ArtifactDigest != *job.ArtifactDigest || digest != evidence.ArtifactDigest {
+		return fmt.Errorf("optimization_blocked: canonical artifact digest mismatch")
+	}
+	parts := strings.SplitN(evidence.Candidate, "@", 2)
+	candidateID := parts[0]
+	seenCash, seenMarket, seenTrend, seenCandidate := false, false, false, false
+	seen := map[string]bool{}
+	returns := map[string]float64{}
+	baselineReturns := map[string]float64{}
+	if len(parts) != 2 || evidence.ManifestID == "" || job.DatasetManifestID == nil || *job.DatasetManifestID != evidence.ManifestID || evidence.Assumptions.DatasetManifestID != evidence.ManifestID || candidateID == "" {
 		return fmt.Errorf("optimization_blocked: normalized manifest identity evidence is incomplete")
 	}
 	for _, row := range evidence.Rows {
-		if row.ManifestIdentity != evidence.ManifestID || !row.Metrics.Reconciled || !row.Metrics.TotalReturn.Available {
-			continue
+		if seen[row.StrategyID] {
+			return fmt.Errorf("optimization_blocked: duplicate strategy row %s", row.StrategyID)
+		}
+		seen[row.StrategyID] = true
+		if row.DatasetManifestID != evidence.ManifestID || row.Descriptor.ID != row.StrategyID || row.Descriptor.Version != row.StrategyVersion || row.Metrics.TotalReturn.Value == nil || math.IsNaN(*row.Metrics.TotalReturn.Value) || math.IsInf(*row.Metrics.TotalReturn.Value, 0) || !row.Metrics.Reconciled || !row.Metrics.TotalReturn.Available {
+			return fmt.Errorf("optimization_blocked: exact reconciled numeric row evidence is incomplete")
+		}
+		manifestDigest := sha256.Sum256(row.NormalizedRunManifest)
+		if row.ManifestIdentity != fmt.Sprintf("%x", manifestDigest) {
+			return fmt.Errorf("optimization_blocked: run manifest digest mismatch")
+		}
+		var manifest struct {
+			DatasetManifestID string            `json:"dataset_manifest_id"`
+			StrategyID        string            `json:"strategy_id"`
+			StrategyVersion   string            `json:"strategy_version"`
+			Parameters        map[string]string `json:"parameters"`
+		}
+		if json.Unmarshal(row.NormalizedRunManifest, &manifest) != nil || manifest.DatasetManifestID != evidence.ManifestID || manifest.StrategyID != row.StrategyID || manifest.StrategyVersion != row.StrategyVersion || !maps.Equal(manifest.Parameters, row.Parameters) {
+			return fmt.Errorf("optimization_blocked: normalized run manifest mismatch")
+		}
+		returns[row.StrategyID] = *row.Metrics.TotalReturn.Value
+		if row.Descriptor.Baseline && row.StrategyID != candidateID {
+			baselineReturns[row.StrategyID] = *row.Metrics.TotalReturn.Value
 		}
 		seenCash = seenCash || row.StrategyID == "cash"
 		seenMarket = seenMarket || row.StrategyID == "benchmark_buy_hold"
-		seenCandidate = seenCandidate || row.StrategyID == candidateID
+		seenTrend = seenTrend || row.StrategyID == "benchmark_trend"
+		if row.StrategyID == candidateID {
+			if row.Descriptor.Baseline || row.Descriptor.Legacy || row.StrategyVersion != parts[1] {
+				return fmt.Errorf("optimization_blocked: candidate must be an exact non-baseline descriptor")
+			}
+			seenCandidate = true
+		}
+		if (row.StrategyID == "cash" || row.StrategyID == "benchmark_buy_hold") && !row.Descriptor.Baseline {
+			return fmt.Errorf("optimization_blocked: mandatory baseline descriptor mismatch")
+		}
 	}
-	if !seenCash || !seenMarket || !seenCandidate {
+	if !seenCash || !seenMarket || !seenTrend || !seenCandidate {
 		return fmt.Errorf("optimization_blocked: reconciled cash, market, and candidate metric rows are required")
 	}
-	if !evidence.Governance.OptimizationAllowed {
+	optimizationAllowed := true
+	for _, baselineReturn := range baselineReturns {
+		optimizationAllowed = optimizationAllowed && returns[candidateID] > baselineReturn
+	}
+	if !optimizationAllowed {
 		reason := "baseline-relative value was not established"
 		if len(evidence.Governance.Reasons) > 0 {
 			reason = strings.Join(evidence.Governance.Reasons, ",")

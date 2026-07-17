@@ -226,6 +226,9 @@ type BacktestJob struct {
 	SummaryCompactJSON *string    `json:"summary_compact_json" gorm:"type:text"`
 	Error              *string    `json:"error" gorm:"type:text"`
 	DatasetManifestID  *string    `json:"dataset_manifest_id,omitempty" gorm:"size:64;index"`
+	JobType            string     `json:"job_type" gorm:"size:40;not null;default:legacy_backtest;index"`
+	ArtifactDigest     *string    `json:"artifact_digest,omitempty" gorm:"size:64"`
+	DiagnosticJSON     *string    `json:"diagnostic_json,omitempty" gorm:"type:text"`
 	StartedAt          *time.Time `json:"started_at"`
 	FinishedAt         *time.Time `json:"finished_at"`
 	CreatedAt          time.Time  `json:"created_at" gorm:"index"`

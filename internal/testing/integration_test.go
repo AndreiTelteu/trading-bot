@@ -3,11 +3,14 @@ package testing
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 	"trading-go/internal/accounting"
@@ -114,6 +117,8 @@ func setupTestRoutes(app *fiber.App, cfg *config.Config) {
 	backtest.Get("/jobs", handlers.ListBacktestJobs)
 	backtest.Get("/latest", handlers.GetLatestBacktestStatus)
 	backtest.Get("/status/:id", handlers.GetBacktestStatus)
+	backtest.Get("/strategies", handlers.ListBacktestStrategies)
+	backtest.Post("/compare", handlers.StartStage05Comparison)
 
 	ai := api.Group("/ai")
 	ai.Get("/proposals", handlers.GetAIProposals)
@@ -545,6 +550,32 @@ func TestListBacktestJobsEndpoint(t *testing.T) {
 	}
 }
 
+func TestStage05AuthenticatedStrategyAndComparisonValidationEndpoints(t *testing.T) {
+	SetupTestDB(t)
+	app := SetupTestApp()
+	cookie := loginCookie(t, app)
+	request := httptest.NewRequest(http.MethodGet, "/api/backtest/strategies", nil)
+	request.Header.Set("Cookie", cookie)
+	response, err := app.Test(request)
+	if err != nil || response.StatusCode != http.StatusOK {
+		t.Fatalf("strategies status=%v err=%v", response.StatusCode, err)
+	}
+	var payload struct {
+		SchemaVersion string                   `json:"schema_version"`
+		Strategies    []map[string]interface{} `json:"strategies"`
+	}
+	if json.NewDecoder(response.Body).Decode(&payload) != nil || payload.SchemaVersion != "strategy-descriptor-v1" || len(payload.Strategies) < 6 {
+		t.Fatalf("strategies payload=%+v", payload)
+	}
+	request = httptest.NewRequest(http.MethodPost, "/api/backtest/compare", bytes.NewBufferString(`{"target_gross_exposure":"1"}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Cookie", cookie)
+	response, err = app.Test(request)
+	if err != nil || response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("invalid comparison status=%v err=%v", response.StatusCode, err)
+	}
+}
+
 func TestOptimizeBacktestEndpointCreatesProposal(t *testing.T) {
 	SetupTestDB(t)
 	app := SetupTestApp()
@@ -576,9 +607,9 @@ func TestOptimizeBacktestEndpointCreatesProposal(t *testing.T) {
 	database.DB.Save(&config)
 
 	summaryJSON := `{"job_id":1,"started_at":"2026-03-14T00:00:00Z","finished_at":"2026-03-14T00:10:00Z","baseline":{"Mode":"baseline","Metrics":{"TradeCount":10,"WinRate":40,"ProfitFactor":1.1,"AvgWin":2.4,"AvgLoss":-1.2}},"vol_sizing":{"Mode":"vol_sizing","Metrics":{"TradeCount":8,"WinRate":50,"ProfitFactor":1.4,"AvgWin":2.8,"AvgLoss":-1.0}},"validation":{"passed":true,"windows":1}}`
-	summaryJSON = withStage05OptimizationEvidence(t, summaryJSON)
+	summaryJSON, artifactDigest, manifestID := withStage05OptimizationEvidence(t, summaryJSON)
 	job := database.BacktestJob{
-		Status:      "completed",
+		Status: "completed", JobType: "stage05_comparison", ArtifactDigest: &artifactDigest, DatasetManifestID: &manifestID,
 		Progress:    1,
 		SummaryJSON: &summaryJSON,
 		CreatedAt:   time.Now(),
@@ -656,9 +687,9 @@ func TestOptimizeBacktestEndpointFallsBackToHypotheses(t *testing.T) {
 	database.DB.Save(&config)
 
 	summaryJSON := `{"job_id":1,"started_at":"2026-03-14T00:00:00Z","finished_at":"2026-03-14T00:10:00Z","baseline":{"Mode":"baseline","Metrics":{"TradeCount":10,"WinRate":0.40,"ProfitFactor":0.9,"AvgWin":2.4,"AvgLoss":-1.4}},"vol_sizing":{"Mode":"vol_sizing","Metrics":{"TradeCount":8,"WinRate":0.45,"ProfitFactor":0.95,"AvgWin":2.6,"AvgLoss":-1.2}},"validation":{"passed":false,"windows":1}}`
-	summaryJSON = withStage05OptimizationEvidence(t, summaryJSON)
+	summaryJSON, artifactDigest, manifestID := withStage05OptimizationEvidence(t, summaryJSON)
 	job := database.BacktestJob{
-		Status:      "completed",
+		Status: "completed", JobType: "stage05_comparison", ArtifactDigest: &artifactDigest, DatasetManifestID: &manifestID,
 		Progress:    1,
 		SummaryJSON: &summaryJSON,
 		CreatedAt:   time.Now(),
@@ -772,9 +803,9 @@ func TestOptimizeBacktestEndpointReturnsRawResponseForNoJSONArray(t *testing.T) 
 	database.DB.Save(&config)
 
 	summaryJSON := `{"job_id":1,"started_at":"2026-03-14T00:00:00Z","finished_at":"2026-03-14T00:10:00Z","baseline":{"Mode":"baseline","Metrics":{"TradeCount":10,"WinRate":0.40,"ProfitFactor":0.9,"AvgWin":2.4,"AvgLoss":-1.4}},"vol_sizing":{"Mode":"vol_sizing","Metrics":{"TradeCount":8,"WinRate":0.45,"ProfitFactor":0.95,"AvgWin":2.6,"AvgLoss":-1.2}},"validation":{"passed":false,"windows":1}}`
-	summaryJSON = withStage05OptimizationEvidence(t, summaryJSON)
+	summaryJSON, artifactDigest, manifestID := withStage05OptimizationEvidence(t, summaryJSON)
 	job := database.BacktestJob{
-		Status:      "completed",
+		Status: "completed", JobType: "stage05_comparison", ArtifactDigest: &artifactDigest, DatasetManifestID: &manifestID,
 		Progress:    1,
 		SummaryJSON: &summaryJSON,
 		CreatedAt:   time.Now(),
@@ -835,24 +866,41 @@ func strPtr(v string) *string {
 	return &v
 }
 
-func withStage05OptimizationEvidence(t *testing.T, legacy string) string {
+func withStage05OptimizationEvidence(t *testing.T, legacy string) (string, string, string) {
 	t.Helper()
 	var value map[string]interface{}
 	if err := json.Unmarshal([]byte(legacy), &value); err != nil {
 		t.Fatal(err)
 	}
 	value["schema_version"] = "strategy-comparison-v1"
-	value["manifest_id"] = "integration-manifest"
-	value["candidate"] = "vol_sizing@fixture"
-	value["normalized_assumptions"] = map[string]interface{}{"dataset_manifest_id": "integration-manifest"}
-	metric := func() map[string]interface{} {
-		return map[string]interface{}{"reconciled": true, "total_return": map[string]interface{}{"available": true, "value": .01}}
+	manifestID := strings.Repeat("a", 64)
+	now := time.Now().UTC()
+	manifest := database.DatasetManifest{ID: manifestID, ContentHash: manifestID, SchemaVersion: "point-in-time-dataset-manifest-v2", DatasetVersion: "integration-v1", RequestedStart: now.Add(-time.Hour), RequestedEnd: now, EffectiveStart: now.Add(-time.Hour), EffectiveEnd: now, KnowledgeCutoff: now, Source: "integration", ProvenanceJSON: "{}", BuildVersion: "integration", SymbolsJSON: "[]", AssetsJSON: "[]", RolesTimeframesJSON: "[]", CoverageJSON: "[]", LimitationsJSON: "[]", CreatedAt: now}
+	if err := database.DB.FirstOrCreate(&manifest, "id=?", manifestID).Error; err != nil {
+		t.Fatal(err)
 	}
-	value["rows"] = []map[string]interface{}{{"strategy_id": "cash", "manifest_identity": "integration-manifest", "metrics": metric()}, {"strategy_id": "benchmark_buy_hold", "manifest_identity": "integration-manifest", "metrics": metric()}, {"strategy_id": "vol_sizing", "manifest_identity": "integration-manifest", "metrics": metric()}}
-	value["governance"] = map[string]interface{}{"schema_version": "baseline-governance-gate-v1", "optimization_allowed": true, "promotion_allowed": true}
+	value["manifest_id"] = manifestID
+	value["candidate"] = "vol_sizing@fixture"
+	value["normalized_assumptions"] = map[string]interface{}{"dataset_manifest_id": manifestID}
+	metric := func(returnValue float64) map[string]interface{} {
+		return map[string]interface{}{"reconciled": true, "total_return": map[string]interface{}{"available": true, "value": returnValue}}
+	}
+	row := func(id, version string, baseline bool, returnValue float64) map[string]interface{} {
+		parameters := map[string]string{"target_gross": "1"}
+		normalized := map[string]interface{}{"schema_version": "normalized-run-manifest-v1", "dataset_manifest_id": manifestID, "strategy_id": id, "strategy_version": version, "parameters": parameters, "assumptions": value["normalized_assumptions"]}
+		raw, _ := json.Marshal(normalized)
+		digest := fmt.Sprintf("%x", sha256.Sum256(raw))
+		return map[string]interface{}{"strategy_id": id, "strategy_version": version, "manifest_identity": digest, "dataset_manifest_id": manifestID, "parameters": parameters, "normalized_run_manifest": normalized, "descriptor": map[string]interface{}{"id": id, "version": version, "baseline": baseline}, "metrics": metric(returnValue)}
+	}
+	value["rows"] = []map[string]interface{}{row("cash", "1.0.0", true, 0), row("benchmark_buy_hold", "1.0.0", true, .01), row("benchmark_trend", "1.0.0", true, .005), row("vol_sizing", "fixture", false, .02)}
+	value["governance"] = map[string]interface{}{"schema_version": "baseline-governance-gate-v1", "optimization_allowed": true, "promotion_allowed": false}
+	delete(value, "artifact_digest")
+	unsigned, _ := json.Marshal(value)
+	artifactDigest := fmt.Sprintf("%x", sha256.Sum256(unsigned))
+	value["artifact_digest"] = artifactDigest
 	encoded, err := json.Marshal(value)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return string(encoded)
+	return string(encoded), artifactDigest, manifestID
 }

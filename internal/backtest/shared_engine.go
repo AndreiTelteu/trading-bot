@@ -127,6 +127,7 @@ func runSharedBacktestEntry(ledger *backtestMemoryLedger, config BacktestConfig,
 
 type backtestLedgerEvent struct {
 	Side, Symbol, Quantity, Price, Fee, CostVersion, Reason string
+	ExecutionReferencePrice                                 string
 	SignalAt, DecisionAt, OrderAt, At                       time.Time
 	CashAfter                                               string
 }
@@ -244,15 +245,27 @@ func (ledger *backtestMemoryLedger) RecordBrokerOutcome(_ context.Context, appro
 		ledger.turnover += quantity * price
 		if intent.Side == tradingcore.Buy {
 			ledger.cash -= quantity*price + fee
-			ledger.positions[symbol] = &positionState{Symbol: symbol, EntryPrice: price, Size: quantity, StopPrice: metadataFloat64(metadata, "stop_price"), TakeProfit: metadataFloat64(metadata, "take_profit_price"), HighestPrice: price, EntryTime: fill.FilledAt, LastAtr: metadataFloatValue(metadata, "atr_value"), EntryFee: fee, EntryRank: metadataIntValue(metadata, "entry_rank"), RegimeState: metadata["regime_state"], BreadthRatio: metadataFloatValue(metadata, "breadth_ratio"), ModelVersion: metadata["model_version"], PredictedProb: metadataFloat64(metadata, "predicted_probability"), PredictedEV: metadataFloat64(metadata, "predicted_ev")}
+			if existing := ledger.positions[symbol]; existing != nil {
+				total := existing.Size + quantity
+				existing.EntryPrice = (existing.EntryPrice*existing.Size + price*quantity) / total
+				existing.Size = total
+				existing.EntryFee += fee
+			} else {
+				ledger.positions[symbol] = &positionState{Symbol: symbol, EntryPrice: price, Size: quantity, StopPrice: metadataFloat64(metadata, "stop_price"), TakeProfit: metadataFloat64(metadata, "take_profit_price"), HighestPrice: price, EntryTime: fill.FilledAt, LastAtr: metadataFloatValue(metadata, "atr_value"), EntryFee: fee, EntryRank: metadataIntValue(metadata, "entry_rank"), RegimeState: metadata["regime_state"], BreadthRatio: metadataFloatValue(metadata, "breadth_ratio"), ModelVersion: metadata["model_version"], PredictedProb: metadataFloat64(metadata, "predicted_probability"), PredictedEV: metadataFloat64(metadata, "predicted_ev")}
+			}
 		} else {
 			pos := ledger.positions[symbol]
 			ledger.cash += quantity*price - fee
-			pnl := (price-pos.EntryPrice)*quantity - pos.EntryFee - fee
+			entryFee := pos.EntryFee * quantity / pos.Size
+			pnl := (price-pos.EntryPrice)*quantity - entryFee - fee
 			ledger.trades = append(ledger.trades, Trade{Symbol: symbol, EntryTime: pos.EntryTime, ExitTime: fill.FilledAt, EntryPrice: pos.EntryPrice, ExitPrice: price, Size: quantity, Pnl: pnl, PnlPercent: pnl / (pos.EntryPrice * quantity) * 100, Reason: intent.Reason, HoldBars: pos.BarsHeld, EntryRank: pos.EntryRank, RegimeState: pos.RegimeState, BreadthRatio: pos.BreadthRatio, UniverseMode: ledger.config.UniverseMode, PolicyVersion: intent.Versions.Policy, RolloutState: ledger.config.Governance.RolloutState, ExperimentID: ledger.config.Governance.ExperimentID, ModelVersion: pos.ModelVersion, PredictedProbability: cloneFloat64Ptr(pos.PredictedProb), PredictedEV: cloneFloat64Ptr(pos.PredictedEV)})
-			delete(ledger.positions, symbol)
+			pos.Size -= quantity
+			pos.EntryFee -= entryFee
+			if pos.Size <= 1e-12 {
+				delete(ledger.positions, symbol)
+			}
 		}
-		ledger.events = append(ledger.events, backtestLedgerEvent{Side: string(intent.Side), Symbol: symbol, Quantity: fill.Quantity.Decimal().String(), Price: fill.Price.Decimal().String(), Fee: fill.Fee.Decimal().String(), CostVersion: fill.CostModelVersion, Reason: intent.Reason, SignalAt: intent.SignalAt, DecisionAt: intent.DecisionAt, OrderAt: fill.OrderedAt, At: fill.FilledAt, CashAfter: decimalString(ledger.cash)})
+		ledger.events = append(ledger.events, backtestLedgerEvent{Side: string(intent.Side), Symbol: symbol, Quantity: fill.Quantity.Decimal().String(), Price: fill.Price.Decimal().String(), Fee: fill.Fee.Decimal().String(), CostVersion: fill.CostModelVersion, ExecutionReferencePrice: metadata["execution_reference_price"], Reason: intent.Reason, SignalAt: intent.SignalAt, DecisionAt: intent.DecisionAt, OrderAt: fill.OrderedAt, At: fill.FilledAt, CashAfter: decimalString(ledger.cash)})
 	}
 	return nil
 }

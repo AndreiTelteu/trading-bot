@@ -468,6 +468,22 @@ func RunMigrations(db *gorm.DB) error {
 				return Stage04RollbackError()
 			},
 		},
+		{
+			ID: "202607170600_stage05_governance_evidence",
+			Migrate: func(tx *gorm.DB) error {
+				for _, column := range []string{"JobType", "ArtifactDigest", "DiagnosticJSON"} {
+					if !tx.Migrator().HasColumn(&BacktestJob{}, column) {
+						if err := tx.Migrator().AddColumn(&BacktestJob{}, column); err != nil {
+							return err
+						}
+					}
+				}
+				return nil
+			},
+			Rollback: func(tx *gorm.DB) error {
+				return fmt.Errorf("Stage 05 canonical governance evidence is intentionally retained")
+			},
+		},
 	})
 
 	return m.Migrate()

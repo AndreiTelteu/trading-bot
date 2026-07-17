@@ -468,6 +468,11 @@ func fixtureReplaySnapshots(values []ReplaySnapshot) []replaySnapshotEntry {
 	for _, value := range values {
 		members := make([]database.UniverseMember, 0, len(value.Members))
 		for _, member := range value.Members {
+			stage := strings.ToLower(strings.TrimSpace(member.Stage))
+			if stage == "" || stage == "eligible" || stage == "accepted" {
+				stage = "active"
+			}
+			member.Stage = stage
 			rankScore := member.RankScore
 			if rankScore == 0 && member.Rank > 0 {
 				rankScore = -float64(member.Rank)
@@ -477,7 +482,8 @@ func fixtureReplaySnapshots(values []ReplaySnapshot) []replaySnapshotEntry {
 				v := member.RejectionReason
 				rejection = &v
 			}
-			members = append(members, database.UniverseMember{Symbol: strings.ToUpper(member.Symbol), Stage: member.Stage, ListingAgeDays: member.ListingAgeDays, MedianDailyQuoteVolume: member.MedianDailyQuoteVolume, MedianIntradayQuoteVolume: member.MedianIntradayQuoteVolume, RankComponentsJSON: member.RankComponentsJSON, RejectionReason: rejection, RankScore: rankScore, Shortlisted: member.Shortlisted, LastPrice: member.LastPrice, Change24h: member.Change24h, QuoteVolume24h: member.QuoteVolume24h, GapRatio: member.GapRatio, VolatilityRatio: member.VolatilityRatio, Return1D: member.Return1D, Return3D: member.Return3D, Return7D: member.Return7D, Return30D: member.Return30D, RelativeStrength: member.RelativeStrength, TrendQuality: member.TrendQuality, BreakoutProximity: member.BreakoutProximity, VolumeAcceleration: member.VolumeAcceleration, OverextensionPenalty: member.OverextensionPenalty})
+			assetID, exchangeSymbolID := member.AssetID, member.ExchangeSymbolID
+			members = append(members, database.UniverseMember{AssetID: &assetID, ExchangeSymbolID: &exchangeSymbolID, Symbol: strings.ToUpper(member.Symbol), Stage: member.Stage, ListingAgeDays: member.ListingAgeDays, MedianDailyQuoteVolume: member.MedianDailyQuoteVolume, MedianIntradayQuoteVolume: member.MedianIntradayQuoteVolume, RankComponentsJSON: member.RankComponentsJSON, RejectionReason: rejection, RankScore: rankScore, Shortlisted: member.Shortlisted, LastPrice: member.LastPrice, Change24h: member.Change24h, QuoteVolume24h: member.QuoteVolume24h, GapRatio: member.GapRatio, VolatilityRatio: member.VolatilityRatio, Return1D: member.Return1D, Return3D: member.Return3D, Return7D: member.Return7D, Return30D: member.Return30D, RelativeStrength: member.RelativeStrength, TrendQuality: member.TrendQuality, BreakoutProximity: member.BreakoutProximity, VolumeAcceleration: member.VolumeAcceleration, OverextensionPenalty: member.OverextensionPenalty})
 		}
 		observedComplete := value.ObservedComplete || len(value.Members) > 0
 		result = append(result, replaySnapshotEntry{Timestamp: value.Timestamp.UTC(), RegimeState: value.RegimeState, BreadthRatio: value.BreadthRatio, Members: members, ObservedComplete: observedComplete})
@@ -501,7 +507,14 @@ func canonicalReplaySnapshots(values []replaySnapshotEntry) []ReplaySnapshot {
 			if m.RejectionReason != nil {
 				rejection = *m.RejectionReason
 			}
-			public = append(public, ReplayMember{Symbol: m.Symbol, Rank: i + 1, Shortlisted: m.Shortlisted, Stage: m.Stage, ListingAgeDays: m.ListingAgeDays, MedianDailyQuoteVolume: m.MedianDailyQuoteVolume, MedianIntradayQuoteVolume: m.MedianIntradayQuoteVolume, RankComponentsJSON: m.RankComponentsJSON, RejectionReason: rejection, LastPrice: m.LastPrice, Change24h: m.Change24h, QuoteVolume24h: m.QuoteVolume24h, GapRatio: m.GapRatio, VolatilityRatio: m.VolatilityRatio, Return1D: m.Return1D, Return3D: m.Return3D, Return7D: m.Return7D, Return30D: m.Return30D, RelativeStrength: m.RelativeStrength, TrendQuality: m.TrendQuality, BreakoutProximity: m.BreakoutProximity, VolumeAcceleration: m.VolumeAcceleration, OverextensionPenalty: m.OverextensionPenalty, RankScore: m.RankScore})
+			assetID, exchangeSymbolID := "", ""
+			if m.AssetID != nil {
+				assetID = *m.AssetID
+			}
+			if m.ExchangeSymbolID != nil {
+				exchangeSymbolID = *m.ExchangeSymbolID
+			}
+			public = append(public, ReplayMember{AssetID: assetID, ExchangeSymbolID: exchangeSymbolID, Symbol: m.Symbol, Rank: i + 1, Shortlisted: m.Shortlisted, Stage: m.Stage, ListingAgeDays: m.ListingAgeDays, MedianDailyQuoteVolume: m.MedianDailyQuoteVolume, MedianIntradayQuoteVolume: m.MedianIntradayQuoteVolume, RankComponentsJSON: m.RankComponentsJSON, RejectionReason: rejection, LastPrice: m.LastPrice, Change24h: m.Change24h, QuoteVolume24h: m.QuoteVolume24h, GapRatio: m.GapRatio, VolatilityRatio: m.VolatilityRatio, Return1D: m.Return1D, Return3D: m.Return3D, Return7D: m.Return7D, Return30D: m.Return30D, RelativeStrength: m.RelativeStrength, TrendQuality: m.TrendQuality, BreakoutProximity: m.BreakoutProximity, VolumeAcceleration: m.VolumeAcceleration, OverextensionPenalty: m.OverextensionPenalty, RankScore: m.RankScore})
 		}
 		result = append(result, ReplaySnapshot{Timestamp: value.Timestamp.UTC(), RegimeState: value.RegimeState, BreadthRatio: value.BreadthRatio, ObservedComplete: value.ObservedComplete, Members: public})
 	}

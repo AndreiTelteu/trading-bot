@@ -55,6 +55,9 @@ type BacktestJobResponse struct {
 	CreatedAt         time.Time           `json:"created_at"`
 	UpdatedAt         time.Time           `json:"updated_at"`
 	DatasetManifestID *string             `json:"dataset_manifest_id,omitempty"`
+	JobType           string              `json:"job_type"`
+	ArtifactDigest    *string             `json:"artifact_digest,omitempty"`
+	Diagnostic        json.RawMessage     `json:"diagnostic,omitempty"`
 }
 
 func ListBacktestJobResponses() ([]BacktestJobResponse, error) {
@@ -109,6 +112,11 @@ func BuildBacktestJobResponse(job *database.BacktestJob) (*BacktestJobResponse, 
 		CreatedAt:         job.CreatedAt,
 		UpdatedAt:         job.UpdatedAt,
 		DatasetManifestID: job.DatasetManifestID,
+		JobType:           job.JobType,
+		ArtifactDigest:    job.ArtifactDigest,
+	}
+	if job.DiagnosticJSON != nil && len(*job.DiagnosticJSON) <= 64<<10 && json.Valid([]byte(*job.DiagnosticJSON)) {
+		response.Diagnostic = json.RawMessage(*job.DiagnosticJSON)
 	}
 
 	compactJSON, err := compactSummaryJSON(job)
@@ -238,5 +246,5 @@ func compactSummaryJSON(job *database.BacktestJob) (string, error) {
 func backtestJobResponseColumns() string {
 	return `id, status, progress, message, summary_compact_json,
 		CASE WHEN COALESCE(summary_compact_json, '') = '' THEN summary_json ELSE NULL END AS summary_json,
-		error, dataset_manifest_id, started_at, finished_at, created_at, updated_at`
+		error, dataset_manifest_id, job_type, artifact_digest, diagnostic_json, started_at, finished_at, created_at, updated_at`
 }

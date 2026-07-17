@@ -2,6 +2,7 @@ package backtest
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -55,6 +56,8 @@ type ComparableMetrics struct {
 	Turnover             string                `json:"turnover"`
 	TurnoverRatio        OptionalMetric        `json:"turnover_ratio"`
 	TotalCosts           string                `json:"total_costs"`
+	FeeCosts             string                `json:"fee_costs"`
+	SlippageCosts        string                `json:"slippage_costs"`
 	AverageGrossExposure OptionalMetric        `json:"average_gross_exposure"`
 	MaximumGrossExposure OptionalMetric        `json:"maximum_gross_exposure"`
 	AverageNetExposure   OptionalMetric        `json:"average_net_exposure"`
@@ -77,39 +80,55 @@ type Stage05StrategyResult struct {
 }
 
 type RankingArtifact struct {
-	DecisionAt string  `json:"decision_at"`
-	Symbol     string  `json:"symbol"`
-	Rank       int     `json:"rank"`
-	Score      float64 `json:"score"`
-	Selected   bool    `json:"selected"`
+	DecisionAt       string  `json:"decision_at"`
+	Symbol           string  `json:"symbol"`
+	Rank             int     `json:"rank"`
+	Score            float64 `json:"score"`
+	Selected         bool    `json:"selected"`
+	AssetID          string  `json:"asset_id"`
+	ExchangeSymbolID string  `json:"exchange_symbol_id"`
 }
 
 type NormalizedAssumptions struct {
-	StartingCapital   string          `json:"starting_capital"`
-	MaxGrossExposure  string          `json:"max_gross_exposure"`
-	MaxNetExposure    string          `json:"max_net_exposure"`
-	DatasetManifestID string          `json:"dataset_manifest_id"`
-	UniverseMode      UniverseMode    `json:"universe_mode"`
-	DecisionCadence   string          `json:"decision_cadence"`
-	ExecutionPolicy   ExecutionPolicy `json:"execution_policy"`
-	FeeBPS            float64         `json:"fee_bps"`
-	SlippageBPS       float64         `json:"slippage_bps"`
-	FinalPolicy       string          `json:"final_policy"`
+	StartingCapital    string                  `json:"starting_capital"`
+	MaxGrossExposure   string                  `json:"max_gross_exposure"`
+	MaxNetExposure     string                  `json:"max_net_exposure"`
+	DatasetManifestID  string                  `json:"dataset_manifest_id"`
+	UniverseMode       UniverseMode            `json:"universe_mode"`
+	DecisionCadence    string                  `json:"decision_cadence"`
+	ExecutionPolicy    ExecutionPolicy         `json:"execution_policy"`
+	FeeBPS             float64                 `json:"fee_bps"`
+	SlippageBPS        float64                 `json:"slippage_bps"`
+	FinalPolicy        string                  `json:"final_policy"`
+	ExecutionRole      string                  `json:"execution_role"`
+	ExecutionTimeframe string                  `json:"execution_timeframe"`
+	ExecutionSeries    []DatasetSeriesIdentity `json:"execution_series"`
+}
+
+type NormalizedRunManifest struct {
+	SchemaVersion     string                `json:"schema_version"`
+	DatasetManifestID string                `json:"dataset_manifest_id"`
+	StrategyID        string                `json:"strategy_id"`
+	StrategyVersion   string                `json:"strategy_version"`
+	Parameters        map[string]string     `json:"parameters"`
+	Assumptions       NormalizedAssumptions `json:"assumptions"`
 }
 
 type ComparisonRow struct {
-	StrategyID       string             `json:"strategy_id"`
-	StrategyVersion  string             `json:"strategy_version"`
-	Descriptor       StrategyDescriptor `json:"descriptor"`
-	Parameters       map[string]string  `json:"parameters"`
-	ManifestIdentity string             `json:"manifest_identity"`
-	Baseline         bool               `json:"baseline"`
-	Metrics          ComparableMetrics  `json:"metrics"`
-	ExcessVsCash     OptionalMetric     `json:"excess_return_vs_cash"`
-	ExcessVsMarket   OptionalMetric     `json:"excess_return_vs_market"`
-	MetricDeltas     map[string]float64 `json:"metric_deltas,omitempty"`
-	Pass             bool               `json:"pass"`
-	Reasons          []string           `json:"reasons"`
+	StrategyID            string                `json:"strategy_id"`
+	StrategyVersion       string                `json:"strategy_version"`
+	Descriptor            StrategyDescriptor    `json:"descriptor"`
+	Parameters            map[string]string     `json:"parameters"`
+	ManifestIdentity      string                `json:"manifest_identity"`
+	DatasetManifestID     string                `json:"dataset_manifest_id"`
+	NormalizedRunManifest NormalizedRunManifest `json:"normalized_run_manifest"`
+	Baseline              bool                  `json:"baseline"`
+	Metrics               ComparableMetrics     `json:"metrics"`
+	ExcessVsCash          OptionalMetric        `json:"excess_return_vs_cash"`
+	ExcessVsMarket        OptionalMetric        `json:"excess_return_vs_market"`
+	MetricDeltas          map[string]float64    `json:"metric_deltas,omitempty"`
+	Pass                  bool                  `json:"pass"`
+	Reasons               []string              `json:"reasons"`
 }
 
 type GovernanceGate struct {
@@ -120,14 +139,15 @@ type GovernanceGate struct {
 }
 
 type ComparisonArtifact struct {
-	SchemaVersion string                           `json:"schema_version"`
-	ManifestID    string                           `json:"manifest_id"`
-	Candidate     string                           `json:"candidate"`
-	Assumptions   NormalizedAssumptions            `json:"normalized_assumptions"`
-	Rows          []ComparisonRow                  `json:"rows"`
-	Governance    GovernanceGate                   `json:"governance"`
-	Results       map[string]Stage05StrategyResult `json:"-"`
-	Limitations   []string                         `json:"limitations"`
+	SchemaVersion  string                           `json:"schema_version"`
+	ManifestID     string                           `json:"manifest_id"`
+	Candidate      string                           `json:"candidate"`
+	Assumptions    NormalizedAssumptions            `json:"normalized_assumptions"`
+	Rows           []ComparisonRow                  `json:"rows"`
+	Governance     GovernanceGate                   `json:"governance"`
+	Results        map[string]Stage05StrategyResult `json:"-"`
+	Limitations    []string                         `json:"limitations"`
+	ArtifactDigest string                           `json:"artifact_digest"`
 }
 
 func RunStage05Comparison(config BacktestConfig, series map[string][]services.OHLCV, request Stage05RunRequest) (ComparisonArtifact, error) {
@@ -151,7 +171,7 @@ func RunStage05Comparison(config BacktestConfig, series map[string][]services.OH
 	if _, ok := candidateParameters["final_policy"]; ok || request.StrategyID != StrategyCashID {
 		candidateParameters["final_policy"] = request.FinalPolicy
 	}
-	candidate, _, err := DefaultStrategyRegistry.Resolve(request.StrategyID, request.StrategyVersion, candidateParameters)
+	candidate, _, _, err := DefaultStrategyRegistry.ResolveExecutable(request.StrategyID, request.StrategyVersion, candidateParameters)
 	if err != nil {
 		return ComparisonArtifact{}, err
 	}
@@ -173,11 +193,11 @@ func RunStage05Comparison(config BacktestConfig, series map[string][]services.OH
 			parameters["target_gross"] = request.TargetGrossExposure
 			parameters["final_policy"] = request.FinalPolicy
 		}
-		selected, strategy, resolveErr := DefaultStrategyRegistry.Resolve(id, version, parameters)
+		selected, strategy, planner, resolveErr := DefaultStrategyRegistry.ResolveExecutable(id, version, parameters)
 		if resolveErr != nil {
 			return ComparisonArtifact{}, resolveErr
 		}
-		result, runErr := runStage05Strategy(config, series, selected, strategy, request.AllowInMemoryFixture)
+		result, runErr := runStage05StrategyWithPlanner(config, series, selected, strategy, planner, request.AllowInMemoryFixture)
 		if runErr != nil {
 			return ComparisonArtifact{}, runErr
 		}
@@ -225,6 +245,9 @@ func validateComparableInputs(config BacktestConfig, series map[string][]service
 	if len(config.BenchmarkSeries) == 0 || strings.TrimSpace(config.BenchmarkSymbol) == "" {
 		return &StrategyDiagnosticError{Code: DiagnosticBenchmarkRequired, Strategy: request.StrategyID, Details: "independent benchmark role series is required"}
 	}
+	if !request.AllowInMemoryFixture && (!config.ExecutionSeriesRequired || len(config.ExecutionSeries[config.BenchmarkSymbol]) == 0 || config.ExecutionTimeframe != "1m") {
+		return &StrategyDiagnosticError{Code: DiagnosticManifestIncompatible, Strategy: request.StrategyID, Field: "execution:1m", Details: "manifest-pinned benchmark and candidate execution series on the common clock are required"}
+	}
 	return nil
 }
 
@@ -240,6 +263,14 @@ type stage05Replay struct {
 }
 
 func runStage05Strategy(config BacktestConfig, series map[string][]services.OHLCV, selected SelectedStrategy, strategy tradingcore.Strategy, fixture bool) (Stage05StrategyResult, error) {
+	_, _, planner, err := DefaultStrategyRegistry.ResolveExecutable(selected.Descriptor.ID, selected.Descriptor.Version, selected.Parameters)
+	if err != nil {
+		return Stage05StrategyResult{}, err
+	}
+	return runStage05StrategyWithPlanner(config, series, selected, strategy, planner, fixture)
+}
+
+func runStage05StrategyWithPlanner(config BacktestConfig, series map[string][]services.OHLCV, selected SelectedStrategy, strategy tradingcore.Strategy, planner Stage05Planner, fixture bool) (Stage05StrategyResult, error) {
 	if err := validateStrategyDataRequirements(config, selected, fixture); err != nil {
 		return Stage05StrategyResult{}, err
 	}
@@ -302,11 +333,13 @@ func runStage05Strategy(config BacktestConfig, series map[string][]services.OHLC
 			equity = appendEquity(equity, signalAt, portfolioEquity(ledger, marks))
 			continue
 		}
-		targets, ranked, decide, decisionErr := stage05Targets(selected, reference[:i+1], series, config, replays, signalAt, lastRebalance, lastTargets)
+		plan, decisionErr := planner.Plan(Stage05PlanningContext{Selected: selected, Reference: reference[:i+1], Series: series, Config: config, Replays: replays, At: signalAt, LastRebalance: lastRebalance, LastTargets: lastTargets, Fixture: fixture})
 		if decisionErr != nil {
 			return Stage05StrategyResult{}, decisionErr
 		}
+		targets, ranked, decide := plan.Targets, plan.Rankings, plan.Decide
 		rankings = append(rankings, ranked...)
+		transitionEconomicPositions(ledger, targets, config, signalAt)
 		if !decide {
 			equity = appendEquity(equity, signalAt, portfolioEquity(ledger, marks))
 			continue
@@ -379,6 +412,9 @@ func validateStrategyDataRequirements(config BacktestConfig, selected SelectedSt
 			}
 			continue
 		}
+		if requirement.Role == "execution" && selected.Descriptor.BenchmarkRequired && !matched[strings.ToUpper(config.BenchmarkSymbol)] {
+			return &StrategyDiagnosticError{Code: DiagnosticManifestIncompatible, Strategy: selected.Descriptor.ID, Field: requirement.Role + ":" + requirement.Timeframe, Details: "exact benchmark execution series identity is absent from the validated manifest"}
+		}
 		for _, symbol := range config.Symbols {
 			if !matched[strings.ToUpper(symbol)] {
 				return &StrategyDiagnosticError{Code: DiagnosticManifestIncompatible, Strategy: selected.Descriptor.ID, Field: requirement.Role + ":" + requirement.Timeframe, Details: "required exact series is absent for " + strings.ToUpper(symbol)}
@@ -413,7 +449,14 @@ func loadStage05Replay(config BacktestConfig, fixture bool) ([]stage05Replay, er
 	return result, nil
 }
 
-func stage05Targets(selected SelectedStrategy, reference []services.OHLCV, series map[string][]services.OHLCV, config BacktestConfig, replays []stage05Replay, at, lastRebalance time.Time, lastTargets []string) ([]string, []RankingArtifact, bool, error) {
+type stage05BuiltinPlanner struct{}
+
+func (stage05BuiltinPlanner) Plan(context Stage05PlanningContext) (Stage05Plan, error) {
+	targets, rankings, decide, err := stage05Targets(context.Selected, context.Reference, context.Series, context.Config, context.Replays, context.At, context.LastRebalance, context.LastTargets, context.Fixture)
+	return Stage05Plan{Targets: targets, Rankings: rankings, Decide: decide}, err
+}
+
+func stage05Targets(selected SelectedStrategy, reference []services.OHLCV, series map[string][]services.OHLCV, config BacktestConfig, replays []stage05Replay, at, lastRebalance time.Time, lastTargets []string, fixture bool) ([]string, []RankingArtifact, bool, error) {
 	switch selected.Descriptor.ID {
 	case StrategyBenchmarkHoldID:
 		if len(lastTargets) > 0 {
@@ -423,16 +466,20 @@ func stage05Targets(selected SelectedStrategy, reference []services.OHLCV, serie
 	case StrategyBenchmarkTrendID:
 		lookback, _ := strconv.Atoi(selected.Parameters["lookback_bars"])
 		sample, _ := strconv.Atoi(selected.Parameters["sample_bars"])
-		if len(reference) < lookback*sample {
+		if sample != 4 && !fixture {
+			return nil, nil, false, &StrategyDiagnosticError{Code: DiagnosticInvalidCombination, Strategy: selected.Descriptor.ID, Field: "sample_bars", Details: "UTC hourly aggregation requires exactly four 15m bars"}
+		}
+		hourly := completedUTCHourlyCloses(reference, at)
+		if sample == 1 && fixture {
+			hourly = reference
+		}
+		if len(hourly) < lookback {
 			return nil, nil, false, &StrategyDiagnosticError{Code: DiagnosticInsufficientWarmup, Strategy: selected.Descriptor.ID, Details: "trend lookback unavailable"}
 		}
-		if len(reference)%sample != 0 {
+		if !time.UnixMilli(hourly[len(hourly)-1].CloseTime).Equal(at) {
 			return lastTargets, nil, false, nil
 		}
-		window := make([]services.OHLCV, 0, lookback)
-		for index := len(reference) - lookback*sample + sample - 1; index < len(reference); index += sample {
-			window = append(window, reference[index])
-		}
+		window := hourly[len(hourly)-lookback:]
 		sum := 0.0
 		for _, bar := range window {
 			sum += bar.Close
@@ -452,7 +499,10 @@ func stage05Targets(selected SelectedStrategy, reference []services.OHLCV, serie
 		if !ok || !snapshot.complete || at.Sub(snapshot.at) > rebalance {
 			return nil, nil, false, &StrategyDiagnosticError{Code: DiagnosticUniverseCoverage, Strategy: selected.Descriptor.ID, Details: "complete snapshot is missing or stale at rebalance"}
 		}
-		eligible := eligibleReplaySymbols(snapshot.members)
+		eligible, membershipErr := eligibleReplaySymbolsWithPolicy(snapshot.members, ReplayMembershipPolicy{IncludeShortlist: selected.Parameters["include_shortlist"] == "true"})
+		if membershipErr != nil {
+			return nil, nil, false, &StrategyDiagnosticError{Code: DiagnosticUniverseCoverage, Strategy: selected.Descriptor.ID, Field: "stage", Details: membershipErr.Error()}
+		}
 		if selected.Descriptor.ID == StrategyEqualWeightID {
 			return eligible, nil, true, nil
 		}
@@ -487,12 +537,46 @@ func stage05Targets(selected SelectedStrategy, reference []services.OHLCV, serie
 			if selectedAsset {
 				targets = append(targets, item.symbol)
 			}
-			ranked = append(ranked, RankingArtifact{DecisionAt: canonicalTime(at), Symbol: item.symbol, Rank: i + 1, Score: item.value, Selected: selectedAsset})
+			identity := replayIdentity(snapshot.members, item.symbol)
+			ranked = append(ranked, RankingArtifact{DecisionAt: canonicalTime(at), Symbol: item.symbol, AssetID: identity.AssetID, ExchangeSymbolID: identity.ExchangeSymbolID, Rank: i + 1, Score: item.value, Selected: selectedAsset})
 		}
 		return targets, ranked, true, nil
 	default:
 		return nil, nil, false, &StrategyDiagnosticError{Code: DiagnosticUnknownStrategy, Strategy: selected.Descriptor.ID, Details: "Stage 05 planner is not registered"}
 	}
+}
+
+func completedUTCHourlyCloses(bars []services.OHLCV, availableAt time.Time) []services.OHLCV {
+	buckets := map[time.Time]map[int]services.OHLCV{}
+	for _, bar := range bars {
+		open, closeAt := time.UnixMilli(bar.OpenTime).UTC(), time.UnixMilli(bar.CloseTime).UTC()
+		if closeAt.After(availableAt) || open.Second() != 0 || open.Nanosecond() != 0 || open.Minute()%15 != 0 {
+			continue
+		}
+		hour := open.Truncate(time.Hour)
+		if buckets[hour] == nil {
+			buckets[hour] = map[int]services.OHLCV{}
+		}
+		buckets[hour][open.Minute()] = bar
+	}
+	hours := []time.Time{}
+	for hour, bucket := range buckets {
+		if len(bucket) == 4 {
+			_, a := bucket[0]
+			_, b := bucket[15]
+			_, c := bucket[30]
+			_, d := bucket[45]
+			if a && b && c && d {
+				hours = append(hours, hour)
+			}
+		}
+	}
+	sort.Slice(hours, func(i, j int) bool { return hours[i].Before(hours[j]) })
+	result := make([]services.OHLCV, 0, len(hours))
+	for _, hour := range hours {
+		result = append(result, buckets[hour][45])
+	}
+	return result
 }
 
 func replayAsOf(values []stage05Replay, at time.Time) (stage05Replay, bool) {
@@ -503,49 +587,150 @@ func replayAsOf(values []stage05Replay, at time.Time) (stage05Replay, bool) {
 	return values[idx], true
 }
 
-func eligibleReplaySymbols(members []ReplayMember) []string {
+func eligibleReplaySymbols(members []ReplayMember) ([]string, error) {
+	return eligibleReplaySymbolsWithPolicy(members, ReplayMembershipPolicy{IncludeShortlist: true})
+}
+
+func eligibleReplaySymbolsWithPolicy(members []ReplayMember, policy ReplayMembershipPolicy) ([]string, error) {
 	seen := map[string]bool{}
 	result := []string{}
 	for _, member := range members {
-		stage := strings.ToLower(member.Stage)
-		eligibleStage := stage == "" || stage == "accepted" || stage == "eligible" || stage == "ranked" || member.Shortlisted
-		if member.RejectionReason != "" || !eligibleStage {
+		eligible, err := replayMemberEligible(member.Stage, member.Shortlisted, member.RejectionReason != "", policy)
+		if err != nil {
+			return nil, err
+		}
+		if !eligible {
 			continue
 		}
 		symbol := strings.ToUpper(member.Symbol)
-		if symbol != "" && !seen[symbol] {
-			seen[symbol] = true
+		identity := member.AssetID
+		if identity == "" {
+			identity = symbol
+		}
+		if symbol != "" && !seen[identity] {
+			seen[identity] = true
 			result = append(result, symbol)
 		}
 	}
 	sort.Strings(result)
-	return result
+	return result, nil
+}
+
+func replayIdentity(members []ReplayMember, symbol string) ReplayMember {
+	for _, member := range members {
+		if strings.EqualFold(member.Symbol, symbol) {
+			return member
+		}
+	}
+	return ReplayMember{}
+}
+
+func transitionEconomicPositions(ledger *backtestMemoryLedger, targets []string, config BacktestConfig, at time.Time) {
+	candidates := []string{}
+	for _, target := range targets {
+		lifecycle, known := config.SymbolLifecycles[target]
+		if !known || (!lifecycle.ListedAt.After(at) && (lifecycle.DelistedAt == nil || lifecycle.DelistedAt.After(at))) {
+			candidates = append(candidates, target)
+		}
+	}
+	for symbol, lifecycle := range config.SymbolLifecycles {
+		if !lifecycle.ListedAt.After(at) && (lifecycle.DelistedAt == nil || lifecycle.DelistedAt.After(at)) {
+			candidates = append(candidates, symbol)
+		}
+	}
+	sort.Strings(candidates)
+	for held, position := range ledger.positions {
+		assetID := config.EconomicAssetIdentities[held]
+		if assetID == "" {
+			continue
+		}
+		for _, target := range candidates {
+			if held != target && config.EconomicAssetIdentities[target] == assetID {
+				delete(ledger.positions, held)
+				position.Symbol = target
+				ledger.positions[target] = position
+				break
+			}
+		}
+	}
 }
 
 func rebalanceStage05(ledger *backtestMemoryLedger, config BacktestConfig, strategy tradingcore.Strategy, targets []string, marks, fills map[string]float64, signalAt, fillAt time.Time, parameters map[string]string, regime string) error {
-	if len(ledger.positions) > 0 {
-		if err := liquidateStage05(ledger, config, strategy, marks, fills, signalAt, fillAt, regime); err != nil {
-			return err
-		}
-	}
-	if len(targets) == 0 {
-		return nil
-	}
 	gross, _ := strconv.ParseFloat(parameters["target_gross"], 64)
-	equity := portfolioEquity(ledger, marks)
-	weight := gross / float64(len(targets))
-	for rank, symbol := range targets {
-		mark := marks[symbol]
+	// Selection is fixed at signalAt. The execution adapter then computes every
+	// target simultaneously from pre-trade equity and the common next-executable
+	// evidence, eliminating stale-mark and symbol-order sizing bias.
+	executableEquity := ledger.cash
+	for symbol, position := range ledger.positions {
+		if fills[symbol] <= 0 {
+			return &StrategyDiagnosticError{Code: DiagnosticManifestIncompatible, Strategy: config.StrategyID, Field: symbol, Details: "next executable price unavailable"}
+		}
+		executableEquity += position.Size * fills[symbol]
+	}
+	targetQuantities := map[string]float64{}
+	weight := 0.0
+	if len(targets) > 0 {
+		weight = gross / float64(len(targets))
+	}
+	for _, symbol := range targets {
 		fill := fills[symbol]
-		if mark <= 0 || fill <= 0 {
-			return &StrategyDiagnosticError{Code: DiagnosticManifestIncompatible, Strategy: config.StrategyID, Field: symbol, Details: "signal or next executable price unavailable"}
+		if fill <= 0 {
+			return &StrategyDiagnosticError{Code: DiagnosticManifestIncompatible, Strategy: config.StrategyID, Field: symbol, Details: "next executable price unavailable"}
 		}
-		quantity := equity * weight / mark
-		if err := runStage05Target(ledger, config, strategy, symbol, tradingcore.Buy, quantity, mark, fill, signalAt, fillAt, rank+1, weight, "rebalance_entry", regime, marks); err != nil {
-			return err
+		lot, tick, _, _, err := constraintValues(config, symbol, fillAt)
+		if err != nil {
+			return &StrategyDiagnosticError{Code: DiagnosticConstraintRequired, Strategy: config.StrategyID, Field: symbol, Details: err.Error()}
 		}
+		adverse := fill * (1 + config.SlippageBps/10000)
+		if parsed, parseErr := strconv.ParseFloat(tick, 64); parseErr == nil && parsed > 0 {
+			adverse = math.Ceil(adverse/parsed-1e-12) * parsed
+		}
+		quantity := executableEquity * weight / (adverse * (1 + config.FeeBps/10000))
+		if lot > 0 {
+			quantity = math.Floor(quantity/lot+1e-12) * lot
+		}
+		targetQuantities[symbol] = stage05EconomicFloat(quantity)
+	}
+	// Reductions are always completed before additions. Unchanged positions
+	// produce no intent, fill, turnover, fee, or slippage.
+	for _, symbol := range sortedPositionSymbols(ledger.positions) {
+		current, desired := ledger.positions[symbol].Size, targetQuantities[symbol]
+		if current-desired > 1e-10 {
+			if err := runStage05Target(ledger, config, strategy, symbol, tradingcore.Sell, current-desired, marks[symbol], fills[symbol], signalAt, fillAt, 0, weight, "rebalance_reduction", regime, fills); err != nil {
+				return err
+			}
+		}
+	}
+	sortedTargets := append([]string(nil), targets...)
+	sort.Strings(sortedTargets)
+	for rank, symbol := range sortedTargets {
+		current := 0.0
+		if position := ledger.positions[symbol]; position != nil {
+			current = position.Size
+		}
+		if targetQuantities[symbol]-current > 1e-10 {
+			if err := runStage05Target(ledger, config, strategy, symbol, tradingcore.Buy, targetQuantities[symbol]-current, marks[symbol], fills[symbol], signalAt, fillAt, rank+1, weight, "rebalance_addition", regime, fills); err != nil {
+				return err
+			}
+		}
+	}
+	achievedGross := 0.0
+	for symbol, position := range ledger.positions {
+		achievedGross += position.Size * fills[symbol]
+	}
+	if executableEquity > 0 && achievedGross/executableEquity > gross+1e-8 {
+		return &StrategyDiagnosticError{Code: DiagnosticInvalidCombination, Strategy: config.StrategyID, Field: "target_gross", Details: "achieved executable gross exposure exceeds declared cap"}
 	}
 	return nil
+}
+
+func sortedPositionSymbols(positions map[string]*positionState) []string {
+	result := make([]string, 0, len(positions))
+	for symbol := range positions {
+		result = append(result, symbol)
+	}
+	sort.Strings(result)
+	return result
 }
 
 func liquidateStage05(ledger *backtestMemoryLedger, config BacktestConfig, strategy tradingcore.Strategy, marks, fills map[string]float64, signalAt, fillAt time.Time, regime string) error {
@@ -560,7 +745,7 @@ func liquidateStage05(ledger *backtestMemoryLedger, config BacktestConfig, strat
 		if mark <= 0 || fill <= 0 {
 			return &StrategyDiagnosticError{Code: DiagnosticManifestIncompatible, Strategy: config.StrategyID, Field: symbol, Details: "exit signal or next executable price unavailable"}
 		}
-		if err := runStage05Target(ledger, config, strategy, symbol, tradingcore.Sell, position.Size, mark, fill, signalAt, fillAt, i, 0, "rebalance_exit", regime, marks); err != nil {
+		if err := runStage05Target(ledger, config, strategy, symbol, tradingcore.Sell, position.Size, mark, fill, signalAt, fillAt, i, 0, "rebalance_exit", regime, fills); err != nil {
 			return err
 		}
 	}
@@ -572,19 +757,8 @@ func runStage05Target(ledger *backtestMemoryLedger, config BacktestConfig, strat
 	if err != nil {
 		return err
 	}
-	// Cash-capped quantity is an execution-adapter fill policy, not strategy
-	// information: selection and target weight were fixed at signalAt. Capping
-	// against the next executable price plus deterministic costs prevents an
-	// opening gap from manufacturing negative cash.
-	if side == tradingcore.Buy {
-		costMultiplier := 1 + (config.FeeBps+config.SlippageBps)/10000
-		cashCap := ledger.cash / (executionPrice * costMultiplier)
-		if cashCap < quantity {
-			quantity = cashCap
-		}
-		if quantity <= 0 {
-			return &StrategyDiagnosticError{Code: DiagnosticInvalidCombination, Strategy: config.StrategyID, Field: symbol, Details: "cash-capped executable quantity is zero"}
-		}
+	if quantity <= 0 {
+		return &StrategyDiagnosticError{Code: DiagnosticInvalidCombination, Strategy: config.StrategyID, Field: symbol, Details: "executable delta quantity is zero"}
 	}
 	quantity = stage05EconomicFloat(quantity)
 	accountName := config.AccountID
@@ -611,7 +785,9 @@ func runStage05Target(ledger *backtestMemoryLedger, config BacktestConfig, strat
 	if err != nil {
 		return err
 	}
-	price := mustPrice(signalPrice)
+	// The execution adapter supplies the manifest-pinned next executable price
+	// for quantity/risk evaluation after the decision selection is frozen.
+	price := mustPrice(executionPrice)
 	quote := tradingcore.Quote{Instrument: instrument, Bid: price, Ask: price, Last: price, ObservedAt: signalAt}
 	score, _ := tradingcore.ParseDecimal(decimalString(weight))
 	universe, err := tradingcore.NewUniverseSnapshot(signalAt, "stage05-point-in-time-v1", string(config.UniverseMode), []tradingcore.UniverseCandidate{{Instrument: instrument, Rank: priority + 1, Score: score, Eligible: true}})
@@ -623,6 +799,7 @@ func runStage05Target(ledger *backtestMemoryLedger, config BacktestConfig, strat
 		action = "sell"
 	}
 	settings := map[string]string{"target_action." + instrument.ID.String(): action, "target_quantity." + instrument.ID.String(): decimalString(quantity), "target_priority." + instrument.ID.String(): strconv.Itoa(priority), "target_weight." + instrument.ID.String(): decimalString(weight), "target_reason." + instrument.ID.String(): reason, "target_regime." + instrument.ID.String(): regime, "strategy_horizon": config.Timeframe}
+	settings["execution_reference_price."+instrument.ID.String()] = decimalString(executionPrice)
 	versions := tradingcore.VersionContext{Strategy: config.StrategyID + "@" + config.StrategyVersion, Settings: config.ConfigVersion, Policy: backtestPolicyVersion(config), Dataset: config.DatasetManifestID}
 	snapshot, err := tradingcore.NewDecisionContext(tradingcore.DecisionContextInput{MarketObservedAt: signalAt, SignalAt: signalAt, DecisionAt: signalAt, Quotes: map[tradingcore.InstrumentID]tradingcore.Quote{instrument.ID: quote}, Universe: universe, Portfolio: portfolio, Settings: settings, Versions: versions})
 	if err != nil {
@@ -656,6 +833,28 @@ func runStage05Target(ledger *backtestMemoryLedger, config BacktestConfig, strat
 		return err
 	}
 	ledger.recordRun(result, signalAt, signalAt)
+	diagnostic := &StrategyExecutionDiagnostic{Symbol: symbol, Side: string(side), RequestedQuantity: decimalString(quantity), ApprovedQuantity: "0", FilledQuantity: "0"}
+	approved := 0.0
+	for _, intent := range result.Risk.Approved().Intents() {
+		approved += intent.Quantity.Decimal().Float64()
+	}
+	diagnostic.ApprovedQuantity = decimalString(approved)
+	filled := 0.0
+	for _, accepted := range result.Broker.Accepted() {
+		for _, fill := range accepted.Fills() {
+			filled += fill.Quantity.Decimal().Float64()
+		}
+	}
+	diagnostic.FilledQuantity = decimalString(filled)
+	if rejected := result.Risk.Rejected(); len(rejected) > 0 {
+		diagnostic.PolicyCode = string(rejected[0].Code)
+	}
+	if rejected := result.Broker.Rejected(); len(rejected) > 0 {
+		diagnostic.ProviderCode = string(rejected[0].Code)
+	}
+	if math.Abs(filled-quantity) > 1e-9 || len(result.Risk.Rejected()) > 0 || len(result.Broker.Rejected()) > 0 {
+		return &StrategyDiagnosticError{Code: DiagnosticAllocationRejected, Strategy: config.StrategyID, Field: symbol, Details: "required target was rejected or materially underfilled", Execution: diagnostic}
+	}
 	return nil
 }
 
@@ -689,7 +888,7 @@ func nextFillPrices(config BacktestConfig, series map[string][]services.OHLCV, s
 	var common time.Time
 	for _, symbol := range symbols {
 		bars := config.ExecutionSeries[symbol]
-		if len(bars) == 0 {
+		if len(bars) == 0 && !config.ExecutionSeriesRequired {
 			bars = series[symbol]
 		}
 		idx := sort.Search(len(bars), func(i int) bool { return time.UnixMilli(bars[i].OpenTime).After(signalAt) })
@@ -731,7 +930,7 @@ func finalLiquidationPrices(config BacktestConfig, series map[string][]services.
 	var signalAt, fillAt time.Time
 	for _, symbol := range symbols {
 		bars := config.ExecutionSeries[symbol]
-		if len(bars) == 0 {
+		if len(bars) == 0 && !config.ExecutionSeriesRequired {
 			bars = series[symbol]
 		}
 		last := -1
@@ -829,9 +1028,11 @@ func stage05SymbolStates(series map[string][]services.OHLCV, at time.Time) map[s
 // is represented as unavailable rather than serialized as zero, NaN, or Inf.
 func computeComparableMetrics(config BacktestConfig, ledger *backtestMemoryLedger, equity []EquityPoint, marks map[string]float64, series map[string][]services.OHLCV) ComparableMetrics {
 	ending := portfolioEquity(ledger, marks)
-	metrics := ComparableMetrics{SchemaVersion: EvaluationSchemaVersion, StartingCapital: decimalString(config.InitialBalance), EndingEquity: decimalString(ending), TotalReturn: availableMetric(ending/config.InitialBalance - 1), MaxDrawdown: availableMetric(maxDrawdown(equity)), Turnover: exactTurnover(ledger.events), TotalCosts: exactFees(ledger.events), TradeCount: len(ledger.trades), FillCount: len(ledger.events)}
+	regularEquity := regularClockEquity(equity, config)
+	feeCosts, slippageCosts := exactFees(ledger.events), exactSlippage(ledger.events)
+	metrics := ComparableMetrics{SchemaVersion: EvaluationSchemaVersion, StartingCapital: decimalString(config.InitialBalance), EndingEquity: decimalString(ending), TotalReturn: availableMetric(ending/config.InitialBalance - 1), MaxDrawdown: availableMetric(maxDrawdown(regularEquity)), Turnover: exactTurnover(ledger.events), FeeCosts: feeCosts, SlippageCosts: slippageCosts, TotalCosts: exactAdd(feeCosts, slippageCosts), TradeCount: len(ledger.trades), FillCount: len(ledger.events)}
 	metrics.TurnoverRatio = availableMetric(ratFloat(metrics.Turnover) / config.InitialBalance)
-	returns := equityReturns(equity)
+	returns := equityReturns(regularEquity)
 	if len(returns) >= 2 {
 		mean, std := meanStd(returns)
 		if std > 0 {
@@ -839,17 +1040,17 @@ func computeComparableMetrics(config BacktestConfig, ledger *backtestMemoryLedge
 		} else {
 			metrics.Sharpe = unavailableMetric("zero return variance")
 		}
-		downside := []float64{}
+		downsideSum := 0.0
 		for _, value := range returns {
 			if value < 0 {
-				downside = append(downside, value)
+				downsideSum += value * value
 			}
 		}
-		_, downsideStd := meanStd(downside)
-		if len(downside) >= 2 && downsideStd > 0 {
-			metrics.Sortino = availableMetric(mean / downsideStd * math.Sqrt(barsPerYear(config.TimeframeMinutes, config.AtrAnnualizationDays)))
+		downsideDeviation := math.Sqrt(downsideSum / float64(len(returns)))
+		if downsideDeviation > 0 {
+			metrics.Sortino = availableMetric(mean / downsideDeviation * math.Sqrt(barsPerYear(config.TimeframeMinutes, config.AtrAnnualizationDays)))
 		} else {
-			metrics.Sortino = unavailableMetric("fewer than two non-zero downside samples")
+			metrics.Sortino = unavailableMetric("zero downside deviation relative to target return")
 		}
 	} else {
 		metrics.Sharpe = unavailableMetric("fewer than two return samples")
@@ -874,11 +1075,12 @@ func computeComparableMetrics(config BacktestConfig, ledger *backtestMemoryLedge
 	} else {
 		metrics.Expectancy = unavailableMetric("no closed trades")
 	}
-	grossSamples, exposureSamples := []float64{}, 0
+	grossSamples := []float64{}
+	exposedDuration, totalDuration := time.Duration(0), time.Duration(0)
 	maxGross := 0.0
 	quantities := map[string]float64{}
 	eventIndex := 0
-	for _, point := range equity {
+	for pointIndex, point := range regularEquity {
 		for eventIndex < len(ledger.events) && !ledger.events[eventIndex].At.After(point.Time) {
 			event := ledger.events[eventIndex]
 			quantity := ratFloat(event.Quantity)
@@ -898,8 +1100,14 @@ func computeComparableMetrics(config BacktestConfig, ledger *backtestMemoryLedge
 			gross /= point.Value
 		}
 		grossSamples = append(grossSamples, gross)
-		if gross > 0 {
-			exposureSamples++
+		if pointIndex+1 < len(regularEquity) {
+			duration := regularEquity[pointIndex+1].Time.Sub(point.Time)
+			if duration > 0 {
+				totalDuration += duration
+				if gross > 0 {
+					exposedDuration += duration
+				}
+			}
 		}
 		if gross > maxGross {
 			maxGross = gross
@@ -908,8 +1116,8 @@ func computeComparableMetrics(config BacktestConfig, ledger *backtestMemoryLedge
 	metrics.AverageGrossExposure = availableMetric(meanValue(grossSamples))
 	metrics.MaximumGrossExposure = availableMetric(maxGross)
 	metrics.AverageNetExposure = metrics.AverageGrossExposure
-	if len(grossSamples) > 0 {
-		metrics.ExposureTime = availableMetric(float64(exposureSamples) / float64(len(grossSamples)))
+	if totalDuration > 0 {
+		metrics.ExposureTime = availableMetric(float64(exposedDuration) / float64(totalDuration))
 	} else {
 		metrics.ExposureTime = unavailableMetric("no valuation samples")
 	}
@@ -918,6 +1126,20 @@ func computeComparableMetrics(config BacktestConfig, ledger *backtestMemoryLedge
 	metrics.ByRegime = tradeConcentration(ledger.trades)
 	metrics.Reconciled = math.Abs(ending-equity[len(equity)-1].Value) <= 1e-8 && !math.IsNaN(ending) && !math.IsInf(ending, 0) && reconcileStage05Ledger(config.InitialBalance, ledger)
 	return metrics
+}
+
+func regularClockEquity(equity []EquityPoint, config BacktestConfig) []EquityPoint {
+	clock := map[int64]bool{config.Start.UTC().UnixNano(): true, config.End.UTC().UnixNano(): true}
+	for _, bar := range config.BenchmarkSeries {
+		clock[time.UnixMilli(bar.CloseTime).UTC().UnixNano()] = true
+	}
+	result := []EquityPoint{}
+	for _, point := range equity {
+		if clock[point.Time.UTC().UnixNano()] {
+			result = appendEquity(result, point.Time, point.Value)
+		}
+	}
+	return result
 }
 
 func reconcileStage05Ledger(initial float64, ledger *backtestMemoryLedger) bool {
@@ -934,15 +1156,19 @@ func reconcileStage05Ledger(initial float64, ledger *backtestMemoryLedger) bool 
 			return false
 		}
 		notional := new(big.Rat).Mul(quantity, price)
-		if quantities[event.Symbol] == nil {
-			quantities[event.Symbol] = new(big.Rat)
+		identity := ledger.config.EconomicAssetIdentities[event.Symbol]
+		if identity == "" {
+			identity = event.Symbol
+		}
+		if quantities[identity] == nil {
+			quantities[identity] = new(big.Rat)
 		}
 		if event.Side == string(tradingcore.Buy) {
 			cash.Sub(cash, new(big.Rat).Add(notional, fee))
-			quantities[event.Symbol].Add(quantities[event.Symbol], quantity)
+			quantities[identity].Add(quantities[identity], quantity)
 		} else if event.Side == string(tradingcore.Sell) {
 			cash.Add(cash, new(big.Rat).Sub(notional, fee))
-			quantities[event.Symbol].Sub(quantities[event.Symbol], quantity)
+			quantities[identity].Sub(quantities[identity], quantity)
 		} else {
 			return false
 		}
@@ -950,10 +1176,16 @@ func reconcileStage05Ledger(initial float64, ledger *backtestMemoryLedger) bool 
 	if math.Abs(ratToFloat(cash)-ledger.cash) > 1e-8 {
 		return false
 	}
-	for symbol, quantity := range quantities {
+	for identity, quantity := range quantities {
 		held := 0.0
-		if position := ledger.positions[symbol]; position != nil {
-			held = position.Size
+		for symbol, position := range ledger.positions {
+			assetID := ledger.config.EconomicAssetIdentities[symbol]
+			if assetID == "" {
+				assetID = symbol
+			}
+			if assetID == identity {
+				held += position.Size
+			}
 		}
 		if math.Abs(ratToFloat(quantity)-held) > 1e-10 {
 			return false
@@ -990,6 +1222,33 @@ func exactFees(events []backtestLedgerEvent) string {
 	total := new(big.Rat)
 	for _, event := range events {
 		if value, ok := new(big.Rat).SetString(event.Fee); ok {
+			total.Add(total, value)
+		}
+	}
+	return ratDecimal(total, 18)
+}
+
+func exactSlippage(events []backtestLedgerEvent) string {
+	total := new(big.Rat)
+	for _, event := range events {
+		quantity, qOK := new(big.Rat).SetString(event.Quantity)
+		price, pOK := new(big.Rat).SetString(event.Price)
+		reference, rOK := new(big.Rat).SetString(event.ExecutionReferencePrice)
+		if qOK && pOK && rOK {
+			difference := new(big.Rat).Sub(price, reference)
+			if difference.Sign() < 0 {
+				difference.Neg(difference)
+			}
+			total.Add(total, new(big.Rat).Mul(quantity, difference))
+		}
+	}
+	return ratDecimal(total, 18)
+}
+
+func exactAdd(values ...string) string {
+	total := new(big.Rat)
+	for _, raw := range values {
+		if value, ok := new(big.Rat).SetString(raw); ok {
 			total.Add(total, value)
 		}
 	}
@@ -1094,9 +1353,25 @@ func buildStage05Comparison(config BacktestConfig, request Stage05RunRequest, ca
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
+	executionSeries := []DatasetSeriesIdentity{}
+	for _, identity := range config.DatasetSeries {
+		if identity.Role == "execution" && identity.Timeframe == config.ExecutionTimeframe {
+			executionSeries = append(executionSeries, identity)
+		}
+	}
+	sort.Slice(executionSeries, func(i, j int) bool {
+		if executionSeries[i].AssetID != executionSeries[j].AssetID {
+			return executionSeries[i].AssetID < executionSeries[j].AssetID
+		}
+		return executionSeries[i].ExchangeSymbolID < executionSeries[j].ExchangeSymbolID
+	})
+	assumptions := NormalizedAssumptions{StartingCapital: decimalString(config.InitialBalance), MaxGrossExposure: request.TargetGrossExposure, MaxNetExposure: request.MaxNetExposure, DatasetManifestID: config.DatasetManifestID, UniverseMode: config.UniverseMode, DecisionCadence: config.Timeframe, ExecutionPolicy: config.ExecutionPolicy, FeeBPS: config.FeeBps, SlippageBPS: config.SlippageBps, FinalPolicy: request.FinalPolicy, ExecutionRole: "execution", ExecutionTimeframe: config.ExecutionTimeframe, ExecutionSeries: executionSeries}
 	for _, id := range ids {
 		result := results[id]
-		row := ComparisonRow{StrategyID: id, StrategyVersion: result.Manifest.Strategy.Descriptor.Version, Descriptor: cloneStrategyDescriptor(result.Manifest.Strategy.Descriptor), Parameters: cloneStringMap(result.Manifest.Strategy.Parameters), ManifestIdentity: result.Manifest.DatasetManifestID, Baseline: result.Manifest.Strategy.Descriptor.Baseline, Metrics: result.Metrics, Reasons: []string{}}
+		normalized := NormalizedRunManifest{SchemaVersion: "normalized-run-manifest-v1", DatasetManifestID: config.DatasetManifestID, StrategyID: id, StrategyVersion: result.Manifest.Strategy.Descriptor.Version, Parameters: cloneStringMap(result.Manifest.Strategy.Parameters), Assumptions: assumptions}
+		encodedManifest, _ := json.Marshal(normalized)
+		runDigest := fmt.Sprintf("%x", sha256.Sum256(encodedManifest))
+		row := ComparisonRow{StrategyID: id, StrategyVersion: result.Manifest.Strategy.Descriptor.Version, Descriptor: cloneStrategyDescriptor(result.Manifest.Strategy.Descriptor), Parameters: cloneStringMap(result.Manifest.Strategy.Parameters), ManifestIdentity: runDigest, DatasetManifestID: result.Manifest.DatasetManifestID, NormalizedRunManifest: normalized, Baseline: result.Manifest.Strategy.Descriptor.Baseline, Metrics: result.Metrics, Reasons: []string{}}
 		if result.Metrics.TotalReturn.Available && cashReturn.Available {
 			row.ExcessVsCash = availableMetric(result.Metrics.TotalReturn.Value - cashReturn.Value)
 		} else {
@@ -1170,14 +1445,38 @@ func buildStage05Comparison(config BacktestConfig, request Stage05RunRequest, ca
 	limitations := append([]string(nil), config.DatasetLimitations...)
 	limitations = append(limitations, "positive historical performance requires complete external Stage 04 vendor coverage", "generalization requires Stage 07 multi-window validation", "live inference is not supported by a single backtest", "OHLCV full-fill evidence cannot prove order-book impact")
 	sort.Strings(limitations)
-	return ComparisonArtifact{SchemaVersion: ComparisonSchemaVersion, ManifestID: config.DatasetManifestID, Candidate: candidate.Descriptor.ID + "@" + candidate.Descriptor.Version, Assumptions: NormalizedAssumptions{StartingCapital: decimalString(config.InitialBalance), MaxGrossExposure: request.TargetGrossExposure, MaxNetExposure: request.MaxNetExposure, DatasetManifestID: config.DatasetManifestID, UniverseMode: config.UniverseMode, DecisionCadence: config.Timeframe, ExecutionPolicy: config.ExecutionPolicy, FeeBPS: config.FeeBps, SlippageBPS: config.SlippageBps, FinalPolicy: request.FinalPolicy}, Rows: rows, Governance: GovernanceGate{SchemaVersion: GovernanceSchemaVersion, OptimizationAllowed: allowed, PromotionAllowed: allowed, Reasons: reasons}, Results: results, Limitations: limitations}
+	reasons = append(reasons, "pending_stage07_validation")
+	artifact := ComparisonArtifact{SchemaVersion: ComparisonSchemaVersion, ManifestID: config.DatasetManifestID, Candidate: candidate.Descriptor.ID + "@" + candidate.Descriptor.Version, Assumptions: assumptions, Rows: rows, Governance: GovernanceGate{SchemaVersion: GovernanceSchemaVersion, OptimizationAllowed: allowed, PromotionAllowed: false, Reasons: reasons}, Results: results, Limitations: limitations}
+	artifact.ArtifactDigest, _ = comparisonDigest(artifact)
+	return artifact
+}
+
+func comparisonDigest(value ComparisonArtifact) (string, error) {
+	value.ArtifactDigest = ""
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(encoded)
+	return fmt.Sprintf("%x", digest[:]), nil
 }
 
 func MarshalComparisonArtifact(value ComparisonArtifact) ([]byte, error) {
 	if value.SchemaVersion != ComparisonSchemaVersion || value.Governance.SchemaVersion != GovernanceSchemaVersion || len(value.Rows) == 0 || len(value.Rows) > 16 {
 		return nil, fmt.Errorf("invalid or unbounded comparison artifact")
 	}
-	return json.Marshal(value)
+	expected, err := comparisonDigest(value)
+	if err != nil || value.ArtifactDigest == "" || expected != value.ArtifactDigest {
+		return nil, fmt.Errorf("comparison artifact digest mismatch")
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	if len(encoded) > 2<<20 {
+		return nil, fmt.Errorf("comparison artifact exceeds 2 MiB persistence limit")
+	}
+	return encoded, nil
 }
 
 func UnmarshalComparisonArtifact(data []byte) (ComparisonArtifact, error) {
@@ -1190,6 +1489,10 @@ func UnmarshalComparisonArtifact(data []byte) (ComparisonArtifact, error) {
 	}
 	if value.SchemaVersion != ComparisonSchemaVersion || value.Governance.SchemaVersion != GovernanceSchemaVersion || len(value.Rows) == 0 || len(value.Rows) > 16 {
 		return ComparisonArtifact{}, fmt.Errorf("unsupported or unbounded comparison artifact")
+	}
+	expected, err := comparisonDigest(value)
+	if err != nil || expected != value.ArtifactDigest {
+		return ComparisonArtifact{}, fmt.Errorf("comparison artifact digest mismatch")
 	}
 	return value, nil
 }

@@ -173,6 +173,8 @@ type ReplaySnapshot struct {
 }
 
 type ReplayMember struct {
+	AssetID                                                                                                  string `json:"asset_id"`
+	ExchangeSymbolID                                                                                         string `json:"exchange_symbol_id"`
 	Symbol                                                                                                   string `json:"symbol"`
 	Rank                                                                                                     int    `json:"rank"`
 	Shortlisted                                                                                              bool   `json:"shortlisted"`

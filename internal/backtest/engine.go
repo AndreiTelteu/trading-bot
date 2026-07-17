@@ -45,10 +45,11 @@ type entryCandidate struct {
 }
 
 type backtestUniverseSelection struct {
-	RegimeState    string
-	BreadthRatio   float64
-	ActiveUniverse []services.UniverseCandidateMetrics
-	Shortlist      []services.UniverseCandidateMetrics
+	MembershipError string
+	RegimeState     string
+	BreadthRatio    float64
+	ActiveUniverse  []services.UniverseCandidateMetrics
+	Shortlist       []services.UniverseCandidateMetrics
 }
 
 type symbolState struct {
@@ -243,6 +244,9 @@ func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (Bac
 		case UniverseDynamicReplay:
 			if lastRebalance.IsZero() || currentTime.Sub(lastRebalance) >= config.UniversePolicy.RebalanceInterval {
 				currentUniverse = resolveReplayUniverse(replaySnapshots, currentTime)
+				if currentUniverse.MembershipError != "" {
+					return BacktestResult{}, &StrategyDiagnosticError{Code: DiagnosticUniverseCoverage, Field: "stage", Details: currentUniverse.MembershipError}
+				}
 				lastRebalance = currentTime
 			}
 		default:
@@ -1389,7 +1393,11 @@ func resolveReplayUniverse(snapshots []replaySnapshotEntry, currentTime time.Tim
 	candidates := make([]services.UniverseCandidateMetrics, 0, len(snap.Members))
 	var shortlist []services.UniverseCandidateMetrics
 	for _, m := range snap.Members {
-		if m.RejectionReason != nil || m.Stage == "rejected" || m.Stage == "ranked" {
+		eligible, membershipErr := replayMemberEligible(m.Stage, m.Shortlisted, m.RejectionReason != nil, ReplayMembershipPolicy{IncludeShortlist: true})
+		if membershipErr != nil {
+			return backtestUniverseSelection{MembershipError: membershipErr.Error()}
+		}
+		if !eligible {
 			continue
 		}
 		candidate := services.UniverseCandidateMetrics{

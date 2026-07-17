@@ -32,6 +32,7 @@ func main() {
 	strategyVersion := flag.String("strategy-version", "", "Stage 05 strategy version")
 	strategyParams := flag.String("strategy-params", "", "comma-separated key=value Stage 05 parameters")
 	targetGross := flag.String("target-gross", "1", "normalized Stage 05 gross exposure decimal")
+	maxNet := flag.String("max-net", "1", "normalized Stage 05 maximum net exposure decimal")
 	finalPolicy := flag.String("final-policy", "liquidate", "liquidate or mark_to_market")
 	flag.Parse()
 
@@ -67,7 +68,7 @@ func main() {
 			}
 			parameters[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
 		}
-		comparison, compareErr := backtest.RunStage05ComparisonSyncWithOverrides(backtest.Stage05RunRequest{StrategyID: *strategyID, StrategyVersion: *strategyVersion, Parameters: parameters, TargetGrossExposure: *targetGross, MaxNetExposure: *targetGross, FinalPolicy: *finalPolicy}, overrides)
+		comparison, compareErr := backtest.RunStage05ComparisonSyncWithOverrides(backtest.Stage05RunRequest{StrategyID: *strategyID, StrategyVersion: *strategyVersion, Parameters: parameters, TargetGrossExposure: *targetGross, MaxNetExposure: *maxNet, FinalPolicy: *finalPolicy}, overrides)
 		if compareErr != nil {
 			log.Fatalf("Stage 05 comparison failed: %v", compareErr)
 		}

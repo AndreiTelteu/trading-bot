@@ -3,7 +3,6 @@ package handlers
 import (
 	"strconv"
 	"strings"
-	"trading-go/internal/backtest"
 	"trading-go/internal/database"
 	"trading-go/internal/services"
 
@@ -74,23 +73,8 @@ func OptimizeBacktest(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "Invalid request body"})
 	}
 
-	job, err := backtest.GetBacktestJob(req.JobID)
-	if err != nil {
-		return c.Status(404).JSON(fiber.Map{"error": "Backtest job not found"})
-	}
-
-	summaryJSON := ""
-	if job.SummaryJSON != nil {
-		summaryJSON = *job.SummaryJSON
-	}
-
 	result, err := services.GenerateBacktestOptimizationProposals(services.BacktestOptimizationInput{
-		JobID:       job.ID,
-		Status:      job.Status,
-		CreatedAt:   job.CreatedAt,
-		StartedAt:   job.StartedAt,
-		FinishedAt:  job.FinishedAt,
-		SummaryJSON: summaryJSON,
+		JobID: req.JobID,
 	})
 	if err != nil {
 		if fiberErr, ok := err.(*fiber.Error); ok {

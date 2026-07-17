@@ -3,6 +3,7 @@ package backtest
 import (
 	"encoding/csv"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -104,7 +105,20 @@ func StartBacktestJob() (*database.BacktestJob, error) {
 // persists only the compact machine-readable comparison, never the unbounded
 // per-strategy curves/artifacts.
 func StartStage05ComparisonJob(request Stage05RunRequest, overrides map[string]string) (*database.BacktestJob, error) {
-	job := database.BacktestJob{Status: "pending", Progress: 0, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	if strings.TrimSpace(request.StrategyID) == "" {
+		return nil, &StrategyDiagnosticError{Code: DiagnosticUnknownStrategy, Details: "candidate strategy id is required"}
+	}
+	parameters := cloneStringMap(request.Parameters)
+	if request.TargetGrossExposure != "" {
+		parameters["target_gross"] = request.TargetGrossExposure
+	}
+	if request.FinalPolicy != "" {
+		parameters["final_policy"] = request.FinalPolicy
+	}
+	if _, _, _, err := DefaultStrategyRegistry.ResolveExecutable(request.StrategyID, request.StrategyVersion, parameters); err != nil {
+		return nil, err
+	}
+	job := database.BacktestJob{Status: "pending", JobType: "stage05_comparison", Progress: 0, CreatedAt: time.Now(), UpdatedAt: time.Now()}
 	if err := database.DB.Create(&job).Error; err != nil {
 		return nil, err
 	}
@@ -120,6 +134,8 @@ func runStage05ComparisonJob(jobID uint, request Stage05RunRequest, overrides ma
 			settings[key] = value
 		}
 	}
+	// Stage 05 never permits the legacy decision-bar execution fallback.
+	settings["backtest_execution_1m"] = "true"
 	config, series, err := prepareBacktestInputsWithSettings(settings)
 	if err != nil {
 		failBacktestJob(jobID, err)
@@ -131,21 +147,29 @@ func runStage05ComparisonJob(jobID uint, request Stage05RunRequest, overrides ma
 	}
 	database.DB.Model(&database.BacktestJob{}).Where("id=?", jobID).Update("dataset_manifest_id", config.DatasetManifestID)
 	updateBacktestJob(jobID, "running", .35, "Running normalized candidate and market baselines")
-	comparison, err := RunStage05Comparison(config, series, request)
+	_, err = executeAndPersistStage05ComparisonJob(jobID, config, series, request)
 	if err != nil {
 		failBacktestJob(jobID, err)
-		return
+	}
+	return
+}
+
+func executeAndPersistStage05ComparisonJob(jobID uint, config BacktestConfig, series map[string][]services.OHLCV, request Stage05RunRequest) (ComparisonArtifact, error) {
+	comparison, err := RunStage05Comparison(config, series, request)
+	if err != nil {
+		return ComparisonArtifact{}, err
 	}
 	encoded, err := MarshalComparisonArtifact(comparison)
 	if err != nil {
-		failBacktestJob(jobID, err)
-		return
+		return ComparisonArtifact{}, err
 	}
 	message := "Stage 05 comparison completed; governance gate blocked"
 	if comparison.Governance.OptimizationAllowed {
 		message = "Stage 05 comparison completed; baseline-relative gate passed"
 	}
+	database.DB.Model(&database.BacktestJob{}).Where("id=?", jobID).Update("artifact_digest", comparison.ArtifactDigest)
 	updateBacktestJobWithSummary(jobID, "completed", 1, message, string(encoded), string(encoded))
+	return comparison, nil
 }
 
 func RunStage05ComparisonSyncWithOverrides(request Stage05RunRequest, overrides map[string]string) (ComparisonArtifact, error) {
@@ -155,6 +179,7 @@ func RunStage05ComparisonSyncWithOverrides(request Stage05RunRequest, overrides 
 			settings[key] = value
 		}
 	}
+	settings["backtest_execution_1m"] = "true"
 	config, series, err := prepareBacktestInputsWithSettings(settings)
 	if err != nil {
 		return ComparisonArtifact{}, err
@@ -579,11 +604,29 @@ func failBacktestJob(jobID uint, err error) {
 		FinishedAt: &now,
 		Error:      &msg,
 	}
+	if diagnostic := structuredStrategyDiagnostic(err); diagnostic != "" {
+		job.DiagnosticJSON = &diagnostic
+	}
 	database.DB.Model(&database.BacktestJob{}).Where("id = ?", jobID).Updates(&job)
 	websocket.BroadcastBacktestComplete(jobID, "failed", map[string]interface{}{
 		"error": msg,
 	})
 	logActivity("error", "Backtest failed", msg)
+}
+
+func structuredStrategyDiagnostic(err error) string {
+	var diagnostic *StrategyDiagnosticError
+	if !errors.As(err, &diagnostic) {
+		return ""
+	}
+	encoded, marshalErr := json.Marshal(struct {
+		SchemaVersion string `json:"schema_version"`
+		*StrategyDiagnosticError
+	}{SchemaVersion: "strategy-diagnostic-v1", StrategyDiagnosticError: diagnostic})
+	if marshalErr != nil || len(encoded) > 64<<10 {
+		return ""
+	}
+	return string(encoded)
 }
 
 func failBacktestJobWithResults(jobID uint, config BacktestConfig, settings map[string]string, baseline, vol BacktestResult, validation ValidationSummary, lane string, err error) {
@@ -905,6 +948,16 @@ func preparePointInTimeBacktestInputs(settings map[string]string) (BacktestConfi
 	for _, covered := range benchmarkSeries {
 		requiredSeries = append(requiredSeries, covered.SeriesKey)
 	}
+	benchmarkExecutionSeries := manifestSeries(benchmark, pointintime.RoleExecution, "1m")
+	if fetchExecution && len(benchmarkExecutionSeries) == 0 {
+		report.Compatible = false
+		report.Failures = append(report.Failures, pointintime.CoverageFailure{Code: "benchmark_execution_role_timeframe_missing", Series: benchmark + ":execution:1m", Details: "independent benchmark execution series is absent or incomplete"})
+	}
+	if fetchExecution {
+		for _, covered := range benchmarkExecutionSeries {
+			requiredSeries = append(requiredSeries, covered.SeriesKey)
+		}
+	}
 	if !report.Compatible {
 		return BacktestConfig{DatasetManifestID: manifestID, DatasetManifestRequired: true, DatasetLimitations: report.Limitations}, nil, &pointintime.CoverageError{Report: report}
 	}
@@ -978,6 +1031,13 @@ func preparePointInTimeBacktestInputs(settings map[string]string) (BacktestConfi
 	benchmarkBars, err := loadTicker(benchmark, pointintime.RoleBenchmark, "15m")
 	if err != nil {
 		return BacktestConfig{}, nil, err
+	}
+	if fetchExecution {
+		benchmarkExecution, executionErr := loadTicker(benchmark, pointintime.RoleExecution, "1m")
+		if executionErr != nil {
+			return BacktestConfig{}, nil, executionErr
+		}
+		execution[benchmark] = benchmarkExecution
 	}
 	engineMode, err := resolveBacktestEngine(settings)
 	if err != nil {
