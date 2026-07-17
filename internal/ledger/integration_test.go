@@ -254,10 +254,15 @@ func TestCashReversalBalancesOriginalWithoutMutation(t *testing.T) {
 func TestBackfillDefaultsToDryRunAndLeavesLegacyHistoryUnresolved(t *testing.T) {
 	db := testutil.SetupPostgresDB(t)
 	database.DB = db
-	if err := db.Create(&database.Wallet{ID: 1, Balance: 123, Currency: "USDT"}).Error; err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Create(&database.Position{Symbol: "LEGACY", Amount: 2, AvgPrice: 10, Status: "open", OpenedAt: time.Now()}).Error; err != nil {
+	if err := db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Exec("SET LOCAL trading_bot.ledger_write='on'").Error; err != nil {
+			return err
+		}
+		if err := tx.Create(&database.Wallet{ID: 1, Balance: 123, Currency: "USDT"}).Error; err != nil {
+			return err
+		}
+		return tx.Create(&database.Position{Symbol: "LEGACY", Amount: 2, AvgPrice: 10, Status: "open", OpenedAt: time.Now()}).Error
+	}); err != nil {
 		t.Fatal(err)
 	}
 	type snapshot struct{ Wallets, Positions, Orders, Batches, Fills, Events, States int64 }
@@ -293,7 +298,12 @@ func TestBackfillDefaultsToDryRunAndLeavesLegacyHistoryUnresolved(t *testing.T) 
 func TestBackfillRequiresApprovalAndAppliesOnlyOpeningCash(t *testing.T) {
 	db := testutil.SetupPostgresDB(t)
 	database.DB = db
-	if err := db.Create(&database.Wallet{ID: 1, Balance: 321, Currency: "USDT"}).Error; err != nil {
+	if err := db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Exec("SET LOCAL trading_bot.ledger_write='on'").Error; err != nil {
+			return err
+		}
+		return tx.Create(&database.Wallet{ID: 1, Balance: 321, Currency: "USDT"}).Error
+	}); err != nil {
 		t.Fatal(err)
 	}
 	service := ledgerpkg.New(db)
@@ -444,10 +454,15 @@ func TestFutureEventAccountCurrencyAndProviderIdentityValidation(t *testing.T) {
 func TestAssetCorrectionAndCompensatingReversalResolveLegacyExposure(t *testing.T) {
 	db := testutil.SetupPostgresDB(t)
 	database.DB = db
-	if err := db.Create(&database.Wallet{ID: 1, AccountID: "primary", Balance: 100, Currency: "USDT"}).Error; err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Create(&database.Position{AccountID: "primary", Symbol: "LEG", Amount: 2, AvgPrice: 10, Status: "open", OpenedAt: time.Now()}).Error; err != nil {
+	if err := db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Exec("SET LOCAL trading_bot.ledger_write='on'").Error; err != nil {
+			return err
+		}
+		if err := tx.Create(&database.Wallet{ID: 1, AccountID: "primary", Balance: 100, Currency: "USDT"}).Error; err != nil {
+			return err
+		}
+		return tx.Create(&database.Position{AccountID: "primary", Symbol: "LEG", Amount: 2, AvgPrice: 10, Status: "open", OpenedAt: time.Now()}).Error
+	}); err != nil {
 		t.Fatal(err)
 	}
 	service := ledgerpkg.New(db)
@@ -508,5 +523,48 @@ func TestBatchImmutabilityForeignKeysAndTimeConstraint(t *testing.T) {
 	future := database.LedgerEvent{ID: "future-direct", LedgerBatchID: "immutable-batch", Sequence: 99, IdempotencyKey: "future-direct", EventType: ledgerpkg.EventAdminCorrection, AccountID: "primary", VenueID: "internal", Currency: "USDT", CashDelta: accounting.Zero(), AssetDelta: accounting.Zero(), ExecutionMode: "administrative", Actor: "test", Reason: "future", RealizedPnL: accounting.Zero(), CostBasisDelta: accounting.Zero(), FeeDelta: accounting.Zero(), MetadataJSON: "{}", OccurredAt: time.Now().Add(time.Hour), RecordedAt: time.Now()}
 	if err := database.DB.Create(&future).Error; err == nil {
 		t.Fatal("database accepted occurred_at after recorded_at")
+	}
+}
+
+func TestProjectionLifecycleCannotBypassLedger(t *testing.T) {
+	service := readyService(t)
+	db := service.DB
+	now := time.Now().UTC()
+
+	if err := db.Create(&database.Wallet{ID: 2, AccountID: "primary", Balance: 99, Currency: "USDT", CreatedAt: now, UpdatedAt: now}).Error; err == nil {
+		t.Fatal("direct wallet insert bypassed the ledger")
+	}
+	if err := db.Create(&database.Position{AccountID: "primary", Symbol: "BYPASS", Amount: 1, AvgPrice: 10, Status: "open", OpenedAt: now}).Error; err == nil {
+		t.Fatal("direct position insert bypassed the ledger")
+	}
+	var wallet database.Wallet
+	if err := db.First(&wallet).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Delete(&wallet).Error; err == nil {
+		t.Fatal("direct wallet delete bypassed the ledger")
+	}
+
+	adjustment, err := service.ApplyAdjustment(context.Background(), ledgerpkg.AdjustmentCommand{IdempotencyKey: "lifecycle-admin-deposit", Type: ledgerpkg.EventCapitalDeposit, Amount: accounting.MustParse("10"), Currency: "USDT", Actor: "operator", Reason: "verified administrative deposit"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	opened, err := service.ApplyFill(context.Background(), fill("lifecycle-manual-fill", "buy", "SAFE", "1", "10", "0.25"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Delete(&opened.Position).Error; err == nil {
+		t.Fatal("direct position delete bypassed immutable fill history")
+	}
+	var capitalEvents, fillEvents, feeEvents int64
+	db.Model(&database.LedgerEvent{}).Where("id = ? AND event_type = ?", adjustment.Event.ID, ledgerpkg.EventCapitalDeposit).Count(&capitalEvents)
+	db.Model(&database.LedgerEvent{}).Where("ledger_batch_id = ? AND event_type = ?", "lifecycle-manual-fill", ledgerpkg.EventBuyFill).Count(&fillEvents)
+	db.Model(&database.LedgerEvent{}).Where("ledger_batch_id = ? AND event_type = ?", "lifecycle-manual-fill", ledgerpkg.EventTradingFee).Count(&feeEvents)
+	if capitalEvents != 1 || fillEvents != 1 || feeEvents != 1 {
+		t.Fatalf("immutable event chain capital=%d fill=%d fee=%d", capitalEvents, fillEvents, feeEvents)
+	}
+	report, err := service.Reconcile(context.Background(), ledgerpkg.DefaultAccountID, time.Time{})
+	if err != nil || !report.Balanced {
+		t.Fatalf("projection did not reconcile after authorized paths: err=%v report=%s", err, report.String())
 	}
 }

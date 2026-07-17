@@ -10,6 +10,8 @@ import (
 	"time"
 	"trading-go/internal/database"
 	"trading-go/internal/testutil"
+
+	"gorm.io/gorm"
 )
 
 func TestResolveCloseReasonPrecedence(t *testing.T) {
@@ -47,7 +49,6 @@ func TestUpdatePositionsPricesAtrTrailingStopRatchet(t *testing.T) {
 	db := testutil.SetupPostgresDB(t)
 	database.DB = db
 
-	database.DB.Create(&database.Wallet{Balance: 1000.0, Currency: "USDT"})
 	database.DB.Create(&database.Setting{Key: "atr_trailing_enabled", Value: "true"})
 	database.DB.Create(&database.Setting{Key: "atr_trailing_mult", Value: "1"})
 	database.DB.Create(&database.Setting{Key: "atr_trailing_period", Value: "14"})
@@ -59,25 +60,20 @@ func TestUpdatePositionsPricesAtrTrailingStopRatchet(t *testing.T) {
 	lastATR := 20.0
 	now := time.Now()
 
-	database.DB.Create(&database.Position{
-		Symbol:            "BTC",
-		Amount:            1.0,
-		AvgPrice:          100.0,
-		EntryPrice:        &entry,
-		LastAtrValue:      &lastATR,
-		TrailingStopPrice: &trailingOne,
-		Status:            "open",
-		OpenedAt:          now,
-	})
-	database.DB.Create(&database.Position{
-		Symbol:            "ETH",
-		Amount:            1.0,
-		AvgPrice:          100.0,
-		EntryPrice:        &entry,
-		LastAtrValue:      &lastATR,
-		TrailingStopPrice: &trailingTwo,
-		Status:            "open",
-		OpenedAt:          now,
+	testutil.WithLedgerProjectionWrites(t, database.DB, func(tx *gorm.DB) error {
+		if err := tx.Create(&database.Wallet{Balance: 1000.0, Currency: "USDT"}).Error; err != nil {
+			return err
+		}
+		if err := tx.Create(&database.Position{
+			Symbol: "BTC", Amount: 1.0, AvgPrice: 100.0, EntryPrice: &entry,
+			LastAtrValue: &lastATR, TrailingStopPrice: &trailingOne, Status: "open", OpenedAt: now,
+		}).Error; err != nil {
+			return err
+		}
+		return tx.Create(&database.Position{
+			Symbol: "ETH", Amount: 1.0, AvgPrice: 100.0, EntryPrice: &entry,
+			LastAtrValue: &lastATR, TrailingStopPrice: &trailingTwo, Status: "open", OpenedAt: now,
+		}).Error
 	})
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -160,7 +156,9 @@ func TestUpdatePositionsPricesCreatesSnapshotWithoutOpenPositions(t *testing.T) 
 	db := testutil.SetupPostgresDB(t)
 	database.DB = db
 
-	database.DB.Create(&database.Wallet{Balance: 1234.5, Currency: "USDT"})
+	testutil.WithLedgerProjectionWrites(t, database.DB, func(tx *gorm.DB) error {
+		return tx.Create(&database.Wallet{Balance: 1234.5, Currency: "USDT"}).Error
+	})
 
 	result, err := UpdatePositionsPrices()
 	if err != nil {

@@ -31,3 +31,21 @@ func TestCanonicalRowsDigestIgnoresDatabaseReturnOrder(t *testing.T) {
 		t.Fatal("canonical digest depends on query return order")
 	}
 }
+
+func TestCanonicalRowsDigestSurvivesJSONBNormalization(t *testing.T) {
+	left, err := CanonicalRowsDigest(map[string][]json.RawMessage{
+		"ledger_events": {json.RawMessage(`{"id":"event","stage08_context_json":{"versions":{"strategy":"v1","policy":"p1"},"active_path":"paper"}}`)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	right, err := CanonicalRowsDigest(map[string][]json.RawMessage{
+		"ledger_events": {json.RawMessage(`{ "stage08_context_json": { "active_path": "paper", "versions": { "policy": "p1", "strategy": "v1" } }, "id": "event" }`)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if left.Digest != right.Digest {
+		t.Fatalf("semantic JSON changed canonical digest: %s != %s", left.Digest, right.Digest)
+	}
+}

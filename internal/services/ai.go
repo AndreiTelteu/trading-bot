@@ -2015,7 +2015,7 @@ func DenyProposal(id uint) (interface{}, error) {
 
 func GetAllProposals() ([]database.AIProposal, error) {
 	var proposals []database.AIProposal
-	if err := database.DB.Order("created_at DESC").Find(&proposals).Error; err != nil {
+	if err := database.DB.Order("created_at DESC").Limit(200).Find(&proposals).Error; err != nil {
 		return nil, err
 	}
 	if proposals == nil {

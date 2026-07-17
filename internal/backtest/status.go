@@ -62,7 +62,7 @@ type BacktestJobResponse struct {
 
 func ListBacktestJobResponses() ([]BacktestJobResponse, error) {
 	var jobs []database.BacktestJob
-	if err := database.DB.Select(backtestJobResponseColumns()).Order("created_at DESC").Find(&jobs).Error; err != nil {
+	if err := database.DB.Select(backtestJobResponseColumns()).Order("created_at DESC").Limit(200).Find(&jobs).Error; err != nil {
 		return nil, err
 	}
 

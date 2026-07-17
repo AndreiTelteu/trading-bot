@@ -13,6 +13,9 @@ func GetActivityLogs(c *fiber.Ctx) error {
 	if err != nil || limit <= 0 {
 		limit = 50
 	}
+	if limit > 500 {
+		limit = 500
+	}
 
 	logType := c.Query("log_type", "")
 
@@ -47,8 +50,8 @@ func CreateActivityLog(c *fiber.Ctx) error {
 	}
 
 	log := database.ActivityLog{
-		LogType:   req.LogType,
-		Message:   req.Message,
+		LogType: req.LogType,
+		Message: req.Message,
 	}
 
 	if req.Details != "" {

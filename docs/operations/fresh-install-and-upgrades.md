@@ -10,7 +10,7 @@ Validate compose without starting services:
 docker compose -f docker-compose.yml config
 ```
 
-For a fresh database, create an empty PostgreSQL database, set `DATABASE_URL`, then start the server. `database.Initialize` applies migrations in dependency order and seeds opening capital through the Stage 01 ledger contract.
+For a fresh database, create an empty PostgreSQL database, set `DATABASE_URL`, then start the server. The server applies migrations, verifies the safe Stage 08 authority envelope, and then seeds opening capital through the Stage 01 ledger contract.
 
 ```bash
 export DATABASE_URL='postgres://USER:PASSWORD@HOST:5432/trading_bot?sslmode=require'
@@ -20,7 +20,7 @@ export GOVERNANCE_ADMIN_USERS='operator'
 /home/andrei/.local/opt/go-v1.26.1/bin/go run ./cmd/server
 ```
 
-Expected startup includes `Database initialized successfully`; any malformed flag, unreconciled requested ledger authority, or invalid Stage 07 live deployment exits before cron, execution workers, or the listener starts.
+Successful startup reaches `Server starting on :5001`; any malformed flag, unreconciled requested ledger authority, or invalid Stage 07 live deployment exits before cron, execution workers, or the listener starts.
 
 ## Upgrades from Stages 03–07
 

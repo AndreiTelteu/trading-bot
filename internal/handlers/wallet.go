@@ -93,8 +93,11 @@ func GetPortfolioSnapshots(c *fiber.Ctx) error {
 	}
 
 	since := time.Now().Add(-duration)
-	if err := database.DB.Where("timestamp >= ?", since).Order("timestamp asc").Find(&snapshots).Error; err != nil {
+	if err := database.DB.Where("timestamp >= ?", since).Order("timestamp desc").Limit(5000).Find(&snapshots).Error; err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "Failed to fetch snapshots"})
+	}
+	for left, right := 0, len(snapshots)-1; left < right; left, right = left+1, right-1 {
+		snapshots[left], snapshots[right] = snapshots[right], snapshots[left]
 	}
 
 	return c.JSON(snapshots)

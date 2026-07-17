@@ -439,6 +439,26 @@ type DeclareParityPolicyRequest struct {
 	Expected             []cutover.ExpectedReason `json:"expected_reasons"`
 }
 
+func verifyParityPolicy(row database.ParityAcceptancePolicy) error {
+	var expected []cutover.ExpectedReason
+	if err := json.Unmarshal([]byte(row.ExpectedReasonsJSON), &expected); err != nil {
+		return fmt.Errorf("parity policy expected reasons corrupt: %w", err)
+	}
+	expectedJSON, _ := json.Marshal(expected)
+	canonical := struct {
+		Schema, Name                                                                                                                                              string
+		MinimumSamples, MinimumCoverageBPS, MaxActionRateBPS, MaxQuantityRateBPS, MaxReasonRateBPS, MaxVersionRateBPS, QuantityToleranceBPS, NotionalToleranceBPS int64
+		Expected                                                                                                                                                  json.RawMessage
+		Principal                                                                                                                                                 string
+		At                                                                                                                                                        time.Time
+	}{row.SchemaVersion, row.Name, row.MinimumSamples, row.MinimumCoverageBPS, row.MaxActionRateBPS, row.MaxQuantityRateBPS, row.MaxReasonRateBPS, row.MaxVersionRateBPS, row.QuantityToleranceBPS, row.NotionalToleranceBPS, expectedJSON, row.DeclaredBy, row.DeclaredAt.UTC()}
+	digest, _, err := hash(canonical)
+	if err != nil || row.ID != digest || row.ContentDigest != digest {
+		return fmt.Errorf("parity policy content digest mismatch")
+	}
+	return nil
+}
+
 func (s Service) DeclareParityPolicy(ctx context.Context, request DeclareParityPolicyRequest, principal string) (database.ParityAcceptancePolicy, error) {
 	if principal == "" || request.Name == "" || request.MinimumSamples <= 0 || request.MinimumCoverageBPS <= 0 || request.MinimumCoverageBPS > 10000 {
 		return database.ParityAcceptancePolicy{}, fmt.Errorf("trusted principal, name, positive samples, and coverage in (0,10000] required")
@@ -478,6 +498,48 @@ func (s Service) PersistParity(ctx context.Context, pairKey, flagID string, c cu
 
 type ParityBinding struct{ PopulationID string }
 
+// PostgreSQL timestamptz stores microsecond precision. Content identities that
+// survive a write/read cycle must be computed from that same representation.
+func postgresTime(value time.Time) time.Time {
+	return time.UnixMicro(value.UTC().UnixMicro()).UTC()
+}
+
+func verifyParityPopulation(db *gorm.DB, row database.ParityPopulation) error {
+	var ids []string
+	if err := json.Unmarshal([]byte(row.ContextDigestsJSON), &ids); err != nil || len(ids) == 0 || int64(len(ids)) != row.ExpectedContexts {
+		return fmt.Errorf("parity population context set is invalid")
+	}
+	canonicalIDs := append([]string(nil), ids...)
+	sort.Strings(canonicalIDs)
+	for i, id := range canonicalIDs {
+		if len(id) != 64 || (i > 0 && id == canonicalIDs[i-1]) {
+			return fmt.Errorf("parity population context set is invalid")
+		}
+	}
+	canonicalJSON, _ := json.Marshal(canonicalIDs)
+	var policy database.ParityAcceptancePolicy
+	if err := db.First(&policy, "id=?", row.PolicyID).Error; err != nil || verifyParityPolicy(policy) != nil || policy.ContentDigest != row.PolicyDigest {
+		return fmt.Errorf("parity population policy binding mismatch")
+	}
+	var snapshot database.Stage08FlagSnapshot
+	if err := db.First(&snapshot, "id=?", row.FlagSnapshotID).Error; err != nil || snapshot.ContentDigest != row.FlagSnapshotDigest {
+		return fmt.Errorf("parity population flag binding mismatch")
+	}
+	if _, err := verifyFlagSnapshot(snapshot); err != nil {
+		return err
+	}
+	canonical := struct {
+		Schema, Pair, Policy, PolicyDigest, Flag, FlagDigest, Attempt, Dataset, Universe string
+		Start, End                                                                       time.Time
+		IDs                                                                              json.RawMessage
+	}{"stage08-parity-population-v1", row.PairKey, row.PolicyID, row.PolicyDigest, row.FlagSnapshotID, row.FlagSnapshotDigest, row.CutoverAttemptID, row.DatasetVersion, row.UniverseVersion, postgresTime(row.WindowStart), postgresTime(row.WindowEnd), canonicalJSON}
+	digest, _, err := hash(canonical)
+	if err != nil || row.ID != digest || row.ContentDigest != digest {
+		return fmt.Errorf("parity population content digest mismatch")
+	}
+	return nil
+}
+
 func (s Service) BeginParityPopulation(ctx context.Context, pairKey, policyID, flagID string, contextIDs []string, windowStart, windowEnd time.Time, datasetVersion, universeVersion string) (database.ParityPopulation, cutover.ComparisonPolicy, error) {
 	var out database.ParityPopulation
 	if pairKey == "" || policyID == "" || flagID == "" || len(contextIDs) == 0 || len(contextIDs) > 10000 || !windowEnd.After(windowStart) {
@@ -494,8 +556,8 @@ func (s Service) BeginParityPopulation(ctx context.Context, pairKey, policyID, f
 	if err := s.DB.WithContext(ctx).First(&p, "id=?", policyID).Error; err != nil {
 		return out, cutover.ComparisonPolicy{}, err
 	}
-	if p.ContentDigest != p.ID {
-		return out, cutover.ComparisonPolicy{}, fmt.Errorf("parity policy integrity mismatch")
+	if err := verifyParityPolicy(p); err != nil {
+		return out, cutover.ComparisonPolicy{}, err
 	}
 	var snapshot database.Stage08FlagSnapshot
 	if err := s.DB.WithContext(ctx).First(&snapshot, "id=?", flagID).Error; err != nil {
@@ -516,9 +578,9 @@ func (s Service) BeginParityPopulation(ctx context.Context, pairKey, policyID, f
 		Schema, Pair, Policy, PolicyDigest, Flag, FlagDigest, Attempt, Dataset, Universe string
 		Start, End                                                                       time.Time
 		IDs                                                                              json.RawMessage
-	}{"stage08-parity-population-v1", pairKey, p.ID, p.ContentDigest, flagID, snapshot.ContentDigest, state.TransitionID, datasetVersion, universeVersion, windowStart.UTC(), windowEnd.UTC(), idsJSON}
+	}{"stage08-parity-population-v1", pairKey, p.ID, p.ContentDigest, flagID, snapshot.ContentDigest, state.TransitionID, datasetVersion, universeVersion, postgresTime(windowStart), postgresTime(windowEnd), idsJSON}
 	id, _, _ := hash(canonical)
-	out = database.ParityPopulation{ID: id, PairKey: pairKey, PolicyID: p.ID, PolicyDigest: p.ContentDigest, FlagSnapshotID: flagID, FlagSnapshotDigest: snapshot.ContentDigest, CutoverAttemptID: state.TransitionID, WindowStart: windowStart.UTC(), WindowEnd: windowEnd.UTC(), ExpectedContexts: int64(len(ids)), ContextDigestsJSON: string(idsJSON), DatasetVersion: datasetVersion, UniverseVersion: universeVersion, ContentDigest: id, CreatedAt: s.now()}
+	out = database.ParityPopulation{ID: id, PairKey: pairKey, PolicyID: p.ID, PolicyDigest: p.ContentDigest, FlagSnapshotID: flagID, FlagSnapshotDigest: snapshot.ContentDigest, CutoverAttemptID: state.TransitionID, WindowStart: postgresTime(windowStart), WindowEnd: postgresTime(windowEnd), ExpectedContexts: int64(len(ids)), ContextDigestsJSON: string(idsJSON), DatasetVersion: datasetVersion, UniverseVersion: universeVersion, ContentDigest: id, CreatedAt: s.now()}
 	if err := s.DB.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&out).Error; err != nil {
 		return out, cutover.ComparisonPolicy{}, err
 	}
@@ -532,6 +594,21 @@ func (s Service) BeginParityPopulation(ctx context.Context, pairKey, policyID, f
 func (s Service) PersistParityBound(ctx context.Context, binding ParityBinding, c cutover.Comparison, at time.Time) (database.ParityObservation, error) {
 	var population database.ParityPopulation
 	if err := s.DB.WithContext(ctx).First(&population, "id=?", binding.PopulationID).Error; err != nil {
+		return database.ParityObservation{}, err
+	}
+	if err := verifyParityPopulation(s.DB.WithContext(ctx), population); err != nil {
+		return database.ParityObservation{}, err
+	}
+	var acceptance database.ParityAcceptancePolicy
+	if err := s.DB.WithContext(ctx).First(&acceptance, "id=?", population.PolicyID).Error; err != nil {
+		return database.ParityObservation{}, err
+	}
+	var expected []cutover.ExpectedReason
+	if err := json.Unmarshal([]byte(acceptance.ExpectedReasonsJSON), &expected); err != nil {
+		return database.ParityObservation{}, fmt.Errorf("parity policy expected reasons corrupt: %w", err)
+	}
+	boundPolicy := cutover.ComparisonPolicy{QuantityToleranceBPS: acceptance.QuantityToleranceBPS, NotionalToleranceBPS: acceptance.NotionalToleranceBPS, Expected: expected}
+	if err := cutover.VerifyComparisonWithPolicy(c, boundPolicy); err != nil {
 		return database.ParityObservation{}, err
 	}
 	var allowed []string
@@ -626,8 +703,14 @@ func (s Service) EvaluateParity(populationID string) (ParityAggregate, error) {
 	if err := s.DB.First(&population, "id=?", populationID).Error; err != nil {
 		return ParityAggregate{}, err
 	}
+	if err := verifyParityPopulation(s.DB, population); err != nil {
+		return ParityAggregate{}, err
+	}
 	var p database.ParityAcceptancePolicy
 	if err := s.DB.First(&p, "id=?", population.PolicyID).Error; err != nil {
+		return ParityAggregate{}, err
+	}
+	if err := verifyParityPolicy(p); err != nil {
 		return ParityAggregate{}, err
 	}
 	var rows []database.ParityObservation
@@ -980,6 +1063,9 @@ func (s Service) transitionRequestDigest(tx *gorm.DB, state database.CutoverStat
 	if r.ParityPopulationID != "" {
 		var row database.ParityPopulation
 		if err := tx.First(&row, "id=?", r.ParityPopulationID).Error; err != nil {
+			return "", nil, err
+		}
+		if err := verifyParityPopulation(tx, row); err != nil {
 			return "", nil, err
 		}
 		populationDigest = row.ContentDigest

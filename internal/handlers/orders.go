@@ -8,7 +8,7 @@ import (
 
 func GetOrders(c *fiber.Ctx) error {
 	var orders []database.Order
-	if err := database.DB.Order("executed_at DESC").Find(&orders).Error; err != nil {
+	if err := database.DB.Order("executed_at DESC").Limit(200).Find(&orders).Error; err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "Failed to fetch orders"})
 	}
 	if orders == nil {

@@ -8,6 +8,9 @@ import (
 	"testing"
 	"time"
 	"trading-go/internal/database"
+	"trading-go/internal/testutil"
+
+	"gorm.io/gorm"
 )
 
 func TestStage01DirectCloseFailsClosedWithoutExactLedgerProjection(t *testing.T) {
@@ -16,9 +19,7 @@ func TestStage01DirectCloseFailsClosedWithoutExactLedgerProjection(t *testing.T)
 	cookie := loginCookie(t, application)
 
 	position := database.Position{Symbol: "DIRECTCLOSE", Amount: 2, AvgPrice: 100, Status: "open", OpenedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
-	if err := database.DB.Create(&position).Error; err != nil {
-		t.Fatal(err)
-	}
+	testutil.WithLedgerProjectionWrites(t, database.DB, func(tx *gorm.DB) error { return tx.Create(&position).Error })
 	var walletBefore database.Wallet
 	if err := database.DB.First(&walletBefore).Error; err != nil {
 		t.Fatal(err)
@@ -64,9 +65,7 @@ func TestStage01DirectDeleteIsFencedAndRetainsEconomicHistory(t *testing.T) {
 	cookie := loginCookie(t, application)
 
 	position := database.Position{Symbol: "DIRECTDELETE", Amount: 3, AvgPrice: 50, Status: "open", OpenedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
-	if err := database.DB.Create(&position).Error; err != nil {
-		t.Fatal(err)
-	}
+	testutil.WithLedgerProjectionWrites(t, database.DB, func(tx *gorm.DB) error { return tx.Create(&position).Error })
 	var walletBefore database.Wallet
 	if err := database.DB.First(&walletBefore).Error; err != nil {
 		t.Fatal(err)

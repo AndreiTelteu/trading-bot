@@ -689,6 +689,56 @@ func RunMigrations(db *gorm.DB) error {
 				return fmt.Errorf("Stage 08 feedback integrity evidence is intentionally retained")
 			},
 		},
+		{
+			ID: "202607181900_final_audit_projection_lifecycle_guards",
+			Migrate: func(tx *gorm.DB) error {
+				if err := tx.Exec(`
+					CREATE OR REPLACE FUNCTION guard_position_economics() RETURNS trigger AS $$
+					BEGIN
+					 IF current_setting('trading_bot.ledger_write',true) IS DISTINCT FROM 'on' THEN
+					   IF TG_OP IN ('INSERT','DELETE') THEN
+					     RAISE EXCEPTION 'position lifecycle requires ledger transaction';
+					   END IF;
+					   IF (OLD.amount,OLD.amount_exact,OLD.cost_basis_exact,OLD.realized_pn_l_exact,OLD.fees_exact,OLD.avg_price,OLD.status,OLD.opened_at,OLD.closed_at,OLD.close_reason)
+					      IS DISTINCT FROM
+					      (NEW.amount,NEW.amount_exact,NEW.cost_basis_exact,NEW.realized_pn_l_exact,NEW.fees_exact,NEW.avg_price,NEW.status,NEW.opened_at,NEW.closed_at,NEW.close_reason)
+					   THEN RAISE EXCEPTION 'position economic columns require ledger transaction'; END IF;
+					 END IF;
+					 IF TG_OP='DELETE' THEN RETURN OLD; END IF;
+					 RETURN NEW;
+					END; $$ LANGUAGE plpgsql;
+					CREATE OR REPLACE FUNCTION guard_wallet_economics() RETURNS trigger AS $$
+					BEGIN
+					 IF current_setting('trading_bot.ledger_write',true) IS DISTINCT FROM 'on' THEN
+					   IF TG_OP IN ('INSERT','DELETE') THEN
+					     RAISE EXCEPTION 'wallet lifecycle requires ledger transaction';
+					   END IF;
+					   IF (OLD.balance,OLD.balance_exact,OLD.currency) IS DISTINCT FROM (NEW.balance,NEW.balance_exact,NEW.currency) THEN
+					     RAISE EXCEPTION 'wallet economic columns require ledger transaction';
+					   END IF;
+					 END IF;
+					 IF TG_OP='DELETE' THEN RETURN OLD; END IF;
+					 RETURN NEW;
+					END; $$ LANGUAGE plpgsql;
+				`).Error; err != nil {
+					return err
+				}
+				if tx.Migrator().HasTable(&Position{}) {
+					if err := tx.Exec(`DROP TRIGGER IF EXISTS positions_economic_guard ON positions; CREATE TRIGGER positions_economic_guard BEFORE INSERT OR UPDATE OR DELETE ON positions FOR EACH ROW EXECUTE FUNCTION guard_position_economics();`).Error; err != nil {
+						return err
+					}
+				}
+				if tx.Migrator().HasTable(&Wallet{}) {
+					if err := tx.Exec(`DROP TRIGGER IF EXISTS wallets_economic_guard ON wallets; CREATE TRIGGER wallets_economic_guard BEFORE INSERT OR UPDATE OR DELETE ON wallets FOR EACH ROW EXECUTE FUNCTION guard_wallet_economics();`).Error; err != nil {
+						return err
+					}
+				}
+				return nil
+			},
+			Rollback: func(tx *gorm.DB) error {
+				return fmt.Errorf("final audit economic projection guards are intentionally retained")
+			},
+		},
 	})
 
 	return m.Migrate()

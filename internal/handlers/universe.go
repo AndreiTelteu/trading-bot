@@ -99,7 +99,7 @@ func GetUniverseSymbols(c *fiber.Ctx) error {
 		query = query.Where("is_excluded = ?", true)
 	}
 
-	result := query.Order("symbol ASC").Find(&symbols)
+	result := query.Order("symbol ASC").Limit(1000).Find(&symbols)
 	if result.Error != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "Failed to fetch universe symbols"})
 	}

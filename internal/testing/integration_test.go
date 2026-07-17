@@ -273,7 +273,7 @@ func TestGetPositions(t *testing.T) {
 		Status:   "open",
 		OpenedAt: time.Now(),
 	}
-	database.DB.Create(&position)
+	testutil.WithLedgerProjectionWrites(t, database.DB, func(tx *gorm.DB) error { return tx.Create(&position).Error })
 
 	req := httptest.NewRequest(http.MethodGet, "/api/positions", nil)
 	req.Header.Set("Cookie", cookie)
@@ -301,24 +301,26 @@ func TestGetPositionsReturnsLatest50ClosedFirst(t *testing.T) {
 		Status:   "open",
 		OpenedAt: baseTime,
 	}
-	if err := database.DB.Create(&openPosition).Error; err != nil {
-		t.Fatalf("Failed to create open position: %v", err)
-	}
-
-	for i := 0; i < 55; i++ {
-		closedAt := baseTime.Add(time.Duration(i) * time.Minute)
-		position := database.Position{
-			Symbol:   "CLOSED" + strconv.Itoa(i) + "USDT",
-			Amount:   1.0,
-			AvgPrice: 100.0,
-			Status:   "closed",
-			OpenedAt: closedAt.Add(-time.Hour),
-			ClosedAt: &closedAt,
+	testutil.WithLedgerProjectionWrites(t, database.DB, func(tx *gorm.DB) error {
+		if err := tx.Create(&openPosition).Error; err != nil {
+			return err
 		}
-		if err := database.DB.Create(&position).Error; err != nil {
-			t.Fatalf("Failed to create closed position %d: %v", i, err)
+		for i := 0; i < 55; i++ {
+			closedAt := baseTime.Add(time.Duration(i) * time.Minute)
+			position := database.Position{
+				Symbol:   "CLOSED" + strconv.Itoa(i) + "USDT",
+				Amount:   1.0,
+				AvgPrice: 100.0,
+				Status:   "closed",
+				OpenedAt: closedAt.Add(-time.Hour),
+				ClosedAt: &closedAt,
+			}
+			if err := tx.Create(&position).Error; err != nil {
+				return err
+			}
 		}
-	}
+		return nil
+	})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/positions", nil)
 	req.Header.Set("Cookie", cookie)

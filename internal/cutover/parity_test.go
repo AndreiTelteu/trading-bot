@@ -2,6 +2,7 @@ package cutover
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 )
@@ -59,5 +60,46 @@ func TestShadowBrokerSubmissionFailsRun(t *testing.T) {
 	})
 	if _, err := RunParity(context.Background(), DecisionContext{DecisionAt: at, MarketAt: at}, evil, safe, ComparisonPolicy{}); err == nil {
 		t.Fatal("malicious shadow broker attempt passed")
+	}
+}
+
+func TestVerifyComparisonRejectsCallerForgedDigest(t *testing.T) {
+	at := time.Unix(10, 0).UTC()
+	ctx := DecisionContext{ContextID: strings.Repeat("a", 64), SymbolID: "asset", VenueSymbol: "AAAUSDT", DecisionAt: at, MarketAt: at}
+	outcome := DecisionOutcome{Action: "skip", SymbolID: "asset", VenueSymbol: "AAAUSDT", Quantity: "0", Notional: "0", SignalAt: at, DecisionAt: at}
+	fixed := adapterFunc(func(context.Context, NonCapitalMode, DecisionContext, SubmitDenyBroker) (DecisionOutcome, error) {
+		return outcome, nil
+	})
+	comparison, err := RunParity(context.Background(), ctx, fixed, fixed, ComparisonPolicy{})
+	if err != nil || VerifyComparison(comparison) != nil {
+		t.Fatalf("genuine comparison rejected: %+v %v", comparison, err)
+	}
+	comparison.ContentDigest = strings.Repeat("f", 64)
+	if VerifyComparison(comparison) == nil {
+		t.Fatal("forged comparison digest accepted")
+	}
+}
+
+func TestVerifyComparisonWithPolicyRejectsRelabeledEvidence(t *testing.T) {
+	at := time.Unix(20, 0).UTC()
+	ctx := DecisionContext{ContextID: strings.Repeat("b", 64), SymbolID: "asset", VenueSymbol: "AAAUSDT", DecisionAt: at, MarketAt: at}
+	legacyOutcome := DecisionOutcome{Action: "buy", SymbolID: "asset", VenueSymbol: "AAAUSDT", Side: "buy", Quantity: "1", Notional: "10", SignalAt: at, DecisionAt: at}
+	candidateOutcome := legacyOutcome
+	candidateOutcome.Quantity = "2"
+	adapter := func(outcome DecisionOutcome) adapterFunc {
+		return func(context.Context, NonCapitalMode, DecisionContext, SubmitDenyBroker) (DecisionOutcome, error) {
+			return outcome, nil
+		}
+	}
+	permissive := ComparisonPolicy{Expected: []ExpectedReason{{Code: "quantity", LegacyValue: "1", CandidateValue: "2", PolicyVersion: "permissive-v1"}}}
+	comparison, err := RunParity(context.Background(), ctx, adapter(legacyOutcome), adapter(candidateOutcome), permissive)
+	if err != nil || comparison.Classification != "expected" {
+		t.Fatalf("fixture comparison: %+v err=%v", comparison, err)
+	}
+	if err := VerifyComparisonWithPolicy(comparison, permissive); err != nil {
+		t.Fatalf("bound policy rejected genuine evidence: %v", err)
+	}
+	if err := VerifyComparisonWithPolicy(comparison, ComparisonPolicy{}); err == nil {
+		t.Fatal("caller-relabeled expected divergence passed a stricter bound policy")
 	}
 }

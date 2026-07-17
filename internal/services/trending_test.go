@@ -12,6 +12,8 @@ import (
 	"trading-go/internal/database"
 	ledgerpkg "trading-go/internal/ledger"
 	"trading-go/internal/testutil"
+
+	"gorm.io/gorm"
 )
 
 func TestExecuteBuyFromTrendingInitializesAtrTrailingWithoutVolSizing(t *testing.T) {
@@ -123,7 +125,12 @@ func TestExecuteBuyFromTrendingRejectsUnreconciledClosedLegacyPosition(t *testin
 		ClosedAt:     &closedAt,
 		CloseReason:  &closeReason,
 	}
-	if err := database.DB.Create(&existing).Error; err != nil {
+	if err := database.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Exec("SET LOCAL trading_bot.ledger_write = 'on'").Error; err != nil {
+			return err
+		}
+		return tx.Create(&existing).Error
+	}); err != nil {
 		t.Fatalf("Failed to seed closed position: %v", err)
 	}
 

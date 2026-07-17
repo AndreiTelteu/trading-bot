@@ -26,29 +26,45 @@ type parityFixture struct {
 
 func TestFixtureParityAcrossBacktestPaperAndFencedLive(t *testing.T) {
 	fixture := loadParityFixture(t)
-	snapshot := parityContext(t, fixture, tradingcore.ExecutionPaper, false)
-	strategy := tradingcore.LegacyRuleStrategy{IDs: tradingcore.NewSequenceIDGenerator("decision", 1)}
-	strategyResult, err := strategy.Decide(context.Background(), snapshot)
-	if err != nil {
-		t.Fatal(err)
-	}
 	policy := parityPolicy(t, fixture)
-	riskResult, err := (tradingcore.PortfolioRiskEngine{}).Evaluate(context.Background(), strategyResult.Intents(), snapshot.Portfolio(), policy)
-	if err != nil {
-		t.Fatal(err)
+	type preBrokerSemantics struct {
+		Symbol, Side, Type, Quantity, Reason, Strategy, Policy, Dataset string
+		SignalAt, DecisionAt, CreatedAt                                 time.Time
+		RiskTrace                                                       []tradingcore.RiskTrace
 	}
-	if len(riskResult.Approved().Intents()) != 1 || len(riskResult.Rejected()) != 0 {
-		t.Fatalf("risk result approved=%d rejected=%v", len(riskResult.Approved().Intents()), riskResult.Rejected())
+	approvedByMode := map[tradingcore.ExecutionMode]tradingcore.DecisionBatch{}
+	semantics := map[tradingcore.ExecutionMode]preBrokerSemantics{}
+	for _, mode := range []tradingcore.ExecutionMode{tradingcore.ExecutionBacktest, tradingcore.ExecutionPaper, tradingcore.ExecutionFullLive} {
+		snapshot := parityContext(t, fixture, mode, false)
+		strategyResult, err := (tradingcore.LegacyRuleStrategy{IDs: tradingcore.NewSequenceIDGenerator("decision", 1)}).Decide(context.Background(), snapshot)
+		if err != nil {
+			t.Fatal(err)
+		}
+		riskResult, err := (tradingcore.PortfolioRiskEngine{}).Evaluate(context.Background(), strategyResult.Intents(), snapshot.Portfolio(), policy)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(riskResult.Approved().Intents()) != 1 || len(riskResult.Rejected()) != 0 {
+			t.Fatalf("mode=%s risk approved=%d rejected=%v", mode, len(riskResult.Approved().Intents()), riskResult.Rejected())
+		}
+		approved := riskResult.Approved()
+		intent := approved.Intents()[0]
+		approvedByMode[mode] = approved
+		semantics[mode] = preBrokerSemantics{intent.Instrument.VenueSymbol, string(intent.Side), string(intent.Type), intent.Quantity.Decimal().String(), intent.Reason, intent.Versions.Strategy, intent.Versions.Policy, intent.Versions.Dataset, intent.SignalAt, intent.DecisionAt, intent.CreatedAt, riskResult.Trace()}
 	}
+	if !reflect.DeepEqual(semantics[tradingcore.ExecutionBacktest], semantics[tradingcore.ExecutionPaper]) || !reflect.DeepEqual(semantics[tradingcore.ExecutionPaper], semantics[tradingcore.ExecutionFullLive]) {
+		t.Fatalf("pre-broker strategy/risk/order intent diverged by mode: %+v", semantics)
+	}
+	riskApproved := approvedByMode[tradingcore.ExecutionPaper]
 
 	clock := tradingcore.NewFixedClock(mustTime(t, fixture.DecisionAt).Add(time.Second))
 	backtest := tradingcore.NewBacktestBroker(clock, tradingcore.NewSequenceIDGenerator("broker", 1), tradingcore.CostModel{FeeBPS: fixture.FeeBPS, SlippageBPS: fixture.SlippageBPS, Version: "cost-v1"})
 	paper := tradingcore.NewPaperBroker(clock, tradingcore.NewSequenceIDGenerator("broker", 1), tradingcore.CostModel{FeeBPS: fixture.FeeBPS, SlippageBPS: fixture.SlippageBPS, Version: "cost-v1"})
-	backtestOutcome, err := backtest.Submit(context.Background(), riskResult.Approved())
+	backtestOutcome, err := backtest.Submit(context.Background(), riskApproved)
 	if err != nil {
 		t.Fatal(err)
 	}
-	paperOutcome, err := paper.Submit(context.Background(), riskResult.Approved())
+	paperOutcome, err := paper.Submit(context.Background(), riskApproved)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,14 +74,15 @@ func TestFixtureParityAcrossBacktestPaperAndFencedLive(t *testing.T) {
 	}
 
 	live := tradingcore.LiveBroker{}
-	requests, err := live.BuildRequests(riskResult.Approved())
+	liveApproved := approvedByMode[tradingcore.ExecutionFullLive]
+	requests, err := live.BuildRequests(liveApproved)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(requests) != 1 || requests[0].ClientOrderID != riskResult.Approved().Intents()[0].IdempotencyKey.String() || requests[0].Quantity != riskResult.Approved().Intents()[0].Quantity.Decimal().String() || requests[0].PolicyVersion != fixture.PolicyVersion {
+	if len(requests) != 1 || requests[0].ClientOrderID != liveApproved.Intents()[0].IdempotencyKey.String() || requests[0].Quantity != liveApproved.Intents()[0].Quantity.Decimal().String() || requests[0].PolicyVersion != fixture.PolicyVersion {
 		t.Fatalf("live request = %+v", requests)
 	}
-	liveOutcome, err := live.Submit(context.Background(), riskResult.Approved())
+	liveOutcome, err := live.Submit(context.Background(), liveApproved)
 	if err != nil {
 		t.Fatal(err)
 	}

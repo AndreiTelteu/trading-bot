@@ -129,6 +129,71 @@ func RunParity(ctx context.Context, captured DecisionContext, legacy, candidate 
 	return result, nil
 }
 
+// VerifyComparison proves that persisted parity evidence was derived from its
+// exact compact outcomes instead of trusting caller-supplied digest labels.
+func VerifyComparison(value Comparison) error {
+	if len(value.ContextID) != 64 || value.SubmitAttempts != 0 {
+		return fmt.Errorf("invalid parity context or forbidden submission attempts")
+	}
+	if value.Classification != "match" && value.Classification != "expected" && value.Classification != "unexplained" {
+		return fmt.Errorf("invalid parity classification")
+	}
+	leftJSON, err := canonicalJSON(value.Legacy)
+	if err != nil || value.LegacyDigest != digest(leftJSON) {
+		return fmt.Errorf("legacy parity outcome digest mismatch")
+	}
+	rightJSON, err := canonicalJSON(value.Candidate)
+	if err != nil || value.CandidateDigest != digest(rightJSON) {
+		return fmt.Errorf("candidate parity outcome digest mismatch")
+	}
+	codes := append([]string(nil), value.DivergenceCodes...)
+	reasons := append([]string(nil), value.ExpectedReasons...)
+	sort.Strings(codes)
+	sort.Strings(reasons)
+	if !bytes.Equal(mustJSON(codes), mustJSON(value.DivergenceCodes)) || !bytes.Equal(mustJSON(reasons), mustJSON(value.ExpectedReasons)) {
+		return fmt.Errorf("parity divergence evidence is not canonical")
+	}
+	content, err := canonicalJSON(struct {
+		Context        string
+		Left, Right    DecisionOutcome
+		Codes, Reasons []string
+		Class          string
+	}{value.ContextID, value.Legacy, value.Candidate, codes, reasons, value.Classification})
+	if err != nil || value.ContentDigest != digest(content) {
+		return fmt.Errorf("parity comparison content digest mismatch")
+	}
+	return nil
+}
+
+// VerifyComparisonWithPolicy also recomputes tolerance handling and the
+// expected/unexplained classification from the acceptance policy bound to the
+// population. A caller cannot relabel a genuine outcome pair as acceptable.
+func VerifyComparisonWithPolicy(value Comparison, policy ComparisonPolicy) error {
+	if err := VerifyComparison(value); err != nil {
+		return err
+	}
+	codes := compareOutcomes(value.Legacy, value.Candidate, policy)
+	var reasons []string
+	classification := "match"
+	if len(codes) > 0 {
+		for _, code := range codes {
+			if reason, ok := trustedExpected(code, value.Legacy, value.Candidate, policy.Expected); ok {
+				reasons = append(reasons, reason)
+			}
+		}
+		classification = "unexplained"
+		if len(reasons) == len(codes) {
+			classification = "expected"
+		}
+	}
+	sort.Strings(codes)
+	sort.Strings(reasons)
+	if classification != value.Classification || !bytes.Equal(mustJSON(codes), mustJSON(value.DivergenceCodes)) || !bytes.Equal(mustJSON(reasons), mustJSON(value.ExpectedReasons)) {
+		return fmt.Errorf("parity classification does not match bound policy")
+	}
+	return nil
+}
+
 func canonicalJSON(value any) ([]byte, error) { return json.Marshal(value) }
 func digest(value []byte) string              { sum := sha256.Sum256(value); return hex.EncodeToString(sum[:]) }
 func compareOutcomes(a, b DecisionOutcome, p ComparisonPolicy) []string {

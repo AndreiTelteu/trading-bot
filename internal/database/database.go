@@ -200,6 +200,12 @@ func SeedDataWithDefaults(defaultBalance float64, defaultCurrency string) error 
 	}
 
 	return DB.Transaction(func(tx *gorm.DB) error {
+		// Wallet/position lifecycle is database-guarded. Seeding is one atomic
+		// ledger boundary, so authorize projection writes before the wallet insert;
+		// seedLedgerBoundary appends the matching opening-capital event below.
+		if err := tx.Exec("SET LOCAL trading_bot.ledger_write = 'on'").Error; err != nil {
+			return err
+		}
 		wallet := Wallet{ID: 1, Balance: defaultBalance, Currency: defaultCurrency, AccountID: primaryLedgerAccount}
 		walletResult := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&wallet)
 		if err := walletResult.Error; err != nil {

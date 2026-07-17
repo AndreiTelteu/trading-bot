@@ -3,7 +3,7 @@ set -euo pipefail
 umask 077
 
 usage() {
-  echo "usage: STAGE08_SOURCE_SERVICE=<pg_service> STAGE08_MAINTENANCE_SERVICE=<pg_service> $0 --output /new/path/backup.dump --principal <trusted-operator>" >&2
+  echo "usage: STAGE08_SOURCE_SERVICE=<pg_service> STAGE08_MAINTENANCE_SERVICE=<pg_service> $0 --output /new/path/backup.dump [--principal <trusted-operator>] [--test-mode]" >&2
   exit 2
 }
 
@@ -11,14 +11,17 @@ source_service="${STAGE08_SOURCE_SERVICE:-}"
 maintenance_service="${STAGE08_MAINTENANCE_SERVICE:-}"
 output=""
 principal=""
+test_mode=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --output) output="${2:-}"; shift 2 ;;
     --principal) principal="${2:-}"; shift 2 ;;
+    --test-mode) test_mode=1; shift ;;
     *) usage ;;
   esac
 done
-[[ -n "$source_service" && -n "$maintenance_service" && -n "$output" && -n "$principal" ]] || usage
+[[ -n "$source_service" && -n "$maintenance_service" && -n "$output" ]] || usage
+if [[ "$test_mode" == 0 && -z "$principal" ]]; then usage; fi
 [[ "$output" = /* ]] || { echo "output must be an absolute path" >&2; exit 2; }
 [[ ! -e "$output" ]] || { echo "refusing to overwrite existing backup output" >&2; exit 4; }
 [[ -d "$(dirname "$output")" ]] || { echo "backup output parent does not exist" >&2; exit 4; }
@@ -32,6 +35,7 @@ work_dir="$(mktemp -d)"
 target_token="$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')"
 target_db="trading_bot_restore_${target_token}"
 target_created=0
+target_dropped=0
 verification_succeeded=0
 output_reserved=0
 cleanup() {
@@ -47,7 +51,12 @@ set +o noclobber
 chmod 600 "$output"
 
 source_db="$(psql "service=$source_service" -X -Atqc 'select current_database()')"
-[[ "$source_db" == *_test ]] || { echo "refusing a source database whose verified identity is not *_test" >&2; exit 4; }
+[[ "$source_db" == "trading_bot_test" ]] || { echo "refusing source database '$source_db'; exact trading_bot_test is required" >&2; exit 4; }
+maintenance_db="$(psql "service=$maintenance_service" -X -Atqc 'select current_database()')"
+[[ "$maintenance_db" == "postgres" ]] || { echo "maintenance service must resolve to postgres, got '$maintenance_db'" >&2; exit 4; }
+preexisting_databases="$(psql "service=$maintenance_service" -X -Atqc "SELECT COALESCE(json_agg(datname ORDER BY datname)::text,'[]') FROM pg_database")"
+target_exists="$(psql "service=$maintenance_service" -X -Atqc "SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname='$target_db')")"
+[[ "$target_exists" == "f" ]] || { echo "refusing preexisting restore target" >&2; exit 4; }
 createdb --maintenance-db="service=$maintenance_service" --template=template0 "$target_db"
 target_created=1
 target_conn="service=$maintenance_service dbname=$target_db"
@@ -75,12 +84,20 @@ source_after="$(printf '%s' "$source_after_json" | sed -n 's/.*"digest":"\([0-9a
 [[ "$source_before" == "$source_after" ]] || { echo "source changed during dump/isolated restore verification" >&2; exit 6; }
 [[ "$source_before" == "$target_fingerprint" ]] || { echo "canonical per-row database fingerprint mismatch" >&2; exit 7; }
 
+dropdb --maintenance-db="service=$maintenance_service" "$target_db"
+target_created=0
+target_dropped=1
+postexisting_databases="$(psql "service=$maintenance_service" -X -Atqc "SELECT COALESCE(json_agg(datname ORDER BY datname)::text,'[]') FROM pg_database")"
+[[ "$preexisting_databases" == "$postexisting_databases" ]] || { echo "database inventory changed outside the unique restore target" >&2; exit 8; }
+
 manifest="$work_dir/verification.json"
 verified_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 pg_dump_version="$(pg_dump --version | tr -d '\n')"
 pg_restore_version="$(pg_restore --version | tr -d '\n')"
 manifest_checksum="$(printf '%s|%s|%s|%s' "$source_before" "$dump_checksum" "$target_token" "$verified_at" | sha256sum | awk '{print $1}')"
 printf '{"SchemaVersion":"stage08-backup-verification-v2","SourceBefore":"%s","SourceAfter":"%s","TargetFingerprint":"%s","DumpChecksum":"%s","ManifestChecksum":"%s","TargetIdentityToken":"%s","ToolVersions":{"pg_dump":"%s","pg_restore":"%s"},"VerifiedAt":"%s"}\n' "$source_before" "$source_after" "$target_fingerprint" "$dump_checksum" "$manifest_checksum" "$target_token" "$pg_dump_version" "$pg_restore_version" "$verified_at" >"$manifest"
-DATABASE_URL="service=$source_service" GOCACHE="${STAGE08_GOCACHE:-/tmp/trading-bot-stage08-go-cache}" "$go_bin" run ./cmd/operations -action record-backup -manifest "$manifest" -principal "$principal" >/dev/null
+if [[ "$test_mode" == 0 ]]; then
+  DATABASE_URL="service=$source_service" GOCACHE="${STAGE08_GOCACHE:-/tmp/trading-bot-stage08-go-cache}" "$go_bin" run ./cmd/operations -action record-backup -manifest "$manifest" -principal "$principal" >/dev/null
+fi
 verification_succeeded=1
-printf '{"status":"verified","dump_checksum":"%s","canonical_digest":"%s"}\n' "$dump_checksum" "$source_before"
+printf '{"status":"verified","test_mode":%s,"source_database":"%s","target_database":"%s","target_dropped":%s,"preexisting_databases":%s,"postexisting_databases":%s,"dump_checksum":"%s","canonical_digest":"%s"}\n' "$test_mode" "$source_db" "$target_db" "$target_dropped" "$preexisting_databases" "$postexisting_databases" "$dump_checksum" "$source_before"

@@ -9,12 +9,30 @@ import (
 	"trading-go/internal/cutover"
 	"trading-go/internal/database"
 	"trading-go/internal/testutil"
+
+	"gorm.io/gorm"
 )
 
 type failingAlert struct{}
 
 func (failingAlert) Dispatch(context.Context, database.OperationalIncident) error {
 	return errors.New("channel unavailable")
+}
+
+type fixedParityAdapter struct{ outcome cutover.DecisionOutcome }
+
+func (a fixedParityAdapter) Decide(context.Context, cutover.NonCapitalMode, cutover.DecisionContext, cutover.SubmitDenyBroker) (cutover.DecisionOutcome, error) {
+	return a.outcome, nil
+}
+
+func genuineParity(t *testing.T, contextID string, at time.Time, policy cutover.ComparisonPolicy) cutover.Comparison {
+	t.Helper()
+	outcome := cutover.DecisionOutcome{Action: "skip", SymbolID: "asset", VenueSymbol: "AAAUSDT", Quantity: "0", Notional: "0", SignalAt: at, DecisionAt: at}
+	comparison, err := cutover.RunParity(context.Background(), cutover.DecisionContext{ContextID: contextID, SymbolID: "asset", VenueSymbol: "AAAUSDT", MarketAt: at, DecisionAt: at}, fixedParityAdapter{outcome}, fixedParityAdapter{outcome}, policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return comparison
 }
 
 func stage08DB(t *testing.T) (Service, string) {
@@ -107,11 +125,11 @@ func TestParityPersistenceThresholdsAndBounds(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx1, ctx2 := strings.Repeat("1", 64), strings.Repeat("2", 64)
-	population, _, err := service.BeginParityPopulation(context.Background(), "legacy:new", policy.ID, flagID, []string{ctx1, ctx2}, time.Now().Add(-time.Minute), time.Now(), "dataset-v1", "universe-v1")
+	population, comparisonPolicy, err := service.BeginParityPopulation(context.Background(), "legacy:new", policy.ID, flagID, []string{ctx1, ctx2}, time.Now().Add(-time.Minute), time.Now(), "dataset-v1", "universe-v1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	base := cutover.Comparison{ContextID: ctx1, LegacyDigest: strings.Repeat("1", 64), CandidateDigest: strings.Repeat("1", 64), ContentDigest: strings.Repeat("3", 64), Classification: "match"}
+	base := genuineParity(t, ctx1, time.Now().UTC(), comparisonPolicy)
 	if _, err := service.PersistParityBound(context.Background(), ParityBinding{PopulationID: population.ID}, base, time.Now()); err != nil {
 		t.Fatal(err)
 	}
@@ -122,14 +140,25 @@ func TestParityPersistenceThresholdsAndBounds(t *testing.T) {
 	if err != nil || aggregate.Accepted || aggregate.Failure != "insufficient_samples" {
 		t.Fatalf("insufficient samples passed: %+v %v", aggregate, err)
 	}
-	base.ContextID = ctx2
-	base.ContentDigest = strings.Repeat("4", 64)
+	base = genuineParity(t, ctx2, time.Now().UTC(), comparisonPolicy)
 	if _, err := service.PersistParityBound(context.Background(), ParityBinding{PopulationID: population.ID}, base, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	aggregate, err = service.EvaluateParity(population.ID)
 	if err != nil || !aggregate.Accepted {
 		t.Fatalf("matching threshold failed: %+v %v", aggregate, err)
+	}
+}
+
+func TestParityPopulationRejectsForgedPolicyDigest(t *testing.T) {
+	service, flagID := stage08DB(t)
+	forged := database.ParityAcceptancePolicy{ID: strings.Repeat("f", 64), SchemaVersion: cutover.ParitySchemaVersion, Name: "forged", MinimumSamples: 1, MinimumCoverageBPS: 1, ExpectedReasonsJSON: "[]", ContentDigest: strings.Repeat("f", 64), DeclaredBy: "attacker", DeclaredAt: time.Now().UTC()}
+	if err := service.DB.Create(&forged).Error; err != nil {
+		t.Fatal(err)
+	}
+	contextID := strings.Repeat("1", 64)
+	if _, _, err := service.BeginParityPopulation(context.Background(), "legacy:new", forged.ID, flagID, []string{contextID}, time.Now().Add(-time.Minute), time.Now(), "dataset", "universe"); err == nil {
+		t.Fatal("caller-forged parity policy was accepted")
 	}
 }
 
@@ -142,7 +171,12 @@ func TestBackfillPlanApprovalDigestAndRetry(t *testing.T) {
 	database.DB = db
 	now := time.Now().UTC()
 	wallet := database.Wallet{AccountID: "primary", Balance: 50, Currency: "USDT", CreatedAt: now, UpdatedAt: now}
-	if err := db.Create(&wallet).Error; err != nil {
+	if err := db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Exec("SET LOCAL trading_bot.ledger_write='on'").Error; err != nil {
+			return err
+		}
+		return tx.Create(&wallet).Error
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Create(&database.LedgerMigrationState{AccountID: "primary", Status: "pending_approval", UnresolvedJSON: "[]", CreatedAt: now, UpdatedAt: now}).Error; err != nil {
@@ -172,5 +206,34 @@ func TestBackfillPlanApprovalDigestAndRetry(t *testing.T) {
 	db.Model(&database.LedgerEvent{}).Count(&events)
 	if events != 1 {
 		t.Fatalf("events duplicated: %d", events)
+	}
+}
+
+func TestStage08JSONBNormalizationPreservesContentAddressedEvidence(t *testing.T) {
+	service, flagID := stage08DB(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	row, err := service.DeclarePrerequisiteEvidence(context.Background(), PrerequisiteEvidenceRequest{
+		EvidenceType:   "schema_deployed",
+		TargetStage:    "ledger_compare",
+		FlagSnapshotID: flagID,
+		WindowStart:    now.Add(-2 * time.Minute),
+		WindowEnd:      now.Add(-time.Minute),
+		Payload: map[string]any{
+			"context":  map[string]any{"versions": map[string]any{"strategy": "v1", "policy": "p1"}, "active_path": "legacy"},
+			"coverage": []any{map[string]any{"symbol": "BTCUSDT", "complete": true}},
+		},
+	}, "operator")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var loaded database.CutoverPrerequisiteEvidence
+	if err := service.DB.First(&loaded, "id=?", row.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyPrerequisiteEvidenceIntegrity(service.DB, loaded); err != nil {
+		t.Fatalf("jsonb-normalized evidence failed digest verification: %v payload=%s", err, loaded.PayloadJSON)
+	}
+	if loaded.ContentDigest != row.ContentDigest {
+		t.Fatalf("content digest changed across jsonb persistence: %s != %s", loaded.ContentDigest, row.ContentDigest)
 	}
 }

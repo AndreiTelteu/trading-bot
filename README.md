@@ -1,10 +1,10 @@
 # Trading Go Platform
 
-A production-ready cryptocurrency trading bot platform built with Go (Fiber) and React.
+A staged cryptocurrency research and paper-trading platform built with Go (Fiber), PostgreSQL, and React. Live exchange submission remains intentionally fenced pending operational cutover evidence and approval.
 
 ## Features
 
-- Real-time trading with Binance integration
+- Binance market-data integration; live order submission is fenced
 - Technical analysis indicators (RSI, MACD, Bollinger Bands, SMA, EMA)
 - AI-powered trading proposals
 - WebSocket live updates
@@ -13,9 +13,9 @@ A production-ready cryptocurrency trading bot platform built with Go (Fiber) and
 
 ## Requirements
 
-- Go 1.21+
-- Node.js 18+ (for frontend build)
-- SQLite3
+- Go 1.26.1 (repository verification toolchain)
+- Bun or Node.js 18+ (for the frontend build)
+- PostgreSQL 16
 
 ## Quick Start
 
@@ -101,17 +101,17 @@ Accepted date formats: `YYYY-MM-DD` or RFC3339.
 
 ### Positions
 - `GET /api/positions` - List all positions
-- `POST /api/positions` - Create position
+- `POST /api/positions` - Fenced; direct position creation is rejected
 - `POST /api/positions/:id/close` - Close position
-- `DELETE /api/positions/:symbol` - Delete position
+- `DELETE /api/positions/:symbol` - Fenced; immutable economic history is retained
 
 ### Orders
 - `GET /api/orders` - List orders
-- `POST /api/orders` - Create order
+- `POST /api/orders` - Fenced; orders originate from execution outcomes
 
 ### Trading
-- `POST /api/trading/buy` - Execute buy order
-- `POST /api/trading/sell` - Execute sell order
+- `POST /api/trading/buy` - Build and reject a fenced live buy request
+- `POST /api/trading/sell` - Build and reject a fenced live sell request
 - `POST /api/trading/update-prices` - Update prices
 
 ### Analysis
@@ -152,7 +152,7 @@ Key settings:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PORT` | `5001` | Server port |
-| `DATABASE_PATH` | `./trading.db` | SQLite database path |
+| `DATABASE_URL` | - | PostgreSQL connection URL |
 | `SECRET_KEY` | `default-secret-key` | Secret key for sessions |
 | `DEFAULT_BALANCE` | `400` | Default wallet balance |
 | `DEFAULT_CURRENCY` | `USDT` | Default trading currency |

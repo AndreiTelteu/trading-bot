@@ -72,6 +72,21 @@ func ResetPublicSchema(t *testing.T, db *gorm.DB) {
 	}
 }
 
+// WithLedgerProjectionWrites is for arranging legacy/projection fixtures in
+// tests that specifically exercise migration or read behavior. Production
+// economic writes must use the ledger service.
+func WithLedgerProjectionWrites(t *testing.T, db *gorm.DB, arrange func(*gorm.DB) error) {
+	t.Helper()
+	if err := db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Exec("SET LOCAL trading_bot.ledger_write='on'").Error; err != nil {
+			return err
+		}
+		return arrange(tx)
+	}); err != nil {
+		t.Fatalf("arrange ledger projection fixture: %v", err)
+	}
+}
+
 func truncatePublicTables(db *gorm.DB) error {
 	var tables []string
 	if err := db.Raw(`
