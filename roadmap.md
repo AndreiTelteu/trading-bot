@@ -92,14 +92,14 @@ Detailed plan: [`docs/reimplementation/stage-04-point-in-time-data.md`](docs/rei
 
 Detailed plan: [`docs/reimplementation/stage-05-benchmarks-baselines.md`](docs/reimplementation/stage-05-benchmarks-baselines.md)
 
-- [ ] Add cash and buy-and-hold benchmarks
-- [ ] Add BTC trend and equal-weight liquid-universe baselines
-- [ ] Add a simple cross-sectional momentum baseline
-- [ ] Compare all strategies at equal exposure and costs
-- [ ] Report excess return, turnover, concentration, and regime cohorts
-- [ ] Add synthetic-series and golden-metrics tests
-- [ ] Block optimization when a candidate does not beat its baseline robustly
-- [ ] Complete independent review and one feedback pass
+- [x] Add cash and buy-and-hold benchmarks
+- [x] Add BTC trend and equal-weight liquid-universe baselines
+- [x] Add a simple cross-sectional momentum baseline
+- [x] Compare all strategies at equal exposure and costs
+- [x] Report excess return, turnover, concentration, and regime cohorts
+- [x] Add synthetic-series and golden-metrics tests
+- [x] Block optimization when a candidate does not beat its baseline robustly
+- [x] Complete independent review and one feedback pass
 
 ## Stage 06 — Production candidate: trend/momentum with explicit risk
 
