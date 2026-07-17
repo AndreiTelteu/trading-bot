@@ -609,7 +609,7 @@ func buildBacktestArtifacts(ledger *backtestMemoryLedger, positions map[string]*
 		for _, intent := range run.Strategy.Intents().Intents() {
 			intents[intent.ID.String()] = intent
 			artifacts.Decisions = append(artifacts.Decisions, decisionFromIntent(intent, "strategy", "intent_generated"))
-			artifacts.Orders = append(artifacts.Orders, OrderArtifact{SignalAt: canonicalTime(intent.SignalAt), DecisionAt: canonicalTime(intent.DecisionAt), OrderAt: canonicalTime(intent.CreatedAt), Symbol: intent.Instrument.VenueSymbol, Side: string(intent.Side), Quantity: intent.Quantity.Decimal().String(), Reason: intent.Reason, Metadata: intent.Metadata()})
+			artifacts.Orders = append(artifacts.Orders, OrderArtifact{SchemaVersion: "order-artifact-v2", IntentID: intent.ID.String(), OrderID: intent.ID.String(), SignalAt: canonicalTime(intent.SignalAt), DecisionAt: canonicalTime(intent.DecisionAt), OrderAt: canonicalTime(intent.CreatedAt), Symbol: intent.Instrument.VenueSymbol, Side: string(intent.Side), Quantity: intent.Quantity.Decimal().String(), Reason: intent.Reason, Metadata: intent.Metadata(), ReasonMetadata: decodeReasonMetadata(intent.Metadata())})
 		}
 		for _, rejection := range run.Risk.Rejected() {
 			intent := intents[rejection.OrderID.String()]
@@ -625,8 +625,8 @@ func buildBacktestArtifacts(ledger *backtestMemoryLedger, positions map[string]*
 		}
 	}
 	for _, event := range ledger.events {
-		artifacts.Fills = append(artifacts.Fills, FillArtifact{SignalAt: canonicalTime(event.SignalAt), DecisionAt: canonicalTime(event.DecisionAt), OrderAt: canonicalTime(event.OrderAt), FillAt: canonicalTime(event.At), Symbol: event.Symbol, Side: event.Side, Quantity: event.Quantity, Price: event.Price, Fee: event.Fee, CostVersion: event.CostVersion})
-		artifacts.Ledger = append(artifacts.Ledger, LedgerArtifact{At: canonicalTime(event.At), Symbol: event.Symbol, Side: event.Side, Quantity: event.Quantity, Price: event.Price, Fee: event.Fee, CashAfter: event.CashAfter})
+		artifacts.Fills = append(artifacts.Fills, FillArtifact{SchemaVersion: "fill-artifact-v2", IntentID: event.IntentID, OrderID: event.OrderID, FillID: event.FillID, SignalAt: canonicalTime(event.SignalAt), DecisionAt: canonicalTime(event.DecisionAt), OrderAt: canonicalTime(event.OrderAt), FillAt: canonicalTime(event.At), Symbol: event.Symbol, Side: event.Side, Quantity: event.Quantity, Price: event.Price, Fee: event.Fee, CostVersion: event.CostVersion, Reason: event.ReasonMetadata})
+		artifacts.Ledger = append(artifacts.Ledger, LedgerArtifact{SchemaVersion: "ledger-artifact-v2", IntentID: event.IntentID, OrderID: event.OrderID, FillID: event.FillID, At: canonicalTime(event.At), Symbol: event.Symbol, Side: event.Side, Quantity: event.Quantity, Price: event.Price, Fee: event.Fee, CashAfter: event.CashAfter, Reason: event.ReasonMetadata})
 	}
 	at := time.Time{}
 	if len(timeline) > 0 {
@@ -657,7 +657,7 @@ func buildBacktestArtifacts(ledger *backtestMemoryLedger, positions map[string]*
 }
 
 func decisionFromIntent(intent tradingcore.OrderIntent, stage, code string) DecisionArtifact {
-	return DecisionArtifact{SignalAt: canonicalTime(intent.SignalAt), DecisionAt: canonicalTime(intent.DecisionAt), Symbol: intent.Instrument.VenueSymbol, Stage: stage, Code: code, Side: string(intent.Side), Quantity: intent.Quantity.Decimal().String(), Reason: intent.Reason, PolicyVersion: intent.Versions.Policy}
+	return DecisionArtifact{SchemaVersion: "decision-artifact-v2", IntentID: intent.ID.String(), SignalAt: canonicalTime(intent.SignalAt), DecisionAt: canonicalTime(intent.DecisionAt), Symbol: intent.Instrument.VenueSymbol, Stage: stage, Code: code, Side: string(intent.Side), Quantity: intent.Quantity.Decimal().String(), Reason: intent.Reason, ReasonMetadata: decodeReasonMetadata(intent.Metadata()), PolicyVersion: intent.Versions.Policy}
 }
 
 func canonicalTime(value time.Time) string {

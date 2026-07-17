@@ -110,7 +110,7 @@ func (intent OrderIntent) Validate() error {
 		return fmt.Errorf("unsupported quantity semantics %q", intent.QuantitySemantics)
 	}
 	switch intent.ExecutionMode {
-	case ExecutionResearch, ExecutionShadow, ExecutionPaper, ExecutionLimitedLive, ExecutionFullLive:
+	case ExecutionResearch, ExecutionShadow, ExecutionBacktest, ExecutionLiveDryRun, ExecutionPaper, ExecutionLimitedLive, ExecutionFullLive:
 	default:
 		return fmt.Errorf("unsupported execution mode %q", intent.ExecutionMode)
 	}

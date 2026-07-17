@@ -304,6 +304,8 @@ type StrategyDescriptor struct {
 	DecisionCadence     string                       `json:"decision_cadence"`
 	RebalanceCadence    string                       `json:"rebalance_cadence"`
 	WarmupBars          int                          `json:"warmup_bars"`
+	WarmupFormula       string                       `json:"warmup_formula,omitempty"`
+	MaximumWarmupBars   int                          `json:"maximum_warmup_bars,omitempty"`
 	Risk                StrategyRiskDeclaration      `json:"risk"`
 	Features            []StrategyFeatureDeclaration `json:"features,omitempty"`
 	FactorTraceSchema   string                       `json:"factor_trace_schema,omitempty"`
@@ -351,46 +353,69 @@ type RunManifest struct {
 }
 
 type DecisionArtifact struct {
-	SignalAt      string `json:"signal_at"`
-	DecisionAt    string `json:"decision_at"`
-	Symbol        string `json:"symbol"`
-	Code          string `json:"code"`
-	Stage         string `json:"stage"`
-	Side          string `json:"side,omitempty"`
-	Quantity      string `json:"quantity,omitempty"`
-	Reason        string `json:"reason,omitempty"`
-	PolicyVersion string `json:"policy_version,omitempty"`
+	SchemaVersion  string         `json:"schema_version,omitempty"`
+	IntentID       string         `json:"intent_id,omitempty"`
+	SignalAt       string         `json:"signal_at"`
+	DecisionAt     string         `json:"decision_at"`
+	Symbol         string         `json:"symbol"`
+	Code           string         `json:"code"`
+	Stage          string         `json:"stage"`
+	Side           string         `json:"side,omitempty"`
+	Quantity       string         `json:"quantity,omitempty"`
+	Reason         string         `json:"reason,omitempty"`
+	ReasonMetadata ReasonMetadata `json:"reason_metadata,omitempty"`
+	PolicyVersion  string         `json:"policy_version,omitempty"`
 }
 type OrderArtifact struct {
-	SignalAt   string            `json:"signal_at"`
-	DecisionAt string            `json:"decision_at"`
-	OrderAt    string            `json:"order_at"`
-	Symbol     string            `json:"symbol"`
-	Side       string            `json:"side"`
-	Quantity   string            `json:"quantity"`
-	Reason     string            `json:"reason,omitempty"`
-	Metadata   map[string]string `json:"metadata,omitempty"`
+	SchemaVersion  string            `json:"schema_version,omitempty"`
+	IntentID       string            `json:"intent_id,omitempty"`
+	OrderID        string            `json:"order_id,omitempty"`
+	SignalAt       string            `json:"signal_at"`
+	DecisionAt     string            `json:"decision_at"`
+	OrderAt        string            `json:"order_at"`
+	Symbol         string            `json:"symbol"`
+	Side           string            `json:"side"`
+	Quantity       string            `json:"quantity"`
+	Reason         string            `json:"reason,omitempty"`
+	Metadata       map[string]string `json:"metadata,omitempty"`
+	ReasonMetadata ReasonMetadata    `json:"reason_metadata,omitempty"`
 }
 type FillArtifact struct {
-	SignalAt    string `json:"signal_at"`
-	DecisionAt  string `json:"decision_at"`
-	OrderAt     string `json:"order_at"`
-	FillAt      string `json:"fill_at"`
-	Symbol      string `json:"symbol"`
-	Side        string `json:"side"`
-	Quantity    string `json:"quantity"`
-	Price       string `json:"price"`
-	Fee         string `json:"fee"`
-	CostVersion string `json:"cost_version"`
+	SchemaVersion string         `json:"schema_version,omitempty"`
+	IntentID      string         `json:"intent_id,omitempty"`
+	OrderID       string         `json:"order_id,omitempty"`
+	FillID        string         `json:"fill_id,omitempty"`
+	SignalAt      string         `json:"signal_at"`
+	DecisionAt    string         `json:"decision_at"`
+	OrderAt       string         `json:"order_at"`
+	FillAt        string         `json:"fill_at"`
+	Symbol        string         `json:"symbol"`
+	Side          string         `json:"side"`
+	Quantity      string         `json:"quantity"`
+	Price         string         `json:"price"`
+	Fee           string         `json:"fee"`
+	CostVersion   string         `json:"cost_version"`
+	Reason        ReasonMetadata `json:"reason_metadata,omitempty"`
 }
 type LedgerArtifact struct {
-	At        string `json:"at"`
-	Symbol    string `json:"symbol"`
-	Side      string `json:"side"`
-	Quantity  string `json:"quantity"`
-	Price     string `json:"price"`
-	Fee       string `json:"fee"`
-	CashAfter string `json:"cash_after"`
+	SchemaVersion string         `json:"schema_version,omitempty"`
+	IntentID      string         `json:"intent_id,omitempty"`
+	OrderID       string         `json:"order_id,omitempty"`
+	FillID        string         `json:"fill_id,omitempty"`
+	At            string         `json:"at"`
+	Symbol        string         `json:"symbol"`
+	Side          string         `json:"side"`
+	Quantity      string         `json:"quantity"`
+	Price         string         `json:"price"`
+	Fee           string         `json:"fee"`
+	CashAfter     string         `json:"cash_after"`
+	Reason        ReasonMetadata `json:"reason_metadata,omitempty"`
+}
+
+type ReasonMetadata struct {
+	SchemaVersion string   `json:"schema_version,omitempty"`
+	Primary       string   `json:"primary,omitempty"`
+	Concurrent    []string `json:"concurrent,omitempty"`
 }
 type ExposureArtifact struct {
 	At        string `json:"at"`
@@ -454,6 +479,7 @@ type Trade struct {
 	ModelVersion         string
 	PredictedProbability *float64
 	PredictedEV          *float64
+	ReasonMetadata       ReasonMetadata
 }
 
 type EquityPoint struct {

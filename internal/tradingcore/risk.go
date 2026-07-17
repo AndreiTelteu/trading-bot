@@ -61,7 +61,7 @@ func (PortfolioRiskEngine) Evaluate(_ context.Context, batch DecisionBatch, port
 		code := RejectionCode("")
 		price, hasPrice := intentPrice(intent, portfolio)
 		switch {
-		case intent.ExecutionMode == ExecutionResearch || intent.ExecutionMode == ExecutionShadow:
+		case intent.ExecutionMode == ExecutionResearch || intent.ExecutionMode == ExecutionShadow || intent.ExecutionMode == ExecutionLiveDryRun:
 			code = RiskExecutionNotAuthorized
 		case !hasPrice:
 			code = RiskMissingPrice

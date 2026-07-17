@@ -1,6 +1,9 @@
 package backtest
 
 import (
+	"crypto/sha256"
+	"encoding/json"
+	"fmt"
 	"reflect"
 	"testing"
 	"time"
@@ -140,7 +143,7 @@ func TestTrendMomentumRegimesMissingWarmupAndExitPrecedence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(plan.Diagnostics) != 1 || plan.Diagnostics[0].Code != DiagnosticStaleEvidence {
+	if len(plan.Diagnostics) != 1 || plan.Diagnostics[0].Code != DiagnosticFeatureBucket {
 		t.Fatalf("stale evidence=%+v", plan.Diagnostics)
 	}
 }
@@ -226,14 +229,28 @@ func TestTrendMomentumComparisonPreservesBaselinesMetadataAndGovernance(t *testi
 		t.Fatalf("governance=%+v", comparison.Governance)
 	}
 	result := comparison.Results[StrategyTrendMomentumCandidate]
-	if result.Manifest.PromotionAllowed || result.Manifest.ExecutionIntent != "research" || len(result.Factors) == 0 || len(result.Sensitivity) != 1 || !result.Metrics.Reconciled {
+	if result.Manifest.PromotionAllowed || result.Manifest.ExecutionIntent != "backtest" || len(result.Factors) == 0 || len(result.Sensitivity) != len(stage06SensitivityGrid) || !result.Metrics.Reconciled {
 		t.Fatalf("candidate evidence=%+v factors=%d sensitivity=%+v", result.Manifest, len(result.Factors), result.Sensitivity)
 	}
-	if result.Parity == nil || !reflect.DeepEqual(result.Parity.BacktestApproved, result.Parity.PaperShadowApproved) || len(result.Parity.LiveDryRunRequests) != len(result.Parity.BacktestApproved) || result.Parity.ExternalSubmissionPerformed {
+	seenSensitivity := map[string]bool{}
+	for _, row := range result.Sensitivity {
+		if seenSensitivity[row.ID] || row.Digest == "" || row.Parameters["variant"] != row.Ablation || row.RiskPolicy["policy_version"] == "" || row.Metrics.TotalCosts != row.TotalCosts || row.Metrics.Turnover != row.Turnover {
+			t.Fatalf("incomplete or duplicate sensitivity row=%+v", row)
+		}
+		seenSensitivity[row.ID] = true
+		copyRow := row
+		copyRow.Digest = ""
+		encodedRow, _ := json.Marshal(copyRow)
+		want := sha256.Sum256(encodedRow)
+		if row.Digest != fmt.Sprintf("%x", want[:]) {
+			t.Fatalf("sensitivity digest is not content bound: row=%s", row.ID)
+		}
+	}
+	if result.Parity == nil || !equalStage06EconomicSemantics(result.Parity.BacktestApproved, result.Parity.PaperShadowApproved) || len(result.Parity.LiveDryRunRequests) != len(result.Parity.BacktestApproved) || result.Parity.ExternalSubmissionPerformed {
 		t.Fatalf("parity=%+v", result.Parity)
 	}
 	for _, code := range result.Parity.LiveFenceCodes {
-		if code != "exchange_execution_fenced" {
+		if code != string(tradingcore.RiskExecutionNotAuthorized) {
 			t.Fatalf("live fence=%v", result.Parity.LiveFenceCodes)
 		}
 	}

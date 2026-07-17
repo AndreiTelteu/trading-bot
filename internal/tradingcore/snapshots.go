@@ -167,6 +167,8 @@ type ExecutionMode string
 const (
 	ExecutionResearch    ExecutionMode = "research"
 	ExecutionShadow      ExecutionMode = "shadow"
+	ExecutionBacktest    ExecutionMode = "backtest_simulation"
+	ExecutionLiveDryRun  ExecutionMode = "live_dry_run"
 	ExecutionPaper       ExecutionMode = "paper"
 	ExecutionLimitedLive ExecutionMode = "limited_live"
 	ExecutionFullLive    ExecutionMode = "full_live"
@@ -222,7 +224,7 @@ func NewPortfolioSnapshot(asOf time.Time, accountID AccountID, mode ExecutionMod
 		return PortfolioSnapshot{}, fmt.Errorf("account id is required")
 	}
 	switch mode {
-	case ExecutionResearch, ExecutionShadow, ExecutionPaper, ExecutionLimitedLive, ExecutionFullLive:
+	case ExecutionResearch, ExecutionShadow, ExecutionBacktest, ExecutionLiveDryRun, ExecutionPaper, ExecutionLimitedLive, ExecutionFullLive:
 	default:
 		return PortfolioSnapshot{}, fmt.Errorf("unsupported execution mode %q", mode)
 	}

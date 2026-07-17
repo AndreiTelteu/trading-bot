@@ -2,6 +2,7 @@ package backtest
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -127,31 +128,45 @@ func runSharedBacktestEntry(ledger *backtestMemoryLedger, config BacktestConfig,
 
 type backtestLedgerEvent struct {
 	Side, Symbol, Quantity, Price, Fee, CostVersion, Reason string
+	IntentID, OrderID, FillID                               string
+	ReasonMetadata                                          ReasonMetadata
 	ExecutionReferencePrice                                 string
 	SignalAt, DecisionAt, OrderAt, At                       time.Time
 	CashAfter                                               string
 }
 type backtestMemoryLedger struct {
-	cash                       float64
-	positions                  map[string]*positionState
-	trades                     []Trade
-	events                     []backtestLedgerEvent
-	turnover                   float64
-	runs                       int
-	observations               []tradingcore.Observation
-	config                     BacktestConfig
-	runRecords                 []backtestRunRecord
-	stage06PaperShadowApproved []Stage06OrderSemantic
-	evidence                   RunEvidence
+	cash                  float64
+	positions             map[string]*positionState
+	trades                []Trade
+	events                []backtestLedgerEvent
+	turnover              float64
+	runs                  int
+	observations          []tradingcore.Observation
+	config                BacktestConfig
+	runRecords            []backtestRunRecord
+	allocationDiagnostics []StrategyTraceDiagnostic
+	evidence              RunEvidence
 }
 
 type backtestRunRecord struct {
 	Result               tradingcore.RunResult
 	SignalAt, DecisionAt time.Time
+	Snapshot             tradingcore.DecisionContext
+	Policy               tradingcore.RiskPolicy
+	Strategy             tradingcore.Strategy
 }
 
 func (ledger *backtestMemoryLedger) recordRun(result tradingcore.RunResult, signalAt, decisionAt time.Time) {
-	ledger.runRecords = append(ledger.runRecords, backtestRunRecord{result, signalAt, decisionAt})
+	ledger.runRecords = append(ledger.runRecords, backtestRunRecord{Result: result, SignalAt: signalAt, DecisionAt: decisionAt})
+	ledger.recordEvidence(result)
+}
+
+func (ledger *backtestMemoryLedger) recordStage06Run(result tradingcore.RunResult, signalAt, decisionAt time.Time, snapshot tradingcore.DecisionContext, policy tradingcore.RiskPolicy, strategy tradingcore.Strategy) {
+	ledger.runRecords = append(ledger.runRecords, backtestRunRecord{Result: result, SignalAt: signalAt, DecisionAt: decisionAt, Snapshot: snapshot, Policy: policy, Strategy: strategy})
+	ledger.recordEvidence(result)
+}
+
+func (ledger *backtestMemoryLedger) recordEvidence(result tradingcore.RunResult) {
 	ledger.evidence.StrategyNoActions += len(result.Strategy.NoActions())
 	ledger.evidence.StrategyIntents += len(result.Strategy.Intents().Intents())
 	ledger.evidence.RiskRejections += len(result.Risk.Rejected())
@@ -243,6 +258,7 @@ func (ledger *backtestMemoryLedger) RecordBrokerOutcome(_ context.Context, appro
 		quantity, price, fee := fill.Quantity.Decimal().Float64(), fill.Price.Decimal().Float64(), fill.Fee.Decimal().Float64()
 		symbol := fill.Instrument.VenueSymbol
 		metadata := intent.Metadata()
+		reasonMetadata := decodeReasonMetadata(metadata)
 		ledger.turnover += quantity * price
 		if intent.Side == tradingcore.Buy {
 			ledger.cash -= quantity*price + fee
@@ -259,16 +275,22 @@ func (ledger *backtestMemoryLedger) RecordBrokerOutcome(_ context.Context, appro
 			ledger.cash += quantity*price - fee
 			entryFee := pos.EntryFee * quantity / pos.Size
 			pnl := (price-pos.EntryPrice)*quantity - entryFee - fee
-			ledger.trades = append(ledger.trades, Trade{Symbol: symbol, EntryTime: pos.EntryTime, ExitTime: fill.FilledAt, EntryPrice: pos.EntryPrice, ExitPrice: price, Size: quantity, Pnl: pnl, PnlPercent: pnl / (pos.EntryPrice * quantity) * 100, Reason: intent.Reason, HoldBars: pos.BarsHeld, EntryRank: pos.EntryRank, RegimeState: pos.RegimeState, BreadthRatio: pos.BreadthRatio, UniverseMode: ledger.config.UniverseMode, PolicyVersion: intent.Versions.Policy, RolloutState: ledger.config.Governance.RolloutState, ExperimentID: ledger.config.Governance.ExperimentID, ModelVersion: pos.ModelVersion, PredictedProbability: cloneFloat64Ptr(pos.PredictedProb), PredictedEV: cloneFloat64Ptr(pos.PredictedEV)})
+			ledger.trades = append(ledger.trades, Trade{Symbol: symbol, EntryTime: pos.EntryTime, ExitTime: fill.FilledAt, EntryPrice: pos.EntryPrice, ExitPrice: price, Size: quantity, Pnl: pnl, PnlPercent: pnl / (pos.EntryPrice * quantity) * 100, Reason: intent.Reason, ReasonMetadata: reasonMetadata, HoldBars: pos.BarsHeld, EntryRank: pos.EntryRank, RegimeState: pos.RegimeState, BreadthRatio: pos.BreadthRatio, UniverseMode: ledger.config.UniverseMode, PolicyVersion: intent.Versions.Policy, RolloutState: ledger.config.Governance.RolloutState, ExperimentID: ledger.config.Governance.ExperimentID, ModelVersion: pos.ModelVersion, PredictedProbability: cloneFloat64Ptr(pos.PredictedProb), PredictedEV: cloneFloat64Ptr(pos.PredictedEV)})
 			pos.Size -= quantity
 			pos.EntryFee -= entryFee
 			if pos.Size <= 1e-12 {
 				delete(ledger.positions, symbol)
 			}
 		}
-		ledger.events = append(ledger.events, backtestLedgerEvent{Side: string(intent.Side), Symbol: symbol, Quantity: fill.Quantity.Decimal().String(), Price: fill.Price.Decimal().String(), Fee: fill.Fee.Decimal().String(), CostVersion: fill.CostModelVersion, ExecutionReferencePrice: metadata["execution_reference_price"], Reason: intent.Reason, SignalAt: intent.SignalAt, DecisionAt: intent.DecisionAt, OrderAt: fill.OrderedAt, At: fill.FilledAt, CashAfter: decimalString(ledger.cash)})
+		ledger.events = append(ledger.events, backtestLedgerEvent{Side: string(intent.Side), Symbol: symbol, Quantity: fill.Quantity.Decimal().String(), Price: fill.Price.Decimal().String(), Fee: fill.Fee.Decimal().String(), CostVersion: fill.CostModelVersion, ExecutionReferencePrice: metadata["execution_reference_price"], Reason: intent.Reason, IntentID: intent.ID.String(), OrderID: fill.OrderID.String(), FillID: fill.ID.String(), ReasonMetadata: reasonMetadata, SignalAt: intent.SignalAt, DecisionAt: intent.DecisionAt, OrderAt: fill.OrderedAt, At: fill.FilledAt, CashAfter: decimalString(ledger.cash)})
 	}
 	return nil
+}
+
+func decodeReasonMetadata(metadata map[string]string) ReasonMetadata {
+	result := ReasonMetadata{SchemaVersion: metadata["reason_schema"], Primary: metadata["primary_reason"]}
+	_ = json.Unmarshal([]byte(metadata["concurrent_reasons"]), &result.Concurrent)
+	return result
 }
 func metadataFloat64(values map[string]string, key string) *float64 {
 	raw := values[key]

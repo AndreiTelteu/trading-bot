@@ -43,6 +43,11 @@ const (
 	DiagnosticExecutionFenced       StrategyDiagnosticCode = "research_execution_fenced"
 	DiagnosticStaleEvidence         StrategyDiagnosticCode = "stale_strategy_evidence"
 	DiagnosticTurnoverBudget        StrategyDiagnosticCode = "turnover_budget_exhausted"
+	DiagnosticUniverseIdentity      StrategyDiagnosticCode = "point_in_time_universe_identity_invalid"
+	DiagnosticFeatureBucket         StrategyDiagnosticCode = "common_feature_bucket_missing"
+	DiagnosticAchievedAllocation    StrategyDiagnosticCode = "achieved_allocation_out_of_bounds"
+	DiagnosticAllocationReconciled  StrategyDiagnosticCode = "achieved_allocation_reconciled"
+	DiagnosticIntentRuntime         StrategyDiagnosticCode = "execution_intent_runtime_mismatch"
 )
 
 type StrategyDiagnosticError struct {
@@ -185,6 +190,13 @@ func validateStrategyDescriptor(descriptor StrategyDescriptor) error {
 		if feature.Name == "" || feature.Timeframe == "" || feature.WarmupBars < 1 || feature.TraceField == "" {
 			return fmt.Errorf("strategy feature declarations must be explicit")
 		}
+		allowedTraceFields := map[string]bool{"long_mean": true, "lookback_returns": true, "absolute_trend": true, "realized_volatility": true}
+		if !allowedTraceFields[feature.TraceField] {
+			return fmt.Errorf("strategy feature %s declares unknown trace field %s", feature.Name, feature.TraceField)
+		}
+	}
+	if descriptor.ID == StrategyTrendMomentumCandidate && (descriptor.WarmupFormula != "16*max(lookback_bars+1,trend_bars,regime_bars)" || descriptor.MaximumWarmupBars != 976) {
+		return fmt.Errorf("candidate warmup formula or maximum is inconsistent")
 	}
 	roles := map[string]bool{"decision": true, "execution": true, "benchmark": true}
 	frames := map[string]bool{"1m": true, "15m": true, "1h": true, "1d": true}
@@ -418,7 +430,7 @@ func newDefaultStrategyRegistry() *StrategyRegistry {
 		{SchemaVersion: StrategyDescriptorSchemaVersion, ID: StrategyEqualWeightID, Version: "1.0.0", Description: "Equal-weight all eligible members in each complete persisted point-in-time liquid-universe snapshot.", RequiredData: decision15m, DecisionCadence: "15m", RebalanceCadence: "24h", WarmupBars: 1, Risk: sharedRisk, Baseline: true, Parameters: []StrategyParameterSpec{{Name: "rebalance", Type: "duration", Description: "Minimum interval between rebalances.", Default: "24h"}, {Name: "target_gross", Type: "decimal", Description: "Total long gross exposure fraction.", Default: "1", Minimum: floatPointer(0), Maximum: floatPointer(1)}, {Name: "final_policy", Type: "enum", Description: "Final valuation policy.", Default: "liquidate", Enum: []string{"mark_to_market", "liquidate"}}}},
 		{SchemaVersion: StrategyDescriptorSchemaVersion, ID: StrategyMomentumID, Version: "1.0.0", Description: "Rank eligible point-in-time members by one trailing close-to-close return; select positive top-N with symbol-ascending deterministic ties.", RequiredData: decision15m, DecisionCadence: "15m", RebalanceCadence: "24h", WarmupBars: 20, Risk: sharedRisk, Baseline: true, Parameters: []StrategyParameterSpec{{Name: "lookback_bars", Type: "integer", Description: "Completed-bar close return lookback.", Default: "20", Minimum: floatPointer(1)}, {Name: "top_n", Type: "integer", Description: "Maximum number of positive-momentum assets.", Default: "3", Minimum: floatPointer(1)}, {Name: "rebalance", Type: "duration", Description: "Minimum interval between ranks.", Default: "24h"}, {Name: "target_gross", Type: "decimal", Description: "Total long gross exposure fraction.", Default: "1", Minimum: floatPointer(0), Maximum: floatPointer(1)}, {Name: "final_policy", Type: "enum", Description: "Final valuation policy.", Default: "liquidate", Enum: []string{"mark_to_market", "liquidate"}}}},
 		{SchemaVersion: StrategyDescriptorSchemaVersion, ID: StrategyLegacyCompatibility, Version: "1.0.0", Description: "Legacy composite indicator voting retained only as compatibility evidence; it is not promotion evidence.", RequiredData: legacyData, BenchmarkRequired: true, DecisionCadence: "15m", RebalanceCadence: "15m", WarmupBars: 120, Risk: sharedRisk, Baseline: true, LegacyCompatibility: true},
-		{SchemaVersion: StrategyDescriptorSchemaVersion, ID: StrategyTrendMomentumCandidate, Version: "1.0.0", Description: "Research-only long-only hypothesis: own top relative-momentum eligible assets with positive absolute trend only in a supportive completed-data benchmark regime.", RequiredData: candidateData, BenchmarkRequired: true, DecisionCadence: "4h", RebalanceCadence: "24h", WarmupBars: 496, Risk: candidateRisk, FactorTraceSchema: "trend-momentum-factor-trace-v1", ResearchOnly: true, ExecutionIntents: []string{"research", "shadow", "backtest", "live_dry_run"}, AblationVariants: []string{"absolute_trend_only", "relative_momentum_only", "combined"}, Features: []StrategyFeatureDeclaration{{Name: "benchmark_regime_sma", Timeframe: "4h", WarmupBars: 30, TraceField: "benchmark_long_sma"}, {Name: "relative_momentum", Timeframe: "4h", WarmupBars: 31, TraceField: "lookback_returns"}, {Name: "asset_absolute_trend", Timeframe: "4h", WarmupBars: 20, TraceField: "absolute_trend"}, {Name: "realized_volatility", Timeframe: "4h", WarmupBars: 31, TraceField: "realized_volatility"}}, Parameters: []StrategyParameterSpec{
+		{SchemaVersion: StrategyDescriptorSchemaVersion, ID: StrategyTrendMomentumCandidate, Version: "1.0.0", Description: "Research-only long-only hypothesis: own top relative-momentum eligible assets with positive absolute trend only in a supportive completed-data benchmark regime.", RequiredData: candidateData, BenchmarkRequired: true, DecisionCadence: "4h", RebalanceCadence: "24h", WarmupBars: 496, WarmupFormula: "16*max(lookback_bars+1,trend_bars,regime_bars)", MaximumWarmupBars: 976, Risk: candidateRisk, FactorTraceSchema: "trend-momentum-factor-trace-v1", ResearchOnly: true, ExecutionIntents: []string{"research", "shadow", "backtest", "live_dry_run"}, AblationVariants: []string{"absolute_trend_only", "relative_momentum_only", "combined"}, Features: []StrategyFeatureDeclaration{{Name: "benchmark_regime_sma", Timeframe: "4h", WarmupBars: 30, TraceField: "long_mean"}, {Name: "relative_momentum", Timeframe: "4h", WarmupBars: 31, TraceField: "lookback_returns"}, {Name: "asset_absolute_trend", Timeframe: "4h", WarmupBars: 20, TraceField: "absolute_trend"}, {Name: "realized_volatility", Timeframe: "4h", WarmupBars: 31, TraceField: "realized_volatility"}}, Parameters: []StrategyParameterSpec{
 			{Name: "variant", Type: "enum", Description: "Pre-registered ablation identity.", Default: "combined", Enum: []string{"absolute_trend_only", "relative_momentum_only", "combined"}},
 			{Name: "vol_normalization", Type: "enum", Description: "Pre-registered volatility normalization switch.", Default: "true", Enum: []string{"false", "true"}},
 			{Name: "lookback_bars", Type: "enum", Description: "Completed 4h momentum lookback.", Default: "30", Enum: []string{"20", "30", "60"}},
@@ -438,6 +450,8 @@ func newDefaultStrategyRegistry() *StrategyRegistry {
 			{Name: "vol_floor", Type: "decimal", Description: "Realized-volatility sizing floor.", Default: "0.02", Minimum: floatPointer(0.005), Maximum: floatPointer(0.2)},
 			{Name: "turnover_budget", Type: "decimal", Description: "Per-rebalance one-way turnover fraction.", Default: "0.25", Minimum: floatPointer(0), Maximum: floatPointer(1)},
 			{Name: "skip_delta", Type: "decimal", Description: "Immaterial target-weight delta fraction.", Default: "0.005", Minimum: floatPointer(0), Maximum: floatPointer(0.05)},
+			{Name: "execution_gap_reserve", Type: "decimal", Description: "Causal decision-price reserve for adverse next-event gaps.", Default: "0.1", Minimum: floatPointer(0), Maximum: floatPointer(0.25)},
+			{Name: "allocation_tolerance", Type: "decimal", Description: "Maximum achieved exposure overshoot caused by execution gaps.", Default: "0.02", Minimum: floatPointer(0), Maximum: floatPointer(0.1)},
 			{Name: "hard_stop", Type: "decimal", Description: "Causal close-based hard loss fraction; zero disables.", Default: "0.12", Minimum: floatPointer(0), Maximum: floatPointer(0.25)},
 			{Name: "include_shortlist", Type: "enum", Description: "Include explicit shortlist alongside active eligible members.", Default: "true", Enum: []string{"false", "true"}},
 			{Name: "execution_intent", Type: "enum", Description: "Research fence intent.", Default: "research", Enum: []string{"research", "shadow", "backtest", "live_dry_run", "paper_capital", "live_submit", "promotion"}},
