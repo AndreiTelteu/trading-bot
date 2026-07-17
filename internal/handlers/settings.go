@@ -1,8 +1,10 @@
 package handlers
 
 import (
+	"fmt"
 	"strings"
 	"trading-go/internal/database"
+	"trading-go/internal/operations"
 	"trading-go/internal/services"
 
 	"github.com/gofiber/fiber/v2"
@@ -33,6 +35,7 @@ func UpdateSettings(c *fiber.Ctx) error {
 	}
 	for _, req := range requests {
 		if authorityAffectingSetting(req.Key) {
+			operations.RecordGovernanceBypass(fmt.Errorf("generic settings mutation attempted for %s", req.Key))
 			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "authority-affecting settings are immutable through the generic API; create a new research experiment"})
 		}
 	}

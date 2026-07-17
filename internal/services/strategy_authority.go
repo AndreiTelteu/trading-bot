@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"trading-go/internal/cutover"
 	"trading-go/internal/database"
 	"trading-go/internal/validation"
 )
@@ -27,6 +28,11 @@ func ResolveStrategyAuthority(settings map[string]string) error {
 			return nil
 		}
 		return fmt.Errorf("baseline fallback policy mismatch")
+	}
+	if flags, active := cutover.Active(); active {
+		if flags.CandidateStrategy != "paper" && flags.CandidateStrategy != "limited_live" && flags.CandidateStrategy != "full_live" {
+			return fmt.Errorf("Stage 06 candidate capital authority is disabled by Stage 08 envelope")
+		}
 	}
 	if id == "cash" || id == "benchmark_buy_hold" || id == "benchmark_trend" || id == "equal_weight" || id == "momentum" {
 		return fmt.Errorf("research baseline %s cannot directly authorize runtime orders", id)

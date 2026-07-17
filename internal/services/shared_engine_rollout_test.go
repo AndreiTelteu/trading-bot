@@ -4,6 +4,7 @@ import (
 	"errors"
 	"testing"
 
+	"trading-go/internal/cutover"
 	"trading-go/internal/tradingcore"
 )
 
@@ -86,5 +87,33 @@ func TestApplicationEngineRoutingSharedShadowInvalidAndFallback(t *testing.T) {
 				t.Fatalf("legacy calls=%d want=%d result=%+v", legacyCalls, test.wantLegacy, result)
 			}
 		})
+	}
+}
+
+func TestDualRunAdaptersReceiveIndependentDeepClones(t *testing.T) {
+	flags := cutover.SafeFlags()
+	flags.SharedEngine = "shadow"
+	flags.DualRun = "observe"
+	if err := cutover.Activate(flags); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(cutover.ResetForTest)
+	input := []AnalyzedCoin{{Symbol: "BTCUSDT", RankComponents: map[string]float64{"momentum": 1}}}
+	shared := func(values []AnalyzedCoin, _ *UniverseSelectionResult, settings map[string]string, _ tradingcore.ExecutionMode) ([]AnalyzedCoin, int, error) {
+		values[0].RankComponents["momentum"] = 99
+		settings["mutated"] = "yes"
+		values[0].Decision = "shadow"
+		return values, 0, nil
+	}
+	legacy := func(values []AnalyzedCoin, _ *UniverseSelectionResult, settings map[string]string) ([]AnalyzedCoin, int) {
+		if values[0].RankComponents["momentum"] != 1 || settings["mutated"] != "" {
+			t.Fatal("legacy observed shadow mutation")
+		}
+		values[0].Decision = "legacy"
+		return values, 0
+	}
+	result, _ := executeShortlistTradesRouted(input, nil, map[string]string{"trading_engine_mode": "shadow_compare"}, shared, legacy)
+	if result[0].Decision != "legacy" || input[0].RankComponents["momentum"] != 1 {
+		t.Fatalf("causal input mutated: input=%+v result=%+v", input, result)
 	}
 }

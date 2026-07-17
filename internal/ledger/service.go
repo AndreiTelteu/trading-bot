@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 	"trading-go/internal/accounting"
+	"trading-go/internal/cutover"
 	"trading-go/internal/database"
 
 	"gorm.io/gorm"
@@ -137,6 +138,7 @@ func (s *Service) ApplyFill(ctx context.Context, command FillCommand) (FillResul
 	if err != nil {
 		return FillResult{}, err
 	}
+	stage08JSON := metadataJSONForCommand(command)
 	var result FillResult
 	err = s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := allowLedgerProjectionWrites(tx); err != nil {
@@ -216,7 +218,8 @@ func (s *Service) ApplyFill(ctx context.Context, command FillCommand) (FillResul
 			FeeAmount: command.Fee, FeeType: command.FeeType, FeeCurrency: command.FeeCurrency,
 			ExecutionMode: command.ExecutionMode, StrategyVersion: command.StrategyVersion,
 			PolicyVersion: command.PolicyVersion, OccurredAt: command.OccurredAt, CreatedAt: recordedAt,
-			CostModelVersion: command.CostModelVersion,
+			CostModelVersion:   command.CostModelVersion,
+			Stage08ContextJSON: stage08JSON,
 		}
 		if err := tx.Create(&fill).Error; err != nil {
 			return err
@@ -240,6 +243,7 @@ func (s *Service) ApplyFill(ctx context.Context, command FillCommand) (FillResul
 			Actor: nonempty(command.Actor, "execution_adapter"), Reason: command.Reason,
 			RealizedPnL: realized, CostBasisDelta: basisDelta, FeeDelta: accounting.Zero(), MetadataJSON: metadataJSON,
 			OccurredAt: command.OccurredAt, RecordedAt: recordedAt,
+			Stage08ContextJSON: stage08JSON,
 		}}
 		if command.Fee.Sign() > 0 {
 			feeType := EventTradingFee
@@ -256,6 +260,7 @@ func (s *Service) ApplyFill(ctx context.Context, command FillCommand) (FillResul
 				Actor: nonempty(command.Actor, "execution_adapter"), Reason: command.Reason,
 				RealizedPnL: command.Fee.Neg(), CostBasisDelta: accounting.Zero(), FeeDelta: command.Fee, MetadataJSON: metadataJSON,
 				OccurredAt: command.OccurredAt, RecordedAt: recordedAt,
+				Stage08ContextJSON: stage08JSON,
 			})
 		}
 		if err := tx.Create(&events).Error; err != nil {
@@ -433,6 +438,7 @@ func upsertFilledOrder(tx *gorm.DB, command FillCommand, position database.Posit
 	}
 	order.RequestedPrice, order.FillPrice, order.ExecutedQty, order.ExchangeFee = &requested, &fill, &qty, &fee
 	order.ModelVersion, order.PolicyVersion = command.ModelVersion, command.PolicyVersion
+	order.Stage08ContextJSON = metadataJSONForCommand(command)
 	order.UniverseMode, order.RolloutState = command.UniverseMode, command.RolloutState
 	order.ExperimentID, order.PredictionLogID, order.DecisionContextJSON = command.ExperimentID, command.PredictionLogID, command.DecisionContextJSON
 	order.TriggerReason, order.SubmittedAt = stringPtrOrNil(command.Reason), &command.OccurredAt
@@ -448,6 +454,30 @@ func upsertFilledOrder(tx *gorm.DB, command FillCommand, position database.Posit
 		return order, tx.Create(&order).Error
 	}
 	return order, tx.Save(&order).Error
+}
+
+func metadataJSONForCommand(command FillCommand) string {
+	metadata := map[string]interface{}{}
+	for key, value := range command.Metadata {
+		metadata[key] = value
+	}
+	metadata["active_path"] = command.ExecutionMode
+	metadata["strategy_version"] = command.StrategyVersion
+	metadata["policy_version"] = command.PolicyVersion
+	metadata["model_version"] = command.ModelVersion
+	if flags, active := cutover.Active(); active {
+		metadata["flag_schema_version"] = flags.SchemaVersion
+		_, flagID, _ := flags.Canonical()
+		metadata["flag_snapshot_id"] = flagID
+		metadata["ledger_authority"] = flags.LedgerAuthority
+		metadata["engine_mode"] = flags.SharedEngine
+		metadata["candidate_strategy_mode"] = flags.CandidateStrategy
+	}
+	payload, err := json.Marshal(metadata)
+	if err != nil {
+		return "{}"
+	}
+	return string(payload)
 }
 
 func loadFillResult(tx *gorm.DB, batchID string) (FillResult, error) {

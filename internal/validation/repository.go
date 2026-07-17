@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"trading-go/internal/cutover"
 	"trading-go/internal/database"
 
 	"gorm.io/gorm"
@@ -42,7 +43,11 @@ func (r Repository) CreateManifestAuthenticated(manifest ExperimentManifest, bac
 	if idempotencyKey != "" {
 		key = &idempotencyKey
 	}
-	row := database.ValidationExperiment{ID: manifest.ID, ContentID: manifest.ContentID, SchemaVersion: manifest.Spec.SchemaVersion, ContentJSON: string(content), ContentDigest: manifest.ContentDigest, CreatedAt: manifest.CreatedAt, BacktestJobID: backtestJobID, ComparisonDigest: comparisonDigest, AuthorityPolicyDigest: manifest.Spec.AuthorityPolicy.Digest, CreatedBy: creator, IdempotencyKey: key}
+	stage08Context := "{}"
+	if flags, active := cutover.Active(); active {
+		stage08Context = flags.ObservationContext("stage07_validation", map[string]string{"strategy": manifest.Spec.Candidate.ID + "@" + manifest.Spec.Candidate.Version, "model": manifest.Spec.Model.Version, "policy": manifest.Spec.Policies.Composite, "dataset": manifest.Spec.DatasetManifestID, "universe": manifest.Spec.UniversePolicy})
+	}
+	row := database.ValidationExperiment{ID: manifest.ID, ContentID: manifest.ContentID, SchemaVersion: manifest.Spec.SchemaVersion, ContentJSON: string(content), ContentDigest: manifest.ContentDigest, CreatedAt: manifest.CreatedAt, BacktestJobID: backtestJobID, ComparisonDigest: comparisonDigest, AuthorityPolicyDigest: manifest.Spec.AuthorityPolicy.Digest, Stage08ContextJSON: stage08Context, CreatedBy: creator, IdempotencyKey: key}
 	err = r.DB.Transaction(func(tx *gorm.DB) error {
 		if key != nil {
 			if e := tx.Exec("SELECT pg_advisory_xact_lock(hashtextextended(?,0))", *key).Error; e != nil {

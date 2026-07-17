@@ -3,6 +3,7 @@ package handlers
 import (
 	"strconv"
 	"trading-go/internal/backtest"
+	"trading-go/internal/cutover"
 
 	"github.com/gofiber/fiber/v2"
 )
@@ -32,6 +33,9 @@ func ListBacktestStrategies(c *fiber.Ctx) error {
 }
 
 func StartStage05Comparison(c *fiber.Ctx) error {
+	if flags, active := cutover.Active(); active && flags.NewBacktest != "research" {
+		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "Stage 08 new backtest research mode is disabled"})
+	}
 	type requestBody struct {
 		backtest.Stage05RunRequest
 		Overrides map[string]string `json:"overrides,omitempty"`

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"trading-go/internal/config"
+	"trading-go/internal/cutover"
 	"trading-go/internal/database"
 	"trading-go/internal/pointintime"
 	"trading-go/internal/services"
@@ -51,7 +52,16 @@ func main() {
 	knowledgeCutoffText := flag.String("knowledge-cutoff", "", "deterministic retrieval cutoff (RFC3339)")
 	step := flag.Duration("step", 24*time.Hour, "snapshot range step")
 	flag.Parse()
-	cfg := config.Load()
+	cfg, loadErr := config.LoadValidated()
+	if loadErr != nil {
+		fatal(loadErr)
+	}
+	if err := cutover.Activate(cfg.Stage08Flags); err != nil {
+		fatal(err)
+	}
+	if *action != "coverage" && cfg.Stage08Flags.PointInTime == "off" {
+		fatal(fmt.Errorf("Stage 04 mutation/build requires STAGE08_POINT_IN_TIME_UNIVERSE=research or authoritative"))
+	}
 	if err := database.Initialize(cfg); err != nil {
 		fatal(err)
 	}

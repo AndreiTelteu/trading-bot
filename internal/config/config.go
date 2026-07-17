@@ -3,7 +3,9 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"time"
+	"trading-go/internal/cutover"
 
 	"github.com/joho/godotenv"
 	"github.com/rs/zerolog"
@@ -36,9 +38,19 @@ type Config struct {
 	RedisAddr            string
 	RedisPassword        string
 	RedisDB              int
+	Stage08Flags         cutover.Flags
 }
 
 func Load() *Config {
+	cfg, _ := load(false)
+	return cfg
+}
+
+// LoadValidated rejects malformed environment and Stage 08 authority before
+// database connections, workers, listeners, or external clients are started.
+func LoadValidated() (*Config, error) { return load(true) }
+
+func load(strict bool) (*Config, error) {
 	godotenv.Load()
 
 	Log = zerolog.New(os.Stdout).
@@ -47,7 +59,14 @@ func Load() *Config {
 		Timestamp().
 		Logger()
 
-	return &Config{
+	flags, flagErr := cutover.Parse(envValues([]string{"STAGE08_FLAG_SCHEMA_VERSION", "STAGE08_LEDGER_AUTHORITY", "STAGE08_SHARED_ENGINE", "STAGE08_NEW_BACKTEST", "STAGE08_POINT_IN_TIME_UNIVERSE", "STAGE08_CANDIDATE_STRATEGY", "STAGE08_DUAL_RUN", "STAGE08_STAGE07_CONTEXT"}))
+	if strict && flagErr != nil {
+		return nil, flagErr
+	}
+	if flagErr != nil {
+		flags = cutover.SafeFlags()
+	}
+	cfg := &Config{
 		ServerPort:           getEnv("PORT", "5001"),
 		DatabaseURL:          getEnv("DATABASE_URL", ""),
 		PostgresHost:         getEnv("POSTGRES_HOST", "localhost"),
@@ -72,7 +91,49 @@ func Load() *Config {
 		RedisAddr:            getEnv("REDIS_ADDR", "localhost:6379"),
 		RedisPassword:        getEnv("REDIS_PASSWORD", ""),
 		RedisDB:              0,
+		Stage08Flags:         flags,
 	}
+	if strict {
+		for _, item := range []struct {
+			key      string
+			value    int
+			positive bool
+		}{{"DB_MAX_OPEN_CONNS", cfg.DBMaxOpenConns, true}, {"DB_MAX_IDLE_CONNS", cfg.DBMaxIdleConns, false}} {
+			if raw, ok := os.LookupEnv(item.key); ok {
+				parsed, err := strconv.Atoi(raw)
+				if err != nil || (item.positive && parsed <= 0) || (!item.positive && parsed < 0) {
+					return nil, fmt.Errorf("malformed %s=%q", item.key, raw)
+				}
+				item.value = parsed
+			}
+		}
+		for _, item := range []struct {
+			key   string
+			value time.Duration
+		}{{"DB_CONN_MAX_LIFETIME", cfg.DBConnMaxLifetime}, {"DB_CONN_MAX_IDLE_TIME", cfg.DBConnMaxIdleTime}} {
+			if raw, ok := os.LookupEnv(item.key); ok {
+				parsed, err := time.ParseDuration(raw)
+				if err != nil || parsed < 0 {
+					return nil, fmt.Errorf("malformed %s=%q", item.key, raw)
+				}
+				item.value = parsed
+			}
+		}
+		if cfg.DBMaxIdleConns > cfg.DBMaxOpenConns {
+			return nil, fmt.Errorf("DB_MAX_IDLE_CONNS cannot exceed DB_MAX_OPEN_CONNS")
+		}
+	}
+	return cfg, nil
+}
+
+func envValues(keys []string) map[string]string {
+	result := map[string]string{}
+	for _, key := range keys {
+		if value, ok := os.LookupEnv(key); ok {
+			result[key] = value
+		}
+	}
+	return result
 }
 
 func (c *Config) DatabaseDSN() (string, error) {

@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"trading-go/internal/cutover"
 	"trading-go/internal/database"
 	"trading-go/internal/pointintime"
 	"trading-go/internal/services"
@@ -89,10 +90,11 @@ type BacktestRunSummary struct {
 
 func StartBacktestJob() (*database.BacktestJob, error) {
 	job := database.BacktestJob{
-		Status:    "pending",
-		Progress:  0,
-		CreatedAt: time.Now(),
-		UpdatedAt: time.Now(),
+		Status:             "pending",
+		Progress:           0,
+		CreatedAt:          time.Now(),
+		UpdatedAt:          time.Now(),
+		Stage08ContextJSON: backtestStage08Context("legacy_backtest", nil),
 	}
 	if err := database.DB.Create(&job).Error; err != nil {
 		return nil, err
@@ -119,12 +121,19 @@ func StartStage05ComparisonJob(request Stage05RunRequest, overrides map[string]s
 	if _, _, _, err := DefaultStrategyRegistry.ResolveExecutable(request.StrategyID, request.StrategyVersion, parameters); err != nil {
 		return nil, err
 	}
-	job := database.BacktestJob{Status: "pending", JobType: "stage05_comparison", Progress: 0, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	job := database.BacktestJob{Status: "pending", JobType: "stage05_comparison", Progress: 0, CreatedAt: time.Now(), UpdatedAt: time.Now(), Stage08ContextJSON: backtestStage08Context("stage05_comparison", map[string]string{"strategy": request.StrategyID + "@" + request.StrategyVersion})}
 	if err := database.DB.Create(&job).Error; err != nil {
 		return nil, err
 	}
 	go runStage05ComparisonJob(job.ID, request, cloneStringMap(overrides))
 	return &job, nil
+}
+
+func backtestStage08Context(path string, versions map[string]string) string {
+	if flags, active := cutover.Active(); active {
+		return flags.ObservationContext(path, versions)
+	}
+	return "{}"
 }
 
 func runStage05ComparisonJob(jobID uint, request Stage05RunRequest, overrides map[string]string) {

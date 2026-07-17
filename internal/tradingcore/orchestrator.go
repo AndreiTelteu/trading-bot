@@ -111,7 +111,9 @@ func (runner Orchestrator) observe(ctx context.Context, observation Observation)
 	}
 }
 
-type traceIntent struct{ ID, Symbol, Side, Quantity, Reason, Policy, SignalAt, DecisionAt, OrderAt string }
+type traceIntent struct {
+	ID, Symbol, Side, Quantity, Reason, Engine, Strategy, Policy, Model, Dataset, Universe, FlagSchema, SignalAt, DecisionAt, OrderAt string
+}
 type traceRejection struct{ ID, Code, Policy string }
 type traceNoAction struct{ Symbol, Code, Reason, Score string }
 type traceFill struct{ ID, OrderID, ProviderFillID, Quantity, Price, Fee, FeeAsset, CostModelVersion, OrderedAt, SubmittedAt, AcceptedAt, FilledAt string }
@@ -161,5 +163,5 @@ func stableRunTrace(snapshot DecisionContext, strategy StrategyResult, risk Risk
 	return json.Marshal(result)
 }
 func intentTrace(intent OrderIntent) traceIntent {
-	return traceIntent{intent.ID.String(), intent.Instrument.VenueSymbol, string(intent.Side), intent.Quantity.Decimal().String(), intent.Reason, intent.Versions.Policy, intent.SignalAt.UTC().Format(time.RFC3339Nano), intent.DecisionAt.UTC().Format(time.RFC3339Nano), intent.CreatedAt.UTC().Format(time.RFC3339Nano)}
+	return traceIntent{intent.ID.String(), intent.Instrument.VenueSymbol, string(intent.Side), intent.Quantity.Decimal().String(), intent.Reason, intent.Versions.Engine, intent.Versions.Strategy, intent.Versions.Policy, intent.Versions.Model, intent.Versions.Dataset, intent.Versions.Universe, intent.Versions.FlagSchema, intent.SignalAt.UTC().Format(time.RFC3339Nano), intent.DecisionAt.UTC().Format(time.RFC3339Nano), intent.CreatedAt.UTC().Format(time.RFC3339Nano)}
 }

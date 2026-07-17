@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 	"trading-go/internal/backtest"
+	"trading-go/internal/cutover"
 	"trading-go/internal/database"
 	stage07governance "trading-go/internal/governance"
 	"trading-go/internal/middleware"
@@ -18,6 +19,9 @@ import (
 )
 
 func CreateValidationExperiment(c *fiber.Ctx) error {
+	if flags, active := cutover.Active(); active && flags.NewBacktest != "research" {
+		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "Stage 08 research backtest/validation mode is disabled"})
+	}
 	var request struct {
 		Spec validation.ManifestSpec `json:"spec"`
 	}
@@ -63,6 +67,9 @@ func CreateValidationExperiment(c *fiber.Ctx) error {
 }
 
 func RunValidationExperiment(c *fiber.Ctx) error {
+	if flags, active := cutover.Active(); active && flags.NewBacktest != "research" {
+		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "Stage 08 research backtest/validation mode is disabled"})
+	}
 	principal, ok := authenticatedGovernancePrincipal(c)
 	if !ok || !principal.Has(stage07governance.CapabilityResearch) {
 		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "research capability required"})
@@ -89,7 +96,11 @@ func RunValidationExperiment(c *fiber.Ctx) error {
 			return e
 		}
 		now := time.Now().UTC()
-		job = database.BacktestJob{Status: "queued", JobType: "stage07_validation", Progress: 0, RequestKey: &key, SemanticID: manifest.ID, DatasetManifestID: &manifest.Spec.DatasetManifestID, CreatedAt: now, UpdatedAt: now}
+		stage08Context := "{}"
+		if flags, active := cutover.Active(); active {
+			stage08Context = flags.ObservationContext("stage07_validation", map[string]string{"strategy": manifest.Spec.Candidate.ID + "@" + manifest.Spec.Candidate.Version, "model": manifest.Spec.Model.Version, "policy": manifest.Spec.Policies.Composite, "dataset": manifest.Spec.DatasetManifestID, "universe": manifest.Spec.UniversePolicy})
+		}
+		job = database.BacktestJob{Status: "queued", JobType: "stage07_validation", Progress: 0, RequestKey: &key, SemanticID: manifest.ID, DatasetManifestID: &manifest.Spec.DatasetManifestID, Stage08ContextJSON: stage08Context, CreatedAt: now, UpdatedAt: now}
 		return tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "request_key"}}, DoNothing: true}).Create(&job).Error
 	})
 	if err != nil {

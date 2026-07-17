@@ -10,12 +10,19 @@ import (
 
 	"trading-go/internal/backtest"
 	"trading-go/internal/config"
+	"trading-go/internal/cutover"
 	"trading-go/internal/database"
 	"trading-go/internal/services"
 )
 
 func main() {
-	cfg := config.Load()
+	cfg, loadErr := config.LoadValidated()
+	if loadErr != nil {
+		log.Fatalf("Invalid startup configuration: %v", loadErr)
+	}
+	if err := cutover.Activate(cfg.Stage08Flags); err != nil {
+		log.Fatal(err)
+	}
 	if err := database.Initialize(cfg); err != nil {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
@@ -57,6 +64,9 @@ func main() {
 	}
 
 	if *strategyID != "" {
+		if cfg.Stage08Flags.NewBacktest != "research" {
+			log.Fatal("Stage 05/06 strategy comparison requires STAGE08_NEW_BACKTEST=research")
+		}
 		parameters := map[string]string{}
 		for _, item := range strings.Split(*strategyParams, ",") {
 			if strings.TrimSpace(item) == "" {

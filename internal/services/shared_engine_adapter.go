@@ -8,8 +8,10 @@ import (
 	"time"
 
 	"trading-go/internal/accounting"
+	"trading-go/internal/cutover"
 	"trading-go/internal/database"
 	ledgerpkg "trading-go/internal/ledger"
+	"trading-go/internal/operations"
 	"trading-go/internal/tradingcore"
 )
 
@@ -54,12 +56,14 @@ func executeShortlistTradesShared(analyses []AnalyzedCoin, universe *UniverseSel
 	broker := tradingcore.Broker(tradingcore.NewPaperBroker(tradingcore.NewFixedClock(now), tradingcore.RandomIDGenerator{Prefix: "paper-fill"}, tradingcore.CostModel{FeeBPS: feeBPS, SlippageBPS: slippageBPS, Version: "paper-cost-v1"}))
 	ledger := tradingcore.FillLedger(ledgerpkg.NewContractAdapter(database.DB))
 	if mode == tradingcore.ExecutionShadow {
+		broker = tradingcore.ShadowBroker{}
 		ledger = discardOutcomeLedger{}
 	}
 	observer := &runtimeDecisionObserver{}
 	runner := tradingcore.Orchestrator{Source: runtimeDecisionSource{snapshot, policy}, Strategy: tradingcore.LegacyRuleStrategy{}, Risk: tradingcore.PortfolioRiskEngine{}, Broker: broker, Ledger: ledger, Observer: observer}
 	result, err := runner.Run(context.Background())
 	if err != nil {
+		operations.RecordBrokerConflict("shared-engine", err)
 		return analyses, 0, err
 	}
 	decisionBySymbol := map[string][2]string{}
@@ -100,6 +104,8 @@ func executeShortlistTradesShared(analyses []AnalyzedCoin, universe *UniverseSel
 			}
 		}
 		if mode == tradingcore.ExecutionShadow {
+			analyses[i].ShadowDecision = analyses[i].Decision
+			analyses[i].ShadowReason = analyses[i].DecisionReason
 			analyses[i].Decision = "shadow_only"
 			if analyses[i].DecisionReason == "" {
 				analyses[i].DecisionReason = "shadow_observation"
@@ -108,7 +114,11 @@ func executeShortlistTradesShared(analyses []AnalyzedCoin, universe *UniverseSel
 		decision := analyses[i].Decision
 		reason := analyses[i].DecisionReason
 		autoTrade := getSettingBool(settings, "auto_trade_enabled", false)
-		history := database.TrendAnalysisHistory{Symbol: analyses[i].Symbol, Timeframe: "15m", ModelVersion: analyses[i].ModelVersion, PolicyVersion: analyses[i].PolicyVersion, UniverseMode: analyses[i].UniverseMode, RolloutState: analyses[i].RolloutState, ExperimentID: stringPtr(analyses[i].ExperimentID), PredictionLogID: analyses[i].PredictionLogID, CurrentPrice: &analyses[i].Price, Change24h: &analyses[i].Change24h, FinalSignal: &analyses[i].Signal, FinalRating: &analyses[i].Rating, AutoTrade: &autoTrade, Decision: &decision, DecisionReason: &reason, DecisionContextJSON: string(result.Trace), AnalyzedAt: now}
+		stage08Context := "{}"
+		if flags, active := cutover.Active(); active {
+			stage08Context = flags.ObservationContext(string(mode), map[string]string{"engine": "shared-engine-v1", "strategy": tradingcore.LegacyStrategyVersion, "policy": analyses[i].PolicyVersion, "model": analyses[i].ModelVersion, "universe": analyses[i].UniverseMode})
+		}
+		history := database.TrendAnalysisHistory{Symbol: analyses[i].Symbol, Timeframe: "15m", ModelVersion: analyses[i].ModelVersion, PolicyVersion: analyses[i].PolicyVersion, UniverseMode: analyses[i].UniverseMode, RolloutState: analyses[i].RolloutState, ExperimentID: stringPtr(analyses[i].ExperimentID), PredictionLogID: analyses[i].PredictionLogID, CurrentPrice: &analyses[i].Price, Change24h: &analyses[i].Change24h, FinalSignal: &analyses[i].Signal, FinalRating: &analyses[i].Rating, AutoTrade: &autoTrade, Decision: &decision, DecisionReason: &reason, DecisionContextJSON: string(result.Trace), Stage08ContextJSON: stage08Context, AnalyzedAt: now}
 		if err := database.DB.Create(&history).Error; err != nil {
 			return analyses, opened, fmt.Errorf("persist shared decision history: %w", err)
 		}
@@ -144,6 +154,13 @@ func buildRuntimeDecisionContext(analyses []AnalyzedCoin, universe *UniverseSele
 	coreSettings := make(map[string]string, len(settings)+len(analyses)*8)
 	for k, v := range settings {
 		coreSettings[k] = v
+	}
+	flags, activeFlags := cutover.Active()
+	if activeFlags {
+		coreSettings["stage08_flag_schema"] = flags.SchemaVersion
+		coreSettings["stage08_ledger_authority"] = flags.LedgerAuthority
+		coreSettings["stage08_shared_engine"] = flags.SharedEngine
+		coreSettings["stage08_dual_run"] = flags.DualRun
 	}
 	coreSettings["model_available"] = fmt.Sprint(hasModelRankings(analyses))
 	candidates := make([]tradingcore.UniverseCandidate, 0, len(analyses))
@@ -305,7 +322,11 @@ func buildRuntimeDecisionContext(analyses []AnalyzedCoin, universe *UniverseSele
 	if err != nil {
 		return tradingcore.DecisionContext{}, tradingcore.RiskPolicy{}, err
 	}
-	contextSnapshot, err := tradingcore.NewDecisionContext(tradingcore.DecisionContextInput{MarketObservedAt: now, SignalAt: now, DecisionAt: now, Quotes: quotes, Universe: universeSnapshot, Portfolio: portfolio, Settings: coreSettings, Versions: tradingcore.VersionContext{Strategy: tradingcore.LegacyStrategyVersion, Settings: "database-settings", Policy: policyVersion, Model: getSettingString(settings, "active_model_version", "")}})
+	versions := tradingcore.VersionContext{Engine: "shared-engine-v1", Strategy: tradingcore.LegacyStrategyVersion, Settings: "database-settings", Policy: policyVersion, Model: getSettingString(settings, "active_model_version", ""), Dataset: getSettingString(settings, "backtest_dataset_manifest_id", ""), Universe: getSettingString(settings, "universe_policy_version", "runtime-universe")}
+	if activeFlags {
+		versions.FlagSchema = flags.SchemaVersion
+	}
+	contextSnapshot, err := tradingcore.NewDecisionContext(tradingcore.DecisionContextInput{MarketObservedAt: now, SignalAt: now, DecisionAt: now, Quotes: quotes, Universe: universeSnapshot, Portfolio: portfolio, Settings: coreSettings, Versions: versions})
 	if err != nil {
 		return tradingcore.DecisionContext{}, tradingcore.RiskPolicy{}, err
 	}

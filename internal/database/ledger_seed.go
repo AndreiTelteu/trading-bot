@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"time"
 	"trading-go/internal/accounting"
+	"trading-go/internal/cutover"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -38,12 +39,16 @@ func seedLedgerBoundary(tx *gorm.DB, wallet Wallet, walletCreated bool) error {
 		if err := tx.Create(&LedgerBatch{ID: batchID, AccountID: primaryLedgerAccount, PayloadHash: stableSeedID("payload", balance.String()), CreatedAt: now}).Error; err != nil {
 			return err
 		}
+		stage08Context := "{}"
+		if flags, active := cutover.Active(); active {
+			stage08Context = flags.ObservationContext("fresh_install_seed", map[string]string{"ledger_contract": "stage01"})
+		}
 		if err := tx.Create(&LedgerEvent{
 			ID: eventID, LedgerBatchID: batchID, Sequence: 1, IdempotencyKey: batchID + ":capital",
 			EventType: "capital_deposit", AccountID: primaryLedgerAccount, VenueID: "internal", Currency: wallet.Currency,
 			CashDelta: balance, AssetDelta: accounting.Zero(), ExecutionMode: "administrative",
 			Actor: "system_seed", Reason: "fresh install opening balance", RealizedPnL: accounting.Zero(), CostBasisDelta: accounting.Zero(), FeeDelta: accounting.Zero(),
-			MetadataJSON: `{"source":"configured_default_balance"}`, OccurredAt: now, RecordedAt: now,
+			MetadataJSON: `{"source":"configured_default_balance"}`, Stage08ContextJSON: stage08Context, OccurredAt: now, RecordedAt: now,
 		}).Error; err != nil {
 			return err
 		}

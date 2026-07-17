@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -9,9 +10,11 @@ import (
 
 	"trading-go/internal/config"
 	"trading-go/internal/cron"
+	"trading-go/internal/cutover"
 	"trading-go/internal/database"
 	"trading-go/internal/handlers"
 	"trading-go/internal/middleware"
+	"trading-go/internal/operations"
 	"trading-go/internal/services"
 	ws "trading-go/internal/websocket"
 
@@ -20,13 +23,22 @@ import (
 )
 
 func main() {
-	cfg := config.Load()
+	cfg, err := config.LoadValidated()
+	if err != nil {
+		log.Fatalf("Invalid startup configuration: %v", err)
+	}
 	if cfg.AuthUsername == "" || cfg.AuthPassword == "" {
 		log.Fatal("AUTH_USERNAME and AUTH_PASSWORD must be set")
 	}
 
+	if err := cutover.Activate(cfg.Stage08Flags); err != nil {
+		log.Fatalf("Failed to activate Stage 08 authority: %v", err)
+	}
 	if err := database.Initialize(cfg); err != nil {
 		log.Fatalf("Failed to initialize database: %v", err)
+	}
+	if _, err := operations.New(database.DB, cfg.Stage08Flags).Initialize(context.Background()); err != nil {
+		log.Fatalf("Stage 08 startup reconciliation failed: %v", err)
 	}
 	services.InitTradingService(cfg.BinanceAPIKey, cfg.BinanceSecret)
 	if err := services.StartExecutionRuntime(); err != nil {
@@ -97,12 +109,14 @@ func setupRoutes(app *fiber.App, cfg *config.Config, authManager *middleware.Aut
 
 	api.Use(authManager.RequireAuth)
 
-	api.Get("/health", func(c *fiber.Ctx) error {
-		return c.JSON(fiber.Map{
-			"status": "ok",
-			"msg":    "Trading Go API is running",
-		})
-	})
+	api.Get("/health", handlers.GetOperationalStatus)
+	api.Get("/operations/status", handlers.GetOperationalStatus)
+	api.Post("/operations/incidents/:id/transition", handlers.TransitionOperationalIncident)
+	api.Post("/operations/cutover/transitions", handlers.TransitionCutover)
+	api.Post("/operations/parity/policies", handlers.DeclareParityPolicy)
+	api.Post("/operations/backfill/plans", handlers.PlanLedgerBackfill)
+	api.Post("/operations/backfill/plans/:id/approve", handlers.ApproveLedgerBackfill)
+	api.Post("/operations/backfill/plans/:id/apply", handlers.ApplyLedgerBackfill)
 
 	api.Get("/config", func(c *fiber.Ctx) error {
 		return c.JSON(fiber.Map{

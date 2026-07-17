@@ -30,6 +30,14 @@ type SimulationBroker struct {
 }
 type BacktestBroker struct{ SimulationBroker }
 type PaperBroker struct{ SimulationBroker }
+type ShadowBroker struct{}
+
+func (ShadowBroker) Submit(_ context.Context, batch DecisionBatch) (BrokerBatchOutcome, error) {
+	if len(batch.Intents()) != 0 {
+		return BrokerBatchOutcome{}, fmt.Errorf("shadow_execution_forbidden: broker received %d approved intents", len(batch.Intents()))
+	}
+	return NewBrokerBatchOutcome(OutcomeComplete, nil, nil)
+}
 
 func NewBacktestBroker(clock Clock, ids IDGenerator, costs CostModel) BacktestBroker {
 	return BacktestBroker{SimulationBroker{Clock: clock, IDs: ids, Costs: costs, Name: "backtest"}}

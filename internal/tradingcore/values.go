@@ -250,6 +250,7 @@ func (v CausationID) String() string    { return v.value }
 
 type VersionContext struct {
 	Strategy, Settings, Policy, Model, FeatureSpec, Dataset string
+	Engine, Universe, FlagSchema                            string
 }
 
 type Provenance struct {

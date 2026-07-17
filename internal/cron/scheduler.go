@@ -1,11 +1,13 @@
 package cron
 
 import (
+	"context"
 	"log"
 	"strconv"
 	"strings"
 
 	"trading-go/internal/database"
+	"trading-go/internal/operations"
 	"trading-go/internal/services"
 
 	"github.com/robfig/cron/v3"
@@ -24,6 +26,9 @@ func Start() {
 	// Reconcile open position marks every 1 minute (fallback only for protective exits)
 	var err error
 	priceJobID, err = scheduler.AddFunc("@every 1m", func() {
+		if err := operations.Monitor(context.Background()); err != nil {
+			log.Printf("Operational monitor failed: %v", err)
+		}
 		if err := runPriceUpdate(); err != nil {
 			log.Printf("Price update job failed: %v", err)
 		}

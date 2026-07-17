@@ -10,8 +10,10 @@ import (
 	"strings"
 	"time"
 	"trading-go/internal/accounting"
+	"trading-go/internal/cutover"
 	"trading-go/internal/database"
 	ledgerpkg "trading-go/internal/ledger"
+	"trading-go/internal/operations"
 	"trading-go/internal/tradingcore"
 	"trading-go/internal/websocket"
 )
@@ -59,6 +61,8 @@ type AnalyzedCoin struct {
 	Error             string             `json:"error,omitempty"`
 	Decision          string             `json:"decision,omitempty"`
 	DecisionReason    string             `json:"decision_reason,omitempty"`
+	ShadowDecision    string             `json:"-"`
+	ShadowReason      string             `json:"-"`
 	FeatureSnapshotID *uint              `json:"-"`
 	PredictionLogID   *uint              `json:"-"`
 }
@@ -929,9 +933,22 @@ type legacyShortlistRunner func([]AnalyzedCoin, *UniverseSelectionResult, map[st
 
 func executeShortlistTradesRouted(analyses []AnalyzedCoin, universe *UniverseSelectionResult, settings map[string]string, shared sharedShortlistRunner, legacy legacyShortlistRunner) ([]AnalyzedCoin, int) {
 	if err := ResolveStrategyAuthority(settings); err != nil {
+		operations.RecordGovernanceBypass(err)
 		return markSharedEngineFailure(analyses, err), 0
 	}
 	engineMode := strings.ToLower(strings.TrimSpace(getSettingString(settings, "trading_engine_mode", "legacy")))
+	if flags, active := cutover.Active(); active {
+		switch flags.SharedEngine {
+		case "off":
+			engineMode = "legacy"
+		case "shadow":
+			engineMode = "shadow_compare"
+		case "paper":
+			engineMode = "shared"
+		default:
+			return markSharedEngineFailure(analyses, fmt.Errorf("Stage 08 live execution remains fenced; exact governed broker activation is required")), 0
+		}
+	}
 	if err := validateTradingEngineMode(engineMode); err != nil {
 		return markSharedEngineFailure(analyses, err), 0
 	}
@@ -945,11 +962,92 @@ func executeShortlistTradesRouted(analyses []AnalyzedCoin, universe *UniverseSel
 		}
 		logActivity("error", "Shared trading engine failed; using explicit legacy fallback", err.Error())
 	} else if engineMode == "shadow_compare" {
-		if _, _, err := shared(append([]AnalyzedCoin(nil), analyses...), universe, settings, tradingcore.ExecutionShadow); err != nil {
-			logActivity("error", "Shared trading engine shadow comparison failed", err.Error())
+		shadowInput, shadowUniverse, cloneErr := cloneDualRunInputs(analyses, universe)
+		if cloneErr != nil {
+			return markSharedEngineFailure(analyses, cloneErr), 0
 		}
+		shadowSettings := cloneStringMap(settings)
+		shadowResults, _, shadowErr := shared(shadowInput, shadowUniverse, shadowSettings, tradingcore.ExecutionShadow)
+		if shadowErr != nil {
+			logActivity("error", "Shared trading engine shadow comparison failed", shadowErr.Error())
+		}
+		legacyInput, legacyUniverse, cloneErr := cloneDualRunInputs(analyses, universe)
+		if cloneErr != nil {
+			return markSharedEngineFailure(analyses, cloneErr), 0
+		}
+		legacyResults, opened := legacy(legacyInput, legacyUniverse, cloneStringMap(settings))
+		if shadowErr == nil {
+			persistDualRunParity(analyses, legacyResults, shadowResults)
+		}
+		return legacyResults, opened
 	}
 	return legacy(analyses, universe, settings)
+}
+
+func cloneDualRunInputs(values []AnalyzedCoin, universe *UniverseSelectionResult) ([]AnalyzedCoin, *UniverseSelectionResult, error) {
+	payload, err := json.Marshal(struct {
+		Values   []AnalyzedCoin           `json:"values"`
+		Universe *UniverseSelectionResult `json:"universe"`
+	}{values, universe})
+	if err != nil {
+		return nil, nil, err
+	}
+	var clone struct {
+		Values   []AnalyzedCoin           `json:"values"`
+		Universe *UniverseSelectionResult `json:"universe"`
+	}
+	if err := json.Unmarshal(payload, &clone); err != nil {
+		return nil, nil, err
+	}
+	return clone.Values, clone.Universe, nil
+}
+
+type parityFixedAdapter struct{ outcome cutover.DecisionOutcome }
+
+func (a parityFixedAdapter) Decide(context.Context, cutover.NonCapitalMode, cutover.DecisionContext, cutover.SubmitDenyBroker) (cutover.DecisionOutcome, error) {
+	return a.outcome, nil
+}
+func persistDualRunParity(input, legacyResults, shadowResults []AnalyzedCoin) {
+	flags, active := cutover.Active()
+	if !active || flags.DualRun != "observe" || database.DB == nil {
+		return
+	}
+	_, flagID, _ := flags.Canonical()
+	legacyBySymbol := map[string]AnalyzedCoin{}
+	shadowBySymbol := map[string]AnalyzedCoin{}
+	for _, v := range legacyResults {
+		legacyBySymbol[v.Symbol] = v
+	}
+	for _, v := range shadowResults {
+		shadowBySymbol[v.Symbol] = v
+	}
+	for _, source := range input {
+		left, lok := legacyBySymbol[source.Symbol]
+		right, rok := shadowBySymbol[source.Symbol]
+		if !lok || !rok {
+			continue
+		}
+		rightAction, rightReason := right.Decision, right.DecisionReason
+		if right.ShadowDecision != "" {
+			rightAction, rightReason = right.ShadowDecision, right.ShadowReason
+		}
+		decisionAt := source.CreatedAt
+		if decisionAt.IsZero() {
+			decisionAt = time.Now().UTC()
+		}
+		contextValue := cutover.DecisionContext{SymbolID: strings.ToUpper(source.Symbol), VenueSymbol: strings.ToUpper(source.Symbol), DecisionAt: decisionAt, MarketAt: decisionAt, FlagSchemaVersion: flags.SchemaVersion, EngineVersion: "legacy-vs-shared-v1", StrategyVersion: tradingcore.LegacyStrategyVersion, PolicyVersion: source.PolicyVersion, ModelVersion: source.ModelVersion, UniverseVersion: source.UniverseMode, Inputs: map[string]string{"signal": source.Signal, "rating": fmt.Sprint(source.Rating), "price": fmt.Sprint(source.Price)}}
+		comparison, err := cutover.RunParity(context.Background(), contextValue, parityFixedAdapter{cutover.DecisionOutcome{Action: left.Decision, SymbolID: contextValue.SymbolID, VenueSymbol: contextValue.VenueSymbol, RejectionCode: left.DecisionReason, FactorTrace: factorTraceStrings(left.RankComponents), EngineVersion: "legacy", StrategyVersion: tradingcore.LegacyStrategyVersion, PolicyVersion: left.PolicyVersion, ModelVersion: left.ModelVersion, UniverseVersion: left.UniverseMode, SignalAt: decisionAt, DecisionAt: decisionAt}}, parityFixedAdapter{cutover.DecisionOutcome{Action: rightAction, SymbolID: contextValue.SymbolID, VenueSymbol: contextValue.VenueSymbol, RejectionCode: rightReason, FactorTrace: factorTraceStrings(right.RankComponents), EngineVersion: "shared-engine-v1", StrategyVersion: tradingcore.LegacyStrategyVersion, PolicyVersion: right.PolicyVersion, ModelVersion: right.ModelVersion, UniverseVersion: right.UniverseMode, SignalAt: decisionAt, DecisionAt: decisionAt}}, cutover.ComparisonPolicy{})
+		if err == nil {
+			_, _ = operations.New(database.DB, flags).PersistParity(context.Background(), "legacy:shared", flagID, comparison, time.Now().UTC())
+		}
+	}
+}
+func factorTraceStrings(values map[string]float64) map[string]string {
+	out := map[string]string{}
+	for key, value := range values {
+		out[key] = strconv.FormatFloat(value, 'g', -1, 64)
+	}
+	return out
 }
 
 func validateTradingEngineMode(mode string) error {
@@ -1113,6 +1211,10 @@ func executeShortlistTradesWithRuntime(analyses []AnalyzedCoin, universe *Univer
 
 		indicatorsJSON, _ := json.Marshal(analysis.Indicators)
 		decisionContext := buildTradeDecisionContext(*analysis)
+		stage08Context := "{}"
+		if flags, active := cutover.Active(); active {
+			stage08Context = flags.ObservationContext("legacy", map[string]string{"engine": "legacy", "strategy": tradingcore.LegacyStrategyVersion, "policy": analysis.PolicyVersion, "model": analysis.ModelVersion, "universe": analysis.UniverseMode})
+		}
 		history := database.TrendAnalysisHistory{
 			Symbol:              analysis.Symbol,
 			Timeframe:           "15m",
@@ -1138,6 +1240,7 @@ func executeShortlistTradesWithRuntime(analyses []AnalyzedCoin, universe *Univer
 			DecisionReason:      &decisionReason,
 			IndicatorsJSON:      string(indicatorsJSON),
 			DecisionContextJSON: defaultDecisionContextJSON(decisionContext),
+			Stage08ContextJSON:  stage08Context,
 			AnalyzedAt:          runtime.Now(),
 		}
 		_ = runtime.PersistHistory(history) // Current behavior attempts persistence and ignores its error.

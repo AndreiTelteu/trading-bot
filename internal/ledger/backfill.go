@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"trading-go/internal/accounting"
+	"trading-go/internal/cutover"
 	"trading-go/internal/database"
 
 	"gorm.io/gorm"
@@ -107,7 +108,11 @@ func (s *Service) Backfill(ctx context.Context, options BackfillOptions) (Backfi
 		}
 		eventID := stableID("event-opening", batchID)
 		metadata, _ := json.Marshal(map[string]interface{}{"legacy_cutover": true, "unresolved": report.Unresolved})
-		event := database.LedgerEvent{ID: eventID, LedgerBatchID: batchID, Sequence: 1, IdempotencyKey: batchID + ":capital", EventType: EventCapitalDeposit, AccountID: options.AccountID, VenueID: "internal", Currency: wallet.Currency, CashDelta: balance, AssetDelta: accounting.Zero(), ExecutionMode: "administrative", Actor: options.ApprovedBy, Reason: "approved legacy cutover opening cash balance", RealizedPnL: accounting.Zero(), CostBasisDelta: accounting.Zero(), FeeDelta: accounting.Zero(), MetadataJSON: string(metadata), OccurredAt: now, RecordedAt: now}
+		stage08Context := "{}"
+		if flags, active := cutover.Active(); active {
+			stage08Context = flags.ObservationContext("administrative_backfill", map[string]string{"ledger_contract": "stage01"})
+		}
+		event := database.LedgerEvent{ID: eventID, LedgerBatchID: batchID, Sequence: 1, IdempotencyKey: batchID + ":capital", EventType: EventCapitalDeposit, AccountID: options.AccountID, VenueID: "internal", Currency: wallet.Currency, CashDelta: balance, AssetDelta: accounting.Zero(), ExecutionMode: "administrative", Actor: options.ApprovedBy, Reason: "approved legacy cutover opening cash balance", RealizedPnL: accounting.Zero(), CostBasisDelta: accounting.Zero(), FeeDelta: accounting.Zero(), MetadataJSON: string(metadata), Stage08ContextJSON: stage08Context, OccurredAt: now, RecordedAt: now}
 		if err := tx.Create(&event).Error; err != nil {
 			return err
 		}

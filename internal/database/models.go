@@ -81,6 +81,7 @@ type Order struct {
 	ExperimentID           *string             `json:"experiment_id" gorm:"size:100;index"`
 	PredictionLogID        *uint               `json:"prediction_log_id" gorm:"index"`
 	DecisionContextJSON    string              `json:"decision_context_json" gorm:"type:text"`
+	Stage08ContextJSON     string              `json:"stage08_context" gorm:"column:stage08_context_json;type:jsonb;not null;default:'{}'"`
 	TriggerReason          *string             `json:"trigger_reason" gorm:"size:50;index"`
 	RequestedPrice         *float64            `json:"requested_price"`
 	FillPrice              *float64            `json:"fill_price"`
@@ -108,60 +109,62 @@ type BrokerOutcomeIngestion struct {
 }
 
 type Fill struct {
-	ID               string             `json:"id" gorm:"primaryKey;size:100"`
-	LedgerBatchID    string             `json:"ledger_batch_id" gorm:"size:100;not null;uniqueIndex"`
-	AccountID        string             `json:"account_id" gorm:"size:100;not null;index"`
-	OrderID          uint               `json:"order_id" gorm:"not null;index"`
-	VenueID          string             `json:"venue_id" gorm:"size:50;not null;default:internal;index"`
-	ProviderFillID   *string            `json:"provider_fill_id,omitempty" gorm:"size:100"`
-	PositionID       uint               `json:"position_id" gorm:"not null;index"`
-	Symbol           string             `json:"symbol" gorm:"size:30;not null;index"`
-	Side             string             `json:"side" gorm:"size:10;not null"`
-	Quantity         accounting.Decimal `json:"quantity" gorm:"type:numeric(38,18);not null"`
-	RequestedPrice   accounting.Decimal `json:"requested_price" gorm:"type:numeric(38,18);not null"`
-	FillPrice        accounting.Decimal `json:"fill_price" gorm:"type:numeric(38,18);not null"`
-	GrossAmount      accounting.Decimal `json:"gross_amount" gorm:"type:numeric(38,18);not null"`
-	FeeAmount        accounting.Decimal `json:"fee_amount" gorm:"type:numeric(38,18);not null"`
-	FeeType          string             `json:"fee_type" gorm:"size:30;not null"`
-	FeeCurrency      string             `json:"fee_currency" gorm:"size:20;not null"`
-	ExecutionMode    string             `json:"execution_mode" gorm:"size:20;not null;index"`
-	StrategyVersion  string             `json:"strategy_version" gorm:"size:100"`
-	PolicyVersion    string             `json:"policy_version" gorm:"size:100"`
-	CostModelVersion string             `json:"cost_model_version" gorm:"size:100;not null;default:unknown"`
-	OccurredAt       time.Time          `json:"occurred_at" gorm:"not null;index"`
-	CreatedAt        time.Time          `json:"created_at" gorm:"not null"`
+	ID                 string             `json:"id" gorm:"primaryKey;size:100"`
+	LedgerBatchID      string             `json:"ledger_batch_id" gorm:"size:100;not null;uniqueIndex"`
+	AccountID          string             `json:"account_id" gorm:"size:100;not null;index"`
+	OrderID            uint               `json:"order_id" gorm:"not null;index"`
+	VenueID            string             `json:"venue_id" gorm:"size:50;not null;default:internal;index"`
+	ProviderFillID     *string            `json:"provider_fill_id,omitempty" gorm:"size:100"`
+	PositionID         uint               `json:"position_id" gorm:"not null;index"`
+	Symbol             string             `json:"symbol" gorm:"size:30;not null;index"`
+	Side               string             `json:"side" gorm:"size:10;not null"`
+	Quantity           accounting.Decimal `json:"quantity" gorm:"type:numeric(38,18);not null"`
+	RequestedPrice     accounting.Decimal `json:"requested_price" gorm:"type:numeric(38,18);not null"`
+	FillPrice          accounting.Decimal `json:"fill_price" gorm:"type:numeric(38,18);not null"`
+	GrossAmount        accounting.Decimal `json:"gross_amount" gorm:"type:numeric(38,18);not null"`
+	FeeAmount          accounting.Decimal `json:"fee_amount" gorm:"type:numeric(38,18);not null"`
+	FeeType            string             `json:"fee_type" gorm:"size:30;not null"`
+	FeeCurrency        string             `json:"fee_currency" gorm:"size:20;not null"`
+	ExecutionMode      string             `json:"execution_mode" gorm:"size:20;not null;index"`
+	StrategyVersion    string             `json:"strategy_version" gorm:"size:100"`
+	PolicyVersion      string             `json:"policy_version" gorm:"size:100"`
+	CostModelVersion   string             `json:"cost_model_version" gorm:"size:100;not null;default:unknown"`
+	Stage08ContextJSON string             `json:"stage08_context" gorm:"column:stage08_context_json;type:jsonb;not null;default:'{}'"`
+	OccurredAt         time.Time          `json:"occurred_at" gorm:"not null;index"`
+	CreatedAt          time.Time          `json:"created_at" gorm:"not null"`
 }
 
 // LedgerEvent stores signed cash and asset postings together because every
 // supported event has at most one posting of each dimension. Zero is explicit;
 // no balance-changing data is hidden in metadata.
 type LedgerEvent struct {
-	ID              string             `json:"id" gorm:"primaryKey;size:100"`
-	LedgerBatchID   string             `json:"ledger_batch_id" gorm:"size:100;not null;index;uniqueIndex:idx_ledger_batch_sequence,priority:1"`
-	Sequence        int                `json:"sequence" gorm:"not null;uniqueIndex:idx_ledger_batch_sequence,priority:2"`
-	IdempotencyKey  string             `json:"idempotency_key" gorm:"size:140;not null;uniqueIndex"`
-	EventType       string             `json:"event_type" gorm:"size:40;not null;index"`
-	AccountID       string             `json:"account_id" gorm:"size:100;not null;index"`
-	VenueID         string             `json:"venue_id" gorm:"size:50;not null;default:internal;index"`
-	Currency        string             `json:"currency" gorm:"size:20;not null;index"`
-	Symbol          string             `json:"symbol" gorm:"size:30;index"`
-	CashDelta       accounting.Decimal `json:"cash_delta" gorm:"type:numeric(38,18);not null"`
-	AssetDelta      accounting.Decimal `json:"asset_delta" gorm:"type:numeric(38,18);not null"`
-	OrderID         *uint              `json:"order_id,omitempty" gorm:"index"`
-	FillID          *string            `json:"fill_id,omitempty" gorm:"size:100;index"`
-	PositionID      *uint              `json:"position_id,omitempty" gorm:"index"`
-	ExecutionMode   string             `json:"execution_mode" gorm:"size:20;not null;index"`
-	StrategyVersion string             `json:"strategy_version" gorm:"size:100"`
-	PolicyVersion   string             `json:"policy_version" gorm:"size:100"`
-	Actor           string             `json:"actor" gorm:"size:100;not null"`
-	Reason          string             `json:"reason" gorm:"size:500"`
-	ReversesEventID *string            `json:"reverses_event_id,omitempty" gorm:"size:100;uniqueIndex"`
-	RealizedPnL     accounting.Decimal `json:"realized_pnl" gorm:"type:numeric(38,18);not null"`
-	CostBasisDelta  accounting.Decimal `json:"cost_basis_delta" gorm:"type:numeric(38,18);not null;default:0"`
-	FeeDelta        accounting.Decimal `json:"fee_delta" gorm:"type:numeric(38,18);not null;default:0"`
-	MetadataJSON    string             `json:"metadata" gorm:"column:metadata_json;type:jsonb;not null;default:'{}'"`
-	OccurredAt      time.Time          `json:"occurred_at" gorm:"not null;index"`
-	RecordedAt      time.Time          `json:"recorded_at" gorm:"not null;index"`
+	ID                 string             `json:"id" gorm:"primaryKey;size:100"`
+	LedgerBatchID      string             `json:"ledger_batch_id" gorm:"size:100;not null;index;uniqueIndex:idx_ledger_batch_sequence,priority:1"`
+	Sequence           int                `json:"sequence" gorm:"not null;uniqueIndex:idx_ledger_batch_sequence,priority:2"`
+	IdempotencyKey     string             `json:"idempotency_key" gorm:"size:140;not null;uniqueIndex"`
+	EventType          string             `json:"event_type" gorm:"size:40;not null;index"`
+	AccountID          string             `json:"account_id" gorm:"size:100;not null;index"`
+	VenueID            string             `json:"venue_id" gorm:"size:50;not null;default:internal;index"`
+	Currency           string             `json:"currency" gorm:"size:20;not null;index"`
+	Symbol             string             `json:"symbol" gorm:"size:30;index"`
+	CashDelta          accounting.Decimal `json:"cash_delta" gorm:"type:numeric(38,18);not null"`
+	AssetDelta         accounting.Decimal `json:"asset_delta" gorm:"type:numeric(38,18);not null"`
+	OrderID            *uint              `json:"order_id,omitempty" gorm:"index"`
+	FillID             *string            `json:"fill_id,omitempty" gorm:"size:100;index"`
+	PositionID         *uint              `json:"position_id,omitempty" gorm:"index"`
+	ExecutionMode      string             `json:"execution_mode" gorm:"size:20;not null;index"`
+	StrategyVersion    string             `json:"strategy_version" gorm:"size:100"`
+	PolicyVersion      string             `json:"policy_version" gorm:"size:100"`
+	Actor              string             `json:"actor" gorm:"size:100;not null"`
+	Reason             string             `json:"reason" gorm:"size:500"`
+	ReversesEventID    *string            `json:"reverses_event_id,omitempty" gorm:"size:100;uniqueIndex"`
+	RealizedPnL        accounting.Decimal `json:"realized_pnl" gorm:"type:numeric(38,18);not null"`
+	CostBasisDelta     accounting.Decimal `json:"cost_basis_delta" gorm:"type:numeric(38,18);not null;default:0"`
+	FeeDelta           accounting.Decimal `json:"fee_delta" gorm:"type:numeric(38,18);not null;default:0"`
+	MetadataJSON       string             `json:"metadata" gorm:"column:metadata_json;type:jsonb;not null;default:'{}'"`
+	Stage08ContextJSON string             `json:"stage08_context" gorm:"column:stage08_context_json;type:jsonb;not null;default:'{}'"`
+	OccurredAt         time.Time          `json:"occurred_at" gorm:"not null;index"`
+	RecordedAt         time.Time          `json:"recorded_at" gorm:"not null;index"`
 }
 
 type LedgerMigrationState struct {
@@ -229,6 +232,7 @@ type BacktestJob struct {
 	JobType                  string     `json:"job_type" gorm:"size:40;not null;default:legacy_backtest;index"`
 	ArtifactDigest           *string    `json:"artifact_digest,omitempty" gorm:"size:64"`
 	DiagnosticJSON           *string    `json:"diagnostic_json,omitempty" gorm:"type:text"`
+	Stage08ContextJSON       string     `json:"stage08_context" gorm:"column:stage08_context_json;type:jsonb;not null;default:'{}'"`
 	ValidationArtifactJSON   *string    `json:"-" gorm:"type:jsonb"`
 	ValidationArtifactDigest *string    `json:"validation_artifact_digest,omitempty" gorm:"size:64"`
 	RequestKey               *string    `json:"request_key,omitempty" gorm:"size:120;uniqueIndex"`
@@ -265,6 +269,7 @@ type TrendAnalysisHistory struct {
 	DecisionReason      *string   `json:"decision_reason" gorm:"type:text"`
 	IndicatorsJSON      string    `json:"indicators_json" gorm:"type:text;not null"`
 	DecisionContextJSON string    `json:"decision_context_json" gorm:"type:text"`
+	Stage08ContextJSON  string    `json:"stage08_context" gorm:"column:stage08_context_json;type:jsonb;not null;default:'{}'"`
 	AnalyzedAt          time.Time `json:"analyzed_at" gorm:"index;index:idx_trend_symbol_analyzed_at,priority:2,sort:desc"`
 }
 
@@ -647,6 +652,7 @@ type ValidationExperiment struct {
 	BacktestJobID         *uint     `json:"backtest_job_id,omitempty" gorm:"index"`
 	ComparisonDigest      *string   `json:"comparison_digest,omitempty" gorm:"size:64;index"`
 	AuthorityPolicyDigest string    `json:"authority_policy_digest" gorm:"size:64;not null;default:'0000000000000000000000000000000000000000000000000000000000000000';index"`
+	Stage08ContextJSON    string    `json:"stage08_context" gorm:"column:stage08_context_json;type:jsonb;not null;default:'{}'"`
 	CreatedBy             string    `json:"created_by" gorm:"size:200;not null;default:'system'"`
 	IdempotencyKey        *string   `json:"idempotency_key,omitempty" gorm:"size:120;uniqueIndex"`
 }
@@ -754,6 +760,149 @@ type GovernanceMonitoringEvidence struct {
 	MetricsJSON            string    `json:"metrics" gorm:"column:metrics_json;type:jsonb;not null"`
 	ContentDigest          string    `json:"content_digest" gorm:"size:64;not null"`
 	CreatedAt              time.Time `json:"created_at" gorm:"not null"`
+}
+
+// Stage08FlagSnapshot is an immutable record of the exact migration authority
+// envelope observed by a runtime or operational action.
+type Stage08FlagSnapshot struct {
+	ID            string    `json:"id" gorm:"primaryKey;size:64"`
+	SchemaVersion string    `json:"schema_version" gorm:"size:50;not null;index"`
+	ContentJSON   string    `json:"content" gorm:"column:content_json;type:jsonb;not null"`
+	ContentDigest string    `json:"content_digest" gorm:"size:64;not null"`
+	CreatedAt     time.Time `json:"created_at" gorm:"not null;index"`
+}
+
+type ParityObservation struct {
+	ID                    string    `json:"id" gorm:"primaryKey;size:64"`
+	ContextID             string    `json:"context_id" gorm:"size:64;not null;index;uniqueIndex:idx_parity_context_pair,priority:1"`
+	PairKey               string    `json:"pair_key" gorm:"size:160;not null;uniqueIndex:idx_parity_context_pair,priority:2"`
+	SchemaVersion         string    `json:"schema_version" gorm:"size:50;not null"`
+	FlagSnapshotID        string    `json:"flag_snapshot_id" gorm:"size:64;not null;index"`
+	LegacyDigest          string    `json:"legacy_digest" gorm:"size:64;not null"`
+	CandidateDigest       string    `json:"candidate_digest" gorm:"size:64;not null"`
+	Classification        string    `json:"classification" gorm:"size:30;not null;index"`
+	DivergenceCodesJSON   string    `json:"divergence_codes" gorm:"column:divergence_codes_json;type:jsonb;not null"`
+	ExpectedPolicyReasons string    `json:"expected_policy_reasons" gorm:"column:expected_policy_reasons;type:jsonb;not null"`
+	CompactSampleJSON     string    `json:"compact_sample" gorm:"column:compact_sample_json;type:jsonb;not null"`
+	ContentDigest         string    `json:"content_digest" gorm:"size:64;not null"`
+	ObservedAt            time.Time `json:"observed_at" gorm:"not null;index"`
+}
+
+type ParityAggregate struct {
+	PairKey             string    `json:"pair_key" gorm:"primaryKey;size:160"`
+	Total               int64     `json:"total" gorm:"not null"`
+	Matches             int64     `json:"matches" gorm:"not null"`
+	Expected            int64     `json:"expected" gorm:"not null"`
+	Unexplained         int64     `json:"unexplained" gorm:"not null"`
+	ActionDivergences   int64     `json:"action_divergences" gorm:"not null"`
+	QuantityDivergences int64     `json:"quantity_divergences" gorm:"not null"`
+	ReasonDivergences   int64     `json:"reason_divergences" gorm:"not null"`
+	VersionDivergences  int64     `json:"version_divergences" gorm:"not null"`
+	UpdatedAt           time.Time `json:"updated_at" gorm:"not null"`
+}
+
+type ParityAcceptancePolicy struct {
+	ID                   string    `json:"id" gorm:"primaryKey;size:64"`
+	SchemaVersion        string    `json:"schema_version" gorm:"size:50;not null"`
+	Name                 string    `json:"name" gorm:"size:120;not null;uniqueIndex"`
+	MinimumSamples       int64     `json:"minimum_samples" gorm:"not null"`
+	MinimumCoverageBPS   int64     `json:"minimum_coverage_bps" gorm:"not null"`
+	MaxActionRateBPS     int64     `json:"max_action_rate_bps" gorm:"not null"`
+	MaxQuantityRateBPS   int64     `json:"max_quantity_rate_bps" gorm:"not null"`
+	MaxReasonRateBPS     int64     `json:"max_reason_rate_bps" gorm:"not null"`
+	MaxVersionRateBPS    int64     `json:"max_version_rate_bps" gorm:"not null"`
+	QuantityToleranceBPS int64     `json:"quantity_tolerance_bps" gorm:"not null"`
+	NotionalToleranceBPS int64     `json:"notional_tolerance_bps" gorm:"not null"`
+	ExpectedReasonsJSON  string    `json:"expected_reasons" gorm:"column:expected_reasons_json;type:jsonb;not null"`
+	ContentDigest        string    `json:"content_digest" gorm:"size:64;not null"`
+	DeclaredBy           string    `json:"declared_by" gorm:"size:200;not null"`
+	DeclaredAt           time.Time `json:"declared_at" gorm:"not null;index"`
+}
+
+type OperationalIncident struct {
+	ID                  string     `json:"id" gorm:"primaryKey;size:64"`
+	DedupeKey           string     `json:"dedupe_key" gorm:"size:160;not null;uniqueIndex"`
+	Type                string     `json:"type" gorm:"size:60;not null;index"`
+	Severity            string     `json:"severity" gorm:"size:20;not null;index"`
+	State               string     `json:"state" gorm:"size:20;not null;index"`
+	Summary             string     `json:"summary" gorm:"size:500;not null"`
+	DetailsJSON         string     `json:"details" gorm:"column:details_json;type:jsonb;not null"`
+	Occurrences         int64      `json:"occurrences" gorm:"not null"`
+	FirstSeenAt         time.Time  `json:"first_seen_at" gorm:"not null"`
+	LastSeenAt          time.Time  `json:"last_seen_at" gorm:"not null;index"`
+	CooldownUntil       time.Time  `json:"cooldown_until" gorm:"not null"`
+	AcknowledgedAt      *time.Time `json:"acknowledged_at,omitempty"`
+	AcknowledgedBy      *string    `json:"acknowledged_by,omitempty" gorm:"size:200"`
+	ResolvedAt          *time.Time `json:"resolved_at,omitempty"`
+	ResolvedBy          *string    `json:"resolved_by,omitempty" gorm:"size:200"`
+	LastDeliveryState   string     `json:"last_delivery_state" gorm:"size:30;not null"`
+	LastDeliveryError   string     `json:"last_delivery_error,omitempty" gorm:"size:500"`
+	LastDeliveryAttempt *time.Time `json:"last_delivery_attempt,omitempty"`
+	UpdatedAt           time.Time  `json:"updated_at" gorm:"not null"`
+}
+
+type OperationalIncidentAudit struct {
+	ID         string    `json:"id" gorm:"primaryKey;size:64"`
+	IncidentID string    `json:"incident_id" gorm:"size:64;not null;index"`
+	FromState  string    `json:"from_state" gorm:"size:20;not null"`
+	ToState    string    `json:"to_state" gorm:"size:20;not null"`
+	Actor      string    `json:"actor" gorm:"size:200;not null"`
+	Reason     string    `json:"reason" gorm:"size:1000;not null"`
+	CreatedAt  time.Time `json:"created_at" gorm:"not null;index"`
+	Digest     string    `json:"digest" gorm:"size:64;not null"`
+}
+
+type CutoverState struct {
+	ID             uint      `json:"id" gorm:"primaryKey;check:id = 1"`
+	Stage          string    `json:"stage" gorm:"size:60;not null;index"`
+	Authority      string    `json:"authority" gorm:"size:40;not null"`
+	FlagSnapshotID string    `json:"flag_snapshot_id" gorm:"size:64;not null"`
+	TransitionID   string    `json:"transition_id" gorm:"size:64;not null"`
+	Version        int64     `json:"version" gorm:"not null"`
+	UpdatedAt      time.Time `json:"updated_at" gorm:"not null"`
+}
+
+type CutoverTransition struct {
+	ID                string    `json:"id" gorm:"primaryKey;size:64"`
+	IdempotencyKey    string    `json:"idempotency_key" gorm:"size:160;not null;uniqueIndex"`
+	FromStage         string    `json:"from_stage" gorm:"size:60;not null"`
+	ToStage           string    `json:"to_stage" gorm:"size:60;not null"`
+	FromAuthority     string    `json:"from_authority" gorm:"size:40;not null"`
+	ToAuthority       string    `json:"to_authority" gorm:"size:40;not null"`
+	FlagSnapshotID    string    `json:"flag_snapshot_id" gorm:"size:64;not null"`
+	Principal         string    `json:"principal" gorm:"size:200;not null"`
+	Reason            string    `json:"reason" gorm:"size:1000;not null"`
+	PrerequisitesJSON string    `json:"prerequisites" gorm:"column:prerequisites_json;type:jsonb;not null"`
+	Stage07ContextKey string    `json:"stage07_context_key,omitempty" gorm:"size:120"`
+	Stage07Transition string    `json:"stage07_transition,omitempty" gorm:"size:64"`
+	RollbackOf        *string   `json:"rollback_of,omitempty" gorm:"size:64;index"`
+	ContentDigest     string    `json:"content_digest" gorm:"size:64;not null"`
+	CreatedAt         time.Time `json:"created_at" gorm:"not null;index"`
+}
+
+type BackfillPlan struct {
+	ID             string     `json:"id" gorm:"primaryKey;size:64"`
+	AccountID      string     `json:"account_id" gorm:"size:100;not null;index"`
+	SchemaVersion  string     `json:"schema_version" gorm:"size:50;not null"`
+	ReportJSON     string     `json:"report" gorm:"column:report_json;type:jsonb;not null"`
+	ReportDigest   string     `json:"report_digest" gorm:"size:64;not null"`
+	Status         string     `json:"status" gorm:"size:30;not null;index"`
+	CreatedAt      time.Time  `json:"created_at" gorm:"not null"`
+	ApprovedAt     *time.Time `json:"approved_at,omitempty"`
+	ApprovedBy     *string    `json:"approved_by,omitempty" gorm:"size:200"`
+	ApprovalDigest *string    `json:"approval_digest,omitempty" gorm:"size:64"`
+	AppliedAt      *time.Time `json:"applied_at,omitempty"`
+}
+
+type BackupVerification struct {
+	ID                  string    `json:"id" gorm:"primaryKey;size:64"`
+	SourceFingerprint   string    `json:"source_fingerprint" gorm:"size:64;not null"`
+	DumpChecksum        string    `json:"dump_checksum" gorm:"size:64;not null"`
+	FixtureMetadataJSON string    `json:"fixture_metadata" gorm:"column:fixture_metadata_json;type:jsonb;not null"`
+	TargetFingerprint   string    `json:"target_fingerprint" gorm:"size:64;not null"`
+	CanonicalDigest     string    `json:"canonical_digest" gorm:"size:64;not null"`
+	Status              string    `json:"status" gorm:"size:30;not null;index"`
+	VerifiedAt          time.Time `json:"verified_at" gorm:"not null;index"`
 }
 
 type PortfolioSnapshot struct {

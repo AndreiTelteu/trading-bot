@@ -50,6 +50,9 @@ func schemaModels() []interface{} {
 		&GovernanceDeployment{},
 		&GovernanceTransition{},
 		&GovernanceMonitoringEvidence{},
+		&Stage08FlagSnapshot{}, &ParityObservation{}, &ParityAggregate{}, &ParityAcceptancePolicy{},
+		&OperationalIncident{}, &OperationalIncidentAudit{},
+		&CutoverState{}, &CutoverTransition{}, &BackfillPlan{}, &BackupVerification{},
 		&PortfolioSnapshot{},
 	}
 }
@@ -597,6 +600,68 @@ func RunMigrations(db *gorm.DB) error {
 			},
 			Rollback: func(tx *gorm.DB) error {
 				return fmt.Errorf("Stage 07 feedback audit integrity is intentionally retained")
+			},
+		},
+		{
+			ID: "202607180100_stage08_migration_cutover_operations",
+			Migrate: func(tx *gorm.DB) error {
+				for _, item := range []struct {
+					model  any
+					column string
+				}{
+					{&Order{}, "Stage08ContextJSON"}, {&Fill{}, "Stage08ContextJSON"}, {&LedgerEvent{}, "Stage08ContextJSON"},
+					{&BacktestJob{}, "Stage08ContextJSON"}, {&TrendAnalysisHistory{}, "Stage08ContextJSON"}, {&ValidationExperiment{}, "Stage08ContextJSON"},
+				} {
+					if !tx.Migrator().HasTable(item.model) {
+						continue
+					}
+					if !tx.Migrator().HasColumn(item.model, item.column) {
+						if err := tx.Migrator().AddColumn(item.model, item.column); err != nil {
+							return err
+						}
+					}
+				}
+				if err := tx.AutoMigrate(
+					&Stage08FlagSnapshot{}, &ParityObservation{}, &ParityAggregate{}, &ParityAcceptancePolicy{},
+					&OperationalIncident{}, &OperationalIncidentAudit{},
+					&CutoverState{}, &CutoverTransition{}, &BackfillPlan{}, &BackupVerification{},
+				); err != nil {
+					return err
+				}
+				return tx.Exec(`
+					CREATE OR REPLACE FUNCTION reject_stage08_immutable_mutation() RETURNS trigger AS $$
+					BEGIN RAISE EXCEPTION 'stage08 immutable audit record cannot be changed'; END;
+					$$ LANGUAGE plpgsql;
+					DROP TRIGGER IF EXISTS stage08_flag_snapshots_immutable ON stage08_flag_snapshots;
+					CREATE TRIGGER stage08_flag_snapshots_immutable BEFORE UPDATE OR DELETE ON stage08_flag_snapshots FOR EACH ROW EXECUTE FUNCTION reject_stage08_immutable_mutation();
+					DROP TRIGGER IF EXISTS parity_observations_immutable ON parity_observations;
+					CREATE TRIGGER parity_observations_immutable BEFORE UPDATE OR DELETE ON parity_observations FOR EACH ROW EXECUTE FUNCTION reject_stage08_immutable_mutation();
+					DROP TRIGGER IF EXISTS parity_acceptance_policies_immutable ON parity_acceptance_policies;
+					CREATE TRIGGER parity_acceptance_policies_immutable BEFORE UPDATE OR DELETE ON parity_acceptance_policies FOR EACH ROW EXECUTE FUNCTION reject_stage08_immutable_mutation();
+					DROP TRIGGER IF EXISTS operational_incident_audits_immutable ON operational_incident_audits;
+					CREATE TRIGGER operational_incident_audits_immutable BEFORE UPDATE OR DELETE ON operational_incident_audits FOR EACH ROW EXECUTE FUNCTION reject_stage08_immutable_mutation();
+					DROP TRIGGER IF EXISTS cutover_transitions_immutable ON cutover_transitions;
+					CREATE TRIGGER cutover_transitions_immutable BEFORE UPDATE OR DELETE ON cutover_transitions FOR EACH ROW EXECUTE FUNCTION reject_stage08_immutable_mutation();
+					DROP TRIGGER IF EXISTS backfill_plans_immutable_after_apply ON backfill_plans;
+					CREATE OR REPLACE FUNCTION guard_applied_backfill_plan() RETURNS trigger AS $$ BEGIN
+					 IF OLD.status='applied' THEN RAISE EXCEPTION 'applied backfill plan is immutable'; END IF;
+					 IF OLD.status='approved' AND (TG_OP='DELETE' OR NEW.status<>'applied' OR NEW.id<>OLD.id OR NEW.account_id<>OLD.account_id OR NEW.report_digest<>OLD.report_digest OR NEW.report_json<>OLD.report_json OR NEW.approval_digest<>OLD.approval_digest OR NEW.approved_by<>OLD.approved_by OR NEW.approved_at<>OLD.approved_at) THEN RAISE EXCEPTION 'approved backfill evidence is immutable'; END IF;
+					 RETURN NEW;
+					END; $$ LANGUAGE plpgsql;
+					CREATE TRIGGER backfill_plans_immutable_after_apply BEFORE UPDATE OR DELETE ON backfill_plans FOR EACH ROW EXECUTE FUNCTION guard_applied_backfill_plan();
+					ALTER TABLE parity_observations DROP CONSTRAINT IF EXISTS parity_observation_class_check;
+					ALTER TABLE parity_observations ADD CONSTRAINT parity_observation_class_check CHECK (classification IN ('match','expected','unexplained'));
+					ALTER TABLE operational_incidents DROP CONSTRAINT IF EXISTS operational_incident_state_check;
+					ALTER TABLE operational_incidents ADD CONSTRAINT operational_incident_state_check CHECK (state IN ('open','acknowledged','resolved'));
+					CREATE OR REPLACE FUNCTION guard_operational_incident_write() RETURNS trigger AS $$ BEGIN IF current_setting('trading_bot.operational_incident_write',true)<>'on' THEN RAISE EXCEPTION 'operational incident writes require audited service contract'; END IF; RETURN NEW; END; $$ LANGUAGE plpgsql;
+					DROP TRIGGER IF EXISTS operational_incident_write_guard ON operational_incidents;
+					CREATE TRIGGER operational_incident_write_guard BEFORE UPDATE OR DELETE ON operational_incidents FOR EACH ROW EXECUTE FUNCTION guard_operational_incident_write();
+					ALTER TABLE backfill_plans DROP CONSTRAINT IF EXISTS backfill_plan_state_check;
+					ALTER TABLE backfill_plans ADD CONSTRAINT backfill_plan_state_check CHECK (status IN ('planned','approved','applied'));
+				`).Error
+			},
+			Rollback: func(tx *gorm.DB) error {
+				return fmt.Errorf("Stage 08 cutover and operational audit history is intentionally retained")
 			},
 		},
 	})
