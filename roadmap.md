@@ -105,14 +105,14 @@ Detailed plan: [`docs/reimplementation/stage-05-benchmarks-baselines.md`](docs/r
 
 Detailed plan: [`docs/reimplementation/stage-06-trend-momentum-strategy.md`](docs/reimplementation/stage-06-trend-momentum-strategy.md)
 
-- [ ] Implement one documented, falsifiable trend/momentum hypothesis
-- [ ] Add regime gating, liquidity filters, ranking, and controlled rebalance cadence
-- [ ] Add per-position and total-exposure caps
-- [ ] Add turnover limits and explicit exit semantics
-- [ ] Add component ablations and sensitivity reports
-- [ ] Keep the strategy research/shadow-only until validation passes
-- [ ] Add unit, scenario, parity, and regression tests
-- [ ] Complete independent review and one feedback pass
+- [x] Implement one documented, falsifiable trend/momentum hypothesis
+- [x] Add regime gating, liquidity filters, ranking, and controlled rebalance cadence
+- [x] Add per-position and total-exposure caps
+- [x] Add turnover limits and explicit exit semantics
+- [x] Add component ablations and sensitivity reports
+- [x] Keep the strategy research/shadow-only until validation passes
+- [x] Add unit, scenario, parity, and regression tests
+- [x] Complete independent review and one feedback pass
 
 ## Stage 07 — Validation, governance, and ML quarantine
 
