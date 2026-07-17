@@ -25,6 +25,13 @@ func schemaModels() []interface{} {
 		&UniverseSymbol{},
 		&UniverseSnapshot{},
 		&UniverseMember{},
+		&Asset{},
+		&ExchangeSymbol{},
+		&TradabilityInterval{},
+		&SymbolConstraintVersion{},
+		&HistoricalBar{},
+		&DatasetManifest{},
+		&IngestionCheckpoint{},
 		&ModelArtifact{},
 		&PolicyConfig{},
 		&ExperimentRun{},
@@ -285,8 +292,26 @@ func RunMigrations(db *gorm.DB) error {
 			},
 		},
 		{
-			ID:      "202607170200_shared_broker_outcomes",
-			Migrate: func(tx *gorm.DB) error { return migrateSchema(tx) },
+			ID: "202607170200_shared_broker_outcomes",
+			Migrate: func(tx *gorm.DB) error {
+				// Historical migrations must not pick up models introduced by later
+				// stages or rebuild immutable economic tables. Freeze Stage 02 to
+				// the table and columns it actually introduced.
+				if err := tx.AutoMigrate(&BrokerOutcomeIngestion{}); err != nil {
+					return err
+				}
+				for _, column := range []string{"RequestedQuantityExact", "ExecutedQuantityExact", "RemainingQuantityExact"} {
+					if !tx.Migrator().HasColumn(&Order{}, column) {
+						if err := tx.Migrator().AddColumn(&Order{}, column); err != nil {
+							return err
+						}
+					}
+				}
+				if !tx.Migrator().HasColumn(&Fill{}, "CostModelVersion") {
+					return tx.Migrator().AddColumn(&Fill{}, "CostModelVersion")
+				}
+				return nil
+			},
 			Rollback: func(tx *gorm.DB) error {
 				if err := tx.Migrator().DropTable(&BrokerOutcomeIngestion{}); err != nil {
 					return err
@@ -303,6 +328,80 @@ func RunMigrations(db *gorm.DB) error {
 				}
 				return nil
 			},
+		},
+		{
+			ID: "202607170400_point_in_time_market_data",
+			Migrate: func(tx *gorm.DB) error {
+				// Scope this migration deliberately. Running the global AutoMigrate
+				// here can rebuild Stage 01 economic tables after their immutable
+				// triggers and partial unique indexes have been installed.
+				if err := tx.AutoMigrate(
+					&Asset{}, &ExchangeSymbol{}, &TradabilityInterval{},
+					&SymbolConstraintVersion{}, &HistoricalBar{},
+					&DatasetManifest{}, &IngestionCheckpoint{},
+					&BacktestJob{}, &UniverseSymbol{}, &UniverseSnapshot{},
+					&UniverseMember{}, &ExperimentRun{},
+				); err != nil {
+					return err
+				}
+				return tx.Exec(`
+					ALTER TABLE exchange_symbols DROP CONSTRAINT IF EXISTS exchange_symbols_lifecycle_check;
+					ALTER TABLE exchange_symbols ADD CONSTRAINT exchange_symbols_lifecycle_check CHECK (delisted_at IS NULL OR delisted_at > listed_at);
+					ALTER TABLE tradability_intervals DROP CONSTRAINT IF EXISTS tradability_intervals_time_check;
+					ALTER TABLE tradability_intervals ADD CONSTRAINT tradability_intervals_time_check CHECK (effective_to IS NULL OR effective_to > effective_from);
+					ALTER TABLE symbol_constraint_versions DROP CONSTRAINT IF EXISTS symbol_constraint_versions_time_check;
+					ALTER TABLE symbol_constraint_versions ADD CONSTRAINT symbol_constraint_versions_time_check CHECK (effective_to IS NULL OR effective_to > effective_from);
+					ALTER TABLE historical_bars DROP CONSTRAINT IF EXISTS historical_bars_role_check;
+					ALTER TABLE historical_bars ADD CONSTRAINT historical_bars_role_check CHECK (role IN ('decision','execution','benchmark'));
+					ALTER TABLE historical_bars DROP CONSTRAINT IF EXISTS historical_bars_quality_check;
+					ALTER TABLE historical_bars ADD CONSTRAINT historical_bars_quality_check CHECK (quality_status IN ('valid','warning','rejected','unresolved'));
+					ALTER TABLE historical_bars DROP CONSTRAINT IF EXISTS historical_bars_values_check;
+					ALTER TABLE historical_bars ADD CONSTRAINT historical_bars_values_check CHECK (open > 0 AND high >= open AND high >= close AND high >= low AND low <= open AND low <= close AND volume >= 0 AND quote_volume >= 0 AND dataset_version <> '' AND source <> '' AND length(content_hash)=64);
+					ALTER TABLE symbol_constraint_versions DROP CONSTRAINT IF EXISTS symbol_constraint_values_check;
+					ALTER TABLE symbol_constraint_versions ADD CONSTRAINT symbol_constraint_values_check CHECK (quantity_step > 0 AND price_tick > 0 AND min_quantity > 0 AND min_notional >= 0 AND source <> '');
+					ALTER TABLE dataset_manifests DROP CONSTRAINT IF EXISTS dataset_manifests_interval_check;
+					ALTER TABLE dataset_manifests ADD CONSTRAINT dataset_manifests_interval_check CHECK (requested_end >= requested_start AND effective_end >= effective_start AND dataset_version <> '' AND source <> '' AND id=content_hash AND length(content_hash)=64);
+					ALTER TABLE exchange_symbols DROP CONSTRAINT IF EXISTS fk_exchange_symbols_asset;
+					ALTER TABLE exchange_symbols ADD CONSTRAINT fk_exchange_symbols_asset FOREIGN KEY(asset_id) REFERENCES assets(id) ON DELETE RESTRICT;
+					ALTER TABLE exchange_symbols ADD CONSTRAINT fk_exchange_symbols_base FOREIGN KEY(base_asset_id) REFERENCES assets(id) ON DELETE RESTRICT;
+					ALTER TABLE exchange_symbols ADD CONSTRAINT fk_exchange_symbols_quote FOREIGN KEY(quote_asset_id) REFERENCES assets(id) ON DELETE RESTRICT;
+					ALTER TABLE tradability_intervals ADD CONSTRAINT fk_tradability_symbol FOREIGN KEY(exchange_symbol_id) REFERENCES exchange_symbols(id) ON DELETE RESTRICT;
+					ALTER TABLE symbol_constraint_versions ADD CONSTRAINT fk_constraints_symbol FOREIGN KEY(exchange_symbol_id) REFERENCES exchange_symbols(id) ON DELETE RESTRICT;
+					ALTER TABLE historical_bars ADD CONSTRAINT fk_historical_bars_symbol FOREIGN KEY(exchange_symbol_id) REFERENCES exchange_symbols(id) ON DELETE RESTRICT;
+					ALTER TABLE ingestion_checkpoints ADD CONSTRAINT fk_ingestion_checkpoint_symbol FOREIGN KEY(exchange_symbol_id) REFERENCES exchange_symbols(id) ON DELETE RESTRICT;
+					ALTER TABLE universe_snapshots ADD CONSTRAINT fk_universe_snapshot_manifest FOREIGN KEY(dataset_manifest_id) REFERENCES dataset_manifests(id) ON DELETE RESTRICT;
+					ALTER TABLE universe_members ADD CONSTRAINT fk_universe_member_asset FOREIGN KEY(asset_id) REFERENCES assets(id) ON DELETE RESTRICT;
+					ALTER TABLE universe_members ADD CONSTRAINT fk_universe_member_symbol FOREIGN KEY(exchange_symbol_id) REFERENCES exchange_symbols(id) ON DELETE RESTRICT;
+					ALTER TABLE backtest_jobs ADD CONSTRAINT fk_backtest_job_manifest FOREIGN KEY(dataset_manifest_id) REFERENCES dataset_manifests(id) ON DELETE RESTRICT;
+					ALTER TABLE experiment_runs ADD CONSTRAINT fk_experiment_run_manifest FOREIGN KEY(dataset_manifest_id) REFERENCES dataset_manifests(id) ON DELETE RESTRICT;
+					CREATE INDEX IF NOT EXISTS idx_exchange_symbol_asof ON exchange_symbols(venue_id,listed_at,delisted_at);
+					CREATE INDEX IF NOT EXISTS idx_tradability_asof ON tradability_intervals(exchange_symbol_id,effective_from,effective_to);
+					CREATE INDEX IF NOT EXISTS idx_constraints_asof ON symbol_constraint_versions(exchange_symbol_id,effective_from,effective_to);
+					CREATE INDEX IF NOT EXISTS idx_historical_bars_lookup ON historical_bars(dataset_version,exchange_symbol_id,role,timeframe,open_time);
+					CREATE OR REPLACE FUNCTION reject_market_history_mutation() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION 'point-in-time history is immutable'; END; $$ LANGUAGE plpgsql;
+					DROP TRIGGER IF EXISTS historical_bars_immutable ON historical_bars;
+					CREATE TRIGGER historical_bars_immutable BEFORE UPDATE OR DELETE ON historical_bars FOR EACH ROW EXECUTE FUNCTION reject_market_history_mutation();
+					DROP TRIGGER IF EXISTS dataset_manifests_immutable ON dataset_manifests;
+					CREATE TRIGGER dataset_manifests_immutable BEFORE UPDATE OR DELETE ON dataset_manifests FOR EACH ROW EXECUTE FUNCTION reject_market_history_mutation();
+					DROP TRIGGER IF EXISTS assets_immutable ON assets;
+					CREATE TRIGGER assets_immutable BEFORE UPDATE OR DELETE ON assets FOR EACH ROW EXECUTE FUNCTION reject_market_history_mutation();
+					DROP TRIGGER IF EXISTS exchange_symbols_immutable ON exchange_symbols;
+					CREATE TRIGGER exchange_symbols_immutable BEFORE UPDATE OR DELETE ON exchange_symbols FOR EACH ROW EXECUTE FUNCTION reject_market_history_mutation();
+					DROP TRIGGER IF EXISTS tradability_intervals_immutable ON tradability_intervals;
+					CREATE TRIGGER tradability_intervals_immutable BEFORE UPDATE OR DELETE ON tradability_intervals FOR EACH ROW EXECUTE FUNCTION reject_market_history_mutation();
+					DROP TRIGGER IF EXISTS symbol_constraints_immutable ON symbol_constraint_versions;
+					CREATE TRIGGER symbol_constraints_immutable BEFORE UPDATE OR DELETE ON symbol_constraint_versions FOR EACH ROW EXECUTE FUNCTION reject_market_history_mutation();
+					CREATE OR REPLACE FUNCTION reject_overlapping_effective_interval() RETURNS trigger AS $$ BEGIN
+					 IF TG_TABLE_NAME='tradability_intervals' AND EXISTS(SELECT 1 FROM tradability_intervals x WHERE x.exchange_symbol_id=NEW.exchange_symbol_id AND x.id<>COALESCE(NEW.id,0) AND tstzrange(x.effective_from,x.effective_to,'[)') && tstzrange(NEW.effective_from,NEW.effective_to,'[)')) THEN RAISE EXCEPTION 'overlapping tradability interval'; END IF;
+					 IF TG_TABLE_NAME='symbol_constraint_versions' AND EXISTS(SELECT 1 FROM symbol_constraint_versions x WHERE x.exchange_symbol_id=NEW.exchange_symbol_id AND x.id<>COALESCE(NEW.id,0) AND tstzrange(x.effective_from,x.effective_to,'[)') && tstzrange(NEW.effective_from,NEW.effective_to,'[)')) THEN RAISE EXCEPTION 'overlapping constraint interval'; END IF;
+					 RETURN NEW; END; $$ LANGUAGE plpgsql;
+					DROP TRIGGER IF EXISTS tradability_no_overlap ON tradability_intervals;
+					CREATE TRIGGER tradability_no_overlap BEFORE INSERT OR UPDATE ON tradability_intervals FOR EACH ROW EXECUTE FUNCTION reject_overlapping_effective_interval();
+					DROP TRIGGER IF EXISTS constraints_no_overlap ON symbol_constraint_versions;
+					CREATE TRIGGER constraints_no_overlap BEFORE INSERT OR UPDATE ON symbol_constraint_versions FOR EACH ROW EXECUTE FUNCTION reject_overlapping_effective_interval();
+				`).Error
+			},
+			Rollback: func(tx *gorm.DB) error { return nil },
 		},
 	})
 

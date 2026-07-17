@@ -27,31 +27,33 @@ type BacktestJobValidationSummary struct {
 }
 
 type BacktestJobSummary struct {
-	FailedLane    string                       `json:"failed_lane,omitempty"`
-	Symbols       []string                     `json:"symbols,omitempty"`
-	BacktestMode  BacktestMode                 `json:"backtest_mode,omitempty"`
-	ModelVersion  string                       `json:"model_version,omitempty"`
-	PolicyVersion string                       `json:"policy_version,omitempty"`
-	RolloutState  string                       `json:"rollout_state,omitempty"`
-	ExperimentID  string                       `json:"experiment_id,omitempty"`
-	UniverseMode  UniverseMode                 `json:"universe_mode,omitempty"`
-	PolicyContext services.GovernanceContext   `json:"policy_context"`
-	Baseline      BacktestJobStrategySummary   `json:"baseline"`
-	VolSizing     BacktestJobStrategySummary   `json:"vol_sizing"`
-	Validation    BacktestJobValidationSummary `json:"validation"`
+	FailedLane        string                       `json:"failed_lane,omitempty"`
+	Symbols           []string                     `json:"symbols,omitempty"`
+	BacktestMode      BacktestMode                 `json:"backtest_mode,omitempty"`
+	ModelVersion      string                       `json:"model_version,omitempty"`
+	PolicyVersion     string                       `json:"policy_version,omitempty"`
+	DatasetManifestID string                       `json:"dataset_manifest_id,omitempty"`
+	RolloutState      string                       `json:"rollout_state,omitempty"`
+	ExperimentID      string                       `json:"experiment_id,omitempty"`
+	UniverseMode      UniverseMode                 `json:"universe_mode,omitempty"`
+	PolicyContext     services.GovernanceContext   `json:"policy_context"`
+	Baseline          BacktestJobStrategySummary   `json:"baseline"`
+	VolSizing         BacktestJobStrategySummary   `json:"vol_sizing"`
+	Validation        BacktestJobValidationSummary `json:"validation"`
 }
 
 type BacktestJobResponse struct {
-	ID         uint                `json:"id"`
-	Status     string              `json:"status"`
-	Progress   float64             `json:"progress"`
-	Message    *string             `json:"message,omitempty"`
-	Summary    *BacktestJobSummary `json:"summary,omitempty"`
-	Error      *string             `json:"error,omitempty"`
-	StartedAt  *time.Time          `json:"started_at,omitempty"`
-	FinishedAt *time.Time          `json:"finished_at,omitempty"`
-	CreatedAt  time.Time           `json:"created_at"`
-	UpdatedAt  time.Time           `json:"updated_at"`
+	ID                uint                `json:"id"`
+	Status            string              `json:"status"`
+	Progress          float64             `json:"progress"`
+	Message           *string             `json:"message,omitempty"`
+	Summary           *BacktestJobSummary `json:"summary,omitempty"`
+	Error             *string             `json:"error,omitempty"`
+	StartedAt         *time.Time          `json:"started_at,omitempty"`
+	FinishedAt        *time.Time          `json:"finished_at,omitempty"`
+	CreatedAt         time.Time           `json:"created_at"`
+	UpdatedAt         time.Time           `json:"updated_at"`
+	DatasetManifestID *string             `json:"dataset_manifest_id,omitempty"`
 }
 
 func ListBacktestJobResponses() ([]BacktestJobResponse, error) {
@@ -96,15 +98,16 @@ func BuildBacktestJobResponse(job *database.BacktestJob) (*BacktestJobResponse, 
 	}
 
 	response := &BacktestJobResponse{
-		ID:         job.ID,
-		Status:     job.Status,
-		Progress:   job.Progress,
-		Message:    job.Message,
-		Error:      job.Error,
-		StartedAt:  job.StartedAt,
-		FinishedAt: job.FinishedAt,
-		CreatedAt:  job.CreatedAt,
-		UpdatedAt:  job.UpdatedAt,
+		ID:                job.ID,
+		Status:            job.Status,
+		Progress:          job.Progress,
+		Message:           job.Message,
+		Error:             job.Error,
+		StartedAt:         job.StartedAt,
+		FinishedAt:        job.FinishedAt,
+		CreatedAt:         job.CreatedAt,
+		UpdatedAt:         job.UpdatedAt,
+		DatasetManifestID: job.DatasetManifestID,
 	}
 
 	compactJSON, err := compactSummaryJSON(job)
@@ -148,15 +151,16 @@ func BuildBacktestJobSummary(summary BacktestRunSummary) BacktestJobSummary {
 	sort.Strings(symbols)
 
 	return BacktestJobSummary{
-		FailedLane:    summary.FailedLane,
-		Symbols:       symbols,
-		BacktestMode:  summary.BacktestMode,
-		ModelVersion:  summary.ModelVersion,
-		PolicyVersion: summary.PolicyVersion,
-		RolloutState:  summary.PolicyContext.RolloutState,
-		ExperimentID:  summary.ExperimentID,
-		UniverseMode:  summary.UniverseMode,
-		PolicyContext: summary.PolicyContext,
+		FailedLane:        summary.FailedLane,
+		Symbols:           symbols,
+		BacktestMode:      summary.BacktestMode,
+		ModelVersion:      summary.ModelVersion,
+		PolicyVersion:     summary.PolicyVersion,
+		DatasetManifestID: summary.DatasetManifestID,
+		RolloutState:      summary.PolicyContext.RolloutState,
+		ExperimentID:      summary.ExperimentID,
+		UniverseMode:      summary.UniverseMode,
+		PolicyContext:     summary.PolicyContext,
 		Baseline: BacktestJobStrategySummary{
 			Classification: summary.Baseline.Classification,
 			Coverage:       summary.Baseline.Coverage,
@@ -219,5 +223,5 @@ func compactSummaryJSON(job *database.BacktestJob) (string, error) {
 func backtestJobResponseColumns() string {
 	return `id, status, progress, message, summary_compact_json,
 		CASE WHEN COALESCE(summary_compact_json, '') = '' THEN summary_json ELSE NULL END AS summary_json,
-		error, started_at, finished_at, created_at, updated_at`
+		error, dataset_manifest_id, started_at, finished_at, created_at, updated_at`
 }

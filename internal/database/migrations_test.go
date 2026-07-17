@@ -102,6 +102,46 @@ func TestGenuinePreLedgerPopulatedSchemaUpgradeDoesNotFabricateHistory(t *testin
 	assertTrigger(t, db, "positions_economic_guard")
 }
 
+func TestStage03ShapedSchemaUpgradesToPointInTimeWithoutDestructiveRewrite(t *testing.T) {
+	db := testutil.OpenPostgresDB(t)
+	t.Cleanup(func() {
+		testutil.ResetPublicSchema(t, db)
+		if err := database.RunMigrations(db); err != nil {
+			t.Fatalf("restore full schema after Stage 03 upgrade fixture: %v", err)
+		}
+	})
+	testutil.ResetPublicSchema(t, db)
+	for _, statement := range []string{
+		`CREATE TABLE schema_migrations (id varchar(255) PRIMARY KEY)`,
+		`CREATE TABLE backtest_jobs (id bigserial PRIMARY KEY,status varchar(20),progress double precision,created_at timestamptz,updated_at timestamptz)`,
+		`CREATE TABLE universe_snapshots (id bigserial PRIMARY KEY,snapshot_time timestamptz,regime_state varchar(20),breadth_ratio double precision,eligible_count bigint,candidate_count bigint,ranked_count bigint,shortlist_count bigint,rebalance_interval varchar(20),created_at timestamptz,updated_at timestamptz)`,
+		`CREATE TABLE universe_members (id bigserial PRIMARY KEY,universe_snapshot_id bigint,symbol varchar(20),stage varchar(20),rank_score double precision,shortlisted boolean,created_at timestamptz,updated_at timestamptz)`,
+		`INSERT INTO universe_snapshots(id,snapshot_time,regime_state,created_at,updated_at) VALUES(7,'2024-01-01T00:00:00Z','neutral',now(),now())`,
+		`INSERT INTO universe_members(universe_snapshot_id,symbol,stage,rank_score,shortlisted,created_at,updated_at) VALUES(7,'LEGACYUSDT','active',1,true,now(),now())`,
+	} {
+		if err := db.Exec(statement).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, id := range []string{"202603221700_initial_postgres_schema", "202603221830_backtest_job_summary_compact_json", "202603222100_execution_parity_fields", "202603230100_universe_selection_tables", "202603230400_learned_model_entities", "202603231200_governance_tracking_entities", "202607160100_immutable_ledger", "202607160200_stage01_review_remediation", "202607170200_shared_broker_outcomes"} {
+		if err := db.Exec("INSERT INTO schema_migrations(id) VALUES(?)", id).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := database.RunMigrations(db); err != nil {
+		t.Fatal(err)
+	}
+	for _, model := range []any{&database.Asset{}, &database.ExchangeSymbol{}, &database.HistoricalBar{}, &database.DatasetManifest{}, &database.IngestionCheckpoint{}} {
+		if !db.Migrator().HasTable(model) {
+			t.Fatalf("missing upgraded table for %T", model)
+		}
+	}
+	var legacy database.UniverseMember
+	if err := db.First(&legacy, "symbol=?", "LEGACYUSDT").Error; err != nil || legacy.UniverseSnapshotID != 7 {
+		t.Fatalf("legacy snapshot member was not preserved: %+v %v", legacy, err)
+	}
+}
+
 func assertTrigger(t *testing.T, db interface {
 	Raw(string, ...interface{}) *gorm.DB
 }, name string) {

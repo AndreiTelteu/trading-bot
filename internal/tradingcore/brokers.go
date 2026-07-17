@@ -9,6 +9,7 @@ import (
 
 const ExchangeExecutionFenced RejectionCode = "exchange_execution_fenced"
 const BelowMinimumQuantity RejectionCode = "below_minimum_quantity"
+const BelowMinimumNotional RejectionCode = "below_minimum_notional"
 
 type CostModel struct {
 	FeeBPS, SlippageBPS int64
@@ -18,6 +19,7 @@ type CostModel struct {
 	ExecutionPrice      OptionalPrice
 	PriceTick           string
 	MinQuantity         string
+	MinNotional         string
 }
 
 type SimulationBroker struct {
@@ -92,6 +94,16 @@ func (broker SimulationBroker) Submit(_ context.Context, batch DecisionBatch) (B
 			}
 			if decimalRat(fillQuantity.Decimal()).Cmp(decimalRat(minimum)) < 0 {
 				rejected = append(rejected, OrderRejection{OrderID: intent.ID, Code: BelowMinimumQuantity, Message: "quantity below symbol minimum", EvaluatedAt: broker.Clock.Now().UTC(), PolicyVersion: intent.Versions.Policy})
+				continue
+			}
+		}
+		if broker.Costs.MinNotional != "" {
+			minimum, parseErr := ParseDecimal(broker.Costs.MinNotional)
+			if parseErr != nil {
+				return BrokerBatchOutcome{}, parseErr
+			}
+			if notional(fillQuantity, fillPrice).Cmp(decimalRat(minimum)) < 0 {
+				rejected = append(rejected, OrderRejection{OrderID: intent.ID, Code: BelowMinimumNotional, Message: "fill notional below symbol minimum", EvaluatedAt: broker.Clock.Now().UTC(), PolicyVersion: intent.Versions.Policy})
 				continue
 			}
 		}

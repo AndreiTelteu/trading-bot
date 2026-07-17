@@ -225,6 +225,7 @@ type BacktestJob struct {
 	SummaryJSON        *string    `json:"summary_json" gorm:"type:text"`
 	SummaryCompactJSON *string    `json:"summary_compact_json" gorm:"type:text"`
 	Error              *string    `json:"error" gorm:"type:text"`
+	DatasetManifestID  *string    `json:"dataset_manifest_id,omitempty" gorm:"size:64;index"`
 	StartedAt          *time.Time `json:"started_at"`
 	FinishedAt         *time.Time `json:"finished_at"`
 	CreatedAt          time.Time  `json:"created_at" gorm:"index"`
@@ -261,24 +262,30 @@ type TrendAnalysisHistory struct {
 }
 
 type UniverseSymbol struct {
-	ID              uint             `json:"id" gorm:"primaryKey;autoIncrement"`
-	Symbol          string           `json:"symbol" gorm:"size:20;uniqueIndex"`
-	BaseAsset       string           `json:"base_asset" gorm:"size:20;index"`
-	QuoteAsset      string           `json:"quote_asset" gorm:"size:20;index"`
-	Status          string           `json:"status" gorm:"size:20;index"`
-	SpotTradable    bool             `json:"spot_tradable" gorm:"default:false"`
-	IsExcluded      bool             `json:"is_excluded" gorm:"default:false;index"`
-	ExclusionReason *string          `json:"exclusion_reason" gorm:"type:text"`
-	FirstSeenAt     time.Time        `json:"first_seen_at" gorm:"index"`
-	LastSeenAt      time.Time        `json:"last_seen_at" gorm:"index"`
-	CreatedAt       time.Time        `json:"created_at"`
-	UpdatedAt       time.Time        `json:"updated_at"`
-	Snapshots       []UniverseMember `json:"-" gorm:"foreignKey:Symbol;references:Symbol"`
+	ID              uint      `json:"id" gorm:"primaryKey;autoIncrement"`
+	Symbol          string    `json:"symbol" gorm:"size:20;uniqueIndex"`
+	BaseAsset       string    `json:"base_asset" gorm:"size:20;index"`
+	QuoteAsset      string    `json:"quote_asset" gorm:"size:20;index"`
+	Status          string    `json:"status" gorm:"size:20;index"`
+	SpotTradable    bool      `json:"spot_tradable" gorm:"default:false"`
+	IsExcluded      bool      `json:"is_excluded" gorm:"default:false;index"`
+	ExclusionReason *string   `json:"exclusion_reason" gorm:"type:text"`
+	FirstSeenAt     time.Time `json:"first_seen_at" gorm:"index"`
+	LastSeenAt      time.Time `json:"last_seen_at" gorm:"index"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
 }
 
 type UniverseSnapshot struct {
 	ID                uint             `json:"id" gorm:"primaryKey;autoIncrement"`
-	SnapshotTime      time.Time        `json:"snapshot_time" gorm:"index"`
+	SnapshotTime      time.Time        `json:"snapshot_time" gorm:"index;uniqueIndex:idx_universe_snapshot_identity,priority:1"`
+	PolicyVersion     string           `json:"policy_version" gorm:"size:100;not null;default:legacy;uniqueIndex:idx_universe_snapshot_identity,priority:2"`
+	DatasetManifestID *string          `json:"dataset_manifest_id,omitempty" gorm:"size:64;index;uniqueIndex:idx_universe_snapshot_identity,priority:3"`
+	CoverageState     string           `json:"coverage_state" gorm:"size:30;not null;default:complete;index"`
+	CoverageJSON      string           `json:"coverage" gorm:"column:coverage_json;type:jsonb;not null;default:'{}'"`
+	BenchmarkAssetID  *string          `json:"benchmark_asset_id,omitempty" gorm:"size:100;index"`
+	BenchmarkSymbolID *string          `json:"benchmark_symbol_id,omitempty" gorm:"size:100;index"`
+	CandidatePoolJSON string           `json:"candidate_pool" gorm:"column:candidate_pool_json;type:jsonb;not null;default:'[]'"`
 	RebalanceInterval string           `json:"rebalance_interval" gorm:"size:20"`
 	RegimeState       string           `json:"regime_state" gorm:"size:20;index"`
 	BreadthRatio      float64          `json:"breadth_ratio"`
@@ -293,7 +300,9 @@ type UniverseSnapshot struct {
 
 type UniverseMember struct {
 	ID                        uint      `json:"id" gorm:"primaryKey;autoIncrement"`
-	UniverseSnapshotID        uint      `json:"universe_snapshot_id" gorm:"index"`
+	UniverseSnapshotID        uint      `json:"universe_snapshot_id" gorm:"index;uniqueIndex:idx_universe_member_economic,priority:1"`
+	AssetID                   *string   `json:"asset_id,omitempty" gorm:"size:100;index;uniqueIndex:idx_universe_member_economic,priority:2"`
+	ExchangeSymbolID          *string   `json:"exchange_symbol_id,omitempty" gorm:"size:100;index"`
 	Symbol                    string    `json:"symbol" gorm:"size:20;index"`
 	Stage                     string    `json:"stage" gorm:"size:20;index"`
 	LastPrice                 float64   `json:"last_price"`
@@ -314,11 +323,121 @@ type UniverseMember struct {
 	VolumeAcceleration        float64   `json:"volume_acceleration"`
 	OverextensionPenalty      float64   `json:"overextension_penalty"`
 	RankScore                 float64   `json:"rank_score"`
+	Rank                      int       `json:"rank" gorm:"index"`
 	RankComponentsJSON        string    `json:"rank_components_json" gorm:"type:text"`
 	Shortlisted               bool      `json:"shortlisted" gorm:"default:false;index"`
 	RejectionReason           *string   `json:"rejection_reason" gorm:"type:text"`
 	CreatedAt                 time.Time `json:"created_at"`
 	UpdatedAt                 time.Time `json:"updated_at"`
+}
+
+// Asset is the stable economic identity. Exchange tickers are intentionally
+// modeled separately so a rename never creates a second exposure.
+type Asset struct {
+	ID             string    `json:"id" gorm:"primaryKey;size:100"`
+	CanonicalCode  string    `json:"canonical_code" gorm:"size:40;not null;uniqueIndex"`
+	Name           string    `json:"name" gorm:"size:200"`
+	Source         string    `json:"source" gorm:"size:100;not null"`
+	ProvenanceJSON string    `json:"provenance" gorm:"column:provenance_json;type:jsonb;not null;default:'{}'"`
+	RetrievedAt    time.Time `json:"retrieved_at" gorm:"not null;index"`
+	CreatedAt      time.Time `json:"created_at"`
+}
+
+type ExchangeSymbol struct {
+	ID             string     `json:"id" gorm:"primaryKey;size:100"`
+	VenueID        string     `json:"venue_id" gorm:"size:50;not null;uniqueIndex:idx_exchange_symbol_version,priority:1"`
+	Ticker         string     `json:"ticker" gorm:"size:40;not null;index;uniqueIndex:idx_exchange_symbol_version,priority:2"`
+	AssetID        string     `json:"asset_id" gorm:"size:100;not null;index"`
+	BaseAssetID    string     `json:"base_asset_id" gorm:"size:100;not null;index"`
+	QuoteAssetID   string     `json:"quote_asset_id" gorm:"size:100;not null;index"`
+	ListedAt       time.Time  `json:"listed_at" gorm:"not null;index"`
+	DelistedAt     *time.Time `json:"delisted_at,omitempty" gorm:"index"`
+	Version        int        `json:"version" gorm:"not null;default:1;uniqueIndex:idx_exchange_symbol_version,priority:3"`
+	Source         string     `json:"source" gorm:"size:100;not null"`
+	ProvenanceJSON string     `json:"provenance" gorm:"column:provenance_json;type:jsonb;not null;default:'{}'"`
+	RetrievedAt    time.Time  `json:"retrieved_at" gorm:"not null;index"`
+	CreatedAt      time.Time  `json:"created_at"`
+}
+
+type TradabilityInterval struct {
+	ID               uint       `json:"id" gorm:"primaryKey;autoIncrement"`
+	ExchangeSymbolID string     `json:"exchange_symbol_id" gorm:"size:100;not null;index;uniqueIndex:idx_tradability_interval,priority:1"`
+	EffectiveFrom    time.Time  `json:"effective_from" gorm:"not null;index;uniqueIndex:idx_tradability_interval,priority:2"`
+	EffectiveTo      *time.Time `json:"effective_to,omitempty" gorm:"index"`
+	SpotTradable     bool       `json:"spot_tradable" gorm:"not null"`
+	Status           string     `json:"status" gorm:"size:30;not null"`
+	Source           string     `json:"source" gorm:"size:100;not null"`
+	ProvenanceJSON   string     `json:"provenance" gorm:"column:provenance_json;type:jsonb;not null;default:'{}'"`
+	RetrievedAt      time.Time  `json:"retrieved_at" gorm:"not null;index"`
+}
+
+type SymbolConstraintVersion struct {
+	ID               uint       `json:"id" gorm:"primaryKey;autoIncrement"`
+	ExchangeSymbolID string     `json:"exchange_symbol_id" gorm:"size:100;not null;index;uniqueIndex:idx_symbol_constraint_effective,priority:1"`
+	EffectiveFrom    time.Time  `json:"effective_from" gorm:"not null;index;uniqueIndex:idx_symbol_constraint_effective,priority:2"`
+	EffectiveTo      *time.Time `json:"effective_to,omitempty" gorm:"index"`
+	QuantityStep     string     `json:"quantity_step" gorm:"type:numeric(38,18);not null"`
+	PriceTick        string     `json:"price_tick" gorm:"type:numeric(38,18);not null"`
+	MinQuantity      string     `json:"min_quantity" gorm:"type:numeric(38,18);not null"`
+	MinNotional      string     `json:"min_notional" gorm:"type:numeric(38,18);not null;default:0"`
+	Source           string     `json:"source" gorm:"size:100;not null"`
+	ProvenanceJSON   string     `json:"provenance" gorm:"column:provenance_json;type:jsonb;not null;default:'{}'"`
+	RetrievedAt      time.Time  `json:"retrieved_at" gorm:"not null;index"`
+}
+
+type HistoricalBar struct {
+	ID               uint      `json:"id" gorm:"primaryKey;autoIncrement"`
+	ExchangeSymbolID string    `json:"exchange_symbol_id" gorm:"size:100;not null;index;uniqueIndex:idx_historical_bar_revision,priority:1"`
+	Timeframe        string    `json:"timeframe" gorm:"size:20;not null;index;uniqueIndex:idx_historical_bar_revision,priority:2"`
+	OpenTime         time.Time `json:"open_time" gorm:"not null;index;uniqueIndex:idx_historical_bar_revision,priority:3"`
+	DatasetVersion   string    `json:"dataset_version" gorm:"size:100;not null;index;uniqueIndex:idx_historical_bar_revision,priority:4"`
+	Role             string    `json:"role" gorm:"size:20;not null;index;uniqueIndex:idx_historical_bar_revision,priority:5"`
+	Open             string    `json:"open" gorm:"type:numeric(38,18);not null"`
+	High             string    `json:"high" gorm:"type:numeric(38,18);not null"`
+	Low              string    `json:"low" gorm:"type:numeric(38,18);not null"`
+	Close            string    `json:"close" gorm:"type:numeric(38,18);not null"`
+	Volume           string    `json:"volume" gorm:"type:numeric(38,18);not null"`
+	QuoteVolume      string    `json:"quote_volume" gorm:"type:numeric(38,18);not null"`
+	TradeCount       int64     `json:"trade_count" gorm:"not null;default:0"`
+	QualityStatus    string    `json:"quality_status" gorm:"size:30;not null;index"`
+	QualityFlagsJSON string    `json:"quality_flags" gorm:"column:quality_flags_json;type:jsonb;not null;default:'[]'"`
+	Source           string    `json:"source" gorm:"size:100;not null;index"`
+	ProvenanceJSON   string    `json:"provenance" gorm:"column:provenance_json;type:jsonb;not null;default:'{}'"`
+	RetrievedAt      time.Time `json:"retrieved_at" gorm:"not null;index"`
+	ContentHash      string    `json:"content_hash" gorm:"size:64;not null"`
+	CreatedAt        time.Time `json:"created_at"`
+}
+
+type DatasetManifest struct {
+	ID                  string    `json:"id" gorm:"primaryKey;size:64"`
+	SchemaVersion       string    `json:"schema_version" gorm:"size:50;not null;index"`
+	DatasetVersion      string    `json:"dataset_version" gorm:"size:100;not null;index"`
+	RequestedStart      time.Time `json:"requested_start" gorm:"not null;index"`
+	RequestedEnd        time.Time `json:"requested_end" gorm:"not null;index"`
+	EffectiveStart      time.Time `json:"effective_start" gorm:"not null"`
+	EffectiveEnd        time.Time `json:"effective_end" gorm:"not null"`
+	Source              string    `json:"source" gorm:"size:100;not null"`
+	ProvenanceJSON      string    `json:"provenance" gorm:"column:provenance_json;type:jsonb;not null;default:'{}'"`
+	BuildVersion        string    `json:"build_version" gorm:"size:100;not null"`
+	ContentHash         string    `json:"content_hash" gorm:"size:64;not null;uniqueIndex"`
+	SymbolsJSON         string    `json:"symbols" gorm:"column:symbols_json;type:jsonb;not null;default:'[]'"`
+	AssetsJSON          string    `json:"assets" gorm:"column:assets_json;type:jsonb;not null;default:'[]'"`
+	RolesTimeframesJSON string    `json:"roles_timeframes" gorm:"column:roles_timeframes_json;type:jsonb;not null;default:'[]'"`
+	CoverageJSON        string    `json:"coverage" gorm:"column:coverage_json;type:jsonb;not null;default:'[]'"`
+	LimitationsJSON     string    `json:"limitations" gorm:"column:limitations_json;type:jsonb;not null;default:'[]'"`
+	CreatedAt           time.Time `json:"created_at"`
+}
+
+type IngestionCheckpoint struct {
+	ID               uint       `json:"id" gorm:"primaryKey;autoIncrement"`
+	DatasetVersion   string     `json:"dataset_version" gorm:"size:100;not null;uniqueIndex:idx_ingestion_checkpoint,priority:1"`
+	ExchangeSymbolID string     `json:"exchange_symbol_id" gorm:"size:100;not null;uniqueIndex:idx_ingestion_checkpoint,priority:2"`
+	Timeframe        string     `json:"timeframe" gorm:"size:20;not null;uniqueIndex:idx_ingestion_checkpoint,priority:3"`
+	Role             string     `json:"role" gorm:"size:20;not null;uniqueIndex:idx_ingestion_checkpoint,priority:4"`
+	LastOpenTime     *time.Time `json:"last_open_time,omitempty"`
+	Status           string     `json:"status" gorm:"size:30;not null;index"`
+	UnresolvedJSON   string     `json:"unresolved" gorm:"column:unresolved_json;type:jsonb;not null;default:'[]'"`
+	UpdatedAt        time.Time  `json:"updated_at"`
 }
 
 type ModelArtifact struct {
@@ -423,6 +542,7 @@ type ExperimentRun struct {
 	ID                          uint      `json:"id" gorm:"primaryKey;autoIncrement"`
 	ExperimentID                string    `json:"experiment_id" gorm:"size:100;uniqueIndex"`
 	BacktestJobID               *uint     `json:"backtest_job_id" gorm:"index"`
+	DatasetManifestID           *string   `json:"dataset_manifest_id,omitempty" gorm:"size:64;index"`
 	BacktestMode                string    `json:"backtest_mode" gorm:"size:50;index"`
 	ModelVersion                string    `json:"model_version" gorm:"size:100;index"`
 	FeatureSpecVersion          string    `json:"feature_spec_version" gorm:"size:50;index"`

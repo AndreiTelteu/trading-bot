@@ -74,6 +74,28 @@ func TestFixtureParityAcrossBacktestPaperAndFencedLive(t *testing.T) {
 	}
 }
 
+func TestHistoricalMinimumNotionalRejectsSimulationFill(t *testing.T) {
+	fixture := loadParityFixture(t)
+	snapshot := parityContext(t, fixture, tradingcore.ExecutionPaper, false)
+	strategyResult, err := (tradingcore.LegacyRuleStrategy{IDs: tradingcore.NewSequenceIDGenerator("decision", 1)}).Decide(context.Background(), snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	riskResult, err := (tradingcore.PortfolioRiskEngine{}).Evaluate(context.Background(), strategyResult.Intents(), snapshot.Portfolio(), parityPolicy(t, fixture))
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock := tradingcore.NewFixedClock(mustTime(t, fixture.DecisionAt).Add(time.Second))
+	broker := tradingcore.NewBacktestBroker(clock, tradingcore.NewSequenceIDGenerator("broker", 1), tradingcore.CostModel{FeeBPS: fixture.FeeBPS, SlippageBPS: fixture.SlippageBPS, Version: "cost-v1", MinNotional: "1000000"})
+	outcome, err := broker.Submit(context.Background(), riskResult.Approved())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(outcome.Accepted()) != 0 || len(outcome.Rejected()) != 1 || outcome.Rejected()[0].Code != tradingcore.BelowMinimumNotional {
+		t.Fatalf("minimum-notional outcome = %+v", outcome)
+	}
+}
+
 func TestLegacyGateOrderRolloutAndShadowObservationCannotAuthorize(t *testing.T) {
 	fixture := loadParityFixture(t)
 	snapshot := parityContext(t, fixture, tradingcore.ExecutionPaper, true)

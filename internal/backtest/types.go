@@ -90,6 +90,14 @@ type BacktestConfig struct {
 	ReplaySnapshotsProvided                bool
 	FeatureSeries                          []FeatureSeries
 	ConstraintsAvailable                   bool
+	DatasetManifestID                      string
+	DatasetManifestValidated               bool
+	DatasetManifestRequired                bool
+	DatasetLimitations                     []string
+	SymbolIdentities                       map[string]string
+	EconomicAssetIdentities                map[string]string
+	SymbolLifecycles                       map[string]SymbolLifecycle
+	ConstraintResolver                     func(symbol string, at time.Time) (SymbolConstraints, bool)
 	CodeRevision                           string
 	ConfigVersion                          string
 	StrategyVersion                        string
@@ -120,6 +128,11 @@ type SymbolConstraints struct {
 	QuantityStep float64 `json:"quantity_step"`
 	PriceTick    float64 `json:"price_tick"`
 	MinQuantity  float64 `json:"min_quantity,omitempty"`
+	MinNotional  float64 `json:"min_notional,omitempty"`
+}
+type SymbolLifecycle struct {
+	ListedAt   time.Time
+	DelistedAt *time.Time
 }
 
 type ReplaySnapshot struct {
@@ -167,21 +180,22 @@ func (series FeatureSeries) AsOf(at time.Time) []FeatureObservation {
 type CoverageReason string
 
 const (
-	CoverageMissingSeries      CoverageReason = "missing_series"
-	CoverageEmptySeries        CoverageReason = "empty_series"
-	CoverageDuplicateTimestamp CoverageReason = "duplicate_timestamp"
-	CoverageNonMonotonic       CoverageReason = "non_monotonic_timestamp"
-	CoverageInternalGap        CoverageReason = "internal_gap"
-	CoverageBounds             CoverageReason = "requested_bounds_not_covered"
-	CoverageReplayEmpty        CoverageReason = "replay_snapshots_empty"
-	CoverageReplayMembersEmpty CoverageReason = "replay_members_insufficient"
-	CoverageBenchmarkMissing   CoverageReason = "benchmark_missing"
-	CoverageFeatureMissing     CoverageReason = "model_feature_missing"
-	CoverageInvalidBarWidth    CoverageReason = "invalid_bar_interval"
-	CoverageReplayDuplicate    CoverageReason = "replay_duplicate_timestamp"
-	CoverageReplayMemberDup    CoverageReason = "replay_duplicate_member"
-	CoverageReplayNoEffective  CoverageReason = "replay_no_effective_start_snapshot"
-	CoverageReplayGap          CoverageReason = "replay_internal_gap"
+	CoverageMissingSeries        CoverageReason = "missing_series"
+	CoverageEmptySeries          CoverageReason = "empty_series"
+	CoverageDuplicateTimestamp   CoverageReason = "duplicate_timestamp"
+	CoverageNonMonotonic         CoverageReason = "non_monotonic_timestamp"
+	CoverageInternalGap          CoverageReason = "internal_gap"
+	CoverageBounds               CoverageReason = "requested_bounds_not_covered"
+	CoverageReplayEmpty          CoverageReason = "replay_snapshots_empty"
+	CoverageReplayMembersEmpty   CoverageReason = "replay_members_insufficient"
+	CoverageBenchmarkMissing     CoverageReason = "benchmark_missing"
+	CoverageFeatureMissing       CoverageReason = "model_feature_missing"
+	CoverageInvalidBarWidth      CoverageReason = "invalid_bar_interval"
+	CoverageReplayDuplicate      CoverageReason = "replay_duplicate_timestamp"
+	CoverageReplayMemberDup      CoverageReason = "replay_duplicate_member"
+	CoverageReplayNoEffective    CoverageReason = "replay_no_effective_start_snapshot"
+	CoverageReplayGap            CoverageReason = "replay_internal_gap"
+	CoverageManifestIncompatible CoverageReason = "dataset_manifest_incompatible"
 )
 
 type CoverageDiagnostic struct {
@@ -217,26 +231,26 @@ type ArtifactRefs struct {
 }
 
 type RunManifest struct {
-	SchemaVersion       string            `json:"schema_version"`
-	Classification      RunClassification `json:"classification"`
-	CodeRevision        string            `json:"code_revision"`
-	ConfigVersion       string            `json:"config_version"`
-	StrategyVersion     string            `json:"strategy_version"`
-	PolicyVersion       string            `json:"policy_version"`
-	CostVersion         string            `json:"cost_version"`
-	DatasetManifestHash string            `json:"dataset_manifest_hash"`
-	UniverseMode        UniverseMode      `json:"universe_mode"`
-	BenchmarkSymbol     string            `json:"benchmark_symbol,omitempty"`
-	Seed                int64             `json:"seed"`
-	FeeBPS              float64           `json:"fee_bps"`
-	SlippageBPS         float64           `json:"slippage_bps"`
-	CoveragePolicy      CoveragePolicy    `json:"coverage_policy"`
-	ExecutionPolicy     ExecutionPolicy   `json:"execution_policy"`
-	Start               string            `json:"start"`
-	End                 string            `json:"end"`
-	Coverage            CoverageReport    `json:"coverage"`
-	Limitations         []string          `json:"limitations,omitempty"`
-	Artifacts           ArtifactRefs      `json:"artifacts"`
+	SchemaVersion     string            `json:"schema_version"`
+	Classification    RunClassification `json:"classification"`
+	CodeRevision      string            `json:"code_revision"`
+	ConfigVersion     string            `json:"config_version"`
+	StrategyVersion   string            `json:"strategy_version"`
+	PolicyVersion     string            `json:"policy_version"`
+	CostVersion       string            `json:"cost_version"`
+	DatasetManifestID string            `json:"dataset_manifest_id"`
+	UniverseMode      UniverseMode      `json:"universe_mode"`
+	BenchmarkSymbol   string            `json:"benchmark_symbol,omitempty"`
+	Seed              int64             `json:"seed"`
+	FeeBPS            float64           `json:"fee_bps"`
+	SlippageBPS       float64           `json:"slippage_bps"`
+	CoveragePolicy    CoveragePolicy    `json:"coverage_policy"`
+	ExecutionPolicy   ExecutionPolicy   `json:"execution_policy"`
+	Start             string            `json:"start"`
+	End               string            `json:"end"`
+	Coverage          CoverageReport    `json:"coverage"`
+	Limitations       []string          `json:"limitations,omitempty"`
+	Artifacts         ArtifactRefs      `json:"artifacts"`
 }
 
 type DecisionArtifact struct {

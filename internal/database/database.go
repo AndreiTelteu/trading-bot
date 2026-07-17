@@ -134,6 +134,8 @@ func SeedDataWithDefaults(defaultBalance float64, defaultCurrency string) error 
 		{Key: "backtest_end", Value: "", Category: strPtr("backtest")},
 		{Key: "backtest_symbols", Value: "", Category: strPtr("backtest")},
 		{Key: "backtest_universe_mode", Value: "static", Category: strPtr("backtest")},
+		{Key: "backtest_require_point_in_time", Value: "true", Category: strPtr("backtest")},
+		{Key: "backtest_dataset_manifest_id", Value: "", Category: strPtr("backtest")},
 		{Key: "validation_train_months", Value: "12", Category: strPtr("backtest")},
 		{Key: "validation_test_months", Value: "3", Category: strPtr("backtest")},
 		{Key: "validation_bootstrap_iterations", Value: "500", Category: strPtr("backtest")},

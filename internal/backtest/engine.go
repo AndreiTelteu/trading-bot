@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"gorm.io/gorm"
 	"sort"
+	"strings"
 	"time"
 	"trading-go/internal/database"
+	"trading-go/internal/pointintime"
 	"trading-go/internal/services"
 )
 
@@ -64,10 +66,11 @@ type executionSymbolState struct {
 
 // replaySnapshotEntry is a preloaded universe snapshot for dynamic_replay mode.
 type replaySnapshotEntry struct {
-	Timestamp    time.Time
-	RegimeState  string
-	BreadthRatio float64
-	Members      []database.UniverseMember
+	Timestamp        time.Time
+	RegimeState      string
+	BreadthRatio     float64
+	Members          []database.UniverseMember
+	ObservedComplete bool
 }
 
 func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (BacktestResult, error) {
@@ -92,15 +95,35 @@ func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (Bac
 			replaySnapshots = fixtureReplaySnapshots(config.ReplaySnapshots)
 		} else {
 			var err error
-			replaySnapshots, err = loadReplaySnapshots(config.Start, config.End)
+			replaySnapshots, err = loadReplaySnapshotsForManifest(config.Start, config.End, config.DatasetManifestID)
 			if err != nil {
 				return BacktestResult{}, fmt.Errorf("failed to load replay snapshots: %w", err)
 			}
 		}
 	}
 	if config.EngineMode == EngineShared {
+		if config.DatasetManifestRequired && (!config.DatasetManifestValidated || config.DatasetManifestID == "") {
+			coverage := CoverageReport{SchemaVersion: CoverageSchemaVersion, PolicyVersion: config.CoveragePolicy.Version, Passed: false, Reasons: []CoverageReason{CoverageManifestIncompatible}, Diagnostics: []CoverageDiagnostic{{Dataset: "manifest", Status: "failed", Reason: CoverageManifestIncompatible}}}
+			result := BacktestResult{Classification: RunCoverageFailed, Coverage: coverage, Manifest: buildManifest(config, coverage, RunCoverageFailed, "")}
+			return result, &CoverageError{Report: coverage}
+		}
+		if config.DatasetManifestRequired && database.DB != nil {
+			roles := map[string]string{pointintime.RoleDecision: config.Timeframe}
+			if config.ExecutionSeriesRequired {
+				roles[pointintime.RoleExecution] = config.ExecutionTimeframe
+			}
+			if config.BenchmarkRequired {
+				roles[pointintime.RoleBenchmark] = config.Timeframe
+			}
+			_, _, manifestErr := pointintime.ValidateManifest(database.DB, pointintime.ManifestRequirement{ManifestID: config.DatasetManifestID, Start: config.Start, End: config.End, Symbols: config.Symbols, Roles: roles, RequireComplete: true})
+			if manifestErr != nil {
+				coverage := CoverageReport{SchemaVersion: CoverageSchemaVersion, PolicyVersion: config.CoveragePolicy.Version, Passed: false, Reasons: []CoverageReason{CoverageManifestIncompatible}, Diagnostics: []CoverageDiagnostic{{Dataset: "manifest", Status: "failed", Reason: CoverageManifestIncompatible}}}
+				result := BacktestResult{Classification: RunCoverageFailed, Coverage: coverage, Manifest: buildManifest(config, coverage, RunCoverageFailed, config.DatasetManifestID)}
+				return result, &CoverageError{Report: coverage}
+			}
+		}
 		coverage := validateCoverage(config, series, replaySnapshots)
-		hash := datasetManifestHash(config, series, replaySnapshots)
+		hash := inlineDatasetManifestID(config, series, replaySnapshots)
 		if !coverage.Passed {
 			result := BacktestResult{Classification: RunCoverageFailed, Coverage: coverage, Manifest: buildManifest(config, coverage, RunCoverageFailed, hash)}
 			return result, &CoverageError{Report: coverage}
@@ -229,6 +252,7 @@ func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (Bac
 				sharedLedger.evidence.UniverseUnavailable++
 			}
 		}
+		remapRenamedPositions(config, positions, currentUniverse, currentBars, liquidationWindowClosed)
 
 		for _, symbol := range symbols {
 			pos := positions[symbol]
@@ -424,6 +448,9 @@ func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (Bac
 				break
 			}
 			symbol := candidate.Symbol
+			if hasEconomicPosition(config, positions, symbol) {
+				continue
+			}
 			if config.EngineMode == EngineShared && liquidationWindowClosed[symbol] {
 				continue
 			}
@@ -564,7 +591,7 @@ func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (Bac
 		result.Coverage = validateCoverage(config, series, replaySnapshots)
 		result.Classification = classifySharedRun(sharedLedger)
 		result.Artifacts = buildBacktestArtifacts(sharedLedger, positions, states, timeline)
-		result.Manifest = buildManifest(config, result.Coverage, result.Classification, datasetManifestHash(config, series, replaySnapshots))
+		result.Manifest = buildManifest(config, result.Coverage, result.Classification, inlineDatasetManifestID(config, series, replaySnapshots))
 	}
 	return result, nil
 }
@@ -605,7 +632,14 @@ func buildBacktestUniverseSelection(config BacktestConfig, states map[string]*sy
 		quoteVolume24h := sumQuoteVolume(window[maxInt(0, len(window)-barsPerDay):])
 		change24h := services.CalculateReturn(closesFromOHLCV(window), minInt(barsPerDay, len(window)-1))
 		candidate := services.BuildUniverseCandidateMetrics(symbol, "", "USDT", currentBars[symbol].Close, change24h, quoteVolume24h, daily, hourly, btcReturn7D)
-		candidate.ListingAgeDays = (state.lastIndex + 1) / barsPerDay
+		listedAt := config.Start
+		if lifecycle, ok := config.SymbolLifecycles[strings.ToUpper(symbol)]; ok && !lifecycle.ListedAt.IsZero() {
+			listedAt = lifecycle.ListedAt
+		}
+		observedAt := time.UnixMilli(currentBars[symbol].OpenTime)
+		if !listedAt.IsZero() && !observedAt.Before(listedAt) {
+			candidate.ListingAgeDays = int(observedAt.Sub(listedAt).Hours() / 24)
+		}
 		if applyPolicy {
 			if rejection := services.UniverseHardFilterReason(candidate, config.UniversePolicy); rejection != "" {
 				continue
@@ -685,7 +719,7 @@ func buildEntryCandidates(config BacktestConfig, selection backtestUniverseSelec
 			BTCCandles15m:     btcCandles,
 			OpenPositionCount: len(positions),
 			ExposureRatio:     exposureRatio,
-			AlreadyOpen:       positions[candidate.Symbol] != nil,
+			AlreadyOpen:       hasEconomicPosition(config, positions, candidate.Symbol),
 		})
 		if !featureRow.Valid {
 			continue
@@ -718,6 +752,49 @@ func buildEntryCandidates(config BacktestConfig, selection backtestUniverseSelec
 		})
 	}
 	return entries
+}
+
+func hasEconomicPosition(config BacktestConfig, positions map[string]*positionState, symbol string) bool {
+	if positions[symbol] != nil {
+		return true
+	}
+	asset := config.EconomicAssetIdentities[strings.ToUpper(symbol)]
+	if asset == "" {
+		return false
+	}
+	for existing := range positions {
+		if config.EconomicAssetIdentities[strings.ToUpper(existing)] == asset {
+			return true
+		}
+	}
+	return false
+}
+
+func remapRenamedPositions(config BacktestConfig, positions map[string]*positionState, universe backtestUniverseSelection, currentBars map[string]services.OHLCV, liquidation map[string]bool) {
+	targets := map[string]string{}
+	for _, candidate := range universe.ActiveUniverse {
+		asset := config.EconomicAssetIdentities[strings.ToUpper(candidate.Symbol)]
+		if asset != "" {
+			targets[asset] = candidate.Symbol
+		}
+	}
+	for old, position := range positions {
+		asset := config.EconomicAssetIdentities[strings.ToUpper(old)]
+		target := targets[asset]
+		if target == "" || target == old {
+			continue
+		}
+		if _, available := currentBars[target]; !available {
+			continue
+		}
+		delete(positions, old)
+		position.Symbol = target
+		positions[target] = position
+		if liquidation[old] {
+			liquidation[target] = true
+		}
+		delete(liquidation, old)
+	}
 }
 
 func determinePositionSize(config BacktestConfig, atr float64, price float64, cash float64, portfolioValue float64) (float64, float64, *float64, *float64, error) {
@@ -1228,6 +1305,10 @@ func evaluateIntrabarProtectiveExit(execState *executionSymbolState, bar15m serv
 
 // loadReplaySnapshots loads persisted UniverseSnapshot records within the given time range.
 func loadReplaySnapshots(start, end time.Time) ([]replaySnapshotEntry, error) {
+	return loadReplaySnapshotsForManifest(start, end, "")
+}
+
+func loadReplaySnapshotsForManifest(start, end time.Time, manifestID string) ([]replaySnapshotEntry, error) {
 	if database.DB == nil {
 		return nil, fmt.Errorf("database not initialized")
 	}
@@ -1235,7 +1316,11 @@ func loadReplaySnapshots(start, end time.Time) ([]replaySnapshotEntry, error) {
 	var snapshots []database.UniverseSnapshot
 	if !start.IsZero() {
 		var effective database.UniverseSnapshot
-		query := database.DB.Preload("Members", func(db *gorm.DB) *gorm.DB { return db.Order("rank_score DESC, symbol ASC") }).Where("snapshot_time <= ?", start).Order("snapshot_time DESC").First(&effective)
+		query := database.DB.Preload("Members", func(db *gorm.DB) *gorm.DB { return db.Order("rank_score DESC, symbol ASC") }).Where("snapshot_time <= ?", start)
+		if manifestID != "" {
+			query = query.Where("dataset_manifest_id=? AND coverage_state='complete'", manifestID)
+		}
+		query = query.Order("snapshot_time DESC").First(&effective)
 		if query.Error == nil {
 			snapshots = append(snapshots, effective)
 		} else if !errors.Is(query.Error, gorm.ErrRecordNotFound) {
@@ -1243,6 +1328,9 @@ func loadReplaySnapshots(start, end time.Time) ([]replaySnapshotEntry, error) {
 		}
 	}
 	query := database.DB.Preload("Members", func(db *gorm.DB) *gorm.DB { return db.Order("rank_score DESC, symbol ASC") }).Order("snapshot_time ASC")
+	if manifestID != "" {
+		query = query.Where("dataset_manifest_id=? AND coverage_state='complete'", manifestID)
+	}
 	if !start.IsZero() {
 		query = query.Where("snapshot_time > ?", start)
 	}
@@ -1258,10 +1346,11 @@ func loadReplaySnapshots(start, end time.Time) ([]replaySnapshotEntry, error) {
 	entries := make([]replaySnapshotEntry, 0, len(snapshots))
 	for _, snap := range snapshots {
 		entries = append(entries, replaySnapshotEntry{
-			Timestamp:    snap.SnapshotTime,
-			RegimeState:  snap.RegimeState,
-			BreadthRatio: snap.BreadthRatio,
-			Members:      snap.Members,
+			Timestamp:        snap.SnapshotTime,
+			RegimeState:      snap.RegimeState,
+			BreadthRatio:     snap.BreadthRatio,
+			Members:          snap.Members,
+			ObservedComplete: snap.CoverageState == "complete",
 		})
 	}
 	return entries, nil
@@ -1296,6 +1385,9 @@ func resolveReplayUniverse(snapshots []replaySnapshotEntry, currentTime time.Tim
 	candidates := make([]services.UniverseCandidateMetrics, 0, len(snap.Members))
 	var shortlist []services.UniverseCandidateMetrics
 	for _, m := range snap.Members {
+		if m.RejectionReason != nil || m.Stage == "rejected" || m.Stage == "ranked" {
+			continue
+		}
 		candidate := services.UniverseCandidateMetrics{
 			Symbol:                    m.Symbol,
 			LastPrice:                 m.LastPrice,

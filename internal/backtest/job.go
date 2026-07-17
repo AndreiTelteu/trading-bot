@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 	"trading-go/internal/database"
+	"trading-go/internal/pointintime"
 	"trading-go/internal/services"
 	"trading-go/internal/websocket"
 )
@@ -66,21 +67,22 @@ var loadBacktestConstraints = func(symbols []string) (map[string]SymbolConstrain
 }
 
 type BacktestRunSummary struct {
-	FailedLane       string                     `json:"failed_lane,omitempty"`
-	JobID            uint                       `json:"job_id"`
-	StartedAt        time.Time                  `json:"started_at"`
-	FinishedAt       time.Time                  `json:"finished_at"`
-	BacktestMode     BacktestMode               `json:"backtest_mode"`
-	ModelVersion     string                     `json:"model_version,omitempty"`
-	PolicyVersion    string                     `json:"policy_version,omitempty"`
-	UniverseMode     UniverseMode               `json:"universe_mode"`
-	PolicyContext    services.GovernanceContext `json:"policy_context"`
-	ExperimentID     string                     `json:"experiment_id,omitempty"`
-	CandidateSymbols []string                   `json:"candidate_symbols,omitempty"`
-	SettingsSnapshot map[string]string          `json:"settings_snapshot,omitempty"`
-	Baseline         BacktestResult             `json:"baseline"`
-	VolSizing        BacktestResult             `json:"vol_sizing"`
-	Validation       ValidationSummary          `json:"validation"`
+	FailedLane        string                     `json:"failed_lane,omitempty"`
+	JobID             uint                       `json:"job_id"`
+	StartedAt         time.Time                  `json:"started_at"`
+	FinishedAt        time.Time                  `json:"finished_at"`
+	BacktestMode      BacktestMode               `json:"backtest_mode"`
+	ModelVersion      string                     `json:"model_version,omitempty"`
+	PolicyVersion     string                     `json:"policy_version,omitempty"`
+	UniverseMode      UniverseMode               `json:"universe_mode"`
+	PolicyContext     services.GovernanceContext `json:"policy_context"`
+	ExperimentID      string                     `json:"experiment_id,omitempty"`
+	CandidateSymbols  []string                   `json:"candidate_symbols,omitempty"`
+	DatasetManifestID string                     `json:"dataset_manifest_id,omitempty"`
+	SettingsSnapshot  map[string]string          `json:"settings_snapshot,omitempty"`
+	Baseline          BacktestResult             `json:"baseline"`
+	VolSizing         BacktestResult             `json:"vol_sizing"`
+	Validation        ValidationSummary          `json:"validation"`
 }
 
 func StartBacktestJob() (*database.BacktestJob, error) {
@@ -121,9 +123,16 @@ func runBacktestJob(jobID uint) {
 	settingsSnapshot := services.GetAllSettings()
 	config, series, err := prepareBacktestInputsWithSettings(settingsSnapshot)
 	if err != nil {
-		failBacktestJob(jobID, err)
+		if pointintime.IsCoverageError(err) {
+			coverage := CoverageReport{SchemaVersion: CoverageSchemaVersion, PolicyVersion: "point-in-time-manifest", Passed: false, Reasons: []CoverageReason{CoverageManifestIncompatible}, Diagnostics: []CoverageDiagnostic{{Dataset: "manifest", Status: "failed", Reason: CoverageManifestIncompatible}}}
+			result := BacktestResult{Classification: RunCoverageFailed, Coverage: coverage, Manifest: buildManifest(config, coverage, RunCoverageFailed, config.DatasetManifestID)}
+			failBacktestJobWithResults(jobID, config, settingsSnapshot, result, result, ValidationSummary{}, "preparation", err)
+		} else {
+			failBacktestJob(jobID, err)
+		}
 		return
 	}
+	database.DB.Model(&database.BacktestJob{}).Where("id=?", jobID).Update("dataset_manifest_id", config.DatasetManifestID)
 
 	updateBacktestJob(jobID, "running", 0.35, "Running baseline + vol sizing backtests")
 
@@ -166,19 +175,20 @@ func runBacktestJob(jobID uint) {
 
 	finishedAt := time.Now()
 	summary := BacktestRunSummary{
-		JobID:            jobID,
-		StartedAt:        startedAt,
-		FinishedAt:       finishedAt,
-		BacktestMode:     config.BacktestMode,
-		ModelVersion:     config.Governance.ModelVersion,
-		PolicyVersion:    config.Governance.PolicyVersions.CompositeVersion,
-		UniverseMode:     config.UniverseMode,
-		PolicyContext:    config.Governance,
-		CandidateSymbols: append([]string(nil), config.Symbols...),
-		SettingsSnapshot: settingsSnapshot,
-		Baseline:         baselineResult,
-		VolSizing:        volResult,
-		Validation:       validation,
+		JobID:             jobID,
+		StartedAt:         startedAt,
+		FinishedAt:        finishedAt,
+		BacktestMode:      config.BacktestMode,
+		ModelVersion:      config.Governance.ModelVersion,
+		PolicyVersion:     config.Governance.PolicyVersions.CompositeVersion,
+		UniverseMode:      config.UniverseMode,
+		PolicyContext:     config.Governance,
+		CandidateSymbols:  append([]string(nil), config.Symbols...),
+		DatasetManifestID: config.DatasetManifestID,
+		SettingsSnapshot:  settingsSnapshot,
+		Baseline:          baselineResult,
+		VolSizing:         volResult,
+		Validation:        validation,
 	}
 	if experimentID, err := RegisterExperimentRun(jobID, &summary); err == nil {
 		summary.ExperimentID = experimentID
@@ -256,19 +266,20 @@ func RunBacktestSyncWithOverrides(overrides map[string]string) (BacktestRunSumma
 
 	now := time.Now()
 	summary := BacktestRunSummary{
-		JobID:            0,
-		StartedAt:        now,
-		FinishedAt:       now,
-		BacktestMode:     config.BacktestMode,
-		ModelVersion:     config.Governance.ModelVersion,
-		PolicyVersion:    config.Governance.PolicyVersions.CompositeVersion,
-		UniverseMode:     config.UniverseMode,
-		PolicyContext:    config.Governance,
-		CandidateSymbols: append([]string(nil), config.Symbols...),
-		SettingsSnapshot: settings,
-		Baseline:         baselineResult,
-		VolSizing:        volResult,
-		Validation:       validation,
+		JobID:             0,
+		StartedAt:         now,
+		FinishedAt:        now,
+		BacktestMode:      config.BacktestMode,
+		ModelVersion:      config.Governance.ModelVersion,
+		PolicyVersion:     config.Governance.PolicyVersions.CompositeVersion,
+		UniverseMode:      config.UniverseMode,
+		PolicyContext:     config.Governance,
+		CandidateSymbols:  append([]string(nil), config.Symbols...),
+		DatasetManifestID: config.DatasetManifestID,
+		SettingsSnapshot:  settings,
+		Baseline:          baselineResult,
+		VolSizing:         volResult,
+		Validation:        validation,
 	}
 
 	if experimentID, err := RegisterExperimentRun(0, &summary); err == nil {
@@ -514,11 +525,19 @@ func failBacktestJob(jobID uint, err error) {
 }
 
 func failBacktestJobWithResults(jobID uint, config BacktestConfig, settings map[string]string, baseline, vol BacktestResult, validation ValidationSummary, lane string, err error) {
-	summary := BacktestRunSummary{JobID: jobID, FailedLane: lane, BacktestMode: config.BacktestMode, UniverseMode: config.UniverseMode, PolicyContext: config.Governance, CandidateSymbols: append([]string(nil), config.Symbols...), SettingsSnapshot: settings, Baseline: baseline, VolSizing: vol, Validation: validation}
+	summary := BacktestRunSummary{JobID: jobID, FailedLane: lane, BacktestMode: config.BacktestMode, UniverseMode: config.UniverseMode, PolicyContext: config.Governance, CandidateSymbols: append([]string(nil), config.Symbols...), DatasetManifestID: config.DatasetManifestID, SettingsSnapshot: settings, Baseline: baseline, VolSizing: vol, Validation: validation}
 	compact, _ := MarshalBacktestJobSummary(summary)
 	msg := fmt.Sprintf("%s: %v", lane, err)
 	now := time.Now()
-	database.DB.Model(&database.BacktestJob{}).Where("id = ?", jobID).Updates(&database.BacktestJob{ID: jobID, Status: "failed", Progress: 1, UpdatedAt: now, FinishedAt: &now, Error: &msg, SummaryJSON: &compact, SummaryCompactJSON: &compact})
+	manifestID := config.DatasetManifestID
+	var manifestPtr *string
+	if manifestID != "" {
+		var count int64
+		if database.DB.Model(&database.DatasetManifest{}).Where("id=?", manifestID).Count(&count).Error == nil && count == 1 {
+			manifestPtr = &manifestID
+		}
+	}
+	database.DB.Model(&database.BacktestJob{}).Where("id = ?", jobID).Updates(&database.BacktestJob{ID: jobID, Status: "failed", Progress: 1, UpdatedAt: now, FinishedAt: &now, Error: &msg, SummaryJSON: &compact, SummaryCompactJSON: &compact, DatasetManifestID: manifestPtr})
 	websocket.BroadcastBacktestComplete(jobID, "failed", BuildBacktestJobSummary(summary))
 }
 
@@ -528,6 +547,9 @@ func prepareBacktestInputs() (BacktestConfig, map[string][]services.OHLCV, error
 }
 
 func prepareBacktestInputsWithSettings(settings map[string]string) (BacktestConfig, map[string][]services.OHLCV, error) {
+	if getSettingBool(settings, "backtest_require_point_in_time", false) || strings.TrimSpace(settings["backtest_dataset_manifest_id"]) != "" {
+		return preparePointInTimeBacktestInputs(settings)
+	}
 	wallet := database.Wallet{}
 	database.DB.First(&wallet)
 
@@ -738,6 +760,182 @@ func prepareBacktestInputsWithSettings(settings map[string]string) (BacktestConf
 		config.FeatureSeries = buildRuntimeFeatureCoverage(config.CoveragePolicy.RequiredModelFeatures, series, time.Duration(timeframeMinutes)*time.Minute)
 	}
 
+	return config, series, nil
+}
+
+func preparePointInTimeBacktestInputs(settings map[string]string) (BacktestConfig, map[string][]services.OHLCV, error) {
+	manifestID := strings.TrimSpace(settings["backtest_dataset_manifest_id"])
+	manifest, loadErr := pointintime.LoadManifest(database.DB, manifestID)
+	if loadErr != nil {
+		return BacktestConfig{DatasetManifestID: manifestID, DatasetManifestRequired: true}, nil, &pointintime.CoverageError{Report: pointintime.CoverageReport{SchemaVersion: pointintime.CoverageSchemaVersion, ManifestID: manifestID, Compatible: false, Failures: []pointintime.CoverageFailure{{Code: "manifest_not_found", Details: loadErr.Error()}}}}
+	}
+	start, err := parseTime(settings["backtest_start"])
+	if err != nil {
+		return BacktestConfig{}, nil, err
+	}
+	end, err := parseTime(settings["backtest_end"])
+	if err != nil {
+		return BacktestConfig{}, nil, err
+	}
+	if start.IsZero() {
+		start, _ = time.Parse(time.RFC3339Nano, manifest.RequestedStart)
+	}
+	if end.IsZero() {
+		end, _ = time.Parse(time.RFC3339Nano, manifest.RequestedEnd)
+	}
+	benchmark := strings.ToUpper(getSettingString(settings, "backtest_benchmark_symbol", "BTCUSDT"))
+	symbols := parseSymbols(settings["backtest_symbols"])
+	if len(symbols) == 0 {
+		seen := map[string]bool{}
+		for _, covered := range manifest.Series {
+			if covered.Role == pointintime.RoleDecision && covered.Timeframe == "15m" && covered.Ticker != "" && !seen[strings.ToUpper(covered.Ticker)] {
+				symbol := strings.ToUpper(covered.Ticker)
+				seen[symbol] = true
+				symbols = append(symbols, symbol)
+			}
+		}
+		sort.Strings(symbols)
+	}
+	fetchExecution := getSettingBool(settings, "backtest_execution_1m", false)
+	roles := map[string]string{pointintime.RoleDecision: "15m", pointintime.RoleBenchmark: "15m"}
+	if fetchExecution {
+		roles[pointintime.RoleExecution] = "1m"
+	}
+	validated, report, err := pointintime.ValidateManifest(database.DB, pointintime.ManifestRequirement{ManifestID: manifestID, Start: start, End: end, Symbols: symbols, Roles: roles, RequireComplete: true})
+	if err != nil {
+		return BacktestConfig{DatasetManifestID: manifestID, DatasetManifestRequired: true, DatasetLimitations: report.Limitations}, nil, err
+	}
+	hasExactSeries := func(ticker, role, frame string) bool {
+		for _, covered := range validated.Series {
+			if strings.EqualFold(covered.Ticker, ticker) && covered.Role == role && covered.Timeframe == frame && covered.Complete {
+				return true
+			}
+		}
+		return false
+	}
+	for _, symbol := range symbols {
+		if !hasExactSeries(symbol, pointintime.RoleDecision, "15m") {
+			report.Compatible = false
+			report.Failures = append(report.Failures, pointintime.CoverageFailure{Code: "symbol_role_timeframe_missing", Series: symbol + ":decision:15m", Details: "required tradable decision series is absent or incomplete"})
+		}
+		if fetchExecution && !hasExactSeries(symbol, pointintime.RoleExecution, "1m") {
+			report.Compatible = false
+			report.Failures = append(report.Failures, pointintime.CoverageFailure{Code: "symbol_role_timeframe_missing", Series: symbol + ":execution:1m", Details: "required tradable execution series is absent or incomplete"})
+		}
+	}
+	if !hasExactSeries(benchmark, pointintime.RoleBenchmark, "15m") {
+		report.Compatible = false
+		report.Failures = append(report.Failures, pointintime.CoverageFailure{Code: "benchmark_role_timeframe_missing", Series: benchmark + ":benchmark:15m", Details: "required benchmark series is absent or incomplete"})
+	}
+	if !report.Compatible {
+		return BacktestConfig{DatasetManifestID: manifestID, DatasetManifestRequired: true, DatasetLimitations: report.Limitations}, nil, &pointintime.CoverageError{Report: report}
+	}
+	var exchangeSymbols []database.ExchangeSymbol
+	if err := database.DB.Where("ticker IN ?", append(append([]string(nil), symbols...), benchmark)).Order("listed_at ASC").Find(&exchangeSymbols).Error; err != nil {
+		return BacktestConfig{}, nil, err
+	}
+	byTicker := map[string][]database.ExchangeSymbol{}
+	for _, s := range exchangeSymbols {
+		byTicker[s.Ticker] = append(byTicker[s.Ticker], s)
+	}
+	repo := pointintime.Repository{DB: database.DB}
+	series := map[string][]services.OHLCV{}
+	execution := map[string][]services.OHLCV{}
+	identities := map[string]string{}
+	economicIdentities := map[string]string{}
+	lifecycles := map[string]SymbolLifecycle{}
+	loadTicker := func(ticker, role, frame string) ([]services.OHLCV, error) {
+		rows := byTicker[ticker]
+		combined := []services.OHLCV{}
+		for _, s := range rows {
+			bars, e := repo.Bars(manifestID, s.ID, role, frame, start, end, end)
+			if e != nil {
+				return nil, e
+			}
+			combined = append(combined, bars...)
+			identities[ticker] = s.ID
+			economicIdentities[ticker] = s.AssetID
+			lifecycles[ticker] = SymbolLifecycle{ListedAt: s.ListedAt, DelistedAt: s.DelistedAt}
+		}
+		sort.Slice(combined, func(i, j int) bool { return combined[i].OpenTime < combined[j].OpenTime })
+		return combined, nil
+	}
+	for _, symbol := range symbols {
+		bars, e := loadTicker(symbol, pointintime.RoleDecision, "15m")
+		if e != nil {
+			return BacktestConfig{}, nil, e
+		}
+		series[symbol] = bars
+		if fetchExecution {
+			bars, e = loadTicker(symbol, pointintime.RoleExecution, "1m")
+			if e != nil {
+				return BacktestConfig{}, nil, e
+			}
+			execution[symbol] = bars
+		}
+	}
+	benchmarkBars, err := loadTicker(benchmark, pointintime.RoleBenchmark, "15m")
+	if err != nil {
+		return BacktestConfig{}, nil, err
+	}
+	engineMode, err := resolveBacktestEngine(settings)
+	if err != nil {
+		return BacktestConfig{}, nil, err
+	}
+	revision, err := resolveBacktestRevision()
+	if err != nil {
+		return BacktestConfig{}, nil, err
+	}
+	governance, err := services.ResolveGovernanceContext(settings, string(UniverseDynamicReplay))
+	if err != nil {
+		return BacktestConfig{}, nil, err
+	}
+	modelArtifact, err := services.LoadConfiguredModel(settings)
+	if err != nil {
+		return BacktestConfig{}, nil, err
+	}
+	policy := services.GetUniversePolicy(settings)
+	resolver := func(symbol string, at time.Time) (SymbolConstraints, bool) {
+		id := ""
+		for _, candidate := range byTicker[symbol] {
+			if !candidate.ListedAt.After(at) && (candidate.DelistedAt == nil || candidate.DelistedAt.After(at)) {
+				id = candidate.ID
+			}
+		}
+		if id == "" {
+			return SymbolConstraints{}, false
+		}
+		value, e := repo.ConstraintAsOf(id, at)
+		if e != nil {
+			return SymbolConstraints{}, false
+		}
+		return SymbolConstraints{QuantityStep: value.QuantityStep, PriceTick: value.PriceTick, MinQuantity: value.MinQuantity, MinNotional: value.MinNotional}, true
+	}
+	constraintsAvailable := true
+	for _, symbol := range symbols {
+		for _, version := range byTicker[symbol] {
+			coverageStart, coverageEnd := start, end
+			if version.ListedAt.After(coverageStart) {
+				coverageStart = version.ListedAt
+			}
+			if version.DelistedAt != nil && version.DelistedAt.Before(coverageEnd) {
+				coverageEnd = *version.DelistedAt
+			}
+			if coverageEnd.After(coverageStart) && !repo.ConstraintsCover(version.ID, coverageStart, coverageEnd) {
+				constraintsAvailable = false
+			}
+		}
+	}
+	config := BacktestConfig{EngineMode: engineMode, CodeRevision: revision, ConfigVersion: getSettingString(settings, "backtest_config_version", "backtest-config-v1"), StrategyVersion: "legacy-rule-strategy-v1", Seed: int64(getSettingInt(settings, "backtest_seed", 0)), AccountID: "backtest", SettlementCurrency: getSettingString(settings, "backtest_settlement_currency", "USDT"), VenueID: getSettingString(settings, "backtest_venue_id", "binance"), BacktestMode: resolveBacktestMode(UniverseDynamicReplay, modelArtifact != nil), ExecutionSeries: execution, ExecutionSeriesRequired: fetchExecution, ExecutionTimeframe: "1m", ExecutionTimeframeMins: 1, BenchmarkSymbol: benchmark, BenchmarkSeries: benchmarkBars, BenchmarkRequired: true, ConstraintsAvailable: constraintsAvailable, Symbols: symbols, UniverseMode: UniverseDynamicReplay, UniversePolicy: policy, Governance: governance, Start: start, End: end, IndicatorConfig: services.GetIndicatorSettings(), IndicatorWeights: services.GetIndicatorWeights(), Timeframe: "15m", TimeframeMinutes: 15, InitialBalance: 1000, FeeBps: getSettingFloat(settings, "backtest_fee_bps", 10), SlippageBps: getSettingFloat(settings, "backtest_slippage_bps", 5), ModelArtifact: modelArtifact, ModelPolicy: services.GetModelSelectionPolicy(settings), MaxPositions: getSettingInt(settings, "max_positions", 5), TimeStopBars: getSettingInt(settings, "time_stop_bars", 0), EntryPercent: getSettingFloat(settings, "entry_percent", 5), StopLossPercent: getSettingFloat(settings, "stop_loss_percent", 5), TakeProfitPercent: getSettingFloat(settings, "take_profit_percent", 30), RiskPerTrade: getSettingFloat(settings, "risk_per_trade", .5), StopMult: getSettingFloat(settings, "stop_mult", 1.5), TpMult: getSettingFloat(settings, "tp_mult", 3), MaxPositionValue: getSettingFloat(settings, "max_position_value", 0), AtrPeriod: getSettingInt(settings, "atr_trailing_period", 14), AtrTrailingEnabled: getSettingBool(settings, "atr_trailing_enabled", false), AtrTrailingMult: getSettingFloat(settings, "atr_trailing_mult", 1), AtrAnnualizationEnabled: getSettingBool(settings, "atr_annualization_enabled", false), AtrAnnualizationDays: getSettingInt(settings, "atr_annualization_days", 365), BuyOnlyStrong: getSettingBool(settings, "buy_only_strong", true), MinConfidenceToBuy: getSettingFloat(settings, "min_confidence_to_buy", 4), SellOnSignal: getSettingBool(settings, "sell_on_signal", true), MinConfidenceToSell: getSettingFloat(settings, "min_confidence_to_sell", 3.5), AllowSellAtLoss: getSettingBool(settings, "allow_sell_at_loss", false), TrailingStopEnabled: getSettingBool(settings, "trailing_stop_enabled", false), TrailingStopPercent: getSettingFloat(settings, "trailing_stop_percent", 10), ExecutionPolicy: ExecutionPolicy{Version: "backtest-execution-v1", Timing: ExecutionNextExecutable, Liquidity: LiquidityFullFillOHLCV, CostVersion: "backtest-cost-v1", Constraints: map[string]SymbolConstraints{}}, DatasetManifestID: validated.ID, DatasetManifestValidated: true, DatasetManifestRequired: true, DatasetLimitations: validated.Limitations, SymbolIdentities: identities, EconomicAssetIdentities: economicIdentities, SymbolLifecycles: lifecycles, ConstraintResolver: resolver}
+	if !constraintsAvailable {
+		config.DatasetLimitations = append(config.DatasetLimitations, "historical_symbol_constraints_incomplete_safe_fallback")
+	}
+	if modelArtifact != nil {
+		for _, feature := range modelArtifact.Features {
+			config.CoveragePolicy.RequiredModelFeatures = append(config.CoveragePolicy.RequiredModelFeatures, feature.Name)
+		}
+		config.FeatureSeries = buildRuntimeFeatureCoverage(config.CoveragePolicy.RequiredModelFeatures, series, 15*time.Minute)
+	}
 	return config, series, nil
 }
 

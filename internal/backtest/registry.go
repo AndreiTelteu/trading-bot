@@ -52,6 +52,9 @@ func RegisterExperimentRun(jobID uint, summary *BacktestRunSummary) (string, err
 		RankingSummaryJSON:          string(rankingJSON),
 		PromotionDecision:           summary.Validation.PromotionReadiness.RecommendedStage,
 	}
+	if summary.DatasetManifestID != "" {
+		record.DatasetManifestID = &summary.DatasetManifestID
+	}
 	if jobID > 0 {
 		record.BacktestJobID = &jobID
 	}
@@ -60,6 +63,7 @@ func RegisterExperimentRun(jobID uint, summary *BacktestRunSummary) (string, err
 		Columns: []clause.Column{{Name: "experiment_id"}},
 		DoUpdates: clause.AssignmentColumns([]string{
 			"backtest_job_id",
+			"dataset_manifest_id",
 			"backtest_mode",
 			"model_version",
 			"feature_spec_version",

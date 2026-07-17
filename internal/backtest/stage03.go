@@ -18,7 +18,7 @@ import (
 
 const (
 	CoverageSchemaVersion = "backtest-coverage-v1"
-	ManifestSchemaVersion = "backtest-run-manifest-v1"
+	ManifestSchemaVersion = "backtest-run-manifest-v2"
 	ArtifactSchemaVersion = "backtest-artifacts-v1"
 )
 
@@ -122,11 +122,13 @@ func validateCoverage(config BacktestConfig, decision map[string][]services.OHLC
 	}
 	sort.Strings(symbols)
 	for _, symbol := range symbols {
-		report = validateBarCoverage(report, "decision", symbol, decision[symbol], config.CoveragePolicy.DecisionInterval, config.Start, config.End, config.CoveragePolicy)
+		seriesStart, seriesEnd := lifecycleCoverageBounds(config, symbol, config.CoveragePolicy.DecisionInterval)
+		report = validateBarCoverage(report, "decision", symbol, decision[symbol], config.CoveragePolicy.DecisionInterval, seriesStart, seriesEnd, config.CoveragePolicy)
 		if _, configured := config.ExecutionSeries[symbol]; configured || len(config.ExecutionSeries) > 0 || config.ExecutionSeriesRequired {
-			report = validateBarCoverage(report, "execution", symbol, config.ExecutionSeries[symbol], config.CoveragePolicy.ExecutionInterval, config.Start, config.End, config.CoveragePolicy)
+			execStart, execEnd := lifecycleCoverageBounds(config, symbol, config.CoveragePolicy.ExecutionInterval)
+			report = validateBarCoverage(report, "execution", symbol, config.ExecutionSeries[symbol], config.CoveragePolicy.ExecutionInterval, execStart, execEnd, config.CoveragePolicy)
 		} else {
-			report = validateBarCoverage(report, "execution", symbol, decision[symbol], config.CoveragePolicy.DecisionInterval, config.Start, config.End, config.CoveragePolicy)
+			report = validateBarCoverage(report, "execution", symbol, decision[symbol], config.CoveragePolicy.DecisionInterval, seriesStart, seriesEnd, config.CoveragePolicy)
 		}
 	}
 	if config.BenchmarkRequired {
@@ -161,8 +163,9 @@ func validateCoverage(config BacktestConfig, decision map[string][]services.OHLC
 				if !snapshot.Timestamp.After(config.Start) {
 					effective++
 				}
-				if len(snapshot.Members) < minimum {
-					report.add(CoverageDiagnostic{Dataset: "universe", Status: "failed", Reason: CoverageReplayMembersEmpty, Count: len(snapshot.Members), First: canonicalTime(snapshot.Timestamp)})
+				memberCount := replayEligibleMemberCount(snapshot.Members)
+				if memberCount < minimum && !snapshot.ObservedComplete {
+					report.add(CoverageDiagnostic{Dataset: "universe", Status: "failed", Reason: CoverageReplayMembersEmpty, Count: memberCount, First: canonicalTime(snapshot.Timestamp)})
 				}
 				seen := map[string]bool{}
 				for _, member := range snapshot.Members {
@@ -225,6 +228,30 @@ func validateCoverage(config BacktestConfig, decision map[string][]services.OHLC
 		return a.First < b.First
 	})
 	return report
+}
+
+func replayEligibleMemberCount(members []database.UniverseMember) int {
+	count := 0
+	for _, member := range members {
+		if member.RejectionReason != nil || member.Stage == "rejected" || member.Stage == "ranked" {
+			continue
+		}
+		count++
+	}
+	return count
+}
+
+func lifecycleCoverageBounds(config BacktestConfig, symbol string, interval time.Duration) (time.Time, time.Time) {
+	start, end := config.Start, config.End
+	if lifecycle, ok := config.SymbolLifecycles[strings.ToUpper(symbol)]; ok {
+		if lifecycle.ListedAt.After(start) {
+			start = lifecycle.ListedAt
+		}
+		if lifecycle.DelistedAt != nil && lifecycle.DelistedAt.Before(end) {
+			end = *lifecycle.DelistedAt
+		}
+	}
+	return start, end
 }
 
 func validateBarCoverage(report CoverageReport, dataset, symbol string, bars []services.OHLCV, interval time.Duration, start, end time.Time, policy CoveragePolicy) CoverageReport {
@@ -326,7 +353,7 @@ func isLastLiquidationOpportunity(config BacktestConfig, state *symbolState, sym
 	return !later || !config.End.IsZero() && laterAt.After(config.End)
 }
 
-func datasetManifestHash(config BacktestConfig, decision map[string][]services.OHLCV, replay []replaySnapshotEntry) string {
+func inlineDatasetManifestID(config BacktestConfig, decision map[string][]services.OHLCV, replay []replaySnapshotEntry) string {
 	type dataset struct {
 		Kind, Symbol string
 		Bars         []services.OHLCV
@@ -363,12 +390,17 @@ func datasetManifestHash(config BacktestConfig, decision map[string][]services.O
 }
 
 func buildManifest(config BacktestConfig, coverage CoverageReport, classification RunClassification, hash string) RunManifest {
-	limitations := []string{}
+	limitations := append([]string(nil), config.DatasetLimitations...)
+	if config.DatasetManifestID == "" {
+		config.DatasetManifestID = hash
+		limitations = append(limitations, "in_memory_fixture_manifest_not_persisted")
+	}
 	if !config.ConstraintsAvailable {
 		limitations = append(limitations, "symbol_constraints_metadata_unavailable_using_explicit_safe_fallback")
 	}
 	limitations = append(limitations, "ohlcv_full_fill_no_order_book_model")
-	return RunManifest{SchemaVersion: ManifestSchemaVersion, Classification: classification, CodeRevision: config.CodeRevision, ConfigVersion: config.ConfigVersion, StrategyVersion: config.StrategyVersion, PolicyVersion: backtestPolicyVersion(config), CostVersion: config.ExecutionPolicy.CostVersion, DatasetManifestHash: hash, UniverseMode: config.UniverseMode, BenchmarkSymbol: config.BenchmarkSymbol, Seed: config.Seed, FeeBPS: config.FeeBps, SlippageBPS: config.SlippageBps, CoveragePolicy: config.CoveragePolicy, ExecutionPolicy: config.ExecutionPolicy, Start: canonicalTime(config.Start), End: canonicalTime(config.End), Coverage: coverage, Limitations: limitations, Artifacts: ArtifactRefs{SchemaVersion: ArtifactSchemaVersion, Manifest: "manifest.json", Decisions: "decisions.json", Orders: "orders.json", Fills: "fills.json", Trades: "trades.json", Ledger: "ledger.json", Equity: "equity.json", Metrics: "metrics.json", Exposure: "exposure.json"}}
+	sort.Strings(limitations)
+	return RunManifest{SchemaVersion: ManifestSchemaVersion, Classification: classification, CodeRevision: config.CodeRevision, ConfigVersion: config.ConfigVersion, StrategyVersion: config.StrategyVersion, PolicyVersion: backtestPolicyVersion(config), CostVersion: config.ExecutionPolicy.CostVersion, DatasetManifestID: config.DatasetManifestID, UniverseMode: config.UniverseMode, BenchmarkSymbol: config.BenchmarkSymbol, Seed: config.Seed, FeeBPS: config.FeeBps, SlippageBPS: config.SlippageBps, CoveragePolicy: config.CoveragePolicy, ExecutionPolicy: config.ExecutionPolicy, Start: canonicalTime(config.Start), End: canonicalTime(config.End), Coverage: coverage, Limitations: limitations, Artifacts: ArtifactRefs{SchemaVersion: ArtifactSchemaVersion, Manifest: "manifest.json", Decisions: "decisions.json", Orders: "orders.json", Fills: "fills.json", Trades: "trades.json", Ledger: "ledger.json", Equity: "equity.json", Metrics: "metrics.json", Exposure: "exposure.json"}}
 }
 
 func MarshalArtifactBytes(result BacktestResult) (ArtifactBytes, error) {

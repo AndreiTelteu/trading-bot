@@ -166,6 +166,10 @@ func setupRoutes(app *fiber.App, cfg *config.Config, authManager *middleware.Aut
 	universe.Get("/snapshots", handlers.ListUniverseSnapshots)
 	universe.Get("/snapshots/:id", handlers.GetUniverseSnapshotDetail)
 	universe.Get("/symbols", handlers.GetUniverseSymbols)
+	marketData := api.Group("/market-data")
+	marketData.Get("/coverage", handlers.InspectDatasetCoverage)
+	marketData.Get("/manifests/:id", handlers.GetDatasetManifest)
+	marketData.Get("/bars", handlers.ListHistoricalBars)
 
 	// Activity logs endpoints
 	activity := api.Group("/activity-logs")
