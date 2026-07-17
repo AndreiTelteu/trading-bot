@@ -12,10 +12,7 @@ import (
 	"trading-go/internal/config"
 	"trading-go/internal/database"
 	ledgerpkg "trading-go/internal/ledger"
-
-	"gorm.io/driver/postgres"
-	"gorm.io/gorm"
-	"gorm.io/gorm/logger"
+	"trading-go/internal/operations"
 )
 
 func main() {
@@ -32,15 +29,24 @@ func main() {
 	originalEvent := flag.String("original-event", "", "event id to reverse")
 	flag.Parse()
 
-	cfg := config.Load()
-	dsn, err := cfg.DatabaseDSN()
+	cfg, err := config.LoadValidated()
 	if err != nil {
 		log.Fatal(err)
 	}
-	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
-	if err != nil {
+	if err := database.OpenAndMigrate(cfg); err != nil {
 		log.Fatal(err)
 	}
+	stage08 := operations.New(database.DB, cfg.Stage08Flags)
+	if _, err := stage08.Initialize(context.Background()); err != nil {
+		log.Fatalf("Stage 08 startup reconciliation failed: %v", err)
+	}
+	if err := database.SeedDataWithDefaults(cfg.DefaultBalance, cfg.DefaultCurrency); err != nil {
+		log.Fatal(err)
+	}
+	if _, err := stage08.Initialize(context.Background()); err != nil {
+		log.Fatal(err)
+	}
+	db := database.DB
 	service := ledgerpkg.New(db)
 	ctx := context.Background()
 	var output interface{}

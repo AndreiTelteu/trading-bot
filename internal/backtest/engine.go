@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 	"trading-go/internal/database"
+	"trading-go/internal/operations"
 	"trading-go/internal/pointintime"
 	"trading-go/internal/services"
 )
@@ -122,6 +123,7 @@ func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (Bac
 			}
 			_, _, manifestErr := pointintime.ValidateManifest(database.DB, pointintime.ManifestRequirement{ManifestID: config.DatasetManifestID, Start: config.Start, End: config.End, Symbols: config.Symbols, Roles: roles, Series: exact, RequireComplete: true})
 			if manifestErr != nil {
+				operations.RecordMissingMarketData("backtest_engine", config.DatasetManifestID, manifestErr)
 				coverage := CoverageReport{SchemaVersion: CoverageSchemaVersion, PolicyVersion: config.CoveragePolicy.Version, Passed: false, Reasons: []CoverageReason{CoverageManifestIncompatible}, Diagnostics: []CoverageDiagnostic{{Dataset: "manifest", Status: "failed", Reason: CoverageManifestIncompatible}}}
 				result := BacktestResult{Classification: RunCoverageFailed, Coverage: coverage, Manifest: buildManifest(config, coverage, RunCoverageFailed, config.DatasetManifestID)}
 				return result, &CoverageError{Report: coverage}

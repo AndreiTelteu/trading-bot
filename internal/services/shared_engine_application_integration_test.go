@@ -11,16 +11,17 @@ import (
 	"trading-go/internal/tradingcore"
 )
 
-func TestSharedAndShadowApplicationModesPersistDecisionHistory(t *testing.T) {
+func TestSharedPersistsAndApprovedShadowIsInert(t *testing.T) {
 	for _, test := range []struct {
-		name       string
-		mode       tradingcore.ExecutionMode
-		wantOpened int
-		wantFill   int64
-		decision   string
+		name        string
+		mode        tradingcore.ExecutionMode
+		wantOpened  int
+		wantFill    int64
+		wantHistory int
+		decision    string
 	}{
-		{name: "shared", mode: tradingcore.ExecutionPaper, wantOpened: 1, wantFill: 1, decision: "buy"},
-		{name: "shadow_compare", mode: tradingcore.ExecutionShadow, wantOpened: 0, wantFill: 0, decision: "shadow_only"},
+		{name: "shared", mode: tradingcore.ExecutionPaper, wantOpened: 1, wantFill: 1, wantHistory: 1, decision: "buy"},
+		{name: "shadow_compare", mode: tradingcore.ExecutionShadow, wantOpened: 0, wantFill: 0, wantHistory: 0, decision: "shadow_only"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			db := testutil.SetupPostgresDB(t)
@@ -37,11 +38,14 @@ func TestSharedAndShadowApplicationModesPersistDecisionHistory(t *testing.T) {
 				t.Fatalf("mode result=%+v opened=%d", results, opened)
 			}
 			var histories []database.TrendAnalysisHistory
-			if err := db.Find(&histories).Error; err != nil || len(histories) != 1 {
+			if err := db.Find(&histories).Error; err != nil || len(histories) != test.wantHistory {
 				t.Fatalf("decision history=%+v err=%v", histories, err)
 			}
-			if !strings.Contains(histories[0].DecisionContextJSON, "BrokerCompleteness") || !strings.Contains(histories[0].DecisionContextJSON, "RiskTrace") {
+			if test.wantHistory > 0 && (!strings.Contains(histories[0].DecisionContextJSON, "BrokerCompleteness") || !strings.Contains(histories[0].DecisionContextJSON, "RiskTrace")) {
 				t.Fatalf("history lacks canonical shared trace: %s", histories[0].DecisionContextJSON)
+			}
+			if test.mode == tradingcore.ExecutionShadow && (results[0].ShadowDecision != "buy" || results[0].ShadowReason != "approved_observation") {
+				t.Fatalf("approved candidate intent was suppressed instead of observed: %+v", results[0])
 			}
 			var fillCount int64
 			if err := db.Model(&database.Fill{}).Count(&fillCount).Error; err != nil || fillCount != test.wantFill {

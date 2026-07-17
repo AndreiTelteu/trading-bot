@@ -52,7 +52,7 @@ func schemaModels() []interface{} {
 		&GovernanceMonitoringEvidence{},
 		&Stage08FlagSnapshot{}, &ParityObservation{}, &ParityAggregate{}, &ParityAcceptancePolicy{},
 		&OperationalIncident{}, &OperationalIncidentAudit{},
-		&CutoverState{}, &CutoverTransition{}, &BackfillPlan{}, &BackupVerification{},
+		&CutoverState{}, &CutoverTransition{}, &BackfillPlan{}, &BackupVerification{}, &ParityPopulation{}, &CutoverPrerequisiteEvidence{}, &ReconciliationEvidence{}, &BrokerConflictCounter{},
 		&PortfolioSnapshot{},
 	}
 }
@@ -662,6 +662,31 @@ func RunMigrations(db *gorm.DB) error {
 			},
 			Rollback: func(tx *gorm.DB) error {
 				return fmt.Errorf("Stage 08 cutover and operational audit history is intentionally retained")
+			},
+		},
+		{
+			ID: "202607181200_stage08_feedback_integrity",
+			Migrate: func(tx *gorm.DB) error {
+				if err := tx.AutoMigrate(&Stage08FlagSnapshot{}, &ParityObservation{}, &CutoverState{}, &CutoverTransition{}, &BackupVerification{}, &ParityPopulation{}, &CutoverPrerequisiteEvidence{}, &ReconciliationEvidence{}, &BrokerConflictCounter{}); err != nil {
+					return err
+				}
+				return tx.Exec(`
+					DROP TRIGGER IF EXISTS parity_populations_immutable ON parity_populations;
+					CREATE TRIGGER parity_populations_immutable BEFORE UPDATE OR DELETE ON parity_populations FOR EACH ROW EXECUTE FUNCTION reject_stage08_immutable_mutation();
+					DROP TRIGGER IF EXISTS cutover_prerequisite_evidences_immutable ON cutover_prerequisite_evidences;
+					CREATE TRIGGER cutover_prerequisite_evidences_immutable BEFORE UPDATE OR DELETE ON cutover_prerequisite_evidences FOR EACH ROW EXECUTE FUNCTION reject_stage08_immutable_mutation();
+					DROP TRIGGER IF EXISTS reconciliation_evidences_immutable ON reconciliation_evidences;
+					CREATE TRIGGER reconciliation_evidences_immutable BEFORE UPDATE OR DELETE ON reconciliation_evidences FOR EACH ROW EXECUTE FUNCTION reject_stage08_immutable_mutation();
+					DROP TRIGGER IF EXISTS backup_verifications_immutable ON backup_verifications;
+					CREATE TRIGGER backup_verifications_immutable BEFORE UPDATE OR DELETE ON backup_verifications FOR EACH ROW EXECUTE FUNCTION reject_stage08_immutable_mutation();
+					ALTER TABLE parity_populations DROP CONSTRAINT IF EXISTS parity_population_positive_check;
+					ALTER TABLE parity_populations ADD CONSTRAINT parity_population_positive_check CHECK (expected_contexts > 0 AND window_end > window_start AND length(content_digest)=64);
+					ALTER TABLE cutover_prerequisite_evidences DROP CONSTRAINT IF EXISTS cutover_evidence_window_check;
+					ALTER TABLE cutover_prerequisite_evidences ADD CONSTRAINT cutover_evidence_window_check CHECK (window_end > window_start AND length(content_digest)=64 AND content_digest=id);
+				`).Error
+			},
+			Rollback: func(tx *gorm.DB) error {
+				return fmt.Errorf("Stage 08 feedback integrity evidence is intentionally retained")
 			},
 		},
 	})

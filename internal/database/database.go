@@ -13,6 +13,29 @@ import (
 var DB *gorm.DB
 
 func Initialize(cfg *config.Config) error {
+	if err := OpenAndMigrate(cfg); err != nil {
+		return err
+	}
+	if err := SeedDataWithDefaults(cfg.DefaultBalance, cfg.DefaultCurrency); err != nil {
+		return err
+	}
+	log.Println("Database initialized successfully")
+	return nil
+}
+
+// OpenAndMigrate performs only additive schema work. Mutating binaries use it
+// before Stage 08 authority reconciliation, and seed economic/default rows only
+// after the locked authority envelope has been verified.
+func OpenAndMigrate(cfg *config.Config) error {
+	if err := Open(cfg); err != nil {
+		return err
+	}
+	return RunMigrations(DB)
+}
+
+// Open establishes and verifies the PostgreSQL connection without schema or
+// economic writes. It is used by canonical source fingerprinting.
+func Open(cfg *config.Config) error {
 	var err error
 
 	dsn, err := cfg.DatabaseDSN()
@@ -43,15 +66,6 @@ func Initialize(cfg *config.Config) error {
 		return err
 	}
 
-	if err := RunMigrations(DB); err != nil {
-		return err
-	}
-
-	if err := SeedDataWithDefaults(cfg.DefaultBalance, cfg.DefaultCurrency); err != nil {
-		return err
-	}
-
-	log.Println("Database initialized successfully")
 	return nil
 }
 

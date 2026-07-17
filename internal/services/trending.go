@@ -37,34 +37,40 @@ type TrendingData struct {
 
 // AnalyzedCoin represents the result of analyzing a single coin
 type AnalyzedCoin struct {
-	Symbol            string             `json:"symbol"`
-	Price             float64            `json:"price"`
-	Change24h         float64            `json:"change_24h"`
-	RankScore         float64            `json:"rank_score,omitempty"`
-	RankComponents    map[string]float64 `json:"rank_components,omitempty"`
-	Signal            string             `json:"signal"`
-	Rating            float64            `json:"rating"`
-	Timeframe         string             `json:"timeframe"`
-	CreatedAt         time.Time          `json:"created_at"`
-	ModelVersion      string             `json:"model_version,omitempty"`
-	PolicyVersion     string             `json:"policy_version,omitempty"`
-	UniverseMode      string             `json:"universe_mode,omitempty"`
-	RolloutState      string             `json:"rollout_state,omitempty"`
-	ExperimentID      string             `json:"experiment_id,omitempty"`
-	ModelScore        *float64           `json:"model_score,omitempty"`
-	ModelRank         *int               `json:"model_rank,omitempty"`
-	PolicySelected    *bool              `json:"policy_selected,omitempty"`
-	ProbUp            *float64           `json:"prob_up,omitempty"`
-	ExpectedValue     *float64           `json:"expected_value,omitempty"`
-	Indicators        []IndicatorResult  `json:"indicators"`
-	TradeExecuted     *bool              `json:"trade_executed,omitempty"`
-	Error             string             `json:"error,omitempty"`
-	Decision          string             `json:"decision,omitempty"`
-	DecisionReason    string             `json:"decision_reason,omitempty"`
-	ShadowDecision    string             `json:"-"`
-	ShadowReason      string             `json:"-"`
-	FeatureSnapshotID *uint              `json:"-"`
-	PredictionLogID   *uint              `json:"-"`
+	Symbol                string             `json:"symbol"`
+	Price                 float64            `json:"price"`
+	Change24h             float64            `json:"change_24h"`
+	RankScore             float64            `json:"rank_score,omitempty"`
+	RankComponents        map[string]float64 `json:"rank_components,omitempty"`
+	Signal                string             `json:"signal"`
+	Rating                float64            `json:"rating"`
+	Timeframe             string             `json:"timeframe"`
+	CreatedAt             time.Time          `json:"created_at"`
+	ModelVersion          string             `json:"model_version,omitempty"`
+	PolicyVersion         string             `json:"policy_version,omitempty"`
+	UniverseMode          string             `json:"universe_mode,omitempty"`
+	RolloutState          string             `json:"rollout_state,omitempty"`
+	ExperimentID          string             `json:"experiment_id,omitempty"`
+	ModelScore            *float64           `json:"model_score,omitempty"`
+	ModelRank             *int               `json:"model_rank,omitempty"`
+	PolicySelected        *bool              `json:"policy_selected,omitempty"`
+	ProbUp                *float64           `json:"prob_up,omitempty"`
+	ExpectedValue         *float64           `json:"expected_value,omitempty"`
+	Indicators            []IndicatorResult  `json:"indicators"`
+	TradeExecuted         *bool              `json:"trade_executed,omitempty"`
+	Error                 string             `json:"error,omitempty"`
+	Decision              string             `json:"decision,omitempty"`
+	DecisionReason        string             `json:"decision_reason,omitempty"`
+	ShadowDecision        string             `json:"-"`
+	ShadowReason          string             `json:"-"`
+	FeatureSnapshotID     *uint              `json:"-"`
+	PredictionLogID       *uint              `json:"-"`
+	DatasetManifestID     string             `json:"-"`
+	DecisionSide          string             `json:"-"`
+	DecisionQuantity      string             `json:"-"`
+	DecisionNotional      string             `json:"-"`
+	ExitReason            string             `json:"-"`
+	ConcurrentExitReasons []string           `json:"-"`
 }
 
 // IndicatorResult stores a single indicator's analysis
@@ -1013,6 +1019,27 @@ func persistDualRunParity(input, legacyResults, shadowResults []AnalyzedCoin) {
 		return
 	}
 	_, flagID, _ := flags.Canonical()
+	service := operations.New(database.DB, flags)
+	var state database.CutoverState
+	if err := database.DB.First(&state, 1).Error; err != nil {
+		return
+	}
+	var transition database.CutoverTransition
+	if state.TransitionID == strings.Repeat("0", 64) || database.DB.First(&transition, "id=?", state.TransitionID).Error != nil || transition.ParityPolicyID == "" {
+		operations.RecordGovernanceBypass(fmt.Errorf("dual-run parity is not bound to the active cutover policy"))
+		return
+	}
+	var declared database.ParityAcceptancePolicy
+	if err := database.DB.First(&declared, "id=?", transition.ParityPolicyID).Error; err != nil {
+		operations.RecordGovernanceBypass(fmt.Errorf("dual-run parity policy missing: %w", err))
+		return
+	}
+	var expected []cutover.ExpectedReason
+	if declared.ID != declared.ContentDigest || json.Unmarshal([]byte(declared.ExpectedReasonsJSON), &expected) != nil {
+		operations.RecordGovernanceBypass(fmt.Errorf("dual-run parity policy integrity mismatch"))
+		return
+	}
+	comparisonPolicy := cutover.ComparisonPolicy{QuantityToleranceBPS: declared.QuantityToleranceBPS, NotionalToleranceBPS: declared.NotionalToleranceBPS, Expected: expected}
 	legacyBySymbol := map[string]AnalyzedCoin{}
 	shadowBySymbol := map[string]AnalyzedCoin{}
 	for _, v := range legacyResults {
@@ -1021,6 +1048,9 @@ func persistDualRunParity(input, legacyResults, shadowResults []AnalyzedCoin) {
 	for _, v := range shadowResults {
 		shadowBySymbol[v.Symbol] = v
 	}
+	comparisons := make([]cutover.Comparison, 0, len(input))
+	datasetVersion, universeVersion := "", ""
+	windowStart := time.Now().UTC()
 	for _, source := range input {
 		left, lok := legacyBySymbol[source.Symbol]
 		right, rok := shadowBySymbol[source.Symbol]
@@ -1035,12 +1065,46 @@ func persistDualRunParity(input, legacyResults, shadowResults []AnalyzedCoin) {
 		if decisionAt.IsZero() {
 			decisionAt = time.Now().UTC()
 		}
-		contextValue := cutover.DecisionContext{SymbolID: strings.ToUpper(source.Symbol), VenueSymbol: strings.ToUpper(source.Symbol), DecisionAt: decisionAt, MarketAt: decisionAt, FlagSchemaVersion: flags.SchemaVersion, EngineVersion: "legacy-vs-shared-v1", StrategyVersion: tradingcore.LegacyStrategyVersion, PolicyVersion: source.PolicyVersion, ModelVersion: source.ModelVersion, UniverseVersion: source.UniverseMode, Inputs: map[string]string{"signal": source.Signal, "rating": fmt.Sprint(source.Rating), "price": fmt.Sprint(source.Price)}}
-		comparison, err := cutover.RunParity(context.Background(), contextValue, parityFixedAdapter{cutover.DecisionOutcome{Action: left.Decision, SymbolID: contextValue.SymbolID, VenueSymbol: contextValue.VenueSymbol, RejectionCode: left.DecisionReason, FactorTrace: factorTraceStrings(left.RankComponents), EngineVersion: "legacy", StrategyVersion: tradingcore.LegacyStrategyVersion, PolicyVersion: left.PolicyVersion, ModelVersion: left.ModelVersion, UniverseVersion: left.UniverseMode, SignalAt: decisionAt, DecisionAt: decisionAt}}, parityFixedAdapter{cutover.DecisionOutcome{Action: rightAction, SymbolID: contextValue.SymbolID, VenueSymbol: contextValue.VenueSymbol, RejectionCode: rightReason, FactorTrace: factorTraceStrings(right.RankComponents), EngineVersion: "shared-engine-v1", StrategyVersion: tradingcore.LegacyStrategyVersion, PolicyVersion: right.PolicyVersion, ModelVersion: right.ModelVersion, UniverseVersion: right.UniverseMode, SignalAt: decisionAt, DecisionAt: decisionAt}}, cutover.ComparisonPolicy{})
+		datasetVersion, universeVersion = source.DatasetManifestID, source.UniverseMode
+		contextValue := cutover.DecisionContext{SymbolID: strings.ToUpper(source.Symbol), VenueSymbol: strings.ToUpper(source.Symbol), DecisionAt: decisionAt, MarketAt: decisionAt, FlagSchemaVersion: flags.SchemaVersion, EngineVersion: "legacy-vs-shared-v1", StrategyVersion: tradingcore.LegacyStrategyVersion, PolicyVersion: source.PolicyVersion, ModelVersion: source.ModelVersion, DatasetVersion: source.DatasetManifestID, UniverseVersion: source.UniverseMode, Inputs: map[string]string{"signal": source.Signal, "rating": fmt.Sprint(source.Rating), "price": fmt.Sprint(source.Price)}}
+		leftOutcome := parityOutcome(left, left.Decision, left.DecisionReason, "legacy", contextValue, decisionAt)
+		rightOutcome := parityOutcome(right, rightAction, rightReason, "shared-engine-v1", contextValue, decisionAt)
+		comparison, err := cutover.RunParity(context.Background(), contextValue, parityFixedAdapter{leftOutcome}, parityFixedAdapter{rightOutcome}, comparisonPolicy)
 		if err == nil {
-			_, _ = operations.New(database.DB, flags).PersistParity(context.Background(), "legacy:shared", flagID, comparison, time.Now().UTC())
+			comparisons = append(comparisons, comparison)
 		}
 	}
+	if len(comparisons) == 0 {
+		return
+	}
+	ids := make([]string, len(comparisons))
+	for i := range comparisons {
+		ids[i] = comparisons[i].ContextID
+	}
+	windowEnd := time.Now().UTC()
+	if !windowEnd.After(windowStart) {
+		windowEnd = windowStart.Add(time.Microsecond)
+	}
+	population, _, err := service.BeginParityPopulation(context.Background(), "legacy:shared", declared.ID, flagID, ids, windowStart, windowEnd, datasetVersion, universeVersion)
+	if err != nil {
+		operations.RecordGovernanceBypass(fmt.Errorf("declare parity population: %w", err))
+		return
+	}
+	for _, comparison := range comparisons {
+		if _, err := service.PersistParityBound(context.Background(), operations.ParityBinding{PopulationID: population.ID}, comparison, windowEnd); err != nil {
+			operations.RecordGovernanceBypass(err)
+		}
+	}
+}
+func parityOutcome(value AnalyzedCoin, action, reason, engine string, causal cutover.DecisionContext, at time.Time) cutover.DecisionOutcome {
+	side, quantity, notional := value.DecisionSide, value.DecisionQuantity, value.DecisionNotional
+	if quantity == "" {
+		quantity = "0"
+	}
+	if notional == "" {
+		notional = "0"
+	}
+	return cutover.DecisionOutcome{Action: action, SymbolID: causal.SymbolID, VenueSymbol: causal.VenueSymbol, Side: side, Quantity: quantity, Notional: notional, RejectionCode: reason, PrimaryExitReason: value.ExitReason, ConcurrentExitReasons: append([]string(nil), value.ConcurrentExitReasons...), FactorTrace: factorTraceStrings(value.RankComponents), EngineVersion: engine, StrategyVersion: tradingcore.LegacyStrategyVersion, PolicyVersion: value.PolicyVersion, ModelVersion: value.ModelVersion, DatasetVersion: value.DatasetManifestID, UniverseVersion: value.UniverseMode, SignalAt: at, DecisionAt: at}
 }
 func factorTraceStrings(values map[string]float64) map[string]string {
 	out := map[string]string{}
@@ -1172,6 +1236,15 @@ func executeShortlistTradesWithRuntime(analyses []AnalyzedCoin, universe *Univer
 		})
 
 		if decision == "buy_candidate" {
+			analysis.DecisionSide = "buy"
+			if database.DB != nil && analysis.Price > 0 {
+				var wallet database.Wallet
+				if database.DB.First(&wallet).Error == nil {
+					notional := wallet.Balance * getSettingFloat(settings, "entry_percent", 5) / 100
+					analysis.DecisionNotional = strconv.FormatFloat(notional, 'g', -1, 64)
+					analysis.DecisionQuantity = strconv.FormatFloat(notional/analysis.Price, 'g', -1, 64)
+				}
+			}
 			cleanSymbol := strings.ReplaceAll(analysis.Symbol, "USDT", "")
 			hasExisting, lookupErr := runtime.LookupOpenPosition(cleanSymbol)
 			if lookupErr != nil {

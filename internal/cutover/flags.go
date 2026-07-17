@@ -12,17 +12,35 @@ import (
 var activeState struct {
 	sync.RWMutex
 	flags       Flags
+	snapshotID  string
+	authority   string
 	initialized bool
 }
 
+// Activate is retained for isolated unit tests. Production binaries must call
+// ActivateVerified only after the persisted cutover state is locked and checked.
 func Activate(flags Flags) error {
+	return ActivateVerified(flags, "", "unverified")
+}
+func ActivateVerified(flags Flags, snapshotID, authority string) error {
 	if err := flags.Validate(); err != nil {
 		return err
 	}
+	if snapshotID != "" {
+		_, digest, err := flags.Canonical()
+		if err != nil || digest != snapshotID {
+			return fmt.Errorf("verified flag snapshot digest mismatch")
+		}
+	}
 	activeState.Lock()
-	activeState.flags, activeState.initialized = flags, true
+	activeState.flags, activeState.snapshotID, activeState.authority, activeState.initialized = flags, snapshotID, authority, true
 	activeState.Unlock()
 	return nil
+}
+func ActiveEvidence() (Flags, string, string, bool) {
+	activeState.RLock()
+	defer activeState.RUnlock()
+	return activeState.flags, activeState.snapshotID, activeState.authority, activeState.initialized
 }
 func Active() (Flags, bool) {
 	activeState.RLock()
@@ -31,7 +49,7 @@ func Active() (Flags, bool) {
 }
 func ResetForTest() {
 	activeState.Lock()
-	activeState.flags, activeState.initialized = Flags{}, false
+	activeState.flags, activeState.snapshotID, activeState.authority, activeState.initialized = Flags{}, "", "", false
 	activeState.Unlock()
 }
 
@@ -137,15 +155,30 @@ func (f Flags) Canonical() ([]byte, string, error) {
 
 func (f Flags) ObservationContext(activePath string, versions map[string]string) string {
 	_, flagID, _ := f.Canonical()
+	if _, verifiedID, _, ok := ActiveEvidence(); ok && verifiedID != "" {
+		flagID = verifiedID
+	}
 	copyVersions := map[string]string{}
 	for key, value := range versions {
 		copyVersions[key] = value
 	}
+	base := struct {
+		SchemaVersion  string            `json:"schema_version"`
+		FlagSnapshotID string            `json:"flag_snapshot_id"`
+		ActivePath     string            `json:"active_path"`
+		Flags          Flags             `json:"flags"`
+		Versions       map[string]string `json:"versions"`
+	}{"stage08-observation-context-v2", flagID, activePath, f, copyVersions}
+	canonical, _ := json.Marshal(base)
+	sum := sha256.Sum256(canonical)
 	payload, _ := json.Marshal(struct {
-		SchemaVersion, FlagSnapshotID, ActivePath string
-		Flags                                     Flags
-		Versions                                  map[string]string
-	}{"stage08-observation-context-v1", flagID, activePath, f, copyVersions})
+		SchemaVersion  string            `json:"schema_version"`
+		FlagSnapshotID string            `json:"flag_snapshot_id"`
+		ActivePath     string            `json:"active_path"`
+		Flags          Flags             `json:"flags"`
+		Versions       map[string]string `json:"versions"`
+		ContentDigest  string            `json:"content_digest"`
+	}{base.SchemaVersion, base.FlagSnapshotID, base.ActivePath, base.Flags, base.Versions, hex.EncodeToString(sum[:])})
 	return string(payload)
 }
 

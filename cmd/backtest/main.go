@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -10,8 +11,8 @@ import (
 
 	"trading-go/internal/backtest"
 	"trading-go/internal/config"
-	"trading-go/internal/cutover"
 	"trading-go/internal/database"
+	"trading-go/internal/operations"
 	"trading-go/internal/services"
 )
 
@@ -20,11 +21,18 @@ func main() {
 	if loadErr != nil {
 		log.Fatalf("Invalid startup configuration: %v", loadErr)
 	}
-	if err := cutover.Activate(cfg.Stage08Flags); err != nil {
+	if err := database.OpenAndMigrate(cfg); err != nil {
+		log.Fatalf("Failed to initialize database: %v", err)
+	}
+	stage08 := operations.New(database.DB, cfg.Stage08Flags)
+	if _, err := stage08.Initialize(context.Background()); err != nil {
+		log.Fatalf("Stage 08 startup reconciliation failed: %v", err)
+	}
+	if err := database.SeedDataWithDefaults(cfg.DefaultBalance, cfg.DefaultCurrency); err != nil {
 		log.Fatal(err)
 	}
-	if err := database.Initialize(cfg); err != nil {
-		log.Fatalf("Failed to initialize database: %v", err)
+	if _, err := stage08.Initialize(context.Background()); err != nil {
+		log.Fatal(err)
 	}
 
 	services.InitTradingService(cfg.BinanceAPIKey, cfg.BinanceSecret)

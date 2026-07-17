@@ -17,6 +17,7 @@ import (
 	"time"
 	"trading-go/internal/cutover"
 	"trading-go/internal/database"
+	"trading-go/internal/operations"
 	"trading-go/internal/pointintime"
 	"trading-go/internal/services"
 	"trading-go/internal/websocket"
@@ -929,6 +930,7 @@ func preparePointInTimeBacktestInputs(settings map[string]string) (BacktestConfi
 	}
 	validated, report, err := pointintime.ValidateManifest(database.DB, pointintime.ManifestRequirement{ManifestID: manifestID, Start: start, End: end, Symbols: symbols, Roles: roles, RequireComplete: true})
 	if err != nil {
+		operations.RecordMissingMarketData("backtest_manifest", manifestID, err)
 		return BacktestConfig{DatasetManifestID: manifestID, DatasetManifestRequired: true, DatasetLimitations: report.Limitations}, nil, err
 	}
 	manifestSeries := func(ticker, role, frame string) []pointintime.SeriesCoverage {
@@ -983,6 +985,7 @@ func preparePointInTimeBacktestInputs(settings map[string]string) (BacktestConfi
 		return BacktestConfig{DatasetManifestID: manifestID, DatasetManifestRequired: true, DatasetLimitations: report.Limitations}, nil, &pointintime.CoverageError{Report: report}
 	}
 	if _, exactReport, err := pointintime.ValidateManifest(database.DB, pointintime.ManifestRequirement{ManifestID: manifestID, Start: start, End: end, Series: requiredSeries, RequireComplete: true}); err != nil {
+		operations.RecordMissingMarketData("backtest_exact_series", manifestID, err)
 		return BacktestConfig{DatasetManifestID: manifestID, DatasetManifestRequired: true, DatasetLimitations: exactReport.Limitations}, nil, err
 	}
 	var exchangeSymbols []database.ExchangeSymbol

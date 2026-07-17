@@ -185,7 +185,7 @@ func withinBPS(x, y string, tolerance int64) bool {
 	return math.Abs(a-b)*10000/base <= float64(tolerance)
 }
 func trustedExpected(code string, a, b DecisionOutcome, reasons []ExpectedReason) (string, bool) {
-	values := map[string][2]string{"engine_version": {a.EngineVersion, b.EngineVersion}, "strategy_version": {a.StrategyVersion, b.StrategyVersion}, "policy_version": {a.PolicyVersion, b.PolicyVersion}, "model_version": {a.ModelVersion, b.ModelVersion}, "dataset_version": {a.DatasetVersion, b.DatasetVersion}, "universe_version": {a.UniverseVersion, b.UniverseVersion}}
+	values := map[string][2]string{"quantity": {a.Quantity, b.Quantity}, "notional": {a.Notional, b.Notional}, "engine_version": {a.EngineVersion, b.EngineVersion}, "strategy_version": {a.StrategyVersion, b.StrategyVersion}, "policy_version": {a.PolicyVersion, b.PolicyVersion}, "model_version": {a.ModelVersion, b.ModelVersion}, "dataset_version": {a.DatasetVersion, b.DatasetVersion}, "universe_version": {a.UniverseVersion, b.UniverseVersion}}
 	for _, r := range reasons {
 		pair, ok := values[code]
 		if r.Code == code && ok && pair[0] == r.LegacyValue && pair[1] == r.CandidateValue && r.PolicyVersion != "" {

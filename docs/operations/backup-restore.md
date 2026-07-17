@@ -1,16 +1,21 @@
 # Backup, isolated restore, verification, and disaster recovery
 
-The verifier refuses a source database without `_test`, a target without `_restore_test`, equal source/target URLs, or missing PostgreSQL tools. For the mandated isolated exercise, pre-create an empty target database and run:
+Prerequisites are `pg_dump`, `pg_restore`, `psql`, `createdb`, `dropdb`, `sha256sum`, the pinned Go binary, and libpq service entries whose passwords are supplied by a mode-0600 `PGPASSFILE` (or another libpq credential provider). The source service must resolve to a database whose verified name ends in `_test` for the bounded exercise. Do not put database URLs or passwords on the command line.
+
+The output path must be absolute, its parent must exist, and the file must not exist. The verifier creates an unguessable database itself from `template0`, writes and reads a random identity token before restore, and drops that database on exit:
 
 ```bash
-export TEST_DATABASE_URL='postgres://postgres:postgres@127.0.0.1:55433/trading_bot_test?sslmode=disable'
-createdb -h 127.0.0.1 -p 55433 -U postgres trading_bot_restore_test
+export PGSERVICEFILE=/absolute/path/to/pg_service.conf
+export PGPASSFILE=/absolute/path/to/pgpass
+export STAGE08_SOURCE_SERVICE=trading_bot_test_source
+export STAGE08_MAINTENANCE_SERVICE=trading_bot_test_maintenance
 ./scripts/stage08_backup_restore.sh \
-  --target 'postgres://postgres:postgres@127.0.0.1:55433/trading_bot_restore_test?sslmode=disable' \
-  --output /tmp/trading_bot_stage08.dump
-dropdb -h 127.0.0.1 -p 55433 -U postgres trading_bot_restore_test
+  --output /tmp/trading_bot_stage08.dump \
+  --principal operations-admin
 ```
 
-Expected output is bounded JSON with `status:"verified"`, dump SHA-256, database identities, and canonical ledger/projection counts/digest. The script uses `pg_dump`, cleans only the already-isolated target, runs `cmd/operations -action verify` there to apply current migrations and perform integrity/reconciliation checks, verifies canonical equality, and proves the source economic fingerprint did not change. If any required tool is unavailable it exits 3 and makes no verification claim.
+Expected output is bounded JSON containing `status:"verified"`, the dump checksum, and the canonical database digest. Exit 3 means a required tool was unavailable and no verification occurred. Other nonzero exits identify refusal, source mutation, restore failure, or a canonical mismatch.
 
-For an actual disaster, first preserve the damaged source, obtain explicit incident/change approval, create a new isolated recovery database, restore there, run the current binary migrations, `cmd/ledger -action reconcile -json`, Stage 04 manifest verification, and canonical comparison. Cut application traffic over only after human approval. Never restore over the source. Keep the legacy binary/path and verified dump through the rollback window.
+The script refuses overwrite, uses restrictive permissions, never runs `pg_restore --clean`, reruns migrations/startup integrity/reconciliation in the isolated target, and compares ordered per-row hashes (identity, exact amounts/costs, timestamps, provenance, and audit content) plus counts for every economic and immutable audit table. Equal aggregate balances cannot mask changed row identities. It compares the source before and after the exercise, then persists an immutable `BackupVerification` through `cmd/operations -action record-backup`; status only accepts verification bound to the current flag snapshot and cutover transition.
+
+For disaster recovery, preserve the source, acknowledge the incident, and repeat into a newly created database. Cut traffic only after canonical verification and explicit human approval. Never restore over the source. Keep the legacy binary/path and verified dump through the rollback window.

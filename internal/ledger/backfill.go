@@ -22,13 +22,16 @@ type BackfillOptions struct {
 }
 
 type BackfillReport struct {
-	DryRun            bool     `json:"dry_run"`
-	WouldOpenCash     string   `json:"would_open_cash"`
-	Currency          string   `json:"currency"`
-	LegacyPositionIDs []uint   `json:"legacy_position_ids"`
-	LegacyOrderIDs    []uint   `json:"legacy_order_ids"`
-	Unresolved        []string `json:"unresolved"`
-	Applied           bool     `json:"applied"`
+	DryRun              bool     `json:"dry_run"`
+	WouldOpenCash       string   `json:"would_open_cash"`
+	Currency            string   `json:"currency"`
+	LegacyPositionIDs   []uint   `json:"legacy_position_ids"`
+	LegacyOrderIDs      []uint   `json:"legacy_order_ids"`
+	LegacyPositionCount int64    `json:"legacy_position_count"`
+	LegacyOrderCount    int64    `json:"legacy_order_count"`
+	SampleTruncated     bool     `json:"sample_truncated"`
+	Unresolved          []string `json:"unresolved"`
+	Applied             bool     `json:"applied"`
 }
 
 // Backfill records only the observed cutover cash balance. Legacy positions and
@@ -49,16 +52,25 @@ func (s *Service) Backfill(ctx context.Context, options BackfillOptions) (Backfi
 		return BackfillReport{}, err
 	}
 	report := BackfillReport{DryRun: !options.Apply, WouldOpenCash: balance.String(), Currency: wallet.Currency, LegacyPositionIDs: []uint{}, LegacyOrderIDs: []uint{}, Unresolved: []string{}}
-	if err := s.DB.WithContext(ctx).Model(&database.Position{}).Where("account_id = ? AND status = ?", options.AccountID, "open").Pluck("id", &report.LegacyPositionIDs).Error; err != nil {
+	positions := s.DB.WithContext(ctx).Model(&database.Position{}).Where("account_id = ? AND status = ?", options.AccountID, "open")
+	if err := positions.Count(&report.LegacyPositionCount).Error; err != nil {
 		return report, err
 	}
-	if err := s.DB.WithContext(ctx).Model(&database.Order{}).Where("account_id = ?", options.AccountID).Pluck("id", &report.LegacyOrderIDs).Error; err != nil {
+	if err := positions.Order("id").Limit(100).Pluck("id", &report.LegacyPositionIDs).Error; err != nil {
 		return report, err
 	}
-	if len(report.LegacyPositionIDs) > 0 {
+	orders := s.DB.WithContext(ctx).Model(&database.Order{}).Where("account_id = ?", options.AccountID)
+	if err := orders.Count(&report.LegacyOrderCount).Error; err != nil {
+		return report, err
+	}
+	if err := orders.Order("id").Limit(100).Pluck("id", &report.LegacyOrderIDs).Error; err != nil {
+		return report, err
+	}
+	report.SampleTruncated = report.LegacyPositionCount > int64(len(report.LegacyPositionIDs)) || report.LegacyOrderCount > int64(len(report.LegacyOrderIDs))
+	if report.LegacyPositionCount > 0 {
 		report.Unresolved = append(report.Unresolved, "legacy positions were not converted into asset events or cost basis")
 	}
-	if len(report.LegacyOrderIDs) > 0 {
+	if report.LegacyOrderCount > 0 {
 		report.Unresolved = append(report.Unresolved, "legacy orders were not assumed to be executed fills")
 	}
 	if !options.Apply {
@@ -118,7 +130,7 @@ func (s *Service) Backfill(ctx context.Context, options BackfillOptions) (Backfi
 		}
 		unresolved, _ := json.Marshal(report.Unresolved)
 		status := "ready"
-		if len(report.LegacyPositionIDs) > 0 {
+		if report.LegacyPositionCount > 0 {
 			status = "pending_resolution"
 		}
 		state = database.LedgerMigrationState{AccountID: options.AccountID, Status: status, OpeningEventID: &eventID, UnresolvedJSON: string(unresolved), ApprovedBy: &options.ApprovedBy, ApprovedAt: &now, CreatedAt: now, UpdatedAt: now}

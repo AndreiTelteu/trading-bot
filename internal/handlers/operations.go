@@ -1,12 +1,43 @@
 package handlers
 
 import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
 	"trading-go/internal/cutover"
 	"trading-go/internal/database"
 	"trading-go/internal/operations"
 
 	"github.com/gofiber/fiber/v2"
 )
+
+const maxOperationsBody = 64 << 10
+
+func decodeOperationsJSON(c *fiber.Ctx, dst any) error {
+	body := c.Body()
+	if len(body) == 0 || len(body) > maxOperationsBody {
+		return fmt.Errorf("request body must be between 1 byte and 64KiB")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(dst); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return fmt.Errorf("trailing JSON data is forbidden")
+	}
+	return nil
+}
+func requireOperationsCapability(c *fiber.Ctx, required string) error {
+	caps, _ := c.Locals("governance_capabilities").([]string)
+	for _, v := range caps {
+		if v == required {
+			return nil
+		}
+	}
+	return fiber.NewError(fiber.StatusForbidden, "trusted operations capability required")
+}
 
 func operationsService() (operations.Service, error) {
 	flags, ok := cutover.Active()
@@ -28,8 +59,11 @@ func GetOperationalStatus(c *fiber.Ctx) error {
 	return c.Status(code).JSON(status)
 }
 func TransitionOperationalIncident(c *fiber.Ctx) error {
+	if err := requireOperationsCapability(c, "operations:mutate"); err != nil {
+		return err
+	}
 	var request struct{ State, Reason string }
-	if c.BodyParser(&request) != nil {
+	if decodeOperationsJSON(c, &request) != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "invalid request"})
 	}
 	actor, ok := c.Locals("authenticated_actor").(string)
@@ -48,8 +82,14 @@ func TransitionOperationalIncident(c *fiber.Ctx) error {
 }
 func TransitionCutover(c *fiber.Ctx) error {
 	var request operations.TransitionRequest
-	if c.BodyParser(&request) != nil {
+	if decodeOperationsJSON(c, &request) != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "invalid request"})
+	}
+	if err := requireOperationsCapability(c, "operations:mutate"); err != nil {
+		return err
+	}
+	if len(request.IdempotencyKey) > 160 || len(request.Reason) > 1000 || len(request.EvidenceIDs) > 32 {
+		return c.Status(400).JSON(fiber.Map{"error": "cutover request bounds exceeded"})
 	}
 	actor, ok := c.Locals("authenticated_actor").(string)
 	if !ok || actor == "" {
@@ -77,6 +117,9 @@ func TransitionCutover(c *fiber.Ctx) error {
 	return c.JSON(row)
 }
 func PlanLedgerBackfill(c *fiber.Ctx) error {
+	if err := requireOperationsCapability(c, "operations:mutate"); err != nil {
+		return err
+	}
 	s, err := operationsService()
 	if err != nil {
 		return err
@@ -91,8 +134,11 @@ func ApproveLedgerBackfill(c *fiber.Ctx) error {
 	var request struct {
 		ReportDigest string `json:"report_digest"`
 	}
-	if c.BodyParser(&request) != nil {
+	if decodeOperationsJSON(c, &request) != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "invalid request"})
+	}
+	if err := requireOperationsCapability(c, "operations:mutate"); err != nil {
+		return err
 	}
 	actor, ok := c.Locals("authenticated_actor").(string)
 	if !ok || actor == "" {
@@ -120,8 +166,11 @@ func ApplyLedgerBackfill(c *fiber.Ctx) error {
 	var request struct {
 		ApprovalDigest string `json:"approval_digest"`
 	}
-	if c.BodyParser(&request) != nil {
+	if decodeOperationsJSON(c, &request) != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "invalid request"})
+	}
+	if err := requireOperationsCapability(c, "operations:mutate"); err != nil {
+		return err
 	}
 	caps, _ := c.Locals("governance_capabilities").([]string)
 	authorized := false
@@ -144,8 +193,14 @@ func ApplyLedgerBackfill(c *fiber.Ctx) error {
 
 func DeclareParityPolicy(c *fiber.Ctx) error {
 	var request operations.DeclareParityPolicyRequest
-	if c.BodyParser(&request) != nil {
+	if decodeOperationsJSON(c, &request) != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "invalid request"})
+	}
+	if err := requireOperationsCapability(c, "operations:mutate"); err != nil {
+		return err
+	}
+	if len(request.Name) > 120 || len(request.Expected) > 64 {
+		return c.Status(400).JSON(fiber.Map{"error": "parity policy bounds exceeded"})
 	}
 	actor, ok := c.Locals("authenticated_actor").(string)
 	if !ok || actor == "" {
@@ -168,4 +223,49 @@ func DeclareParityPolicy(c *fiber.Ctx) error {
 		return c.Status(409).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.Status(fiber.StatusCreated).JSON(row)
+}
+
+func DeclareCutoverEvidence(c *fiber.Ctx) error {
+	if err := requireOperationsCapability(c, "operations:mutate"); err != nil {
+		return err
+	}
+	var request operations.PrerequisiteEvidenceRequest
+	if err := decodeOperationsJSON(c, &request); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid request"})
+	}
+	actor, ok := c.Locals("authenticated_actor").(string)
+	if !ok || actor == "" {
+		return c.Status(401).JSON(fiber.Map{"error": "trusted actor required"})
+	}
+	service, err := operationsService()
+	if err != nil {
+		return err
+	}
+	row, err := service.DeclarePrerequisiteEvidence(c.UserContext(), request, actor)
+	if err != nil {
+		return c.Status(409).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.Status(fiber.StatusCreated).JSON(row)
+}
+func DeclareStage08FlagSnapshot(c *fiber.Ctx) error {
+	if err := requireOperationsCapability(c, "operations:mutate"); err != nil {
+		return err
+	}
+	var flags cutover.Flags
+	if err := decodeOperationsJSON(c, &flags); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid request"})
+	}
+	actor, ok := c.Locals("authenticated_actor").(string)
+	if !ok || actor == "" {
+		return c.SendStatus(401)
+	}
+	service, err := operationsService()
+	if err != nil {
+		return err
+	}
+	row, err := service.DeclareFlagSnapshot(c.UserContext(), flags, actor)
+	if err != nil {
+		return c.Status(409).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.Status(201).JSON(row)
 }

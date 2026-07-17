@@ -778,6 +778,11 @@ type ParityObservation struct {
 	PairKey               string    `json:"pair_key" gorm:"size:160;not null;uniqueIndex:idx_parity_context_pair,priority:2"`
 	SchemaVersion         string    `json:"schema_version" gorm:"size:50;not null"`
 	FlagSnapshotID        string    `json:"flag_snapshot_id" gorm:"size:64;not null;index"`
+	FlagSnapshotDigest    string    `json:"flag_snapshot_digest" gorm:"size:64;not null;default:''"`
+	PolicyID              string    `json:"policy_id" gorm:"size:64;not null;default:'';index:idx_parity_exact_binding"`
+	PolicyDigest          string    `json:"policy_digest" gorm:"size:64;not null;default:''"`
+	PopulationID          string    `json:"population_id" gorm:"size:64;not null;default:'';index:idx_parity_exact_binding"`
+	CutoverAttemptID      string    `json:"cutover_attempt_id" gorm:"size:64;not null;default:'';index:idx_parity_exact_binding"`
 	LegacyDigest          string    `json:"legacy_digest" gorm:"size:64;not null"`
 	CandidateDigest       string    `json:"candidate_digest" gorm:"size:64;not null"`
 	Classification        string    `json:"classification" gorm:"size:30;not null;index"`
@@ -853,31 +858,43 @@ type OperationalIncidentAudit struct {
 }
 
 type CutoverState struct {
-	ID             uint      `json:"id" gorm:"primaryKey;check:id = 1"`
-	Stage          string    `json:"stage" gorm:"size:60;not null;index"`
-	Authority      string    `json:"authority" gorm:"size:40;not null"`
-	FlagSnapshotID string    `json:"flag_snapshot_id" gorm:"size:64;not null"`
-	TransitionID   string    `json:"transition_id" gorm:"size:64;not null"`
-	Version        int64     `json:"version" gorm:"not null"`
-	UpdatedAt      time.Time `json:"updated_at" gorm:"not null"`
+	ID              uint      `json:"id" gorm:"primaryKey;check:id = 1"`
+	Stage           string    `json:"stage" gorm:"size:60;not null;index"`
+	Authority       string    `json:"authority" gorm:"size:40;not null"`
+	FlagSnapshotID  string    `json:"flag_snapshot_id" gorm:"size:64;not null"`
+	FlagDigest      string    `json:"flag_digest" gorm:"size:64;not null;default:''"`
+	AuthorityJSON   string    `json:"authority_envelope" gorm:"column:authority_json;type:jsonb;not null;default:'{}'"`
+	AuthorityDigest string    `json:"authority_digest" gorm:"size:64;not null;default:''"`
+	TransitionID    string    `json:"transition_id" gorm:"size:64;not null"`
+	Version         int64     `json:"version" gorm:"not null"`
+	UpdatedAt       time.Time `json:"updated_at" gorm:"not null"`
 }
 
 type CutoverTransition struct {
-	ID                string    `json:"id" gorm:"primaryKey;size:64"`
-	IdempotencyKey    string    `json:"idempotency_key" gorm:"size:160;not null;uniqueIndex"`
-	FromStage         string    `json:"from_stage" gorm:"size:60;not null"`
-	ToStage           string    `json:"to_stage" gorm:"size:60;not null"`
-	FromAuthority     string    `json:"from_authority" gorm:"size:40;not null"`
-	ToAuthority       string    `json:"to_authority" gorm:"size:40;not null"`
-	FlagSnapshotID    string    `json:"flag_snapshot_id" gorm:"size:64;not null"`
-	Principal         string    `json:"principal" gorm:"size:200;not null"`
-	Reason            string    `json:"reason" gorm:"size:1000;not null"`
-	PrerequisitesJSON string    `json:"prerequisites" gorm:"column:prerequisites_json;type:jsonb;not null"`
-	Stage07ContextKey string    `json:"stage07_context_key,omitempty" gorm:"size:120"`
-	Stage07Transition string    `json:"stage07_transition,omitempty" gorm:"size:64"`
-	RollbackOf        *string   `json:"rollback_of,omitempty" gorm:"size:64;index"`
-	ContentDigest     string    `json:"content_digest" gorm:"size:64;not null"`
-	CreatedAt         time.Time `json:"created_at" gorm:"not null;index"`
+	ID                   string    `json:"id" gorm:"primaryKey;size:64"`
+	IdempotencyKey       string    `json:"idempotency_key" gorm:"size:160;not null;uniqueIndex"`
+	FromStage            string    `json:"from_stage" gorm:"size:60;not null"`
+	ToStage              string    `json:"to_stage" gorm:"size:60;not null"`
+	FromAuthority        string    `json:"from_authority" gorm:"size:40;not null"`
+	ToAuthority          string    `json:"to_authority" gorm:"size:40;not null"`
+	FlagSnapshotID       string    `json:"flag_snapshot_id" gorm:"size:64;not null"`
+	FlagSnapshotDigest   string    `json:"flag_snapshot_digest" gorm:"size:64;not null;default:''"`
+	SourceStateVersion   int64     `json:"source_state_version" gorm:"not null;default:0"`
+	SourceEnvelopeJSON   string    `json:"source_envelope" gorm:"column:source_envelope_json;type:jsonb;not null;default:'{}'"`
+	SourceEnvelopeDigest string    `json:"source_envelope_digest" gorm:"size:64;not null;default:''"`
+	TargetEnvelopeJSON   string    `json:"target_envelope" gorm:"column:target_envelope_json;type:jsonb;not null;default:'{}'"`
+	TargetEnvelopeDigest string    `json:"target_envelope_digest" gorm:"size:64;not null;default:''"`
+	RequestDigest        string    `json:"request_digest" gorm:"size:64;not null;default:''"`
+	ParityPolicyID       string    `json:"parity_policy_id,omitempty" gorm:"size:64"`
+	EvidenceDigest       string    `json:"evidence_digest,omitempty" gorm:"size:64"`
+	Principal            string    `json:"principal" gorm:"size:200;not null"`
+	Reason               string    `json:"reason" gorm:"size:1000;not null"`
+	PrerequisitesJSON    string    `json:"prerequisites" gorm:"column:prerequisites_json;type:jsonb;not null"`
+	Stage07ContextKey    string    `json:"stage07_context_key,omitempty" gorm:"size:120"`
+	Stage07Transition    string    `json:"stage07_transition,omitempty" gorm:"size:64"`
+	RollbackOf           *string   `json:"rollback_of,omitempty" gorm:"size:64;index"`
+	ContentDigest        string    `json:"content_digest" gorm:"size:64;not null"`
+	CreatedAt            time.Time `json:"created_at" gorm:"not null;index"`
 }
 
 type BackfillPlan struct {
@@ -903,6 +920,66 @@ type BackupVerification struct {
 	CanonicalDigest     string    `json:"canonical_digest" gorm:"size:64;not null"`
 	Status              string    `json:"status" gorm:"size:30;not null;index"`
 	VerifiedAt          time.Time `json:"verified_at" gorm:"not null;index"`
+	ManifestChecksum    string    `json:"manifest_checksum" gorm:"size:64;not null;default:''"`
+	ToolVersionsJSON    string    `json:"tool_versions" gorm:"column:tool_versions_json;type:jsonb;not null;default:'{}'"`
+	FlagSnapshotID      string    `json:"flag_snapshot_id" gorm:"size:64;not null;default:'';index"`
+	CutoverTransitionID string    `json:"cutover_transition_id" gorm:"size:64;not null;default:'';index"`
+}
+
+// ParityPopulation is the immutable server-derived denominator and binding for
+// a single causal dual-run window. Callers cannot supply its expected count.
+type ParityPopulation struct {
+	ID                 string    `json:"id" gorm:"primaryKey;size:64"`
+	PairKey            string    `json:"pair_key" gorm:"size:120;not null;index:idx_parity_population_binding"`
+	PolicyID           string    `json:"policy_id" gorm:"size:64;not null;index:idx_parity_population_binding"`
+	PolicyDigest       string    `json:"policy_digest" gorm:"size:64;not null"`
+	FlagSnapshotID     string    `json:"flag_snapshot_id" gorm:"size:64;not null;index:idx_parity_population_binding"`
+	FlagSnapshotDigest string    `json:"flag_snapshot_digest" gorm:"size:64;not null"`
+	CutoverAttemptID   string    `json:"cutover_attempt_id" gorm:"size:64;not null;index:idx_parity_population_binding"`
+	WindowStart        time.Time `json:"window_start" gorm:"not null"`
+	WindowEnd          time.Time `json:"window_end" gorm:"not null"`
+	ExpectedContexts   int64     `json:"expected_contexts" gorm:"not null"`
+	ContextDigestsJSON string    `json:"context_digests" gorm:"column:context_digests_json;type:jsonb;not null"`
+	DatasetVersion     string    `json:"dataset_version" gorm:"size:120;not null"`
+	UniverseVersion    string    `json:"universe_version" gorm:"size:120;not null"`
+	ContentDigest      string    `json:"content_digest" gorm:"size:64;not null"`
+	CreatedAt          time.Time `json:"created_at" gorm:"not null"`
+}
+
+type CutoverPrerequisiteEvidence struct {
+	ID                  string    `json:"id" gorm:"primaryKey;size:64"`
+	EvidenceType        string    `json:"evidence_type" gorm:"size:80;not null;index"`
+	SourceStage         string    `json:"source_stage" gorm:"size:60;not null"`
+	TargetStage         string    `json:"target_stage" gorm:"size:60;not null"`
+	ContextKey          string    `json:"context_key" gorm:"size:120;not null;index"`
+	FlagSnapshotID      string    `json:"flag_snapshot_id" gorm:"size:64;not null;index"`
+	ParityPolicyID      string    `json:"parity_policy_id,omitempty" gorm:"size:64"`
+	DatasetVersion      string    `json:"dataset_version,omitempty" gorm:"size:120"`
+	UniverseVersion     string    `json:"universe_version,omitempty" gorm:"size:120"`
+	Stage07DeploymentID string    `json:"stage07_deployment_id,omitempty" gorm:"size:64"`
+	WindowStart         time.Time `json:"window_start" gorm:"not null"`
+	WindowEnd           time.Time `json:"window_end" gorm:"not null"`
+	PayloadJSON         string    `json:"payload" gorm:"column:payload_json;type:jsonb;not null"`
+	ContentDigest       string    `json:"content_digest" gorm:"size:64;not null"`
+	CreatedBy           string    `json:"created_by" gorm:"size:200;not null"`
+	CreatedAt           time.Time `json:"created_at" gorm:"not null"`
+}
+
+type ReconciliationEvidence struct {
+	ID                  string    `json:"id" gorm:"primaryKey;size:64"`
+	FlagSnapshotID      string    `json:"flag_snapshot_id" gorm:"size:64;not null;index"`
+	CutoverTransitionID string    `json:"cutover_transition_id" gorm:"size:64;not null;index"`
+	Balanced            bool      `json:"balanced" gorm:"not null"`
+	CanonicalDigest     string    `json:"canonical_digest" gorm:"size:64;not null"`
+	ReportJSON          string    `json:"report" gorm:"column:report_json;type:jsonb;not null"`
+	CheckedAt           time.Time `json:"checked_at" gorm:"not null;index"`
+	ContentDigest       string    `json:"content_digest" gorm:"size:64;not null"`
+}
+type BrokerConflictCounter struct {
+	DedupeKey   string    `json:"dedupe_key" gorm:"primaryKey;size:160"`
+	Count       int64     `json:"count" gorm:"not null"`
+	WindowStart time.Time `json:"window_start" gorm:"not null"`
+	LastSeenAt  time.Time `json:"last_seen_at" gorm:"not null"`
 }
 
 type PortfolioSnapshot struct {

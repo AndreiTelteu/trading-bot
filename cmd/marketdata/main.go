@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"trading-go/internal/config"
-	"trading-go/internal/cutover"
 	"trading-go/internal/database"
+	"trading-go/internal/operations"
 	"trading-go/internal/pointintime"
 	"trading-go/internal/services"
 )
@@ -56,13 +56,20 @@ func main() {
 	if loadErr != nil {
 		fatal(loadErr)
 	}
-	if err := cutover.Activate(cfg.Stage08Flags); err != nil {
-		fatal(err)
-	}
 	if *action != "coverage" && cfg.Stage08Flags.PointInTime == "off" {
 		fatal(fmt.Errorf("Stage 04 mutation/build requires STAGE08_POINT_IN_TIME_UNIVERSE=research or authoritative"))
 	}
-	if err := database.Initialize(cfg); err != nil {
+	if err := database.OpenAndMigrate(cfg); err != nil {
+		fatal(err)
+	}
+	stage08 := operations.New(database.DB, cfg.Stage08Flags)
+	if _, err := stage08.Initialize(context.Background()); err != nil {
+		fatal(err)
+	}
+	if err := database.SeedDataWithDefaults(cfg.DefaultBalance, cfg.DefaultCurrency); err != nil {
+		fatal(err)
+	}
+	if _, err := stage08.Initialize(context.Background()); err != nil {
 		fatal(err)
 	}
 	services.InitTradingService(cfg.BinanceAPIKey, cfg.BinanceSecret)

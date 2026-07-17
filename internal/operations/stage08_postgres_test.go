@@ -19,6 +19,7 @@ func (failingAlert) Dispatch(context.Context, database.OperationalIncident) erro
 
 func stage08DB(t *testing.T) (Service, string) {
 	t.Helper()
+	cutover.ResetForTest()
 	db := testutil.OpenPostgresDB(t)
 	testutil.ResetPublicSchema(t, db)
 	if err := database.RunMigrations(db); err != nil {
@@ -52,8 +53,8 @@ func TestStage08MigrationIncidentAndCutoverAudit(t *testing.T) {
 	alertService := service
 	alertService.Alerts = failingAlert{}
 	delivered, err := alertService.RaiseIncident(context.Background(), IncidentInput{DedupeKey: "alert:test", Type: "missing_benchmark_or_universe", Severity: "warning", Summary: "missing"})
-	if err != nil {
-		t.Fatal(err)
+	if err == nil {
+		t.Fatal("dispatcher failure was not returned after durable incident persistence")
 	}
 	if err := db.First(&delivered, "id=?", delivered.ID).Error; err != nil {
 		t.Fatal(err)
@@ -76,7 +77,7 @@ func TestStage08MigrationIncidentAndCutoverAudit(t *testing.T) {
 	if audits != 2 {
 		t.Fatalf("incident audits=%d", audits)
 	}
-	r := TransitionRequest{IdempotencyKey: "cutover-1", ToStage: "ledger_compare", Principal: "operator", Reason: "approved", FlagSnapshotID: flagID, Prerequisites: map[string]bool{"schema_deployed": true}}
+	r := TransitionRequest{IdempotencyKey: "cutover-1", ToStage: "ledger_compare", Principal: "operator", Reason: "approved", FlagSnapshotID: flagID}
 	transition, err := service.TransitionCutover(context.Background(), r)
 	if err != nil {
 		t.Fatal(err)
@@ -101,27 +102,32 @@ func TestStage08MigrationIncidentAndCutoverAudit(t *testing.T) {
 
 func TestParityPersistenceThresholdsAndBounds(t *testing.T) {
 	service, flagID := stage08DB(t)
-	policy := database.ParityAcceptancePolicy{ID: strings.Repeat("a", 64), SchemaVersion: cutover.ParitySchemaVersion, Name: "predeclared", MinimumSamples: 2, MinimumCoverageBPS: 10000, MaxActionRateBPS: 0, MaxQuantityRateBPS: 0, MaxReasonRateBPS: 0, MaxVersionRateBPS: 0, QuantityToleranceBPS: 1, NotionalToleranceBPS: 1, ExpectedReasonsJSON: "[]", ContentDigest: strings.Repeat("b", 64), DeclaredBy: "operator", DeclaredAt: time.Now().UTC()}
-	if err := service.DB.Create(&policy).Error; err != nil {
+	policy, err := service.DeclareParityPolicy(context.Background(), DeclareParityPolicyRequest{Name: "predeclared", MinimumSamples: 2, MinimumCoverageBPS: 10000, QuantityToleranceBPS: 1, NotionalToleranceBPS: 1}, "operator")
+	if err != nil {
 		t.Fatal(err)
 	}
-	base := cutover.Comparison{ContextID: "ctx-1", LegacyDigest: strings.Repeat("1", 64), CandidateDigest: strings.Repeat("1", 64), ContentDigest: strings.Repeat("2", 64), Classification: "match"}
-	if _, err := service.PersistParity(context.Background(), "legacy:new", flagID, base, time.Now()); err != nil {
+	ctx1, ctx2 := strings.Repeat("1", 64), strings.Repeat("2", 64)
+	population, _, err := service.BeginParityPopulation(context.Background(), "legacy:new", policy.ID, flagID, []string{ctx1, ctx2}, time.Now().Add(-time.Minute), time.Now(), "dataset-v1", "universe-v1")
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.PersistParity(context.Background(), "legacy:new", flagID, base, time.Now()); err != nil {
+	base := cutover.Comparison{ContextID: ctx1, LegacyDigest: strings.Repeat("1", 64), CandidateDigest: strings.Repeat("1", 64), ContentDigest: strings.Repeat("3", 64), Classification: "match"}
+	if _, err := service.PersistParityBound(context.Background(), ParityBinding{PopulationID: population.ID}, base, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	aggregate, err := service.EvaluateParity(policy.ID, 2)
+	if _, err := service.PersistParityBound(context.Background(), ParityBinding{PopulationID: population.ID}, base, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	aggregate, err := service.EvaluateParity(population.ID)
 	if err != nil || aggregate.Accepted || aggregate.Failure != "insufficient_samples" {
 		t.Fatalf("insufficient samples passed: %+v %v", aggregate, err)
 	}
-	base.ContextID = "ctx-2"
-	base.ContentDigest = strings.Repeat("3", 64)
-	if _, err := service.PersistParity(context.Background(), "legacy:new", flagID, base, time.Now()); err != nil {
+	base.ContextID = ctx2
+	base.ContentDigest = strings.Repeat("4", 64)
+	if _, err := service.PersistParityBound(context.Background(), ParityBinding{PopulationID: population.ID}, base, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	aggregate, err = service.EvaluateParity(policy.ID, 2)
+	aggregate, err = service.EvaluateParity(population.ID)
 	if err != nil || !aggregate.Accepted {
 		t.Fatalf("matching threshold failed: %+v %v", aggregate, err)
 	}

@@ -10,7 +10,6 @@ import (
 
 	"trading-go/internal/config"
 	"trading-go/internal/cron"
-	"trading-go/internal/cutover"
 	"trading-go/internal/database"
 	"trading-go/internal/handlers"
 	"trading-go/internal/middleware"
@@ -31,14 +30,18 @@ func main() {
 		log.Fatal("AUTH_USERNAME and AUTH_PASSWORD must be set")
 	}
 
-	if err := cutover.Activate(cfg.Stage08Flags); err != nil {
-		log.Fatalf("Failed to activate Stage 08 authority: %v", err)
-	}
-	if err := database.Initialize(cfg); err != nil {
+	if err := database.OpenAndMigrate(cfg); err != nil {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
-	if _, err := operations.New(database.DB, cfg.Stage08Flags).Initialize(context.Background()); err != nil {
+	stage08 := operations.New(database.DB, cfg.Stage08Flags)
+	if _, err := stage08.Initialize(context.Background()); err != nil {
 		log.Fatalf("Stage 08 startup reconciliation failed: %v", err)
+	}
+	if err := database.SeedDataWithDefaults(cfg.DefaultBalance, cfg.DefaultCurrency); err != nil {
+		log.Fatalf("Failed to seed database after authority verification: %v", err)
+	}
+	if _, err := stage08.Initialize(context.Background()); err != nil {
+		log.Fatalf("Stage 08 post-seed reconciliation failed: %v", err)
 	}
 	services.InitTradingService(cfg.BinanceAPIKey, cfg.BinanceSecret)
 	if err := services.StartExecutionRuntime(); err != nil {
@@ -114,6 +117,8 @@ func setupRoutes(app *fiber.App, cfg *config.Config, authManager *middleware.Aut
 	api.Post("/operations/incidents/:id/transition", handlers.TransitionOperationalIncident)
 	api.Post("/operations/cutover/transitions", handlers.TransitionCutover)
 	api.Post("/operations/parity/policies", handlers.DeclareParityPolicy)
+	api.Post("/operations/flags/snapshots", handlers.DeclareStage08FlagSnapshot)
+	api.Post("/operations/cutover/evidence", handlers.DeclareCutoverEvidence)
 	api.Post("/operations/backfill/plans", handlers.PlanLedgerBackfill)
 	api.Post("/operations/backfill/plans/:id/approve", handlers.ApproveLedgerBackfill)
 	api.Post("/operations/backfill/plans/:id/apply", handlers.ApplyLedgerBackfill)

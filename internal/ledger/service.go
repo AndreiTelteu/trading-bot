@@ -465,6 +465,9 @@ func metadataJSONForCommand(command FillCommand) string {
 	metadata["strategy_version"] = command.StrategyVersion
 	metadata["policy_version"] = command.PolicyVersion
 	metadata["model_version"] = command.ModelVersion
+	metadata["dataset_version"] = command.Metadata["dataset_version"]
+	metadata["universe_version"] = command.UniverseMode
+	metadata["schema_version"] = "stage08-observation-context-v2"
 	if flags, active := cutover.Active(); active {
 		metadata["flag_schema_version"] = flags.SchemaVersion
 		_, flagID, _ := flags.Canonical()
@@ -472,6 +475,16 @@ func metadataJSONForCommand(command FillCommand) string {
 		metadata["ledger_authority"] = flags.LedgerAuthority
 		metadata["engine_mode"] = flags.SharedEngine
 		metadata["candidate_strategy_mode"] = flags.CandidateStrategy
+		_, verifiedID, authority, verified := cutover.ActiveEvidence()
+		if verified && verifiedID != "" {
+			metadata["flag_snapshot_id"] = verifiedID
+			metadata["effective_authority"] = authority
+		}
+	}
+	base, err := json.Marshal(metadata)
+	if err == nil {
+		sum := sha256.Sum256(base)
+		metadata["content_digest"] = hex.EncodeToString(sum[:])
 	}
 	payload, err := json.Marshal(metadata)
 	if err != nil {

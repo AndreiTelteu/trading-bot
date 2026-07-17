@@ -47,18 +47,24 @@ func cloneStringMap(values map[string]string) map[string]string {
 
 func executeShortlistTradesShared(analyses []AnalyzedCoin, universe *UniverseSelectionResult, settings map[string]string, mode tradingcore.ExecutionMode) ([]AnalyzedCoin, int, error) {
 	now := time.Now().UTC()
-	snapshot, policy, err := buildRuntimeDecisionContext(analyses, universe, settings, mode, now)
+	captureMode := mode
+	if mode == tradingcore.ExecutionShadow {
+		captureMode = tradingcore.ExecutionPaper
+	}
+	snapshot, policy, err := buildRuntimeDecisionContext(analyses, universe, settings, captureMode, now)
 	if err != nil {
 		return analyses, 0, err
+	}
+	if mode == tradingcore.ExecutionShadow {
+		// The candidate receives only the immutable snapshot and policy. It has no
+		// broker, ledger, repository, broadcaster, settings store, or service
+		// handle, so an approved intent is an inert observed outcome.
+		return observeSharedCandidate(context.Background(), analyses, snapshot, policy)
 	}
 	feeBPS := int64(getSettingInt(settings, "paper_fee_bps", 10))
 	slippageBPS := int64(getSettingInt(settings, "paper_slippage_bps", 5))
 	broker := tradingcore.Broker(tradingcore.NewPaperBroker(tradingcore.NewFixedClock(now), tradingcore.RandomIDGenerator{Prefix: "paper-fill"}, tradingcore.CostModel{FeeBPS: feeBPS, SlippageBPS: slippageBPS, Version: "paper-cost-v1"}))
 	ledger := tradingcore.FillLedger(ledgerpkg.NewContractAdapter(database.DB))
-	if mode == tradingcore.ExecutionShadow {
-		broker = tradingcore.ShadowBroker{}
-		ledger = discardOutcomeLedger{}
-	}
 	observer := &runtimeDecisionObserver{}
 	runner := tradingcore.Orchestrator{Source: runtimeDecisionSource{snapshot, policy}, Strategy: tradingcore.LegacyRuleStrategy{}, Risk: tradingcore.PortfolioRiskEngine{}, Broker: broker, Ledger: ledger, Observer: observer}
 	result, err := runner.Run(context.Background())
@@ -103,14 +109,6 @@ func executeShortlistTradesShared(analyses []AnalyzedCoin, universe *UniverseSel
 				opened++
 			}
 		}
-		if mode == tradingcore.ExecutionShadow {
-			analyses[i].ShadowDecision = analyses[i].Decision
-			analyses[i].ShadowReason = analyses[i].DecisionReason
-			analyses[i].Decision = "shadow_only"
-			if analyses[i].DecisionReason == "" {
-				analyses[i].DecisionReason = "shadow_observation"
-			}
-		}
 		decision := analyses[i].Decision
 		reason := analyses[i].DecisionReason
 		autoTrade := getSettingBool(settings, "auto_trade_enabled", false)
@@ -128,6 +126,56 @@ func executeShortlistTradesShared(analyses []AnalyzedCoin, universe *UniverseSel
 		NotifyPositionChanged()
 	}
 	return analyses, opened, nil
+}
+
+func observeSharedCandidate(ctx context.Context, analyses []AnalyzedCoin, snapshot tradingcore.DecisionContext, policy tradingcore.RiskPolicy) ([]AnalyzedCoin, int, error) {
+	strategy, err := (tradingcore.LegacyRuleStrategy{}).Decide(ctx, snapshot)
+	if err != nil {
+		return analyses, 0, err
+	}
+	risk, err := (tradingcore.PortfolioRiskEngine{}).Evaluate(ctx, strategy.Intents(), snapshot.Portfolio(), policy)
+	if err != nil {
+		return analyses, 0, err
+	}
+	bySymbol := map[string][2]string{}
+	for _, value := range strategy.NoActions() {
+		bySymbol[strings.ToUpper(value.Instrument.VenueSymbol)] = [2]string{"skip", value.Code}
+	}
+	intents := map[string]tradingcore.OrderIntent{}
+	for _, value := range strategy.Intents().Intents() {
+		intents[value.ID.String()] = value
+	}
+	for _, value := range risk.Rejected() {
+		if intent, ok := intents[value.OrderID.String()]; ok {
+			bySymbol[strings.ToUpper(intent.Instrument.VenueSymbol)] = [2]string{"skip", string(value.Code)}
+		}
+	}
+	approved := map[string]tradingcore.OrderIntent{}
+	for _, intent := range risk.Approved().Intents() {
+		symbol := strings.ToUpper(intent.Instrument.VenueSymbol)
+		bySymbol[symbol] = [2]string{"buy", "approved_observation"}
+		approved[symbol] = intent
+	}
+	for i := range analyses {
+		decision := bySymbol[strings.ToUpper(analyses[i].Symbol)]
+		if decision[0] == "" {
+			decision = [2]string{"skip", "not_in_candidate_population"}
+		}
+		analyses[i].ShadowDecision, analyses[i].ShadowReason = decision[0], decision[1]
+		if intent, ok := approved[strings.ToUpper(analyses[i].Symbol)]; ok {
+			analyses[i].DecisionSide = string(intent.Side)
+			analyses[i].DecisionQuantity = intent.Quantity.Decimal().String()
+			if price, ok := intent.ReferencePrice.Get(); ok {
+				q, _ := strconv.ParseFloat(analyses[i].DecisionQuantity, 64)
+				p, _ := strconv.ParseFloat(price.Decimal().String(), 64)
+				analyses[i].DecisionNotional = strconv.FormatFloat(q*p, 'g', -1, 64)
+			}
+		}
+		analyses[i].Decision, analyses[i].DecisionReason = "shadow_only", "shadow_observation"
+		value := false
+		analyses[i].TradeExecuted = &value
+	}
+	return analyses, 0, nil
 }
 
 func buildRuntimeDecisionContext(analyses []AnalyzedCoin, universe *UniverseSelectionResult, settings map[string]string, mode tradingcore.ExecutionMode, now time.Time) (tradingcore.DecisionContext, tradingcore.RiskPolicy, error) {

@@ -85,7 +85,7 @@ func (a *AuthManager) RequireAuth(c *fiber.Ctx) error {
 	}
 	c.Locals("authenticated_actor", username)
 	if _, ok := a.governanceAdmins[username]; ok {
-		c.Locals("governance_capabilities", []string{"research", "approve", "transition", "rollback"})
+		c.Locals("governance_capabilities", []string{"research", "approve", "transition", "rollback", "operations:read", "operations:mutate", "operations:backup"})
 	} else {
 		c.Locals("governance_capabilities", []string{})
 	}

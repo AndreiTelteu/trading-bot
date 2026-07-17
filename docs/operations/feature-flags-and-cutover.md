@@ -1,6 +1,6 @@
 # Feature flags, staged rollout, and rollback
 
-The versioned environment envelope is authoritative over mutable settings:
+The effective authority is the integrity-verified persisted cutover state plus its exact immutable flag snapshot. Environment flags must match that snapshot at startup; they cannot independently grant authority:
 
 | Flag | Values | Safe default |
 | --- | --- | --- |
@@ -21,11 +21,11 @@ curl -b cookie.jar -H 'Content-Type: application/json' \
   http://127.0.0.1:5001/api/operations/parity/policies
 ```
 
-The legal state sequence is `schema_legacy → ledger_compare → shared_shadow → parity_accepted → new_paper → paper_observation → research_validation → limited_live`. No metric auto-advances it. An authenticated governance administrator posts a transition with a stable idempotency key, reason, and flag snapshot ID from status. The service derives prerequisites from persisted ledger, parity-policy, paper-fill, Stage 04/05/07, approval, and monitoring evidence; the optional `prerequisites` object is audit annotation and never grants a gate:
+The legal state sequence is `schema_legacy → ledger_compare → shared_shadow → parity_accepted → new_paper → paper_observation → research_validation → limited_live`. No metric auto-advances it. First POST the proposed complete envelope to `/api/operations/flags/snapshots`; preparing a content-addressed snapshot grants no authority. Record each completed bounded prerequisite at `/api/operations/cutover/evidence`. Then an authenticated operations/governance administrator posts the transition with the target snapshot, exact parity policy/population, Stage 07 context, and evidence IDs. Caller summaries and parity denominators are rejected:
 
 ```bash
 curl -b cookie.jar -H 'Content-Type: application/json' \
-  -d '{"idempotency_key":"cutover-ledger-compare-001","to_stage":"ledger_compare","reason":"approved change CHG-001","flag_snapshot_id":"DIGEST","prerequisites":{"schema_deployed":true}}' \
+  -d '{"idempotency_key":"cutover-ledger-compare-001","to_stage":"ledger_compare","reason":"approved change CHG-001","flag_snapshot_id":"DIGEST","evidence_ids":[]}' \
   http://127.0.0.1:5001/api/operations/cutover/transitions
 ```
 
