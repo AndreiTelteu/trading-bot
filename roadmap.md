@@ -131,14 +131,14 @@ Detailed plan: [`docs/reimplementation/stage-07-validation-governance.md`](docs/
 
 Detailed plan: [`docs/reimplementation/stage-08-migration-cutover.md`](docs/reimplementation/stage-08-migration-cutover.md)
 
-- [ ] Add feature flags and reversible migration sequencing
-- [ ] Run old/new decision paths in shadow comparison mode
-- [ ] Expose reconciliation, parity, coverage, and validation status operationally
-- [ ] Provide migration, rollback, and incident runbooks
-- [ ] Gate legacy removal on explicit acceptance criteria
+- [x] Add feature flags and reversible migration sequencing
+- [x] Run old/new decision paths in shadow comparison mode
+- [x] Expose reconciliation, parity, coverage, and validation status operationally
+- [x] Provide migration, rollback, and incident runbooks
+- [x] Gate legacy removal on explicit acceptance criteria
 - [ ] Verify backend, frontend, Compose, migrations, and restore path
 - [ ] Remove/deprecate legacy paths only after successful cutover
-- [ ] Complete independent review and one feedback pass
+- [x] Complete independent review and one feedback pass
 
 ## Final roadmap audit
 

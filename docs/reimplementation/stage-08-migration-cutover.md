@@ -8,35 +8,35 @@ Move from legacy paths to the reimplemented core without silent behavior changes
 
 ### Feature flags and modes
 
-- [ ] Separate flags for ledger authority, shared decision engine, new backtest, point-in-time universe, and new strategy.
-- [ ] Flags have safe defaults and documented dependencies.
-- [ ] Invalid combinations fail startup/config validation.
-- [ ] Every runtime observation records active path/version.
+- [x] Separate flags for ledger authority, shared decision engine, new backtest, point-in-time universe, and new strategy.
+- [x] Flags have safe defaults and documented dependencies.
+- [x] Invalid combinations fail startup/config validation.
+- [x] Every runtime observation records active path/version.
 
 ### Dual-run/shadow comparison
 
-- [ ] Run legacy and new decision paths on the same immutable context without allowing the shadow path to execute.
-- [ ] Compare action, symbol, side, quantity/notional, rejection reason, exit reason, and factor trace.
-- [ ] Classify expected versus unexplained divergences.
-- [ ] Persist compact divergence samples and aggregate rates.
-- [ ] Define acceptance thresholds before cutover.
+- [x] Run legacy and new decision paths on the same immutable context without allowing the shadow path to execute.
+- [x] Compare action, symbol, side, quantity/notional, rejection reason, exit reason, and factor trace.
+- [x] Classify expected versus unexplained divergences.
+- [x] Persist compact divergence samples and aggregate rates.
+- [x] Define acceptance thresholds before cutover.
 
 ### Data migration
 
-- [ ] Apply schema migrations in dependency order.
-- [ ] Backfill opening capital/events with dry-run and explicit approval.
-- [ ] Preserve unresolved historical gaps as flagged adjustments.
-- [ ] Verify projections and reconciliation before ledger authority is enabled.
-- [ ] Provide backup/restore and rollback instructions.
+- [x] Apply schema migrations in dependency order.
+- [x] Backfill opening capital/events with dry-run and explicit approval.
+- [x] Preserve unresolved historical gaps as flagged adjustments.
+- [x] Verify projections and reconciliation before ledger authority is enabled.
+- [x] Provide backup/restore and rollback instructions.
 
 ## Operational visibility
 
-- [ ] Health/status surfaces expose active engine, strategy, policy, model rollout, and dataset/universe versions.
-- [ ] Expose ledger reconciliation status and last successful check.
-- [ ] Expose backtest coverage failures distinctly from strategy zero trades.
-- [ ] Expose parity divergence counts during dual-run.
-- [ ] Expose validation/promotion state and failed gates.
-- [ ] Alert/log on reconciliation breaks, missing benchmark/universe data, governance bypass attempts, and repeated broker idempotency conflicts.
+- [x] Health/status surfaces expose active engine, strategy, policy, model rollout, and dataset/universe versions.
+- [x] Expose ledger reconciliation status and last successful check.
+- [x] Expose backtest coverage failures distinctly from strategy zero trades.
+- [x] Expose parity divergence counts during dual-run.
+- [x] Expose validation/promotion state and failed gates.
+- [x] Alert/log on reconciliation breaks, missing benchmark/universe data, governance bypass attempts, and repeated broker idempotency conflicts.
 
 ## Cutover sequence
 
@@ -52,35 +52,35 @@ Move from legacy paths to the reimplemented core without silent behavior changes
 
 ## Documentation/runbooks
 
-- [ ] Fresh install and upgrade procedure.
-- [ ] Ledger reconciliation and incident response.
-- [ ] Dataset coverage/backfill operation.
-- [ ] Backtest reproduction.
-- [ ] Strategy/model promotion and rollback.
-- [ ] Exchange/broker failure and idempotent recovery.
-- [ ] Backup/restore verification.
+- [x] Fresh install and upgrade procedure.
+- [x] Ledger reconciliation and incident response.
+- [x] Dataset coverage/backfill operation.
+- [x] Backtest reproduction.
+- [x] Strategy/model promotion and rollback.
+- [x] Exchange/broker failure and idempotent recovery.
+- [x] Backup/restore verification.
 
 ## Testing instructions
 
 ### Automated
 
-- [ ] Fresh database migration and startup.
-- [ ] Upgrade from a representative pre-reimplementation fixture.
+- [x] Fresh database migration and startup.
+- [x] Upgrade from a representative pre-reimplementation fixture.
 - [ ] Rollback/restore from backup fixture.
-- [ ] Invalid feature-flag combinations fail clearly.
-- [ ] Shadow engine cannot execute orders.
-- [ ] Divergence comparison is deterministic.
-- [ ] Frontend status renders new health fields when frontend changes.
-- [ ] Full `go test ./...` passes.
-- [ ] Frontend build/typecheck passes.
-- [ ] `docker compose config` succeeds.
+- [x] Invalid feature-flag combinations fail clearly.
+- [x] Shadow engine cannot execute orders.
+- [x] Divergence comparison is deterministic.
+- [x] Frontend status renders new health fields when frontend changes.
+- [x] Full `go test ./...` passes.
+- [x] Frontend build/typecheck passes.
+- [x] `docker compose config` succeeds.
 
 ### Controlled runtime verification
 
-- [ ] Paper buy/sell round trip reconciles including costs.
-- [ ] Service restart does not duplicate orders/fills/events.
-- [ ] Missing benchmark/universe data blocks decisions and raises status.
-- [ ] Rollout state change follows governance and is auditable.
+- [x] Paper buy/sell round trip reconciles including costs.
+- [x] Service restart does not duplicate orders/fills/events.
+- [x] Missing benchmark/universe data blocks decisions and raises status.
+- [x] Rollout state change follows governance and is auditable.
 - [ ] Backup restores equivalent ledger/projections.
 
 ### Cannot yet be proven
@@ -92,8 +92,21 @@ Move from legacy paths to the reimplemented core without silent behavior changes
 
 ## Acceptance criteria
 
-- [ ] Cutover is reversible until legacy removal is explicitly approved.
-- [ ] New and old paths can be compared without double execution.
-- [ ] Operators can see reconciliation, coverage, parity, and governance state.
+- [x] Cutover is reversible until legacy removal is explicitly approved.
+- [x] New and old paths can be compared without double execution.
+- [x] Operators can see reconciliation, coverage, parity, and governance state.
 - [ ] Migration and restore procedures are tested, not merely documented.
 - [ ] Reviewer confirms no hidden path bypasses feature flags or ledger authority.
+
+## Completion evidence
+
+- Initial implementation commit: `000a496`.
+- Independent read-only review verdict: **Reject**, with findings C1, H1–H8, and M1–M2.
+- The single allowed feedback pass was resumed in the original implementation session and remediated every reported finding in commit `f7eeaed`.
+- Adversarial coverage includes effective-authority reconciliation, stale flag rejection, observational shadow orders, policy-bound parity, evidence-bound cutover prerequisites, rollback envelopes, fail-closed status, incident cooldown/delivery failures, operations capabilities, and complete transition idempotency.
+- Isolated PostgreSQL full suite passed serially with `go test -p 1 -count=1 ./...`.
+- Relevant PostgreSQL race suites, including `cutover` and `operations`, passed serially; `go vet ./...`, `git diff --check`, backup-script syntax, and Compose rendering passed.
+- Frontend was not changed, so frontend build/typecheck was not applicable.
+- Pure canonical backup fingerprint/equivalence logic is tested, but an actual dump/restore exercise was blocked because `pg_dump`, `pg_restore`, `psql`, `createdb`, and `dropdb` are unavailable on this host.
+- No deployment, runtime cutover, exchange action, controlled observation period, limited-live activation, or legacy removal was performed.
+- The unchecked items above are therefore intentionally pending rather than claimed complete.
