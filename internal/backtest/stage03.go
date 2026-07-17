@@ -6,12 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
 
 	"trading-go/internal/database"
 	"trading-go/internal/services"
+	"trading-go/internal/tradingcore"
 )
 
 const (
@@ -52,6 +54,12 @@ func defaultStage03Policies(config *BacktestConfig) {
 	if config.CoveragePolicy.ExecutionInterval <= 0 && config.ExecutionTimeframeMins > 0 {
 		config.CoveragePolicy.ExecutionInterval = time.Duration(config.ExecutionTimeframeMins) * time.Minute
 	}
+	if config.CoveragePolicy.ReplayInterval <= 0 {
+		config.CoveragePolicy.ReplayInterval = config.UniversePolicy.RebalanceInterval
+		if config.CoveragePolicy.ReplayInterval <= 0 {
+			config.CoveragePolicy.ReplayInterval = config.CoveragePolicy.DecisionInterval
+		}
+	}
 	if config.ExecutionPolicy.Version == "" {
 		config.ExecutionPolicy.Version = "backtest-execution-v1"
 	}
@@ -73,6 +81,9 @@ func defaultStage03Policies(config *BacktestConfig) {
 }
 
 func validateRealismPolicy(config BacktestConfig) error {
+	if config.FeeBps != math.Trunc(config.FeeBps) || config.SlippageBps != math.Trunc(config.SlippageBps) {
+		return &UnsupportedRealismError{Policy: "fractional_basis_points", Reason: "fee and slippage basis points must be integral"}
+	}
 	switch config.ExecutionPolicy.Timing {
 	case ExecutionNextExecutable:
 	case ExecutionMarketOnClose:
@@ -131,36 +142,75 @@ func validateCoverage(config BacktestConfig, decision map[string][]services.OHLC
 		}
 	}
 	if config.UniverseMode == UniverseDynamicReplay {
-		inRange := make([]replaySnapshotEntry, 0, len(replay))
-		for _, snapshot := range replay {
-			if !config.Start.IsZero() && snapshot.Timestamp.Before(config.Start) || !config.End.IsZero() && snapshot.Timestamp.After(config.End) {
-				continue
-			}
-			inRange = append(inRange, snapshot)
-		}
-		if len(inRange) == 0 {
+		if len(replay) == 0 {
 			report.add(CoverageDiagnostic{Dataset: "universe", Status: "failed", Reason: CoverageReplayEmpty})
 		} else {
 			minimum := config.CoveragePolicy.RequiredReplayMembers
 			if minimum <= 0 {
 				minimum = 1
 			}
-			for _, snapshot := range inRange {
+			previous := time.Time{}
+			effective := 0
+			for i, snapshot := range replay {
+				if i > 0 && snapshot.Timestamp.Equal(previous) {
+					report.add(CoverageDiagnostic{Dataset: "universe", Status: "failed", Reason: CoverageReplayDuplicate, First: canonicalTime(snapshot.Timestamp)})
+				}
+				if i > 0 && snapshot.Timestamp.Before(previous) {
+					report.add(CoverageDiagnostic{Dataset: "universe", Status: "failed", Reason: CoverageNonMonotonic, First: canonicalTime(snapshot.Timestamp)})
+				}
+				if !snapshot.Timestamp.After(config.Start) {
+					effective++
+				}
 				if len(snapshot.Members) < minimum {
 					report.add(CoverageDiagnostic{Dataset: "universe", Status: "failed", Reason: CoverageReplayMembersEmpty, Count: len(snapshot.Members), First: canonicalTime(snapshot.Timestamp)})
 				}
+				seen := map[string]bool{}
+				for _, member := range snapshot.Members {
+					symbol := strings.ToUpper(member.Symbol)
+					if seen[symbol] {
+						report.add(CoverageDiagnostic{Dataset: "universe", Symbol: symbol, Status: "failed", Reason: CoverageReplayMemberDup, First: canonicalTime(snapshot.Timestamp)})
+					}
+					seen[symbol] = true
+				}
+				if i > 0 && config.CoveragePolicy.ReplayInterval > 0 {
+					gaps := int(snapshot.Timestamp.Sub(previous)/config.CoveragePolicy.ReplayInterval) - 1
+					if gaps > config.CoveragePolicy.MaxReplayGapIntervals {
+						report.add(CoverageDiagnostic{Dataset: "universe", Status: "failed", Reason: CoverageReplayGap, Gaps: gaps, First: canonicalTime(previous), Last: canonicalTime(snapshot.Timestamp)})
+					}
+				}
+				previous = snapshot.Timestamp
+			}
+			if effective == 0 {
+				report.add(CoverageDiagnostic{Dataset: "universe", Status: "failed", Reason: CoverageReplayNoEffective, Count: effective})
 			}
 			if report.Passed || !containsCoverageDataset(report.Diagnostics, "universe") {
-				report.Diagnostics = append(report.Diagnostics, CoverageDiagnostic{Dataset: "universe", Status: "ok", Count: len(inRange), First: canonicalTime(inRange[0].Timestamp), Last: canonicalTime(inRange[len(inRange)-1].Timestamp)})
+				report.Diagnostics = append(report.Diagnostics, CoverageDiagnostic{Dataset: "universe", Status: "ok", Count: len(replay), First: canonicalTime(replay[0].Timestamp), Last: canonicalTime(replay[len(replay)-1].Timestamp)})
 			}
 		}
 	}
 	for _, feature := range config.CoveragePolicy.RequiredModelFeatures {
-		values := config.RequiredModelFeatures[feature]
-		if len(values) == 0 {
+		var found *FeatureSeries
+		for i := range config.FeatureSeries {
+			if config.FeatureSeries[i].Name == feature {
+				found = &config.FeatureSeries[i]
+				break
+			}
+		}
+		if found == nil || len(found.Observations) == 0 || found.Version == "" || found.Provenance == "" || found.Interval <= 0 {
 			report.add(CoverageDiagnostic{Dataset: "feature", Symbol: feature, Status: "failed", Reason: CoverageFeatureMissing})
 		} else {
-			report.Diagnostics = append(report.Diagnostics, CoverageDiagnostic{Dataset: "feature", Symbol: feature, Status: "ok", Count: len(values)})
+			bars := make([]services.OHLCV, len(found.Observations))
+			for i, o := range found.Observations {
+				if o.AvailableAt.Before(o.EventAt) {
+					report.add(CoverageDiagnostic{Dataset: "feature", Symbol: feature, Status: "failed", Reason: CoverageFeatureMissing, First: canonicalTime(o.AvailableAt)})
+				}
+				bars[i] = services.OHLCV{OpenTime: o.AvailableAt.UnixMilli(), CloseTime: o.AvailableAt.UnixMilli() + 1}
+			}
+			featureStart := config.Start
+			if !featureStart.IsZero() {
+				featureStart = featureStart.Add(time.Duration(computeSignalLookback(config)) * found.Interval)
+			}
+			report = validateBarCoverage(report, "feature", feature, bars, found.Interval, featureStart, config.End, config.CoveragePolicy)
 		}
 	}
 	report.Reasons = uniqueCoverageReasons(report.Reasons)
@@ -188,6 +238,16 @@ func validateBarCoverage(report CoverageReport, dataset, symbol string, bars []s
 	seen := map[int64]struct{}{}
 	previous := int64(0)
 	for i, bar := range bars {
+		width := time.Duration(bar.CloseTime-bar.OpenTime) * time.Millisecond
+		validWidth := width > 0
+		if interval > 0 && dataset != "feature" {
+			// Binance klines use an inclusive close timestamp (interval - 1ms),
+			// while synthetic/internal bars commonly use the exclusive boundary.
+			validWidth = width == interval || interval >= time.Millisecond && width == interval-time.Millisecond
+		}
+		if !validWidth {
+			d.Status, d.Reason = "failed", CoverageInvalidBarWidth
+		}
 		if _, exists := seen[bar.OpenTime]; exists {
 			d.Status, d.Reason = "failed", CoverageDuplicateTimestamp
 		}
@@ -206,7 +266,10 @@ func validateBarCoverage(report CoverageReport, dataset, symbol string, bars []s
 	if d.Status == "ok" && d.Gaps > policy.MaxMissingIntervals {
 		d.Status, d.Reason = "failed", CoverageInternalGap
 	}
-	if d.Status == "ok" && policy.RequireRequestedBounds && (!start.IsZero() && time.UnixMilli(bars[0].OpenTime).After(start) || !end.IsZero() && time.UnixMilli(bars[len(bars)-1].CloseTime).Before(end)) {
+	startMissing := !start.IsZero() && time.UnixMilli(bars[0].OpenTime).After(start)
+	lastClose := time.UnixMilli(bars[len(bars)-1].CloseTime)
+	endMissing := !end.IsZero() && lastClose.Before(end) && lastClose.Add(time.Millisecond).Before(end)
+	if d.Status == "ok" && policy.RequireRequestedBounds && (startMissing || endMissing) {
 		d.Status, d.Reason = "failed", CoverageBounds
 	}
 	if d.Status == "ok" && d.Gaps > 0 {
@@ -237,12 +300,9 @@ func nextExecutable(config BacktestConfig, state *symbolState, symbol string, in
 	if state == nil {
 		return services.OHLCV{}, time.Time{}, false
 	}
-	idx := sort.Search(len(state.series), func(i int) bool { return state.series[i].OpenTime >= informationAt.UnixMilli() })
+	idx := sort.Search(len(state.series), func(i int) bool { return state.series[i].OpenTime > informationAt.UnixMilli() })
 	if idx < len(state.series) {
 		at := time.UnixMilli(state.series[idx].OpenTime)
-		if !at.After(informationAt) {
-			at = informationAt.Add(3 * time.Nanosecond)
-		}
 		return state.series[idx], at, true
 	}
 	return services.OHLCV{}, time.Time{}, false
@@ -262,7 +322,8 @@ func isLastLiquidationOpportunity(config BacktestConfig, state *symbolState, sym
 		_, laterFill, later := nextExecutable(config, state, symbol, time.UnixMilli(state.series[nextDecision].CloseTime))
 		return !later || !config.End.IsZero() && laterFill.After(config.End)
 	}
-	return state.currentIndex == len(state.series)-2
+	_, laterAt, later := nextExecutable(config, state, symbol, time.UnixMilli(state.series[state.currentIndex+1].CloseTime))
+	return !later || !config.End.IsZero() && laterAt.After(config.End)
 }
 
 func datasetManifestHash(config BacktestConfig, decision map[string][]services.OHLCV, replay []replaySnapshotEntry) string {
@@ -270,6 +331,7 @@ func datasetManifestHash(config BacktestConfig, decision map[string][]services.O
 		Kind, Symbol string
 		Bars         []services.OHLCV
 		Snapshots    []ReplaySnapshot
+		Features     []FeatureSeries
 	}
 	items := make([]dataset, 0, len(decision)+2)
 	for symbol, bars := range decision {
@@ -282,16 +344,12 @@ func datasetManifestHash(config BacktestConfig, decision map[string][]services.O
 		items = append(items, dataset{Kind: "benchmark", Symbol: config.BenchmarkSymbol, Bars: config.BenchmarkSeries})
 	}
 	if len(replay) > 0 {
-		snapshots := make([]ReplaySnapshot, 0, len(replay))
-		for _, entry := range replay {
-			members := make([]string, 0, len(entry.Members))
-			for _, member := range entry.Members {
-				members = append(members, member.Symbol)
-			}
-			sort.Strings(members)
-			snapshots = append(snapshots, ReplaySnapshot{Timestamp: entry.Timestamp.UTC(), Members: members})
-		}
-		items = append(items, dataset{Kind: "universe", Snapshots: snapshots})
+		items = append(items, dataset{Kind: "universe", Snapshots: canonicalReplaySnapshots(replay)})
+	}
+	if len(config.FeatureSeries) > 0 {
+		features := append([]FeatureSeries(nil), config.FeatureSeries...)
+		sort.Slice(features, func(i, j int) bool { return features[i].Name < features[j].Name })
+		items = append(items, dataset{Kind: "features", Features: features})
 	}
 	sort.Slice(items, func(i, j int) bool {
 		if items[i].Kind != items[j].Kind {
@@ -306,11 +364,11 @@ func datasetManifestHash(config BacktestConfig, decision map[string][]services.O
 
 func buildManifest(config BacktestConfig, coverage CoverageReport, classification RunClassification, hash string) RunManifest {
 	limitations := []string{}
-	if len(config.ExecutionPolicy.Constraints) == 0 {
-		limitations = append(limitations, "symbol_constraints_unavailable")
+	if !config.ConstraintsAvailable {
+		limitations = append(limitations, "symbol_constraints_metadata_unavailable_using_explicit_safe_fallback")
 	}
 	limitations = append(limitations, "ohlcv_full_fill_no_order_book_model")
-	return RunManifest{SchemaVersion: ManifestSchemaVersion, Classification: classification, CodeRevision: config.CodeRevision, ConfigVersion: config.ConfigVersion, StrategyVersion: config.StrategyVersion, PolicyVersion: backtestPolicyVersion(config), CostVersion: config.ExecutionPolicy.CostVersion, DatasetManifestHash: hash, UniverseMode: config.UniverseMode, BenchmarkSymbol: config.BenchmarkSymbol, Seed: config.Seed, FeeBPS: config.FeeBps, SlippageBPS: config.SlippageBps, CoveragePolicy: config.CoveragePolicy, ExecutionPolicy: config.ExecutionPolicy, Start: canonicalTime(config.Start), End: canonicalTime(config.End), Coverage: coverage, Limitations: limitations, Artifacts: ArtifactRefs{SchemaVersion: ArtifactSchemaVersion, Manifest: "manifest.json", Decisions: "decisions.json", Orders: "orders.json", Fills: "fills.json", Trades: "trades.json", Ledger: "ledger.json", Equity: "equity.json", Metrics: "metrics.json"}}
+	return RunManifest{SchemaVersion: ManifestSchemaVersion, Classification: classification, CodeRevision: config.CodeRevision, ConfigVersion: config.ConfigVersion, StrategyVersion: config.StrategyVersion, PolicyVersion: backtestPolicyVersion(config), CostVersion: config.ExecutionPolicy.CostVersion, DatasetManifestHash: hash, UniverseMode: config.UniverseMode, BenchmarkSymbol: config.BenchmarkSymbol, Seed: config.Seed, FeeBPS: config.FeeBps, SlippageBPS: config.SlippageBps, CoveragePolicy: config.CoveragePolicy, ExecutionPolicy: config.ExecutionPolicy, Start: canonicalTime(config.Start), End: canonicalTime(config.End), Coverage: coverage, Limitations: limitations, Artifacts: ArtifactRefs{SchemaVersion: ArtifactSchemaVersion, Manifest: "manifest.json", Decisions: "decisions.json", Orders: "orders.json", Fills: "fills.json", Trades: "trades.json", Ledger: "ledger.json", Equity: "equity.json", Metrics: "metrics.json", Exposure: "exposure.json"}}
 }
 
 func MarshalArtifactBytes(result BacktestResult) (ArtifactBytes, error) {
@@ -320,10 +378,12 @@ func MarshalArtifactBytes(result BacktestResult) (ArtifactBytes, error) {
 	if result.Artifacts.SchemaVersion != ArtifactSchemaVersion {
 		return ArtifactBytes{}, fmt.Errorf("unsupported artifact schema %q", result.Artifacts.SchemaVersion)
 	}
-	encode := func(value any) ([]byte, error) { return json.Marshal(value) }
+	encode := func(value any) ([]byte, error) {
+		return json.Marshal(ArtifactEnvelope{SchemaVersion: ArtifactSchemaVersion, Payload: value})
+	}
 	var output ArtifactBytes
 	var err error
-	if output.Manifest, err = encode(result.Manifest); err != nil {
+	if output.Manifest, err = json.Marshal(result.Manifest); err != nil {
 		return ArtifactBytes{}, err
 	}
 	if output.Decisions, err = encode(result.Artifacts.Decisions); err != nil {
@@ -357,28 +417,89 @@ func fixtureReplaySnapshots(values []ReplaySnapshot) []replaySnapshotEntry {
 	result := make([]replaySnapshotEntry, 0, len(values))
 	for _, value := range values {
 		members := make([]database.UniverseMember, 0, len(value.Members))
-		for _, symbol := range value.Members {
-			members = append(members, database.UniverseMember{Symbol: strings.ToUpper(symbol)})
+		for _, member := range value.Members {
+			rankScore := member.RankScore
+			if rankScore == 0 && member.Rank > 0 {
+				rankScore = -float64(member.Rank)
+			}
+			var rejection *string
+			if member.RejectionReason != "" {
+				v := member.RejectionReason
+				rejection = &v
+			}
+			members = append(members, database.UniverseMember{Symbol: strings.ToUpper(member.Symbol), Stage: member.Stage, ListingAgeDays: member.ListingAgeDays, MedianDailyQuoteVolume: member.MedianDailyQuoteVolume, MedianIntradayQuoteVolume: member.MedianIntradayQuoteVolume, RankComponentsJSON: member.RankComponentsJSON, RejectionReason: rejection, RankScore: rankScore, Shortlisted: member.Shortlisted, LastPrice: member.LastPrice, Change24h: member.Change24h, QuoteVolume24h: member.QuoteVolume24h, GapRatio: member.GapRatio, VolatilityRatio: member.VolatilityRatio, Return1D: member.Return1D, Return3D: member.Return3D, Return7D: member.Return7D, Return30D: member.Return30D, RelativeStrength: member.RelativeStrength, TrendQuality: member.TrendQuality, BreakoutProximity: member.BreakoutProximity, VolumeAcceleration: member.VolumeAcceleration, OverextensionPenalty: member.OverextensionPenalty})
 		}
-		result = append(result, replaySnapshotEntry{Timestamp: value.Timestamp.UTC(), Members: members})
+		result = append(result, replaySnapshotEntry{Timestamp: value.Timestamp.UTC(), RegimeState: value.RegimeState, BreadthRatio: value.BreadthRatio, Members: members})
 	}
-	sort.SliceStable(result, func(i, j int) bool { return result[i].Timestamp.Before(result[j].Timestamp) })
 	return result
 }
 
-func classifySharedRun(ledger *backtestMemoryLedger, shortlistSize int) RunClassification {
-	if len(ledger.events) > 0 {
+func canonicalReplaySnapshots(values []replaySnapshotEntry) []ReplaySnapshot {
+	result := make([]ReplaySnapshot, 0, len(values))
+	for _, value := range values {
+		members := append([]database.UniverseMember(nil), value.Members...)
+		sort.SliceStable(members, func(i, j int) bool {
+			if members[i].RankScore != members[j].RankScore {
+				return members[i].RankScore > members[j].RankScore
+			}
+			return members[i].Symbol < members[j].Symbol
+		})
+		public := make([]ReplayMember, 0, len(members))
+		for i, m := range members {
+			rejection := ""
+			if m.RejectionReason != nil {
+				rejection = *m.RejectionReason
+			}
+			public = append(public, ReplayMember{Symbol: m.Symbol, Rank: i + 1, Shortlisted: m.Shortlisted, Stage: m.Stage, ListingAgeDays: m.ListingAgeDays, MedianDailyQuoteVolume: m.MedianDailyQuoteVolume, MedianIntradayQuoteVolume: m.MedianIntradayQuoteVolume, RankComponentsJSON: m.RankComponentsJSON, RejectionReason: rejection, LastPrice: m.LastPrice, Change24h: m.Change24h, QuoteVolume24h: m.QuoteVolume24h, GapRatio: m.GapRatio, VolatilityRatio: m.VolatilityRatio, Return1D: m.Return1D, Return3D: m.Return3D, Return7D: m.Return7D, Return30D: m.Return30D, RelativeStrength: m.RelativeStrength, TrendQuality: m.TrendQuality, BreakoutProximity: m.BreakoutProximity, VolumeAcceleration: m.VolumeAcceleration, OverextensionPenalty: m.OverextensionPenalty, RankScore: m.RankScore})
+		}
+		result = append(result, ReplaySnapshot{Timestamp: value.Timestamp.UTC(), RegimeState: value.RegimeState, BreadthRatio: value.BreadthRatio, Members: public})
+	}
+	return result
+}
+
+func classifySharedRun(ledger *backtestMemoryLedger) RunClassification {
+	if ledger.evidence.Fills > 0 {
 		return RunSuccessfulExecution
 	}
-	if shortlistSize == 0 {
+	if ledger.evidence.CandidateEvaluations == 0 || ledger.evidence.PreOrchestratorGates > 0 || ledger.evidence.RiskRejections > 0 || ledger.evidence.BrokerRejections > 0 {
 		return RunGatingZeroTrades
 	}
 	for _, observation := range ledger.observations {
-		if observation.Stage == "risk" || observation.Stage == "broker" || observation.Stage == "strategy" && isGatingCode(observation.Code) {
+		if observation.Stage == "strategy" && isGatingCode(observation.Code) {
 			return RunGatingZeroTrades
 		}
 	}
 	return RunStrategyZeroTrades
+}
+
+func featuresAvailableAsOf(config BacktestConfig, at time.Time) bool {
+	for _, name := range config.CoveragePolicy.RequiredModelFeatures {
+		found := false
+		for _, series := range config.FeatureSeries {
+			if series.Name == name && len(series.AsOf(at)) > 0 {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+func UnmarshalArtifact(data []byte, target any) error {
+	var envelope struct {
+		SchemaVersion string          `json:"schema_version"`
+		Payload       json.RawMessage `json:"payload"`
+	}
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		return err
+	}
+	if envelope.SchemaVersion != ArtifactSchemaVersion {
+		return fmt.Errorf("unsupported artifact schema %q", envelope.SchemaVersion)
+	}
+	return json.Unmarshal(envelope.Payload, target)
 }
 
 func isGatingCode(code string) bool {
@@ -406,9 +527,31 @@ func UnmarshalRunManifest(data []byte) (RunManifest, error) {
 
 func buildBacktestArtifacts(ledger *backtestMemoryLedger, positions map[string]*positionState, states map[string]*symbolState, timeline []int64) BacktestArtifacts {
 	artifacts := BacktestArtifacts{SchemaVersion: ArtifactSchemaVersion, Decisions: []DecisionArtifact{}, Orders: []OrderArtifact{}, Fills: []FillArtifact{}, Ledger: []LedgerArtifact{}, Exposure: []ExposureArtifact{}}
+	for _, record := range ledger.runRecords {
+		run := record.Result
+		intents := map[string]tradingcore.OrderIntent{}
+		for _, noAction := range run.Strategy.NoActions() {
+			artifacts.Decisions = append(artifacts.Decisions, DecisionArtifact{SignalAt: canonicalTime(record.SignalAt), DecisionAt: canonicalTime(record.DecisionAt), Symbol: noAction.Instrument.VenueSymbol, Stage: "strategy", Code: noAction.Code, Reason: noAction.Reason})
+		}
+		for _, intent := range run.Strategy.Intents().Intents() {
+			intents[intent.ID.String()] = intent
+			artifacts.Decisions = append(artifacts.Decisions, decisionFromIntent(intent, "strategy", "intent_generated"))
+			artifacts.Orders = append(artifacts.Orders, OrderArtifact{SignalAt: canonicalTime(intent.SignalAt), DecisionAt: canonicalTime(intent.DecisionAt), OrderAt: canonicalTime(intent.CreatedAt), Symbol: intent.Instrument.VenueSymbol, Side: string(intent.Side), Quantity: intent.Quantity.Decimal().String(), Reason: intent.Reason})
+		}
+		for _, rejection := range run.Risk.Rejected() {
+			intent := intents[rejection.OrderID.String()]
+			artifacts.Decisions = append(artifacts.Decisions, decisionFromIntent(intent, "risk", string(rejection.Code)))
+		}
+		for _, rejection := range run.Broker.Rejected() {
+			intent := intents[rejection.OrderID.String()]
+			artifacts.Decisions = append(artifacts.Decisions, decisionFromIntent(intent, "broker", string(rejection.Code)))
+		}
+		for _, accepted := range run.Broker.Accepted() {
+			intent := intents[accepted.OrderID.String()]
+			artifacts.Decisions = append(artifacts.Decisions, decisionFromIntent(intent, "broker", string(accepted.Status)))
+		}
+	}
 	for _, event := range ledger.events {
-		artifacts.Decisions = append(artifacts.Decisions, DecisionArtifact{SignalAt: canonicalTime(event.SignalAt), DecisionAt: canonicalTime(event.DecisionAt), Symbol: event.Symbol, Code: event.Side})
-		artifacts.Orders = append(artifacts.Orders, OrderArtifact{SignalAt: canonicalTime(event.SignalAt), DecisionAt: canonicalTime(event.DecisionAt), OrderAt: canonicalTime(event.OrderAt), Symbol: event.Symbol, Side: event.Side, Quantity: event.Quantity, Reason: event.Reason})
 		artifacts.Fills = append(artifacts.Fills, FillArtifact{SignalAt: canonicalTime(event.SignalAt), DecisionAt: canonicalTime(event.DecisionAt), OrderAt: canonicalTime(event.OrderAt), FillAt: canonicalTime(event.At), Symbol: event.Symbol, Side: event.Side, Quantity: event.Quantity, Price: event.Price, Fee: event.Fee, CostVersion: event.CostVersion})
 		artifacts.Ledger = append(artifacts.Ledger, LedgerArtifact{At: canonicalTime(event.At), Symbol: event.Symbol, Side: event.Side, Quantity: event.Quantity, Price: event.Price, Fee: event.Fee, CashAfter: event.CashAfter})
 	}
@@ -438,6 +581,10 @@ func buildBacktestArtifacts(ledger *backtestMemoryLedger, positions map[string]*
 		artifacts.Exposure = append(artifacts.Exposure, ExposureArtifact{At: canonicalTime(at), Symbol: symbol, Quantity: decimalString(position.Size), MarkPrice: decimalString(mark), Value: decimalString(position.Size * mark), Status: "marked_unliquidated_no_executable_bar"})
 	}
 	return artifacts
+}
+
+func decisionFromIntent(intent tradingcore.OrderIntent, stage, code string) DecisionArtifact {
+	return DecisionArtifact{SignalAt: canonicalTime(intent.SignalAt), DecisionAt: canonicalTime(intent.DecisionAt), Symbol: intent.Instrument.VenueSymbol, Stage: stage, Code: code, Side: string(intent.Side), Quantity: intent.Quantity.Decimal().String(), Reason: intent.Reason, PolicyVersion: intent.Versions.Policy}
 }
 
 func canonicalTime(value time.Time) string {

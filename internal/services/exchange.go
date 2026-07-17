@@ -128,12 +128,19 @@ type ExchangeInfo struct {
 }
 
 type ExchangeSymbolInfo struct {
-	Symbol               string   `json:"symbol"`
-	Status               string   `json:"status"`
-	BaseAsset            string   `json:"baseAsset"`
-	QuoteAsset           string   `json:"quoteAsset"`
-	IsSpotTradingAllowed bool     `json:"isSpotTradingAllowed"`
-	Permissions          []string `json:"permissions"`
+	Symbol               string                 `json:"symbol"`
+	Status               string                 `json:"status"`
+	BaseAsset            string                 `json:"baseAsset"`
+	QuoteAsset           string                 `json:"quoteAsset"`
+	IsSpotTradingAllowed bool                   `json:"isSpotTradingAllowed"`
+	Permissions          []string               `json:"permissions"`
+	Filters              []ExchangeSymbolFilter `json:"filters"`
+}
+type ExchangeSymbolFilter struct {
+	FilterType string `json:"filterType"`
+	MinQty     string `json:"minQty"`
+	StepSize   string `json:"stepSize"`
+	TickSize   string `json:"tickSize"`
 }
 
 func NewExchangeService(apiKey, apiSecret string) *ExchangeService {

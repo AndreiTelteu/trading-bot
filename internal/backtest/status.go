@@ -19,13 +19,15 @@ type BacktestJobStrategySummary struct {
 }
 
 type BacktestJobValidationSummary struct {
-	Passed           bool     `json:"passed"`
-	Windows          int      `json:"windows"`
-	AcceptedMetrics  []string `json:"accepted_metrics,omitempty"`
-	RecommendedStage string   `json:"recommended_stage,omitempty"`
+	Passed           bool                      `json:"passed"`
+	Windows          int                       `json:"windows"`
+	AcceptedMetrics  []string                  `json:"accepted_metrics,omitempty"`
+	RecommendedStage string                    `json:"recommended_stage,omitempty"`
+	FailedWindows    []ValidationWindowFailure `json:"failed_windows,omitempty"`
 }
 
 type BacktestJobSummary struct {
+	FailedLane    string                       `json:"failed_lane,omitempty"`
 	Symbols       []string                     `json:"symbols,omitempty"`
 	BacktestMode  BacktestMode                 `json:"backtest_mode,omitempty"`
 	ModelVersion  string                       `json:"model_version,omitempty"`
@@ -146,6 +148,7 @@ func BuildBacktestJobSummary(summary BacktestRunSummary) BacktestJobSummary {
 	sort.Strings(symbols)
 
 	return BacktestJobSummary{
+		FailedLane:    summary.FailedLane,
 		Symbols:       symbols,
 		BacktestMode:  summary.BacktestMode,
 		ModelVersion:  summary.ModelVersion,
@@ -177,6 +180,7 @@ func BuildBacktestJobSummary(summary BacktestRunSummary) BacktestJobSummary {
 			Windows:          summary.Validation.Windows,
 			AcceptedMetrics:  summary.Validation.AcceptedMetrics,
 			RecommendedStage: summary.Validation.PromotionReadiness.RecommendedStage,
+			FailedWindows:    summary.Validation.FailedWindows,
 		},
 	}
 }

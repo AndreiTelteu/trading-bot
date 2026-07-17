@@ -17,6 +17,7 @@ type MetricCI struct {
 }
 
 type ValidationSummary struct {
+	FailedWindows                   []ValidationWindowFailure `json:"failed_windows,omitempty"`
 	BacktestMode                    BacktestMode              `json:"backtest_mode"`
 	ModelVersion                    string                    `json:"model_version,omitempty"`
 	UniverseMode                    UniverseMode              `json:"universe_mode"`
@@ -56,6 +57,16 @@ type ValidationSummary struct {
 	TrainingPassed                  bool                      `json:"training_passed"`
 	Passed                          bool                      `json:"passed"`
 }
+type ValidationWindowFailure struct {
+	Window         WalkForwardWindow `json:"window"`
+	Lane           string            `json:"lane"`
+	Reason         string            `json:"reason"`
+	Classification RunClassification `json:"classification"`
+	Coverage       CoverageReport    `json:"coverage"`
+}
+type ValidationCoverageError struct{ Summary ValidationSummary }
+
+func (err *ValidationCoverageError) Error() string { return "validation coverage failed" }
 
 type ValidationWindowSummary struct {
 	Window            WalkForwardWindow   `json:"window"`
@@ -97,19 +108,23 @@ type validationCISet struct {
 }
 
 func RunValidation(config BacktestConfig, series map[string][]services.OHLCV, trainMonths int, testMonths int, iterations int) (ValidationSummary, error) {
+	if config.EngineMode != EngineShared {
+		return ValidationSummary{}, fmt.Errorf("validation requires shared backtest engine")
+	}
 	windows := walkForwardSplit(config.Start, config.End, trainMonths, testMonths)
 	if len(windows) == 0 {
 		return ValidationSummary{}, fmt.Errorf("no validation windows")
 	}
 
 	type windowResult struct {
-		index           int
-		trainBaseline   BacktestResult
-		trainVol        BacktestResult
-		testBaseline    BacktestResult
-		testVol         BacktestResult
-		window          WalkForwardWindow
-		ok              bool
+		index         int
+		trainBaseline BacktestResult
+		trainVol      BacktestResult
+		testBaseline  BacktestResult
+		testVol       BacktestResult
+		window        WalkForwardWindow
+		ok            bool
+		failures      []ValidationWindowFailure
 	}
 
 	results := make([]windowResult, len(windows))
@@ -137,14 +152,17 @@ func RunValidation(config BacktestConfig, series map[string][]services.OHLCV, tr
 				trainSeries := filterSeriesByTime(series, window.TrainStart, window.TrainEnd)
 				testSeries := filterSeriesByTime(series, window.TestStart, window.TestEnd)
 				if len(trainSeries) == 0 || len(testSeries) == 0 {
+					results[idx] = windowResult{index: idx, window: window, failures: []ValidationWindowFailure{{Window: window, Lane: "window", Reason: "empty window series", Classification: RunCoverageFailed}}}
 					continue
 				}
 				trainBaseline, trainVol, err := runValidationPair(config, trainSeries, window.TrainStart, window.TrainEnd)
 				if err != nil {
+					results[idx] = windowResult{index: idx, window: window, failures: validationFailures(window, "train", trainBaseline, trainVol, err)}
 					continue
 				}
 				testBaseline, testVol, err := runValidationPair(config, testSeries, window.TestStart, window.TestEnd)
 				if err != nil {
+					results[idx] = windowResult{index: idx, window: window, failures: validationFailures(window, "test", testBaseline, testVol, err)}
 					continue
 				}
 				results[idx] = windowResult{
@@ -168,9 +186,11 @@ func RunValidation(config BacktestConfig, series map[string][]services.OHLCV, tr
 	var baselineTrades []Trade
 	var volTrades []Trade
 	windowSummaries := make([]ValidationWindowSummary, 0, len(windows))
+	failedWindows := []ValidationWindowFailure{}
 
 	for _, res := range results {
 		if !res.ok {
+			failedWindows = append(failedWindows, res.failures...)
 			continue
 		}
 		trainBaselineMetrics = append(trainBaselineMetrics, res.trainBaseline.Metrics)
@@ -190,6 +210,10 @@ func RunValidation(config BacktestConfig, series map[string][]services.OHLCV, tr
 		})
 	}
 
+	if len(failedWindows) > 0 {
+		summary := ValidationSummary{BacktestMode: config.BacktestMode, UniverseMode: config.UniverseMode, Windows: len(windows), FailedWindows: failedWindows, Passed: false}
+		return summary, &ValidationCoverageError{Summary: summary}
+	}
 	if len(testBaselineMetrics) == 0 || len(testVolMetrics) == 0 {
 		return ValidationSummary{}, fmt.Errorf("no successful validation windows")
 	}
@@ -248,6 +272,20 @@ func RunValidation(config BacktestConfig, series map[string][]services.OHLCV, tr
 		TrainingPassed:                  trainingPassed,
 		Passed:                          trainingPassed && testPassed,
 	}, nil
+}
+
+func validationFailures(window WalkForwardWindow, prefix string, baseline, vol BacktestResult, err error) []ValidationWindowFailure {
+	result := []ValidationWindowFailure{}
+	if baseline.Classification == RunCoverageFailed {
+		result = append(result, ValidationWindowFailure{Window: window, Lane: prefix + "_baseline", Reason: err.Error(), Classification: baseline.Classification, Coverage: baseline.Coverage})
+	}
+	if vol.Classification == RunCoverageFailed {
+		result = append(result, ValidationWindowFailure{Window: window, Lane: prefix + "_vol_sizing", Reason: err.Error(), Classification: vol.Classification, Coverage: vol.Coverage})
+	}
+	if len(result) == 0 {
+		result = append(result, ValidationWindowFailure{Window: window, Lane: prefix, Reason: err.Error()})
+	}
+	return result
 }
 
 func buildRankingDiagnosticsFromTrades(trades []Trade, config BacktestConfig) *RankingDiagnostics {
@@ -374,17 +412,18 @@ func runValidationPair(config BacktestConfig, series map[string][]services.OHLCV
 	baselineConfig.Start = start
 	baselineConfig.End = end
 	resultBaseline, err := RunBacktest(baselineConfig, series)
-	if err != nil {
-		return BacktestResult{}, BacktestResult{}, err
-	}
+	baselineErr := err
 
 	volConfig := config
 	volConfig.StrategyMode = StrategyVolSizing
 	volConfig.Start = start
 	volConfig.End = end
-	resultVol, err := RunBacktest(volConfig, series)
-	if err != nil {
-		return BacktestResult{}, BacktestResult{}, err
+	resultVol, volErr := RunBacktest(volConfig, series)
+	if baselineErr != nil {
+		return resultBaseline, resultVol, baselineErr
+	}
+	if volErr != nil {
+		return resultBaseline, resultVol, volErr
 	}
 
 	return resultBaseline, resultVol, nil

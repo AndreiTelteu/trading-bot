@@ -88,7 +88,8 @@ type BacktestConfig struct {
 	BenchmarkRequired                      bool
 	ReplaySnapshots                        []ReplaySnapshot
 	ReplaySnapshotsProvided                bool
-	RequiredModelFeatures                  map[string]map[int64]float64
+	FeatureSeries                          []FeatureSeries
+	ConstraintsAvailable                   bool
 	CodeRevision                           string
 	ConfigVersion                          string
 	StrategyVersion                        string
@@ -103,6 +104,8 @@ type CoveragePolicy struct {
 	RequireRequestedBounds bool          `json:"require_requested_bounds"`
 	RequiredReplayMembers  int           `json:"required_replay_members"`
 	RequiredModelFeatures  []string      `json:"required_model_features,omitempty"`
+	ReplayInterval         time.Duration `json:"replay_interval"`
+	MaxReplayGapIntervals  int           `json:"max_replay_gap_intervals"`
 }
 
 type ExecutionPolicy struct {
@@ -120,8 +123,45 @@ type SymbolConstraints struct {
 }
 
 type ReplaySnapshot struct {
-	Timestamp time.Time `json:"timestamp"`
-	Members   []string  `json:"members"`
+	Timestamp    time.Time      `json:"timestamp"`
+	RegimeState  string         `json:"regime_state"`
+	BreadthRatio float64        `json:"breadth_ratio"`
+	Members      []ReplayMember `json:"members"`
+}
+
+type ReplayMember struct {
+	Symbol                                                                                                   string `json:"symbol"`
+	Rank                                                                                                     int    `json:"rank"`
+	Shortlisted                                                                                              bool   `json:"shortlisted"`
+	Stage                                                                                                    string `json:"stage,omitempty"`
+	ListingAgeDays                                                                                           int    `json:"listing_age_days,omitempty"`
+	MedianDailyQuoteVolume, MedianIntradayQuoteVolume                                                        float64
+	RankComponentsJSON, RejectionReason                                                                      string
+	LastPrice, Change24h, QuoteVolume24h, GapRatio, VolatilityRatio, Return1D, Return3D, Return7D, Return30D float64
+	RelativeStrength, TrendQuality, BreakoutProximity, VolumeAcceleration, OverextensionPenalty, RankScore   float64
+}
+
+type FeatureObservation struct {
+	EventAt     time.Time `json:"event_at"`
+	AvailableAt time.Time `json:"available_at"`
+	Value       float64   `json:"value"`
+}
+type FeatureSeries struct {
+	Name         string               `json:"name"`
+	Version      string               `json:"version"`
+	Provenance   string               `json:"provenance"`
+	Interval     time.Duration        `json:"interval"`
+	Observations []FeatureObservation `json:"observations"`
+}
+
+func (series FeatureSeries) AsOf(at time.Time) []FeatureObservation {
+	result := []FeatureObservation{}
+	for _, observation := range series.Observations {
+		if !observation.AvailableAt.After(at) {
+			result = append(result, observation)
+		}
+	}
+	return result
 }
 
 type CoverageReason string
@@ -137,6 +177,11 @@ const (
 	CoverageReplayMembersEmpty CoverageReason = "replay_members_insufficient"
 	CoverageBenchmarkMissing   CoverageReason = "benchmark_missing"
 	CoverageFeatureMissing     CoverageReason = "model_feature_missing"
+	CoverageInvalidBarWidth    CoverageReason = "invalid_bar_interval"
+	CoverageReplayDuplicate    CoverageReason = "replay_duplicate_timestamp"
+	CoverageReplayMemberDup    CoverageReason = "replay_duplicate_member"
+	CoverageReplayNoEffective  CoverageReason = "replay_no_effective_start_snapshot"
+	CoverageReplayGap          CoverageReason = "replay_internal_gap"
 )
 
 type CoverageDiagnostic struct {
@@ -168,6 +213,7 @@ type ArtifactRefs struct {
 	Ledger        string `json:"ledger"`
 	Equity        string `json:"equity"`
 	Metrics       string `json:"metrics"`
+	Exposure      string `json:"exposure"`
 }
 
 type RunManifest struct {
@@ -194,10 +240,15 @@ type RunManifest struct {
 }
 
 type DecisionArtifact struct {
-	SignalAt   string `json:"signal_at"`
-	DecisionAt string `json:"decision_at"`
-	Symbol     string `json:"symbol"`
-	Code       string `json:"code"`
+	SignalAt      string `json:"signal_at"`
+	DecisionAt    string `json:"decision_at"`
+	Symbol        string `json:"symbol"`
+	Code          string `json:"code"`
+	Stage         string `json:"stage"`
+	Side          string `json:"side,omitempty"`
+	Quantity      string `json:"quantity,omitempty"`
+	Reason        string `json:"reason,omitempty"`
+	PolicyVersion string `json:"policy_version,omitempty"`
 }
 type OrderArtifact struct {
 	SignalAt   string `json:"signal_at"`
@@ -257,6 +308,17 @@ type ArtifactBytes struct {
 	Exposure  []byte
 	Equity    []byte
 	Metrics   []byte
+}
+
+type ArtifactEnvelope struct {
+	SchemaVersion string `json:"schema_version"`
+	Payload       any    `json:"payload"`
+}
+
+type RunEvidence struct {
+	UniverseEvaluations, UniverseUnavailable, CandidateEvaluations, ShortlistCandidates         int
+	StrategyNoActions, StrategyIntents, RiskRejections, BrokerRejections, AcceptedOrders, Fills int
+	PreOrchestratorGates                                                                        int
 }
 
 type Trade struct {

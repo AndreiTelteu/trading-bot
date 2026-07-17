@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -17,7 +18,55 @@ import (
 	"trading-go/internal/websocket"
 )
 
+var resolveBacktestRevision = func() (string, error) {
+	if value := strings.TrimSpace(os.Getenv("BACKTEST_CODE_REVISION")); value != "" {
+		return value, nil
+	}
+	if info, ok := debug.ReadBuildInfo(); ok {
+		for _, setting := range info.Settings {
+			if setting.Key == "vcs.revision" && setting.Value != "" {
+				return setting.Value, nil
+			}
+		}
+	}
+	return "", fmt.Errorf("backtest code revision unavailable; inject BACKTEST_CODE_REVISION or VCS build metadata")
+}
+var fetchBacktestBars = func(symbol, timeframe string, start, end time.Time) ([]services.OHLCV, error) {
+	return services.GetExchange().FetchOHLCVRange(symbol, timeframe, start, end)
+}
+var loadBacktestConstraints = func(symbols []string) (map[string]SymbolConstraints, error) {
+	info, err := services.GetExchange().FetchExchangeInfoCached(6 * time.Hour)
+	if err != nil {
+		return nil, err
+	}
+	wanted := map[string]bool{}
+	for _, symbol := range symbols {
+		wanted[symbol] = true
+	}
+	result := map[string]SymbolConstraints{}
+	for _, symbol := range info.Symbols {
+		if !wanted[symbol.Symbol] {
+			continue
+		}
+		constraint := SymbolConstraints{}
+		for _, filter := range symbol.Filters {
+			switch filter.FilterType {
+			case "LOT_SIZE":
+				constraint.QuantityStep, _ = strconv.ParseFloat(filter.StepSize, 64)
+				constraint.MinQuantity, _ = strconv.ParseFloat(filter.MinQty, 64)
+			case "PRICE_FILTER":
+				constraint.PriceTick, _ = strconv.ParseFloat(filter.TickSize, 64)
+			}
+		}
+		if constraint.QuantityStep > 0 && constraint.PriceTick > 0 {
+			result[symbol.Symbol] = constraint
+		}
+	}
+	return result, nil
+}
+
 type BacktestRunSummary struct {
+	FailedLane       string                     `json:"failed_lane,omitempty"`
 	JobID            uint                       `json:"job_id"`
 	StartedAt        time.Time                  `json:"started_at"`
 	FinishedAt       time.Time                  `json:"finished_at"`
@@ -96,11 +145,11 @@ func runBacktestJob(jobID uint) {
 	}()
 	btWg.Wait()
 	if baselineErr != nil {
-		failBacktestJob(jobID, baselineErr)
+		failBacktestJobWithResults(jobID, config, settingsSnapshot, baselineResult, volResult, ValidationSummary{}, "baseline", baselineErr)
 		return
 	}
 	if volErr != nil {
-		failBacktestJob(jobID, volErr)
+		failBacktestJobWithResults(jobID, config, settingsSnapshot, baselineResult, volResult, ValidationSummary{}, "vol_sizing", volErr)
 		return
 	}
 
@@ -111,7 +160,7 @@ func runBacktestJob(jobID uint) {
 		getSettingInt(settingsSnapshot, "validation_bootstrap_iterations", 500),
 	)
 	if err != nil {
-		failBacktestJob(jobID, err)
+		failBacktestJobWithResults(jobID, config, settingsSnapshot, baselineResult, volResult, validation, "validation", err)
 		return
 	}
 
@@ -464,6 +513,15 @@ func failBacktestJob(jobID uint, err error) {
 	logActivity("error", "Backtest failed", msg)
 }
 
+func failBacktestJobWithResults(jobID uint, config BacktestConfig, settings map[string]string, baseline, vol BacktestResult, validation ValidationSummary, lane string, err error) {
+	summary := BacktestRunSummary{JobID: jobID, FailedLane: lane, BacktestMode: config.BacktestMode, UniverseMode: config.UniverseMode, PolicyContext: config.Governance, CandidateSymbols: append([]string(nil), config.Symbols...), SettingsSnapshot: settings, Baseline: baseline, VolSizing: vol, Validation: validation}
+	compact, _ := MarshalBacktestJobSummary(summary)
+	msg := fmt.Sprintf("%s: %v", lane, err)
+	now := time.Now()
+	database.DB.Model(&database.BacktestJob{}).Where("id = ?", jobID).Updates(&database.BacktestJob{ID: jobID, Status: "failed", Progress: 1, UpdatedAt: now, FinishedAt: &now, Error: &msg, SummaryJSON: &compact, SummaryCompactJSON: &compact})
+	websocket.BroadcastBacktestComplete(jobID, "failed", BuildBacktestJobSummary(summary))
+}
+
 func prepareBacktestInputs() (BacktestConfig, map[string][]services.OHLCV, error) {
 	settings := services.GetAllSettings()
 	return prepareBacktestInputsWithSettings(settings)
@@ -501,7 +559,6 @@ func prepareBacktestInputsWithSettings(settings map[string]string) (BacktestConf
 
 	series := map[string][]services.OHLCV{}
 	executionSeries := map[string][]services.OHLCV{}
-	ex := services.GetExchange()
 	fetchExecution := getSettingBool(settings, "backtest_execution_1m", false)
 
 	type fetchResult struct {
@@ -532,10 +589,10 @@ func prepareBacktestInputsWithSettings(settings map[string]string) (BacktestConf
 		go func() {
 			defer wg.Done()
 			for sym := range symbolCh {
-				candles, fetchErr := ex.FetchOHLCVRange(sym, timeframe, start, end)
+				candles, fetchErr := fetchBacktestBars(sym, timeframe, start, end)
 				res := fetchResult{symbol: sym, candles: candles, err: fetchErr}
 				if fetchErr == nil && fetchExecution {
-					exec1m, execErr := ex.FetchOHLCVRange(sym, "1m", start, end)
+					exec1m, execErr := fetchBacktestBars(sym, "1m", start, end)
 					if execErr == nil && len(exec1m) > 0 {
 						res.exec1m = exec1m
 					}
@@ -558,19 +615,12 @@ func prepareBacktestInputsWithSettings(settings map[string]string) (BacktestConf
 			executionSeries[res.symbol] = res.exec1m
 		}
 	}
-	engineMode := EngineMode(getSettingString(settings, "trading_engine_mode", "legacy"))
-	if engineMode == EngineMode("shadow_compare") {
-		engineMode = EngineShared
+	engineMode, err := resolveBacktestEngine(settings)
+	if err != nil {
+		return BacktestConfig{}, nil, err
 	}
 	benchmarkSymbol := strings.ToUpper(getSettingString(settings, "backtest_benchmark_symbol", "BTCUSDT"))
-	benchmarkRequired := engineMode == EngineShared
-	var benchmarkSeries []services.OHLCV
-	if benchmarkRequired {
-		benchmarkSeries, err = ex.FetchOHLCVRange(benchmarkSymbol, timeframe, start, end)
-		if err != nil {
-			return BacktestConfig{}, nil, fmt.Errorf("fetch independent benchmark %s: %w", benchmarkSymbol, err)
-		}
-	}
+	benchmarkRequired := true
 	if start.IsZero() || end.IsZero() {
 		rangeStart, rangeEnd := seriesTimeRange(series)
 		if start.IsZero() {
@@ -578,6 +628,41 @@ func prepareBacktestInputsWithSettings(settings map[string]string) (BacktestConf
 		}
 		if end.IsZero() {
 			end = rangeEnd
+		}
+		// Discovery calls establish one immutable interval; all decision and
+		// execution datasets are then reloaded against it.
+		for _, symbol := range symbols {
+			bounded, fetchErr := fetchBacktestBars(symbol, timeframe, start, end)
+			if fetchErr != nil {
+				return BacktestConfig{}, nil, fetchErr
+			}
+			series[symbol] = bounded
+			if fetchExecution {
+				execBars, execErr := fetchBacktestBars(symbol, "1m", start, end)
+				if execErr == nil {
+					executionSeries[symbol] = execBars
+				}
+			}
+		}
+	}
+	benchmarkSeries, err := fetchBacktestBars(benchmarkSymbol, timeframe, start, end)
+	if err != nil {
+		return BacktestConfig{}, nil, fmt.Errorf("fetch independent benchmark %s: %w", benchmarkSymbol, err)
+	}
+	revision, err := resolveBacktestRevision()
+	if err != nil {
+		return BacktestConfig{}, nil, err
+	}
+	constraints, err := loadBacktestConstraints(symbols)
+	if err != nil {
+		return BacktestConfig{}, nil, fmt.Errorf("load symbol constraints: %w", err)
+	}
+	constraintsAvailable := len(symbols) > 0
+	for _, symbol := range symbols {
+		constraint, ok := constraints[symbol]
+		if !ok || constraint.QuantityStep <= 0 || constraint.PriceTick <= 0 || constraint.MinQuantity <= 0 {
+			constraintsAvailable = false
+			break
 		}
 	}
 
@@ -593,7 +678,7 @@ func prepareBacktestInputsWithSettings(settings map[string]string) (BacktestConf
 
 	config := BacktestConfig{
 		EngineMode:      engineMode,
-		CodeRevision:    getSettingString(settings, "backtest_code_revision", "unknown"),
+		CodeRevision:    revision,
 		ConfigVersion:   getSettingString(settings, "backtest_config_version", "backtest-config-v1"),
 		StrategyVersion: "legacy-rule-strategy-v1",
 		Seed:            int64(getSettingInt(settings, "backtest_seed", 0)),
@@ -606,6 +691,7 @@ func prepareBacktestInputsWithSettings(settings map[string]string) (BacktestConf
 		BenchmarkSymbol:         benchmarkSymbol,
 		BenchmarkSeries:         benchmarkSeries,
 		BenchmarkRequired:       benchmarkRequired,
+		ConstraintsAvailable:    constraintsAvailable,
 		Symbols:                 symbols,
 		UniverseMode:            universeMode,
 		UniversePolicy:          policy,
@@ -642,6 +728,14 @@ func prepareBacktestInputsWithSettings(settings map[string]string) (BacktestConf
 		AllowSellAtLoss:         getSettingBool(settings, "allow_sell_at_loss", false),
 		TrailingStopEnabled:     getSettingBool(settings, "trailing_stop_enabled", false),
 		TrailingStopPercent:     getSettingFloat(settings, "trailing_stop_percent", 10.0),
+		ExecutionPolicy:         ExecutionPolicy{Version: "backtest-execution-v1", Timing: ExecutionNextExecutable, Liquidity: LiquidityFullFillOHLCV, CostVersion: "backtest-cost-v1", Constraints: constraints},
+	}
+	if modelArtifact != nil {
+		config.CoveragePolicy.RequiredModelFeatures = make([]string, 0, len(modelArtifact.Features))
+		for _, feature := range modelArtifact.Features {
+			config.CoveragePolicy.RequiredModelFeatures = append(config.CoveragePolicy.RequiredModelFeatures, feature.Name)
+		}
+		config.FeatureSeries = buildRuntimeFeatureCoverage(config.CoveragePolicy.RequiredModelFeatures, series, time.Duration(timeframeMinutes)*time.Minute)
 	}
 
 	return config, series, nil
@@ -657,6 +751,41 @@ func parseSymbols(value string) []string {
 		}
 	}
 	return symbols
+}
+
+func buildRuntimeFeatureCoverage(names []string, series map[string][]services.OHLCV, interval time.Duration) []FeatureSeries {
+	symbols := sortedSymbols(series)
+	result := make([]FeatureSeries, 0, len(names))
+	if len(symbols) == 0 {
+		return result
+	}
+	observations := map[string][]FeatureObservation{}
+	source := series[symbols[0]]
+	btc := series["BTCUSDT"]
+	for i, bar := range source {
+		if i < 119 {
+			continue
+		}
+		available := time.UnixMilli(bar.CloseTime)
+		candidate := services.UniverseCandidateMetrics{Symbol: symbols[0], LastPrice: bar.Close}
+		btcEnd := i + 1
+		if btcEnd > len(btc) {
+			btcEnd = len(btc)
+		}
+		row := services.BuildModelFeatureRow(services.ModelFeatureInput{Timestamp: available, Symbol: symbols[0], Candles15m: candlesFromOHLCV(source[:i+1]), Candidate: candidate, ActiveUniverse: []services.UniverseCandidateMetrics{candidate}, BTCCandles15m: candlesFromOHLCV(btc[:btcEnd])})
+		if !row.Valid {
+			continue
+		}
+		for _, name := range names {
+			if value, ok := row.Values[name]; ok {
+				observations[name] = append(observations[name], FeatureObservation{EventAt: available, AvailableAt: available, Value: value})
+			}
+		}
+	}
+	for _, name := range names {
+		result = append(result, FeatureSeries{Name: name, Version: services.ModelFeatureSpecVersion, Provenance: "services.BuildModelFeatureRow:" + symbols[0], Interval: interval, Observations: observations[name]})
+	}
+	return result
 }
 
 func parseTime(value string) (time.Time, error) {
@@ -762,6 +891,14 @@ func resolveBacktestMode(universeMode UniverseMode, hasModel bool) BacktestMode 
 		return BacktestModeDynamicRule
 	}
 	return BacktestModeLegacyStatic
+}
+
+func resolveBacktestEngine(settings map[string]string) (EngineMode, error) {
+	mode := EngineMode(getSettingString(settings, "backtest_engine_mode", string(EngineShared)))
+	if mode != EngineShared {
+		return "", fmt.Errorf("production backtest engine must be %q, got %q", EngineShared, mode)
+	}
+	return mode, nil
 }
 
 func logActivity(logType, message string, details string) {

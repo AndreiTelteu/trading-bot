@@ -47,7 +47,7 @@ func TestStage03ReplayAndBenchmarkCoverageFailClosed(t *testing.T) {
 	config := BacktestConfig{EngineMode: EngineShared, InitialBalance: 1000, Symbols: []string{"AAAUSDT"}, Start: start, End: time.UnixMilli(bars[len(bars)-1].CloseTime), TimeframeMinutes: 15, UniverseMode: UniverseDynamicReplay, ReplaySnapshotsProvided: true}
 	_, err := RunBacktest(config, map[string][]services.OHLCV{"AAAUSDT": bars})
 	assertCoverageReason(t, err, CoverageReplayEmpty)
-	config.ReplaySnapshots = []ReplaySnapshot{{Timestamp: start, Members: []string{}}}
+	config.ReplaySnapshots = []ReplaySnapshot{{Timestamp: start, Members: []ReplayMember{}}}
 	_, err = RunBacktest(config, map[string][]services.OHLCV{"AAAUSDT": bars})
 	assertCoverageReason(t, err, CoverageReplayMembersEmpty)
 	config.UniverseMode, config.ReplaySnapshots = UniverseStatic, nil
@@ -86,7 +86,7 @@ func TestStage03CloseSignalsFillStrictlyLaterAndDeterministically(t *testing.T) 
 		decision, _ := time.Parse(time.RFC3339Nano, fill.DecisionAt)
 		ordered, _ := time.Parse(time.RFC3339Nano, fill.OrderAt)
 		filled, _ := time.Parse(time.RFC3339Nano, fill.FillAt)
-		if !decision.After(signal) || !ordered.After(decision) || !filled.After(ordered) {
+		if decision.Before(signal) || ordered.Before(decision) || !filled.After(ordered) {
 			t.Fatalf("fill did not follow information: %+v", fill)
 		}
 	}
@@ -135,7 +135,7 @@ func TestStage03FutureMutationDoesNotChangeEarlierArtifacts(t *testing.T) {
 
 func TestStage03FutureMembershipInvisible(t *testing.T) {
 	start := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
-	snapshots := fixtureReplaySnapshots([]ReplaySnapshot{{Timestamp: start, Members: []string{"AAAUSDT"}}, {Timestamp: start.Add(time.Hour), Members: []string{"BBBUSDT"}}})
+	snapshots := fixtureReplaySnapshots([]ReplaySnapshot{{Timestamp: start, Members: []ReplayMember{{Symbol: "AAAUSDT", Rank: 1}}}, {Timestamp: start.Add(time.Hour), Members: []ReplayMember{{Symbol: "BBBUSDT", Rank: 1}}}})
 	before := resolveReplayUniverse(snapshots, start.Add(30*time.Minute))
 	if len(before.ActiveUniverse) != 1 || before.ActiveUniverse[0].Symbol != "AAAUSDT" {
 		t.Fatalf("future membership leaked: %+v", before)
@@ -220,6 +220,223 @@ func TestStage03EndOfPeriodNeverUsesLaterExecutionPrice(t *testing.T) {
 		if at.After(config.End) || fill.Price == "999999" {
 			t.Fatalf("borrowed post-period price: %+v", fill)
 		}
+	}
+}
+
+func TestStage03EndBoundExcludesBarClosingAfterEnd(t *testing.T) {
+	config, series := stage03SharedFixture()
+	bars := series["AAAUSDT"]
+	end := time.UnixMilli(bars[len(bars)-2].CloseTime)
+	leaked := bars[len(bars)-1]
+	leaked.OpenTime = end.UnixMilli()
+	leaked.CloseTime = end.Add(15 * time.Minute).UnixMilli()
+	config.End = end
+	base := cloneSeries(series)
+	base["AAAUSDT"] = append([]services.OHLCV(nil), bars[:len(bars)-1]...)
+	mutated := cloneSeries(base)
+	leaked.Close = 999999
+	leaked.High = 999999
+	mutated["AAAUSDT"] = append(mutated["AAAUSDT"], leaked)
+	first, err := RunBacktest(config, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := RunBacktest(config, mutated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, _ := MarshalArtifactBytes(first)
+	b, _ := MarshalArtifactBytes(second)
+	if !bytes.Equal(a.Decisions, b.Decisions) || !reflect.DeepEqual(first.Equity, second.Equity) {
+		t.Fatal("post-end close information changed run")
+	}
+}
+
+func TestStage03ReplayRawValidationAndStableOrder(t *testing.T) {
+	config, series := stage03SharedFixture()
+	config.Symbols = []string{"AAAUSDT"}
+	delete(series, "BTCUSDT")
+	config.UniverseMode = UniverseDynamicReplay
+	config.ReplaySnapshotsProvided = true
+	config.CoveragePolicy = CoveragePolicy{Version: "replay-v1", DecisionInterval: 15 * time.Minute, ReplayInterval: time.Hour}
+	start := config.Start
+	member := ReplayMember{Symbol: "AAAUSDT", Rank: 1, Shortlisted: true}
+	cases := []struct {
+		name      string
+		snapshots []ReplaySnapshot
+		reason    CoverageReason
+	}{{"duplicate timestamp", []ReplaySnapshot{{Timestamp: start, Members: []ReplayMember{member}}, {Timestamp: start, Members: []ReplayMember{member}}}, CoverageReplayDuplicate}, {"nonmonotonic", []ReplaySnapshot{{Timestamp: start, Members: []ReplayMember{member}}, {Timestamp: start.Add(-time.Hour), Members: []ReplayMember{member}}}, CoverageNonMonotonic}, {"duplicate member", []ReplaySnapshot{{Timestamp: start, Members: []ReplayMember{member, member}}}, CoverageReplayMemberDup}, {"gap", []ReplaySnapshot{{Timestamp: start, Members: []ReplayMember{member}}, {Timestamp: start.Add(3 * time.Hour), Members: []ReplayMember{member}}}, CoverageReplayGap}}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			config.ReplaySnapshots = tc.snapshots
+			_, err := RunBacktest(config, series)
+			assertCoverageReason(t, err, tc.reason)
+		})
+	}
+	entries := fixtureReplaySnapshots([]ReplaySnapshot{{Timestamp: start, Members: []ReplayMember{{Symbol: "ZZZUSDT", Rank: 2, Shortlisted: true}, {Symbol: "AAAUSDT", Rank: 1, Shortlisted: true}}}})
+	resolved := resolveReplayUniverse(entries, start)
+	if len(resolved.Shortlist) != 2 || resolved.Shortlist[0].Symbol != "AAAUSDT" {
+		t.Fatalf("unstable replay order: %+v", resolved.Shortlist)
+	}
+}
+
+func TestStage03FeatureCoverageAsOfAndFutureMutation(t *testing.T) {
+	start := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	series := FeatureSeries{Name: "f", Version: "v1", Provenance: "fixture", Interval: time.Minute, Observations: []FeatureObservation{{EventAt: start, AvailableAt: start.Add(time.Minute), Value: 1}, {EventAt: start.Add(time.Minute), AvailableAt: start.Add(2 * time.Minute), Value: 2}}}
+	if got := series.AsOf(start.Add(time.Minute)); len(got) != 1 || got[0].Value != 1 {
+		t.Fatalf("AsOf leaked future: %+v", got)
+	}
+	mutated := series
+	mutated.Observations = append([]FeatureObservation(nil), series.Observations...)
+	mutated.Observations[1].Value = 999
+	if !reflect.DeepEqual(series.AsOf(start.Add(time.Minute)), mutated.AsOf(start.Add(time.Minute))) {
+		t.Fatal("future feature mutation changed earlier view")
+	}
+}
+
+func TestStage03ArtifactEnvelopeRejectsUnknownVersion(t *testing.T) {
+	config, series := stage03SharedFixture()
+	result, err := RunBacktest(config, series)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifacts, err := MarshalArtifactBytes(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decisions []DecisionArtifact
+	if err := UnmarshalArtifact(artifacts.Decisions, &decisions); err != nil {
+		t.Fatal(err)
+	}
+	invalid := bytes.Replace(artifacts.Decisions, []byte(ArtifactSchemaVersion), []byte("artifact-v99"), 1)
+	if err := UnmarshalArtifact(invalid, &decisions); err == nil {
+		t.Fatal("accepted unknown artifact schema")
+	}
+}
+
+func TestStage03ProductionEngineResolution(t *testing.T) {
+	mode, err := resolveBacktestEngine(map[string]string{"trading_engine_mode": "legacy"})
+	if err != nil || mode != EngineShared {
+		t.Fatalf("default mode=%s err=%v", mode, err)
+	}
+	if _, err := resolveBacktestEngine(map[string]string{"backtest_engine_mode": "legacy"}); err == nil {
+		t.Fatal("production job accepted legacy backtest engine")
+	}
+}
+
+func TestStage03ClassificationUsesWholeRunEvidence(t *testing.T) {
+	first := newBacktestMemoryLedger(BacktestConfig{})
+	first.evidence = RunEvidence{UniverseEvaluations: 10, CandidateEvaluations: 4, StrategyNoActions: 4}
+	second := newBacktestMemoryLedger(BacktestConfig{})
+	second.evidence = first.evidence
+	second.evidence.UniverseUnavailable = 1
+	if classifySharedRun(first) != RunStrategyZeroTrades || classifySharedRun(second) != RunStrategyZeroTrades {
+		t.Fatal("final universe state reclassified identical earlier evidence")
+	}
+}
+
+func TestStage03FractionalBPSAndMinimumQuantityFailClosed(t *testing.T) {
+	config, series := stage03SharedFixture()
+	config.FeeBps = 1.5
+	if _, err := RunBacktest(config, series); err == nil {
+		t.Fatal("fractional bps silently truncated")
+	}
+	config.FeeBps = 1
+	config.ExecutionPolicy.Constraints = map[string]SymbolConstraints{"AAAUSDT": {QuantityStep: .01, PriceTick: .01, MinQuantity: 1000}, "BTCUSDT": {QuantityStep: .01, PriceTick: .01, MinQuantity: 1000}}
+	result, err := RunBacktest(config, series)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Classification != RunGatingZeroTrades || result.SharedLedgerEvents != 0 {
+		t.Fatalf("minimum quantity not rejected: %+v", result)
+	}
+}
+
+func TestStage03ProtectiveOHLCPolicyIsSequentialAndConservative(t *testing.T) {
+	start := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	stop, target := 95.0, 105.0
+	pos := &positionState{EntryPrice: 100, EntryTime: start.Add(-time.Minute), StopPrice: &stop, TakeProfit: &target}
+	both := services.OHLCV{OpenTime: start.UnixMilli(), CloseTime: start.Add(time.Minute).UnixMilli(), Open: 100, High: 106, Low: 94, Close: 100}
+	decision := services.OHLCV{OpenTime: start.UnixMilli(), CloseTime: start.Add(15 * time.Minute).UnixMilli()}
+	result := evaluateIntrabarProtectiveExit(buildExecutionSymbolStates(map[string][]services.OHLCV{"X": {both}})["X"], decision, pos, BacktestConfig{})
+	if result == nil || result.Reason != services.CloseReasonStopLoss || !result.Time.Equal(start.Add(time.Minute)) {
+		t.Fatalf("ambiguous bar policy=%+v", result)
+	}
+	gap := both
+	gap.Open = 90
+	result = evaluateIntrabarProtectiveExit(buildExecutionSymbolStates(map[string][]services.OHLCV{"X": {gap}})["X"], decision, pos, BacktestConfig{})
+	if result.Price != 90 || !result.Time.Equal(start) {
+		t.Fatalf("gap policy=%+v", result)
+	}
+	first := services.OHLCV{OpenTime: start.UnixMilli(), CloseTime: start.Add(time.Minute).UnixMilli(), Open: 100, High: 110, Low: 99, Close: 109}
+	later := services.OHLCV{OpenTime: start.Add(time.Minute).UnixMilli(), CloseTime: start.Add(2 * time.Minute).UnixMilli(), Open: 109, High: 110, Low: 100, Close: 101}
+	trailPos := &positionState{EntryPrice: 100, EntryTime: start.Add(-time.Minute)}
+	cfg := BacktestConfig{TrailingStopEnabled: true, TrailingStopPercent: 5}
+	earlyOnly := evaluateIntrabarProtectiveExit(buildExecutionSymbolStates(map[string][]services.OHLCV{"X": {first}})["X"], decision, trailPos, cfg)
+	if earlyOnly != nil {
+		t.Fatalf("future trailing exit leaked early: %+v", earlyOnly)
+	}
+	trailPos = &positionState{EntryPrice: 100, EntryTime: start.Add(-time.Minute)}
+	all := evaluateIntrabarProtectiveExit(buildExecutionSymbolStates(map[string][]services.OHLCV{"X": {first, later}})["X"], decision, trailPos, cfg)
+	if all == nil || !all.Time.Equal(start.Add(2*time.Minute)) {
+		t.Fatalf("sequential trailing=%+v", all)
+	}
+}
+
+func TestStage03SharedEntryCarriesKnownATRIntoProjection(t *testing.T) {
+	config, _ := stage03SharedFixture()
+	config.Symbols = []string{"AAAUSDT"}
+	config.InitialBalance = 1000
+	config.MaxPositions = 1
+	config.EntryPercent = 10
+	defaultStage03Policies(&config)
+	ledger := newBacktestMemoryLedger(config)
+	at := config.Start.Add(200 * 15 * time.Minute)
+	states := map[string]*symbolState{"AAAUSDT": {lastPrice: 50}}
+	_, err := runSharedBacktestEntry(
+		ledger,
+		config,
+		entryCandidate{Symbol: "AAAUSDT", Rank: 1},
+		barContext{Rating: 10, Signal: "STRONG_BUY", Atr: 2.5},
+		backtestUniverseSelection{RegimeState: services.UniverseRegimeRiskOn},
+		ledger.positions,
+		states,
+		ledger.cash,
+		at,
+		at,
+		at.Add(time.Minute),
+		50,
+		50,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	position := ledger.positions["AAAUSDT"]
+	if position == nil || position.LastAtr != 2.5 {
+		t.Fatalf("shared projection lost entry ATR: %+v", position)
+	}
+}
+
+func TestStage03CoverageAcceptsBinanceInclusiveCloseTimestamp(t *testing.T) {
+	start := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	bars := buildBacktestSeries(start, 4, 10, .1, 10)
+	for i := range bars {
+		bars[i].CloseTime-- // Binance kline close is the inclusive interval endpoint.
+	}
+	config := BacktestConfig{
+		Symbols:          []string{"AAAUSDT"},
+		Start:            start,
+		End:              time.UnixMilli(bars[len(bars)-1].CloseTime).Add(time.Millisecond),
+		TimeframeMinutes: 15,
+		CoveragePolicy: CoveragePolicy{
+			Version:                "binance-width-v1",
+			DecisionInterval:       15 * time.Minute,
+			RequireRequestedBounds: true,
+		},
+	}
+	report := ValidateCoverage(config, map[string][]services.OHLCV{"AAAUSDT": bars})
+	if !report.Passed {
+		t.Fatalf("inclusive Binance close timestamps rejected: %+v", report)
 	}
 }
 

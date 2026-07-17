@@ -8,6 +8,7 @@ import (
 )
 
 const ExchangeExecutionFenced RejectionCode = "exchange_execution_fenced"
+const BelowMinimumQuantity RejectionCode = "below_minimum_quantity"
 
 type CostModel struct {
 	FeeBPS, SlippageBPS int64
@@ -16,6 +17,7 @@ type CostModel struct {
 	Version             string
 	ExecutionPrice      OptionalPrice
 	PriceTick           string
+	MinQuantity         string
 }
 
 type SimulationBroker struct {
@@ -64,7 +66,7 @@ func (broker SimulationBroker) Submit(_ context.Context, batch DecisionBatch) (B
 			return BrokerBatchOutcome{}, err
 		}
 		if broker.Costs.PriceTick != "" {
-			fillPrice, err = roundPriceDown(fillPrice, broker.Costs.PriceTick)
+			fillPrice, err = roundPriceAdverse(fillPrice, broker.Costs.PriceTick, intent.Side)
 			if err != nil {
 				return BrokerBatchOutcome{}, err
 			}
@@ -81,6 +83,16 @@ func (broker SimulationBroker) Submit(_ context.Context, batch DecisionBatch) (B
 			fillQuantity, err = quantityFromRat(newRatBPS(decimalRat(intent.Quantity.Decimal()), fillBPS))
 			if err != nil {
 				return BrokerBatchOutcome{}, err
+			}
+		}
+		if broker.Costs.MinQuantity != "" {
+			minimum, parseErr := ParseDecimal(broker.Costs.MinQuantity)
+			if parseErr != nil {
+				return BrokerBatchOutcome{}, parseErr
+			}
+			if decimalRat(fillQuantity.Decimal()).Cmp(decimalRat(minimum)) < 0 {
+				rejected = append(rejected, OrderRejection{OrderID: intent.ID, Code: BelowMinimumQuantity, Message: "quantity below symbol minimum", EvaluatedAt: broker.Clock.Now().UTC(), PolicyVersion: intent.Versions.Policy})
+				continue
 			}
 		}
 		fee, err := amountFromRat(newRatBPS(notional(fillQuantity, fillPrice), broker.Costs.FeeBPS))
@@ -113,7 +125,7 @@ func (broker SimulationBroker) Submit(_ context.Context, batch DecisionBatch) (B
 	return NewBrokerBatchOutcome(OutcomeComplete, accepted, rejected)
 }
 
-func roundPriceDown(price Price, tickRaw string) (Price, error) {
+func roundPriceAdverse(price Price, tickRaw string, side OrderSide) (Price, error) {
 	tick, err := ParseDecimal(tickRaw)
 	if err != nil || tick.Sign() <= 0 {
 		return Price{}, fmt.Errorf("invalid price tick %q", tickRaw)
@@ -123,6 +135,9 @@ func roundPriceDown(price Price, tickRaw string) (Price, error) {
 	ratio := new(big.Rat).Quo(value, quantum)
 	units := new(big.Int)
 	units.Quo(ratio.Num(), ratio.Denom())
+	if side == Buy && new(big.Rat).SetInt(units).Cmp(ratio) < 0 {
+		units.Add(units, big.NewInt(1))
+	}
 	rounded, err := ratDecimal(new(big.Rat).Mul(new(big.Rat).SetInt(units), quantum))
 	if err != nil {
 		return Price{}, err

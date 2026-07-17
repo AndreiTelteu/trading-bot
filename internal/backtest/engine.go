@@ -1,7 +1,9 @@
 package backtest
 
 import (
+	"errors"
 	"fmt"
+	"gorm.io/gorm"
 	"sort"
 	"time"
 	"trading-go/internal/database"
@@ -219,6 +221,14 @@ func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (Bac
 		default:
 			currentUniverse = buildBacktestUniverseSelection(config, states, benchmarkState, currentBars, lookback, false)
 		}
+		if sharedLedger != nil {
+			sharedLedger.evidence.UniverseEvaluations++
+			sharedLedger.evidence.CandidateEvaluations += len(currentUniverse.ActiveUniverse)
+			sharedLedger.evidence.ShortlistCandidates += len(currentUniverse.Shortlist)
+			if len(currentUniverse.ActiveUniverse) == 0 {
+				sharedLedger.evidence.UniverseUnavailable++
+			}
+		}
 
 		for _, symbol := range symbols {
 			pos := positions[symbol]
@@ -234,16 +244,16 @@ func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (Bac
 				continue
 			}
 			pos.BarsHeld++
-			if bar.High > pos.HighestPrice {
+			if config.EngineMode != EngineShared && bar.High > pos.HighestPrice {
 				pos.HighestPrice = bar.High
 			}
 
-			if config.AtrTrailingEnabled && config.AtrTrailingMult > 0 {
+			if config.EngineMode != EngineShared && config.AtrTrailingEnabled && config.AtrTrailingMult > 0 {
 				if ctx.Atr > 0 {
 					pos.LastAtr = ctx.Atr
 					pos.TrailingStop = services.RatchetATRTrailingStop(pos.TrailingStop, bar.High, pos.EntryPrice, ctx.Atr, config.AtrTrailingMult)
 				}
-			} else if config.TrailingStopEnabled {
+			} else if config.EngineMode != EngineShared && config.TrailingStopEnabled {
 				pos.TrailingStop = services.RatchetPercentTrailingStop(pos.TrailingStop, bar.High, pos.EntryPrice, config.TrailingStopPercent)
 			}
 
@@ -255,8 +265,7 @@ func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (Bac
 
 			if intrabarExit != nil {
 				if config.EngineMode == EngineShared {
-					decisionAt := intrabarExit.Time.Add(time.Nanosecond)
-					if err := runSharedBacktestExit(sharedLedger, config, pos, intrabarExit.Price, intrabarExit.Price, intrabarExit.Time, decisionAt, intrabarExit.Time.Add(3*time.Nanosecond), intrabarExit.Reason); err != nil {
+					if err := runSharedBacktestExit(sharedLedger, config, pos, intrabarExit.Price, intrabarExit.Price, intrabarExit.SignalAt, intrabarExit.SignalAt, intrabarExit.OrderAt, intrabarExit.Time, intrabarExit.Reason); err != nil {
 						return BacktestResult{}, fmt.Errorf("shared exit %s: %w", symbol, err)
 					}
 					cash, positions, trades = sharedLedger.cash, sharedLedger.positions, sharedLedger.trades
@@ -294,21 +303,43 @@ func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (Bac
 				continue
 			}
 
-			// Fall back to bar-close exit evaluation (signal exits, time stops)
+			// Fall back to bar-close exit evaluation (signal exits, time stops).
+			// With lower-resolution data, protective orders were already evaluated
+			// sequentially; do not re-test the full-bar low/high against a stop
+			// ratcheted later in that same bar.
+			stopAtClose, takeProfitAtClose, trailingAtClose := pos.StopPrice, pos.TakeProfit, pos.TrailingStop
+			if config.EngineMode == EngineShared && has1mData {
+				stopAtClose, takeProfitAtClose, trailingAtClose = nil, nil, nil
+			}
 			decision := services.EvaluateBarCloseExit(services.ExitEvaluationInput{
 				CurrentPrice:      bar.Close,
 				HighPrice:         bar.High,
 				LowPrice:          bar.Low,
 				EntryPrice:        pos.EntryPrice,
-				StopPrice:         pos.StopPrice,
-				TakeProfitPrice:   pos.TakeProfit,
-				TrailingStopPrice: pos.TrailingStop,
+				StopPrice:         stopAtClose,
+				TakeProfitPrice:   takeProfitAtClose,
+				TrailingStopPrice: trailingAtClose,
 				BarsHeld:          pos.BarsHeld,
 				Signal:            ctx.Signal,
 				SignalRating:      ctx.Rating,
 			}, policy)
 
 			if decision.Reason == "" {
+				if config.EngineMode == EngineShared {
+					if bar.High > pos.HighestPrice {
+						pos.HighestPrice = bar.High
+					}
+					if !has1mData {
+						if config.AtrTrailingEnabled && config.AtrTrailingMult > 0 && pos.LastAtr > 0 {
+							pos.TrailingStop = services.RatchetATRTrailingStop(pos.TrailingStop, bar.High, pos.EntryPrice, pos.LastAtr, config.AtrTrailingMult)
+						} else if config.TrailingStopEnabled {
+							pos.TrailingStop = services.RatchetPercentTrailingStop(pos.TrailingStop, bar.High, pos.EntryPrice, config.TrailingStopPercent)
+						}
+					}
+					if ctx.Atr > 0 {
+						pos.LastAtr = ctx.Atr
+					}
+				}
 				continue
 			}
 			if config.EngineMode == EngineShared {
@@ -317,7 +348,7 @@ func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (Bac
 				if !executable || !config.End.IsZero() && fillAt.After(config.End) {
 					continue
 				}
-				if err := runSharedBacktestExit(sharedLedger, config, pos, bar.Close, execBar.Open, signalAt, signalAt.Add(time.Nanosecond), fillAt, decision.Reason); err != nil {
+				if err := runSharedBacktestExit(sharedLedger, config, pos, bar.Close, execBar.Open, signalAt, signalAt, signalAt, fillAt, decision.Reason); err != nil {
 					return BacktestResult{}, fmt.Errorf("shared exit %s: %w", symbol, err)
 				}
 				cash, positions, trades = sharedLedger.cash, sharedLedger.positions, sharedLedger.trades
@@ -369,14 +400,25 @@ func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (Bac
 				if !executable || !config.End.IsZero() && fillAt.After(config.End) {
 					continue
 				}
-				if err := runSharedBacktestExit(sharedLedger, config, pos, bar.Close, execBar.Open, signalAt, signalAt.Add(time.Nanosecond), fillAt, "final_liquidation"); err != nil {
+				if err := runSharedBacktestExit(sharedLedger, config, pos, bar.Close, execBar.Open, signalAt, signalAt, signalAt, fillAt, "final_liquidation"); err != nil {
 					return BacktestResult{}, fmt.Errorf("shared final liquidation %s: %w", symbol, err)
 				}
 				cash, positions, trades = sharedLedger.cash, sharedLedger.positions, sharedLedger.trades
 			}
 		}
 
-		entryCandidates := buildEntryCandidates(config, currentUniverse, states, positions, cash, currentTime, lookback)
+		decisionTime := currentTime
+		for _, bar := range currentBars {
+			if closeAt := time.UnixMilli(bar.CloseTime); closeAt.After(decisionTime) {
+				decisionTime = closeAt
+			}
+		}
+		entryCandidates := []entryCandidate{}
+		if sharedLedger != nil && !featuresAvailableAsOf(config, decisionTime) {
+			sharedLedger.evidence.PreOrchestratorGates++
+		} else {
+			entryCandidates = buildEntryCandidates(config, currentUniverse, states, positions, cash, decisionTime, lookback)
+		}
 		for _, candidate := range entryCandidates {
 			if config.EngineMode != EngineShared && len(positions) >= config.MaxPositions {
 				break
@@ -413,7 +455,7 @@ func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (Bac
 				if !executable || !config.End.IsZero() && fillAt.After(config.End) {
 					continue
 				}
-				if _, err := runSharedBacktestEntry(sharedLedger, config, candidate, ctx, currentUniverse, positions, states, cash, signalAt, signalAt.Add(time.Nanosecond), fillAt, bar.Close, execBar.Open); err != nil {
+				if _, err := runSharedBacktestEntry(sharedLedger, config, candidate, ctx, currentUniverse, positions, states, cash, signalAt, signalAt, fillAt, bar.Close, execBar.Open); err != nil {
 					return BacktestResult{}, fmt.Errorf("shared entry %s: %w", symbol, err)
 				}
 				cash, positions, trades = sharedLedger.cash, sharedLedger.positions, sharedLedger.trades
@@ -520,7 +562,7 @@ func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (Bac
 		result.SharedEngineRuns = sharedLedger.runs
 		result.SharedLedgerEvents = len(sharedLedger.events)
 		result.Coverage = validateCoverage(config, series, replaySnapshots)
-		result.Classification = classifySharedRun(sharedLedger, len(currentUniverse.Shortlist))
+		result.Classification = classifySharedRun(sharedLedger)
 		result.Artifacts = buildBacktestArtifacts(sharedLedger, positions, states, timeline)
 		result.Manifest = buildManifest(config, result.Coverage, result.Classification, datasetManifestHash(config, series, replaySnapshots))
 	}
@@ -906,10 +948,11 @@ func filterSeriesWindow(series map[string][]services.OHLCV, start time.Time, end
 		var filtered []services.OHLCV
 		for _, candle := range candles {
 			openTime := time.UnixMilli(candle.OpenTime)
+			closeTime := time.UnixMilli(candle.CloseTime)
 			if !start.IsZero() && openTime.Before(start) {
 				continue
 			}
-			if !end.IsZero() && openTime.After(end) {
+			if !end.IsZero() && closeTime.After(end) {
 				continue
 			}
 			filtered = append(filtered, candle)
@@ -1083,9 +1126,9 @@ func findNext1mOpen(state *executionSymbolState, afterTimestampMs int64) float64
 
 // intrabarExitResult holds the result of an intrabar protective exit check.
 type intrabarExitResult struct {
-	Price  float64
-	Time   time.Time
-	Reason string
+	Price                   float64
+	SignalAt, OrderAt, Time time.Time
+	Reason                  string
 }
 
 // evaluateIntrabarProtectiveExit scans 1m candles within a 15m bar for stop-loss and take-profit triggers.
@@ -1096,62 +1139,47 @@ func evaluateIntrabarProtectiveExit(execState *executionSymbolState, bar15m serv
 		return nil
 	}
 
-	// Determine effective stop and TP prices
-	stopPrice := 0.0
-	if pos.StopPrice != nil {
-		stopPrice = *pos.StopPrice
-	}
-	if pos.TrailingStop != nil && *pos.TrailingStop > stopPrice {
-		stopPrice = *pos.TrailingStop
-	}
 	tpPrice := 0.0
 	if pos.TakeProfit != nil {
 		tpPrice = *pos.TakeProfit
 	}
 
-	if stopPrice <= 0 && tpPrice <= 0 {
-		return nil
+	// Find execution bars after the protective order was established and
+	// within this decision bar's time range.
+	establishedAt := pos.EntryTime
+	scanStart := time.UnixMilli(bar15m.OpenTime)
+	if establishedAt.After(scanStart) {
+		scanStart = establishedAt
 	}
-
-	// Find 1m bars within this 15m bar's time range
 	startIdx := sort.Search(len(execState.series), func(i int) bool {
-		return execState.series[i].OpenTime >= bar15m.OpenTime
+		return execState.series[i].OpenTime >= scanStart.UnixMilli()
 	})
 
 	for i := startIdx; i < len(execState.series); i++ {
 		bar1m := execState.series[i]
-		if bar1m.OpenTime > bar15m.CloseTime {
+		if bar1m.CloseTime > bar15m.CloseTime {
 			break
 		}
+		stopPrice := 0.0
+		if pos.StopPrice != nil {
+			stopPrice = *pos.StopPrice
+		}
+		if pos.TrailingStop != nil && *pos.TrailingStop > stopPrice {
+			stopPrice = *pos.TrailingStop
+		}
+		orderAt := time.UnixMilli(bar1m.OpenTime)
+		availableAt := time.UnixMilli(bar1m.CloseTime)
 
 		stopHit := stopPrice > 0 && bar1m.Low <= stopPrice
 		tpHit := tpPrice > 0 && bar1m.High >= tpPrice
 
 		if stopHit && tpHit {
-			// Deterministic tie-break: if bar opens beyond stop, use stop
+			// Conservative deterministic OHLC policy for longs: stop-first.
+			price, fillAt := stopPrice, availableAt
 			if bar1m.Open <= stopPrice {
-				return &intrabarExitResult{
-					Price:  stopPrice,
-					Time:   time.UnixMilli(bar1m.OpenTime),
-					Reason: services.CloseReasonStopLoss,
-				}
+				price, fillAt = bar1m.Open, orderAt
 			}
-			// Check which trigger comes first by comparing distances
-			// If low breaches stop before high breaches TP, stop wins
-			stopDistance := bar1m.Open - stopPrice
-			tpDistance := tpPrice - bar1m.Open
-			if stopDistance <= tpDistance {
-				return &intrabarExitResult{
-					Price:  stopPrice,
-					Time:   time.UnixMilli(bar1m.OpenTime),
-					Reason: services.CloseReasonStopLoss,
-				}
-			}
-			return &intrabarExitResult{
-				Price:  tpPrice,
-				Time:   time.UnixMilli(bar1m.OpenTime),
-				Reason: services.CloseReasonTakeProfit,
-			}
+			return &intrabarExitResult{Price: price, SignalAt: establishedAt, OrderAt: establishedAt, Time: fillAt, Reason: services.CloseReasonStopLoss}
 		}
 
 		if stopHit {
@@ -1167,11 +1195,11 @@ func evaluateIntrabarProtectiveExit(execState *executionSymbolState, bar15m serv
 					reason = services.CloseReasonTrailingStop
 				}
 			}
-			return &intrabarExitResult{
-				Price:  fillPrice,
-				Time:   time.UnixMilli(bar1m.OpenTime),
-				Reason: reason,
+			fillAt := availableAt
+			if bar1m.Open <= stopPrice {
+				fillAt = orderAt
 			}
+			return &intrabarExitResult{Price: fillPrice, SignalAt: establishedAt, OrderAt: establishedAt, Time: fillAt, Reason: reason}
 		}
 
 		if tpHit {
@@ -1179,11 +1207,17 @@ func evaluateIntrabarProtectiveExit(execState *executionSymbolState, bar15m serv
 			if bar1m.Open >= tpPrice {
 				fillPrice = bar1m.Open // gap-through: fill at open
 			}
-			return &intrabarExitResult{
-				Price:  fillPrice,
-				Time:   time.UnixMilli(bar1m.OpenTime),
-				Reason: services.CloseReasonTakeProfit,
+			fillAt := availableAt
+			if bar1m.Open >= tpPrice {
+				fillAt = orderAt
 			}
+			return &intrabarExitResult{Price: fillPrice, SignalAt: establishedAt, OrderAt: establishedAt, Time: fillAt, Reason: services.CloseReasonTakeProfit}
+		}
+		// Trailing references become available only after this sub-bar closes.
+		if config.AtrTrailingEnabled && config.AtrTrailingMult > 0 && pos.LastAtr > 0 {
+			pos.TrailingStop = services.RatchetATRTrailingStop(pos.TrailingStop, bar1m.High, pos.EntryPrice, pos.LastAtr, config.AtrTrailingMult)
+		} else if config.TrailingStopEnabled {
+			pos.TrailingStop = services.RatchetPercentTrailingStop(pos.TrailingStop, bar1m.High, pos.EntryPrice, config.TrailingStopPercent)
 		}
 	}
 
@@ -1199,16 +1233,27 @@ func loadReplaySnapshots(start, end time.Time) ([]replaySnapshotEntry, error) {
 	}
 
 	var snapshots []database.UniverseSnapshot
-	query := database.DB.Preload("Members").Order("snapshot_time ASC")
 	if !start.IsZero() {
-		query = query.Where("snapshot_time >= ?", start)
+		var effective database.UniverseSnapshot
+		query := database.DB.Preload("Members", func(db *gorm.DB) *gorm.DB { return db.Order("rank_score DESC, symbol ASC") }).Where("snapshot_time <= ?", start).Order("snapshot_time DESC").First(&effective)
+		if query.Error == nil {
+			snapshots = append(snapshots, effective)
+		} else if !errors.Is(query.Error, gorm.ErrRecordNotFound) {
+			return nil, query.Error
+		}
+	}
+	query := database.DB.Preload("Members", func(db *gorm.DB) *gorm.DB { return db.Order("rank_score DESC, symbol ASC") }).Order("snapshot_time ASC")
+	if !start.IsZero() {
+		query = query.Where("snapshot_time > ?", start)
 	}
 	if !end.IsZero() {
 		query = query.Where("snapshot_time <= ?", end)
 	}
-	if err := query.Find(&snapshots).Error; err != nil {
+	var inRange []database.UniverseSnapshot
+	if err := query.Find(&inRange).Error; err != nil {
 		return nil, err
 	}
+	snapshots = append(snapshots, inRange...)
 
 	entries := make([]replaySnapshotEntry, 0, len(snapshots))
 	for _, snap := range snapshots {
@@ -1241,6 +1286,12 @@ func resolveReplayUniverse(snapshots []replaySnapshotEntry, currentTime time.Tim
 		}
 	}
 	snap := snapshots[idx-1]
+	sort.SliceStable(snap.Members, func(i, j int) bool {
+		if snap.Members[i].RankScore != snap.Members[j].RankScore {
+			return snap.Members[i].RankScore > snap.Members[j].RankScore
+		}
+		return snap.Members[i].Symbol < snap.Members[j].Symbol
+	})
 
 	candidates := make([]services.UniverseCandidateMetrics, 0, len(snap.Members))
 	var shortlist []services.UniverseCandidateMetrics
