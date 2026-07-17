@@ -79,14 +79,14 @@ Detailed plan: [`docs/reimplementation/stage-03-backtest-realism.md`](docs/reimp
 
 Detailed plan: [`docs/reimplementation/stage-04-point-in-time-data.md`](docs/reimplementation/stage-04-point-in-time-data.md)
 
-- [ ] Model listing, delisting, liquidity, and universe membership by effective time
-- [ ] Build dataset coverage manifests and validation commands
-- [ ] Add idempotent historical universe snapshot generation/backfill
-- [ ] Remove current-universe and listing-age leakage from historical runs
-- [ ] Guarantee benchmark availability without making it tradable
-- [ ] Add point-in-time and survivorship-bias regression fixtures
-- [ ] Document external data limitations explicitly
-- [ ] Complete independent review and one feedback pass
+- [x] Model listing, delisting, liquidity, and universe membership by effective time
+- [x] Build dataset coverage manifests and validation commands
+- [x] Add idempotent historical universe snapshot generation/backfill
+- [x] Remove current-universe and listing-age leakage from historical runs
+- [x] Guarantee benchmark availability without making it tradable
+- [x] Add point-in-time and survivorship-bias regression fixtures
+- [x] Document external data limitations explicitly
+- [x] Complete independent review and one feedback pass
 
 ## Stage 05 — Benchmarks and simple strategy baselines
 
