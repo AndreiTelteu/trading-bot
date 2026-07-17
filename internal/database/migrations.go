@@ -42,6 +42,12 @@ func schemaModels() []interface{} {
 		&PredictionLog{},
 		&TradeLabel{},
 		&MonitoringSnapshot{},
+		&ValidationExperiment{},
+		&ValidationFoldEvidence{},
+		&ValidationEvidence{},
+		&GovernanceApproval{},
+		&GovernanceDeployment{},
+		&GovernanceTransition{},
 		&PortfolioSnapshot{},
 	}
 }
@@ -482,6 +488,55 @@ func RunMigrations(db *gorm.DB) error {
 			},
 			Rollback: func(tx *gorm.DB) error {
 				return fmt.Errorf("Stage 05 canonical governance evidence is intentionally retained")
+			},
+		},
+		{
+			ID: "202607171900_stage07_validation_governance",
+			Migrate: func(tx *gorm.DB) error {
+				// Freeze this migration to the tables and additive model-artifact
+				// columns introduced by Stage 07. A global AutoMigrate here would
+				// revisit immutable Stage 01 economic tables during upgrades from a
+				// Stage 03-shaped schema and could impose modern NOT NULL columns
+				// before their historical backfills have run.
+				if err := tx.AutoMigrate(
+					&ValidationExperiment{}, &ValidationFoldEvidence{}, &ValidationEvidence{},
+					&GovernanceApproval{}, &GovernanceDeployment{}, &GovernanceTransition{},
+					&ModelArtifact{},
+				); err != nil {
+					return err
+				}
+				return tx.Exec(`
+					CREATE OR REPLACE FUNCTION reject_stage07_immutable_mutation() RETURNS trigger AS $$
+					BEGIN RAISE EXCEPTION 'stage07 immutable audit record cannot be changed'; END;
+					$$ LANGUAGE plpgsql;
+					DROP TRIGGER IF EXISTS validation_experiments_immutable ON validation_experiments;
+					CREATE TRIGGER validation_experiments_immutable BEFORE UPDATE OR DELETE ON validation_experiments FOR EACH ROW EXECUTE FUNCTION reject_stage07_immutable_mutation();
+					DROP TRIGGER IF EXISTS validation_fold_evidence_immutable ON validation_fold_evidences;
+					CREATE TRIGGER validation_fold_evidence_immutable BEFORE UPDATE OR DELETE ON validation_fold_evidences FOR EACH ROW EXECUTE FUNCTION reject_stage07_immutable_mutation();
+					DROP TRIGGER IF EXISTS validation_evidence_immutable ON validation_evidences;
+					CREATE TRIGGER validation_evidence_immutable BEFORE UPDATE OR DELETE ON validation_evidences FOR EACH ROW EXECUTE FUNCTION reject_stage07_immutable_mutation();
+					DROP TRIGGER IF EXISTS governance_approvals_immutable ON governance_approvals;
+					CREATE TRIGGER governance_approvals_immutable BEFORE UPDATE OR DELETE ON governance_approvals FOR EACH ROW EXECUTE FUNCTION reject_stage07_immutable_mutation();
+					DROP TRIGGER IF EXISTS governance_transitions_immutable ON governance_transitions;
+					CREATE TRIGGER governance_transitions_immutable BEFORE UPDATE OR DELETE ON governance_transitions FOR EACH ROW EXECUTE FUNCTION reject_stage07_immutable_mutation();
+					ALTER TABLE validation_experiments DROP CONSTRAINT IF EXISTS validation_experiment_digest_check;
+					ALTER TABLE validation_experiments ADD CONSTRAINT validation_experiment_digest_check CHECK (length(id)=64 AND length(content_id)=64 AND length(content_digest)=64 AND content_id=content_digest);
+					ALTER TABLE validation_evidences DROP CONSTRAINT IF EXISTS validation_evidence_state_check;
+					ALTER TABLE validation_evidences ADD CONSTRAINT validation_evidence_state_check CHECK (status IN ('passed','failed') AND length(id)=64 AND length(evidence_digest)=64);
+					ALTER TABLE validation_fold_evidences DROP CONSTRAINT IF EXISTS validation_fold_evidence_state_check;
+					ALTER TABLE validation_fold_evidences ADD CONSTRAINT validation_fold_evidence_state_check CHECK (status IN ('passed','failed') AND fold_index>=0 AND length(frozen_digest)=64 AND length(evidence_digest)=64);
+					ALTER TABLE model_artifacts DROP CONSTRAINT IF EXISTS model_artifact_class_check;
+					ALTER TABLE model_artifacts ADD CONSTRAINT model_artifact_class_check CHECK (artifact_class IN ('bootstrap','contract_fixture','research','shadow_candidate','promotable_candidate'));
+					ALTER TABLE governance_approvals DROP CONSTRAINT IF EXISTS governance_approval_state_check;
+					ALTER TABLE governance_approvals ADD CONSTRAINT governance_approval_state_check CHECK (target_state IN ('research','shadow','paper','limited_live','full_live','rollback') AND length(id)=64 AND length(content_digest)=64);
+					ALTER TABLE governance_deployments DROP CONSTRAINT IF EXISTS governance_deployment_state_check;
+					ALTER TABLE governance_deployments ADD CONSTRAINT governance_deployment_state_check CHECK (state IN ('research','shadow','paper','limited_live','full_live','rollback'));
+					ALTER TABLE governance_transitions DROP CONSTRAINT IF EXISTS governance_transition_state_check;
+					ALTER TABLE governance_transitions ADD CONSTRAINT governance_transition_state_check CHECK (from_state IN ('','research','shadow','paper','limited_live','full_live') AND to_state IN ('research','shadow','paper','limited_live','full_live','rollback') AND length(id)=64 AND length(content_digest)=64);
+				`).Error
+			},
+			Rollback: func(tx *gorm.DB) error {
+				return fmt.Errorf("Stage 07 immutable validation and governance history is intentionally retained")
 			},
 		},
 	})

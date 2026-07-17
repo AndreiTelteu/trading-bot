@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"strings"
 	"trading-go/internal/database"
 	"trading-go/internal/services"
 
@@ -30,6 +31,11 @@ func UpdateSettings(c *fiber.Ctx) error {
 	if err := c.BodyParser(&requests); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "Invalid request body"})
 	}
+	for _, req := range requests {
+		if stage07GovernanceSetting(req.Key) {
+			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "Stage 07 governance settings are immutable through the generic settings API; use a validated, human-approved governance transition"})
+		}
+	}
 
 	if err := database.DB.Transaction(func(tx *gorm.DB) error {
 		for _, req := range requests {
@@ -48,11 +54,16 @@ func UpdateSettings(c *fiber.Ctx) error {
 
 	var settings []database.Setting
 	database.DB.Find(&settings)
-	settingsMap := services.GetAllSettings()
-	if _, err := services.SyncGovernanceState(settingsMap, "settings_update"); err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "Failed to sync governance state"})
-	}
 	return c.JSON(settings)
+}
+
+func stage07GovernanceSetting(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "active_model_version", "model_rollout_state", "model_fallback_mode", "model_rollback_target", "model_experiment_id", "rollout_policy_version":
+		return true
+	default:
+		return false
+	}
 }
 
 func GetGovernanceOverview(c *fiber.Ctx) error {

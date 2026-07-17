@@ -184,6 +184,13 @@ func setupRoutes(app *fiber.App, cfg *config.Config, authManager *middleware.Aut
 	backtest.Get("/status/:id", handlers.GetBacktestStatus)
 	backtest.Get("/latest", handlers.GetLatestBacktestStatus)
 
+	validationAPI := api.Group("/validation")
+	validationAPI.Post("/experiments", handlers.CreateValidationExperiment)
+	validationAPI.Get("/experiments/:id", handlers.GetValidationExperiment)
+	validationAPI.Post("/approvals", handlers.ApproveGovernanceTransition)
+	validationAPI.Post("/transitions", handlers.ApplyGovernanceTransition)
+	validationAPI.Post("/rollback", handlers.ApplyGovernanceRollback)
+
 	llm := api.Group("/llm")
 	llm.Get("/config", handlers.GetLLMConfig)
 	llm.Put("/config", handlers.UpdateLLMConfig)

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 	"trading-go/internal/database"
+	"trading-go/internal/validation"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -60,8 +61,12 @@ func ResolveGovernanceContext(settings map[string]string, universeMode string) (
 		return GovernanceContext{}, err
 	}
 
-	policy := GetModelSelectionPolicy(settings)
-	policy.PolicyVersion = versions.ModelSelectionPolicyVersion
+	policy := GetAuthorizedModelSelectionPolicy(settings)
+	if policy.ExperimentID != "" {
+		if manifest, loadErr := (validation.Repository{DB: database.DB}).LoadManifest(policy.ExperimentID); loadErr == nil {
+			versions = PolicyVersionSet{ExecutionPolicyVersion: manifest.Spec.Policies.Execution, UniversePolicyVersion: manifest.Spec.Policies.Universe, ModelSelectionPolicyVersion: manifest.Spec.Policies.ModelSelection, EntrySelectionPolicyVersion: manifest.Spec.Policies.EntrySelection, PortfolioRiskPolicyVersion: manifest.Spec.Policies.PortfolioRisk, RolloutPolicyVersion: manifest.Spec.Policies.Rollout, CompositeVersion: manifest.Spec.Policies.Composite}
+		}
+	}
 
 	context := GovernanceContext{
 		ModelVersion:       policy.ActiveModelVersion,
@@ -70,6 +75,7 @@ func ResolveGovernanceContext(settings map[string]string, universeMode string) (
 		FallbackMode:       policy.FallbackMode,
 		RollbackTarget:     policy.RollbackTarget,
 		EffectiveEntryMode: policy.EffectiveEntryMode(),
+		ExperimentID:       policy.ExperimentID,
 		PolicyVersions:     versions,
 	}
 
@@ -81,12 +87,45 @@ func ResolveGovernanceContext(settings map[string]string, universeMode string) (
 	if err := database.DB.Where("version = ?", policy.ActiveModelVersion).First(&artifact).Error; err == nil {
 		context.FeatureSpecVersion = artifact.FeatureSpecVersion
 		context.LabelSpecVersion = artifact.LabelSpecVersion
-		if artifact.ActiveExperimentID != nil {
+		if context.ExperimentID == "" && artifact.ActiveExperimentID != nil {
 			context.ExperimentID = strings.TrimSpace(*artifact.ActiveExperimentID)
 		}
 	}
 
 	return context, nil
+}
+
+// GetAuthorizedModelSelectionPolicy overlays the mutable settings projection
+// only with a Stage 07 deployment that is bound to the same model context.
+// Research code continues to use GetModelSelectionPolicy explicitly.
+func GetAuthorizedModelSelectionPolicy(settings map[string]string) ModelSelectionPolicy {
+	policy := GetModelSelectionPolicy(settings)
+	if policy.ActiveModelVersion == "" {
+		return policy
+	}
+	failClosed := func() ModelSelectionPolicy {
+		if policy.UseForLiveEntries() {
+			policy.RolloutState = ModelRolloutShadow
+		}
+		return policy
+	}
+	if database.DB == nil {
+		return failClosed()
+	}
+	var deployment database.GovernanceDeployment
+	if err := database.DB.Where("context_key=?", "model:"+policy.ActiveModelVersion).First(&deployment).Error; err != nil {
+		return failClosed()
+	}
+	if deployment.ArtifactVersion != policy.ActiveModelVersion && deployment.State != ModelRolloutRollback {
+		return failClosed()
+	}
+	policy.RolloutState = deployment.State
+	policy.PolicyVersion = deployment.PolicyVersion
+	policy.ExperimentID = deployment.ExperimentID
+	if deployment.State == ModelRolloutRollback {
+		policy.RollbackTarget = deployment.ArtifactVersion
+	}
+	return policy
 }
 
 func EnsurePolicyConfigs(settings map[string]string) (PolicyVersionSet, error) {
@@ -150,9 +189,16 @@ func SyncGovernanceState(settings map[string]string, source string) (GovernanceC
 	if database.DB == nil || strings.TrimSpace(context.ModelVersion) == "" {
 		return context, nil
 	}
+	// Stage 07 makes generic settings synchronization observational only. State
+	// authority is now written transactionally by internal/governance after
+	// immutable evidence and a bound human approval; retaining the legacy writes
+	// below would reintroduce an arbitrary-settings promotion backdoor.
+	return context, nil
+}
 
+func syncLegacyGovernanceState(context GovernanceContext, source string) (GovernanceContext, error) {
 	var artifact database.ModelArtifact
-	err = database.DB.Where("version = ?", context.ModelVersion).First(&artifact).Error
+	err := database.DB.Where("version = ?", context.ModelVersion).First(&artifact).Error
 	if err != nil && err != gorm.ErrRecordNotFound {
 		return GovernanceContext{}, err
 	}

@@ -476,6 +476,13 @@ type ModelArtifact struct {
 	MetricsSummaryJSON    string    `json:"metrics_summary_json" gorm:"type:text"`
 	ArtifactPath          string    `json:"artifact_path" gorm:"size:500"`
 	ArtifactChecksum      string    `json:"artifact_checksum" gorm:"size:128"`
+	ArtifactClass         string    `json:"artifact_class" gorm:"size:40;not null;default:research;index"`
+	FeatureSchemaJSON     string    `json:"feature_schema_json" gorm:"type:jsonb;not null;default:'[]'"`
+	TrainingManifestID    string    `json:"training_manifest_id" gorm:"size:64"`
+	CodeRevision          string    `json:"code_revision" gorm:"size:100"`
+	DatasetManifestID     string    `json:"dataset_manifest_id" gorm:"size:64;index"`
+	TrainingSeed          int64     `json:"training_seed"`
+	ModelDigest           string    `json:"model_digest" gorm:"size:64"`
 	RolloutState          string    `json:"rollout_state" gorm:"size:20;index"`
 	ActiveExperimentID    *string   `json:"active_experiment_id" gorm:"size:100;index"`
 	RollbackTarget        *string   `json:"rollback_target" gorm:"size:100"`
@@ -620,6 +627,85 @@ type MonitoringSnapshot struct {
 	RegimeSummaryJSON string    `json:"regime_summary_json" gorm:"type:text"`
 	CreatedAt         time.Time `json:"created_at"`
 	UpdatedAt         time.Time `json:"updated_at"`
+}
+
+// ValidationExperiment is the immutable Stage 07 experiment record. ContentID
+// identifies the canonical semantic specification; ID additionally binds the
+// immutable creation instant so two independently recorded copies remain
+// distinguishable without making reproduction depend on wall-clock time.
+type ValidationExperiment struct {
+	ID               string    `json:"id" gorm:"primaryKey;size:64"`
+	ContentID        string    `json:"content_id" gorm:"size:64;not null;index"`
+	SchemaVersion    string    `json:"schema_version" gorm:"size:50;not null;index"`
+	ContentJSON      string    `json:"content" gorm:"column:content_json;type:jsonb;not null"`
+	ContentDigest    string    `json:"content_digest" gorm:"size:64;not null"`
+	CreatedAt        time.Time `json:"created_at" gorm:"not null;index"`
+	BacktestJobID    *uint     `json:"backtest_job_id,omitempty" gorm:"index"`
+	ComparisonDigest *string   `json:"comparison_digest,omitempty" gorm:"size:64;index"`
+}
+
+type ValidationFoldEvidence struct {
+	ID             uint      `json:"id" gorm:"primaryKey;autoIncrement"`
+	ExperimentID   string    `json:"experiment_id" gorm:"size:64;not null;index;uniqueIndex:idx_validation_fold_identity,priority:1"`
+	FoldIndex      int       `json:"fold_index" gorm:"not null;uniqueIndex:idx_validation_fold_identity,priority:2"`
+	SchemaVersion  string    `json:"schema_version" gorm:"size:50;not null"`
+	Status         string    `json:"status" gorm:"size:30;not null;index"`
+	FrozenDigest   string    `json:"frozen_digest" gorm:"size:64;not null"`
+	EvidenceJSON   string    `json:"evidence" gorm:"column:evidence_json;type:jsonb;not null"`
+	EvidenceDigest string    `json:"evidence_digest" gorm:"size:64;not null"`
+	CreatedAt      time.Time `json:"created_at" gorm:"not null"`
+}
+
+type ValidationEvidence struct {
+	ID             string    `json:"id" gorm:"primaryKey;size:64"`
+	ExperimentID   string    `json:"experiment_id" gorm:"size:64;not null;index;uniqueIndex"`
+	SchemaVersion  string    `json:"schema_version" gorm:"size:50;not null"`
+	Status         string    `json:"status" gorm:"size:30;not null;index"`
+	EvidenceJSON   string    `json:"evidence" gorm:"column:evidence_json;type:jsonb;not null"`
+	EvidenceDigest string    `json:"evidence_digest" gorm:"size:64;not null"`
+	CreatedAt      time.Time `json:"created_at" gorm:"not null;index"`
+}
+
+type GovernanceApproval struct {
+	ID              string    `json:"id" gorm:"primaryKey;size:64"`
+	IdempotencyKey  string    `json:"idempotency_key" gorm:"size:120;not null;uniqueIndex"`
+	ExperimentID    string    `json:"experiment_id" gorm:"size:64;not null;index"`
+	EvidenceID      string    `json:"evidence_id" gorm:"size:64;not null;index"`
+	TargetState     string    `json:"target_state" gorm:"size:30;not null;index"`
+	ArtifactVersion string    `json:"artifact_version" gorm:"size:100;not null;index"`
+	PolicyVersion   string    `json:"policy_version" gorm:"size:100;not null"`
+	Approver        string    `json:"approver" gorm:"size:200;not null"`
+	Reason          string    `json:"reason" gorm:"size:1000;not null"`
+	ApprovedAt      time.Time `json:"approved_at" gorm:"not null;index"`
+	ContentDigest   string    `json:"content_digest" gorm:"size:64;not null"`
+}
+
+type GovernanceDeployment struct {
+	ContextKey      string    `json:"context_key" gorm:"primaryKey;size:120"`
+	ExperimentID    string    `json:"experiment_id" gorm:"size:64;not null;index"`
+	EvidenceID      string    `json:"evidence_id" gorm:"size:64;not null"`
+	State           string    `json:"state" gorm:"size:30;not null;index"`
+	ArtifactVersion string    `json:"artifact_version" gorm:"size:100;not null;index"`
+	PolicyVersion   string    `json:"policy_version" gorm:"size:100;not null"`
+	FallbackVersion string    `json:"fallback_version" gorm:"size:100"`
+	ActivatedAt     time.Time `json:"activated_at" gorm:"not null"`
+	UpdatedAt       time.Time `json:"updated_at" gorm:"not null"`
+}
+
+type GovernanceTransition struct {
+	ID              string    `json:"id" gorm:"primaryKey;size:64"`
+	IdempotencyKey  string    `json:"idempotency_key" gorm:"size:120;not null;uniqueIndex"`
+	ContextKey      string    `json:"context_key" gorm:"size:120;not null;index"`
+	ExperimentID    string    `json:"experiment_id" gorm:"size:64;not null;index"`
+	EvidenceID      string    `json:"evidence_id" gorm:"size:64;not null"`
+	ApprovalID      *string   `json:"approval_id,omitempty" gorm:"size:64;index"`
+	FromState       string    `json:"from_state" gorm:"size:30;not null;index"`
+	ToState         string    `json:"to_state" gorm:"size:30;not null;index"`
+	ArtifactVersion string    `json:"artifact_version" gorm:"size:100;not null"`
+	FallbackVersion string    `json:"fallback_version" gorm:"size:100"`
+	Reason          string    `json:"reason" gorm:"size:1000;not null"`
+	ContentDigest   string    `json:"content_digest" gorm:"size:64;not null"`
+	CreatedAt       time.Time `json:"created_at" gorm:"not null;index"`
 }
 
 type PortfolioSnapshot struct {

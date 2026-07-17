@@ -31,6 +31,7 @@ type ModelCalibration struct {
 }
 
 type LogisticModelArtifact struct {
+	ArtifactClass      string                 `json:"artifact_class"`
 	Version            string                 `json:"version"`
 	ModelFamily        string                 `json:"model_family"`
 	FeatureSpecVersion string                 `json:"feature_spec_version"`
@@ -143,9 +144,17 @@ func (artifact LogisticModelArtifact) Validate() error {
 	if len(artifact.Features) == 0 {
 		return fmt.Errorf("model artifact %s has no features", artifact.Version)
 	}
+	seen := make(map[string]bool, len(artifact.Features))
 	for _, feature := range artifact.Features {
 		if strings.TrimSpace(feature.Name) == "" {
 			return fmt.Errorf("model artifact %s contains unnamed feature", artifact.Version)
+		}
+		if seen[feature.Name] {
+			return fmt.Errorf("model artifact %s contains duplicate feature %s", artifact.Version, feature.Name)
+		}
+		seen[feature.Name] = true
+		if math.IsNaN(feature.Mean) || math.IsInf(feature.Mean, 0) || math.IsNaN(feature.Std) || math.IsInf(feature.Std, 0) || math.IsNaN(feature.Coefficient) || math.IsInf(feature.Coefficient, 0) {
+			return fmt.Errorf("model artifact %s contains non-finite feature metadata", artifact.Version)
 		}
 	}
 	return nil

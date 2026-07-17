@@ -224,11 +224,11 @@ func TestCharacterizationShortlistExistingOpenAndErrorSemantics(t *testing.T) {
 	})
 }
 
-func TestCharacterizationShortlistModelRolloutControlsActualExecution(t *testing.T) {
+func TestStage07LegacyRolloutStringsCannotAuthorizeActualExecution(t *testing.T) {
 	states := []struct {
 		state   string
 		wantBuy int
-	}{{ModelRolloutResearchOnly, 0}, {ModelRolloutShadow, 0}, {ModelRolloutPaper, 1}, {ModelRolloutLimitedLive, 1}, {ModelRolloutFullLive, 1}, {ModelRolloutRollback, 0}}
+	}{{ModelRolloutResearchOnly, 0}, {ModelRolloutShadow, 0}, {ModelRolloutPaper, 0}, {ModelRolloutLimitedLive, 0}, {ModelRolloutFullLive, 0}, {ModelRolloutRollback, 0}}
 	for _, fixture := range states {
 		t.Run(fixture.state, func(t *testing.T) {
 			selected := true

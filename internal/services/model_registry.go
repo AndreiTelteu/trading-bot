@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"trading-go/internal/database"
+	"trading-go/internal/validation"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -30,11 +31,20 @@ var modelArtifactCache = struct {
 }
 
 func LoadConfiguredModel(settings map[string]string) (*LogisticModelArtifact, error) {
-	policy := GetModelSelectionPolicy(settings)
+	policy := GetAuthorizedModelSelectionPolicy(settings)
 	if !policy.Enabled() {
 		return nil, nil
 	}
-	return LoadModelArtifact(policy.ActiveModelVersion)
+	artifact, err := LoadModelArtifact(policy.ActiveModelVersion)
+	if err != nil {
+		return nil, err
+	}
+	if policy.UseForLiveEntries() {
+		if err := verifyStage07ModelAuthority(policy, artifact); err != nil {
+			return nil, err
+		}
+	}
+	return artifact, nil
 }
 
 func LoadModelArtifact(version string) (*LogisticModelArtifact, error) {
@@ -140,6 +150,11 @@ func ensureBuiltinModelArtifactRecord(version string, builtinPath string, checks
 		return err
 	}
 	metricsJSON, _ := json.Marshal(artifact.Metrics)
+	featureSchema := make([]map[string]string, 0, len(artifact.Features))
+	for _, feature := range artifact.Features {
+		featureSchema = append(featureSchema, map[string]string{"name": feature.Name, "type": "float64"})
+	}
+	featureSchemaJSON, _ := json.Marshal(featureSchema)
 
 	record := database.ModelArtifact{
 		Version:            version,
@@ -153,6 +168,9 @@ func ensureBuiltinModelArtifactRecord(version string, builtinPath string, checks
 		MetricsSummaryJSON: string(metricsJSON),
 		ArtifactPath:       "builtin://" + builtinPath,
 		ArtifactChecksum:   checksum,
+		ArtifactClass:      "contract_fixture",
+		FeatureSchemaJSON:  string(featureSchemaJSON),
+		ModelDigest:        checksum,
 		RolloutState:       ModelRolloutShadow,
 	}
 
@@ -169,9 +187,56 @@ func ensureBuiltinModelArtifactRecord(version string, builtinPath string, checks
 			"metrics_summary_json",
 			"artifact_path",
 			"artifact_checksum",
+			"artifact_class",
+			"feature_schema_json",
+			"model_digest",
 			"updated_at",
 		}),
 	}).Create(&record).Error
+}
+
+func verifyStage07ModelAuthority(policy ModelSelectionPolicy, loaded *LogisticModelArtifact) error {
+	if database.DB == nil {
+		return fmt.Errorf("Stage 07 model authority requires persistent governance evidence")
+	}
+	var artifact database.ModelArtifact
+	if err := database.DB.Where("version = ?", policy.ActiveModelVersion).First(&artifact).Error; err != nil {
+		return err
+	}
+	if loaded == nil || loaded.ArtifactClass != "promotable_candidate" || artifact.ArtifactClass != "promotable_candidate" {
+		return fmt.Errorf("model artifact %s class %s is structurally quarantined", policy.ActiveModelVersion, artifact.ArtifactClass)
+	}
+	if artifact.FeatureSpecVersion == "" || artifact.LabelSpecVersion == "" || artifact.FeatureSchemaJSON == "" || artifact.TrainingManifestID == "" || artifact.CodeRevision == "" || artifact.DatasetManifestID == "" || artifact.ModelDigest == "" || artifact.ModelDigest != artifact.ArtifactChecksum {
+		return fmt.Errorf("model artifact %s lacks exact Stage 07 training provenance", policy.ActiveModelVersion)
+	}
+	var storedFeatures []struct{ Name, Type string }
+	if err := json.Unmarshal([]byte(artifact.FeatureSchemaJSON), &storedFeatures); err != nil || len(storedFeatures) != len(loaded.Features) {
+		return fmt.Errorf("model artifact %s feature schema is invalid", policy.ActiveModelVersion)
+	}
+	for i, feature := range loaded.Features {
+		if storedFeatures[i].Name != feature.Name || storedFeatures[i].Type != "float64" {
+			return fmt.Errorf("model artifact %s feature order/type mismatch at index %d", policy.ActiveModelVersion, i)
+		}
+	}
+	if loaded.FeatureSpecVersion != artifact.FeatureSpecVersion || loaded.LabelSpecVersion != artifact.LabelSpecVersion || loaded.Version != artifact.Version {
+		return fmt.Errorf("model artifact %s schema/version metadata mismatch", policy.ActiveModelVersion)
+	}
+	var deployment database.GovernanceDeployment
+	if err := database.DB.Where("context_key = ?", "model:"+policy.ActiveModelVersion).First(&deployment).Error; err != nil {
+		return fmt.Errorf("model artifact %s has no Stage 07 authority: %w", policy.ActiveModelVersion, err)
+	}
+	if deployment.ArtifactVersion != policy.ActiveModelVersion || deployment.State != policy.RolloutState || deployment.PolicyVersion != policy.PolicyVersion {
+		return fmt.Errorf("model artifact %s authority does not match exact rollout and policy", policy.ActiveModelVersion)
+	}
+	manifest, err := (validation.Repository{DB: database.DB}).LoadManifest(deployment.ExperimentID)
+	if err != nil || manifest.Spec.Model == nil {
+		return fmt.Errorf("model artifact %s authority manifest is unavailable or non-model", policy.ActiveModelVersion)
+	}
+	model := manifest.Spec.Model
+	if model.Version != artifact.Version || model.Class != validation.ArtifactPromotableCandidate || model.ModelDigest != artifact.ModelDigest || model.FeatureSpec != artifact.FeatureSpecVersion || model.LabelSpec != artifact.LabelSpecVersion || model.CodeRevision != artifact.CodeRevision || model.DatasetManifest != artifact.DatasetManifestID || model.TrainingManifest != artifact.TrainingManifestID || model.Seed != artifact.TrainingSeed || model.PolicyVersion != deployment.PolicyVersion {
+		return fmt.Errorf("model artifact %s provenance differs from immutable authority manifest", policy.ActiveModelVersion)
+	}
+	return nil
 }
 
 func sha256Hex(payload []byte) string {

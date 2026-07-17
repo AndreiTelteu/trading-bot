@@ -1,5 +1,6 @@
 {
   "version": "logistic_baseline_v1",
+  "artifact_class": "contract_fixture",
   "model_family": "logistic",
   "feature_spec_version": "learned_signal_v1",
   "label_spec_version": "net_trade_return_v1",

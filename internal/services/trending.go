@@ -727,7 +727,7 @@ func AnalyzeShortlist(selection *UniverseSelectionResult, settings map[string]st
 	}
 
 	results := make([]AnalyzedCoin, 0, len(selection.Shortlist))
-	modelPolicy := GetModelSelectionPolicy(settings)
+	modelPolicy := GetAuthorizedModelSelectionPolicy(settings)
 	governance, governanceErr := ResolveGovernanceContext(settings, getSettingString(settings, "universe_mode", "dynamic"))
 	if governanceErr != nil {
 		logActivity("error", "Failed to resolve governance context", governanceErr.Error())
@@ -1014,7 +1014,7 @@ func executeShortlistTradesWithRuntime(analyses []AnalyzedCoin, universe *Univer
 	maxPositions := getSettingInt(settings, "max_positions", 5)
 	buyOnlyStrong := getSettingBool(settings, "buy_only_strong", true)
 	minConfidenceToBuy := getSettingFloat(settings, "min_confidence_to_buy", 4.0)
-	modelPolicy := GetModelSelectionPolicy(settings)
+	modelPolicy := GetAuthorizedModelSelectionPolicy(settings)
 	useModelEntries := modelPolicy.UseForLiveEntries() && hasModelRankings(analyses)
 	marketPolicy := shortlistMarketGatePolicy{
 		Enabled: getSettingBool(settings, "regime_gate_enabled", true), RegimeTimeframe: getSettingString(settings, "regime_timeframe", "1h"),
