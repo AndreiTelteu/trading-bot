@@ -103,6 +103,8 @@ type BacktestConfig struct {
 	CodeRevision                           string
 	ConfigVersion                          string
 	StrategyVersion                        string
+	StrategyID                             string
+	StrategyParameters                     map[string]string
 	Seed                                   int64
 }
 
@@ -163,10 +165,11 @@ type DatasetAudit struct {
 }
 
 type ReplaySnapshot struct {
-	Timestamp    time.Time      `json:"timestamp"`
-	RegimeState  string         `json:"regime_state"`
-	BreadthRatio float64        `json:"breadth_ratio"`
-	Members      []ReplayMember `json:"members"`
+	Timestamp        time.Time      `json:"timestamp"`
+	RegimeState      string         `json:"regime_state"`
+	BreadthRatio     float64        `json:"breadth_ratio"`
+	ObservedComplete bool           `json:"observed_complete"`
+	Members          []ReplayMember `json:"members"`
 }
 
 type ReplayMember struct {
@@ -255,6 +258,52 @@ type ArtifactRefs struct {
 	Equity        string `json:"equity"`
 	Metrics       string `json:"metrics"`
 	Exposure      string `json:"exposure"`
+	Comparison    string `json:"comparison,omitempty"`
+}
+
+type StrategyDataRequirement struct {
+	Role      string `json:"role"`
+	Timeframe string `json:"timeframe"`
+}
+
+type StrategyParameterSpec struct {
+	Name        string   `json:"name"`
+	Type        string   `json:"type"`
+	Description string   `json:"description"`
+	Default     string   `json:"default"`
+	Minimum     *float64 `json:"minimum,omitempty"`
+	Maximum     *float64 `json:"maximum,omitempty"`
+	Enum        []string `json:"enum,omitempty"`
+}
+
+type StrategyRiskDeclaration struct {
+	MaxGrossExposure string `json:"max_gross_exposure"`
+	MaxNetExposure   string `json:"max_net_exposure"`
+	LongOnly         bool   `json:"long_only"`
+	UsesSharedRisk   bool   `json:"uses_shared_risk"`
+}
+
+// StrategyDescriptor is immutable registry metadata. ID plus Version is the
+// stable economic identity of a strategy declaration and parameter schema.
+type StrategyDescriptor struct {
+	SchemaVersion       string                    `json:"schema_version"`
+	ID                  string                    `json:"id"`
+	Version             string                    `json:"version"`
+	Description         string                    `json:"description"`
+	RequiredData        []StrategyDataRequirement `json:"required_data"`
+	BenchmarkRequired   bool                      `json:"benchmark_required"`
+	DecisionCadence     string                    `json:"decision_cadence"`
+	RebalanceCadence    string                    `json:"rebalance_cadence"`
+	WarmupBars          int                       `json:"warmup_bars"`
+	Risk                StrategyRiskDeclaration   `json:"risk"`
+	Parameters          []StrategyParameterSpec   `json:"parameters"`
+	Baseline            bool                      `json:"baseline"`
+	LegacyCompatibility bool                      `json:"legacy_compatibility,omitempty"`
+}
+
+type SelectedStrategy struct {
+	Descriptor StrategyDescriptor `json:"descriptor"`
+	Parameters map[string]string  `json:"parameters"`
 }
 
 type RunManifest struct {
@@ -263,6 +312,7 @@ type RunManifest struct {
 	CodeRevision      string            `json:"code_revision"`
 	ConfigVersion     string            `json:"config_version"`
 	StrategyVersion   string            `json:"strategy_version"`
+	Strategy          SelectedStrategy  `json:"strategy"`
 	PolicyVersion     string            `json:"policy_version"`
 	CostVersion       string            `json:"cost_version"`
 	DatasetManifestID string            `json:"dataset_manifest_id"`

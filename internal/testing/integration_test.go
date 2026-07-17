@@ -576,6 +576,7 @@ func TestOptimizeBacktestEndpointCreatesProposal(t *testing.T) {
 	database.DB.Save(&config)
 
 	summaryJSON := `{"job_id":1,"started_at":"2026-03-14T00:00:00Z","finished_at":"2026-03-14T00:10:00Z","baseline":{"Mode":"baseline","Metrics":{"TradeCount":10,"WinRate":40,"ProfitFactor":1.1,"AvgWin":2.4,"AvgLoss":-1.2}},"vol_sizing":{"Mode":"vol_sizing","Metrics":{"TradeCount":8,"WinRate":50,"ProfitFactor":1.4,"AvgWin":2.8,"AvgLoss":-1.0}},"validation":{"passed":true,"windows":1}}`
+	summaryJSON = withStage05OptimizationEvidence(t, summaryJSON)
 	job := database.BacktestJob{
 		Status:      "completed",
 		Progress:    1,
@@ -655,6 +656,7 @@ func TestOptimizeBacktestEndpointFallsBackToHypotheses(t *testing.T) {
 	database.DB.Save(&config)
 
 	summaryJSON := `{"job_id":1,"started_at":"2026-03-14T00:00:00Z","finished_at":"2026-03-14T00:10:00Z","baseline":{"Mode":"baseline","Metrics":{"TradeCount":10,"WinRate":0.40,"ProfitFactor":0.9,"AvgWin":2.4,"AvgLoss":-1.4}},"vol_sizing":{"Mode":"vol_sizing","Metrics":{"TradeCount":8,"WinRate":0.45,"ProfitFactor":0.95,"AvgWin":2.6,"AvgLoss":-1.2}},"validation":{"passed":false,"windows":1}}`
+	summaryJSON = withStage05OptimizationEvidence(t, summaryJSON)
 	job := database.BacktestJob{
 		Status:      "completed",
 		Progress:    1,
@@ -770,6 +772,7 @@ func TestOptimizeBacktestEndpointReturnsRawResponseForNoJSONArray(t *testing.T) 
 	database.DB.Save(&config)
 
 	summaryJSON := `{"job_id":1,"started_at":"2026-03-14T00:00:00Z","finished_at":"2026-03-14T00:10:00Z","baseline":{"Mode":"baseline","Metrics":{"TradeCount":10,"WinRate":0.40,"ProfitFactor":0.9,"AvgWin":2.4,"AvgLoss":-1.4}},"vol_sizing":{"Mode":"vol_sizing","Metrics":{"TradeCount":8,"WinRate":0.45,"ProfitFactor":0.95,"AvgWin":2.6,"AvgLoss":-1.2}},"validation":{"passed":false,"windows":1}}`
+	summaryJSON = withStage05OptimizationEvidence(t, summaryJSON)
 	job := database.BacktestJob{
 		Status:      "completed",
 		Progress:    1,
@@ -830,4 +833,26 @@ func TestOptimizeBacktestEndpointReturnsRawResponseForNoJSONArray(t *testing.T) 
 
 func strPtr(v string) *string {
 	return &v
+}
+
+func withStage05OptimizationEvidence(t *testing.T, legacy string) string {
+	t.Helper()
+	var value map[string]interface{}
+	if err := json.Unmarshal([]byte(legacy), &value); err != nil {
+		t.Fatal(err)
+	}
+	value["schema_version"] = "strategy-comparison-v1"
+	value["manifest_id"] = "integration-manifest"
+	value["candidate"] = "vol_sizing@fixture"
+	value["normalized_assumptions"] = map[string]interface{}{"dataset_manifest_id": "integration-manifest"}
+	metric := func() map[string]interface{} {
+		return map[string]interface{}{"reconciled": true, "total_return": map[string]interface{}{"available": true, "value": .01}}
+	}
+	value["rows"] = []map[string]interface{}{{"strategy_id": "cash", "manifest_identity": "integration-manifest", "metrics": metric()}, {"strategy_id": "benchmark_buy_hold", "manifest_identity": "integration-manifest", "metrics": metric()}, {"strategy_id": "vol_sizing", "manifest_identity": "integration-manifest", "metrics": metric()}}
+	value["governance"] = map[string]interface{}{"schema_version": "baseline-governance-gate-v1", "optimization_allowed": true, "promotion_allowed": true}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(encoded)
 }

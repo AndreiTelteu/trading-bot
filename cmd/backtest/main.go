@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"strconv"
+	"strings"
 
 	"trading-go/internal/backtest"
 	"trading-go/internal/config"
@@ -27,6 +28,11 @@ func main() {
 	feeBps := flag.Float64("fee-bps", -1, "")
 	slippageBps := flag.Float64("slippage-bps", -1, "")
 	universeMode := flag.String("universe-mode", "", "")
+	strategyID := flag.String("strategy", "", "Stage 05 registered candidate strategy ID")
+	strategyVersion := flag.String("strategy-version", "", "Stage 05 strategy version")
+	strategyParams := flag.String("strategy-params", "", "comma-separated key=value Stage 05 parameters")
+	targetGross := flag.String("target-gross", "1", "normalized Stage 05 gross exposure decimal")
+	finalPolicy := flag.String("final-policy", "liquidate", "liquidate or mark_to_market")
 	flag.Parse()
 
 	overrides := map[string]string{}
@@ -47,6 +53,30 @@ func main() {
 	}
 	if *universeMode != "" {
 		overrides["backtest_universe_mode"] = *universeMode
+	}
+
+	if *strategyID != "" {
+		parameters := map[string]string{}
+		for _, item := range strings.Split(*strategyParams, ",") {
+			if strings.TrimSpace(item) == "" {
+				continue
+			}
+			parts := strings.SplitN(item, "=", 2)
+			if len(parts) != 2 {
+				log.Fatalf("Invalid strategy parameter %q", item)
+			}
+			parameters[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
+		}
+		comparison, compareErr := backtest.RunStage05ComparisonSyncWithOverrides(backtest.Stage05RunRequest{StrategyID: *strategyID, StrategyVersion: *strategyVersion, Parameters: parameters, TargetGrossExposure: *targetGross, MaxNetExposure: *targetGross, FinalPolicy: *finalPolicy}, overrides)
+		if compareErr != nil {
+			log.Fatalf("Stage 05 comparison failed: %v", compareErr)
+		}
+		payload, marshalErr := json.MarshalIndent(comparison, "", "  ")
+		if marshalErr != nil {
+			log.Fatalf("Failed to encode comparison: %v", marshalErr)
+		}
+		fmt.Println(string(payload))
+		return
 	}
 
 	summary, err := backtest.RunBacktestSyncWithOverrides(overrides)

@@ -17,9 +17,10 @@ import (
 )
 
 const (
-	CoverageSchemaVersion = "backtest-coverage-v1"
-	ManifestSchemaVersion = "backtest-run-manifest-v3"
-	ArtifactSchemaVersion = "backtest-artifacts-v1"
+	CoverageSchemaVersion       = "backtest-coverage-v1"
+	ManifestSchemaVersion       = "backtest-run-manifest-v4"
+	LegacyManifestSchemaVersion = "backtest-run-manifest-v3"
+	ArtifactSchemaVersion       = "backtest-artifacts-v1"
 )
 
 type CoverageError struct{ Report CoverageReport }
@@ -400,7 +401,24 @@ func buildManifest(config BacktestConfig, coverage CoverageReport, classificatio
 	}
 	limitations = append(limitations, "ohlcv_full_fill_no_order_book_model")
 	sort.Strings(limitations)
-	return RunManifest{SchemaVersion: ManifestSchemaVersion, Classification: classification, CodeRevision: config.CodeRevision, ConfigVersion: config.ConfigVersion, StrategyVersion: config.StrategyVersion, PolicyVersion: backtestPolicyVersion(config), CostVersion: config.ExecutionPolicy.CostVersion, DatasetManifestID: config.DatasetManifestID, Dataset: DatasetAudit{ManifestID: config.DatasetManifestID, KnowledgeCutoff: config.DatasetKnowledgeCutoff, Series: append([]DatasetSeriesIdentity(nil), config.DatasetSeries...)}, UniverseMode: config.UniverseMode, BenchmarkSymbol: config.BenchmarkSymbol, Seed: config.Seed, FeeBPS: config.FeeBps, SlippageBPS: config.SlippageBps, CoveragePolicy: config.CoveragePolicy, ExecutionPolicy: config.ExecutionPolicy, Start: canonicalTime(config.Start), End: canonicalTime(config.End), Coverage: coverage, Limitations: limitations, Artifacts: ArtifactRefs{SchemaVersion: ArtifactSchemaVersion, Manifest: "manifest.json", Decisions: "decisions.json", Orders: "orders.json", Fills: "fills.json", Trades: "trades.json", Ledger: "ledger.json", Equity: "equity.json", Metrics: "metrics.json", Exposure: "exposure.json"}}
+	selected := selectedStrategyForManifest(config)
+	return RunManifest{SchemaVersion: ManifestSchemaVersion, Classification: classification, CodeRevision: config.CodeRevision, ConfigVersion: config.ConfigVersion, StrategyVersion: selected.Descriptor.Version, Strategy: selected, PolicyVersion: backtestPolicyVersion(config), CostVersion: config.ExecutionPolicy.CostVersion, DatasetManifestID: config.DatasetManifestID, Dataset: DatasetAudit{ManifestID: config.DatasetManifestID, KnowledgeCutoff: config.DatasetKnowledgeCutoff, Series: append([]DatasetSeriesIdentity(nil), config.DatasetSeries...)}, UniverseMode: config.UniverseMode, BenchmarkSymbol: config.BenchmarkSymbol, Seed: config.Seed, FeeBPS: config.FeeBps, SlippageBPS: config.SlippageBps, CoveragePolicy: config.CoveragePolicy, ExecutionPolicy: config.ExecutionPolicy, Start: canonicalTime(config.Start), End: canonicalTime(config.End), Coverage: coverage, Limitations: limitations, Artifacts: ArtifactRefs{SchemaVersion: ArtifactSchemaVersion, Manifest: "manifest.json", Decisions: "decisions.json", Orders: "orders.json", Fills: "fills.json", Trades: "trades.json", Ledger: "ledger.json", Equity: "equity.json", Metrics: "metrics.json", Exposure: "exposure.json"}}
+}
+
+func selectedStrategyForManifest(config BacktestConfig) SelectedStrategy {
+	id := strings.TrimSpace(config.StrategyID)
+	version := strings.TrimSpace(config.StrategyVersion)
+	if id == "" {
+		id = StrategyLegacyCompatibility
+	}
+	if version == "" || strings.HasPrefix(version, "legacy-rule") {
+		version = "1.0.0"
+	}
+	selected, _, err := DefaultStrategyRegistry.Resolve(id, version, config.StrategyParameters)
+	if err == nil {
+		return selected
+	}
+	return SelectedStrategy{Descriptor: StrategyDescriptor{SchemaVersion: StrategyDescriptorSchemaVersion, ID: id, Version: version, Description: "Unregistered compatibility strategy", DecisionCadence: config.Timeframe, RebalanceCadence: config.Timeframe, Risk: StrategyRiskDeclaration{UsesSharedRisk: true}, LegacyCompatibility: true}, Parameters: cloneStringMap(config.StrategyParameters)}
 }
 
 func MarshalArtifactBytes(result BacktestResult) (ArtifactBytes, error) {
@@ -461,7 +479,8 @@ func fixtureReplaySnapshots(values []ReplaySnapshot) []replaySnapshotEntry {
 			}
 			members = append(members, database.UniverseMember{Symbol: strings.ToUpper(member.Symbol), Stage: member.Stage, ListingAgeDays: member.ListingAgeDays, MedianDailyQuoteVolume: member.MedianDailyQuoteVolume, MedianIntradayQuoteVolume: member.MedianIntradayQuoteVolume, RankComponentsJSON: member.RankComponentsJSON, RejectionReason: rejection, RankScore: rankScore, Shortlisted: member.Shortlisted, LastPrice: member.LastPrice, Change24h: member.Change24h, QuoteVolume24h: member.QuoteVolume24h, GapRatio: member.GapRatio, VolatilityRatio: member.VolatilityRatio, Return1D: member.Return1D, Return3D: member.Return3D, Return7D: member.Return7D, Return30D: member.Return30D, RelativeStrength: member.RelativeStrength, TrendQuality: member.TrendQuality, BreakoutProximity: member.BreakoutProximity, VolumeAcceleration: member.VolumeAcceleration, OverextensionPenalty: member.OverextensionPenalty})
 		}
-		result = append(result, replaySnapshotEntry{Timestamp: value.Timestamp.UTC(), RegimeState: value.RegimeState, BreadthRatio: value.BreadthRatio, Members: members})
+		observedComplete := value.ObservedComplete || len(value.Members) > 0
+		result = append(result, replaySnapshotEntry{Timestamp: value.Timestamp.UTC(), RegimeState: value.RegimeState, BreadthRatio: value.BreadthRatio, Members: members, ObservedComplete: observedComplete})
 	}
 	return result
 }
@@ -484,7 +503,7 @@ func canonicalReplaySnapshots(values []replaySnapshotEntry) []ReplaySnapshot {
 			}
 			public = append(public, ReplayMember{Symbol: m.Symbol, Rank: i + 1, Shortlisted: m.Shortlisted, Stage: m.Stage, ListingAgeDays: m.ListingAgeDays, MedianDailyQuoteVolume: m.MedianDailyQuoteVolume, MedianIntradayQuoteVolume: m.MedianIntradayQuoteVolume, RankComponentsJSON: m.RankComponentsJSON, RejectionReason: rejection, LastPrice: m.LastPrice, Change24h: m.Change24h, QuoteVolume24h: m.QuoteVolume24h, GapRatio: m.GapRatio, VolatilityRatio: m.VolatilityRatio, Return1D: m.Return1D, Return3D: m.Return3D, Return7D: m.Return7D, Return30D: m.Return30D, RelativeStrength: m.RelativeStrength, TrendQuality: m.TrendQuality, BreakoutProximity: m.BreakoutProximity, VolumeAcceleration: m.VolumeAcceleration, OverextensionPenalty: m.OverextensionPenalty, RankScore: m.RankScore})
 		}
-		result = append(result, ReplaySnapshot{Timestamp: value.Timestamp.UTC(), RegimeState: value.RegimeState, BreadthRatio: value.BreadthRatio, Members: public})
+		result = append(result, ReplaySnapshot{Timestamp: value.Timestamp.UTC(), RegimeState: value.RegimeState, BreadthRatio: value.BreadthRatio, ObservedComplete: value.ObservedComplete, Members: public})
 	}
 	return result
 }
@@ -548,8 +567,17 @@ func UnmarshalRunManifest(data []byte) (RunManifest, error) {
 	if err := json.Unmarshal(data, &manifest); err != nil {
 		return RunManifest{}, err
 	}
-	if manifest.SchemaVersion != ManifestSchemaVersion {
+	if manifest.SchemaVersion != ManifestSchemaVersion && manifest.SchemaVersion != LegacyManifestSchemaVersion {
 		return RunManifest{}, fmt.Errorf("unsupported manifest schema %q", manifest.SchemaVersion)
+	}
+	if manifest.SchemaVersion == LegacyManifestSchemaVersion {
+		version := manifest.StrategyVersion
+		if version == "" {
+			version = "unknown-legacy-version"
+		}
+		manifest.Strategy = SelectedStrategy{Descriptor: StrategyDescriptor{SchemaVersion: StrategyDescriptorSchemaVersion, ID: StrategyLegacyCompatibility, Version: version, Description: "Legacy v3 run manifest compatibility evidence", DecisionCadence: "legacy", RebalanceCadence: "legacy", Risk: StrategyRiskDeclaration{UsesSharedRisk: true}, Baseline: true, LegacyCompatibility: true}, Parameters: map[string]string{}}
+	} else if manifest.Strategy.Descriptor.SchemaVersion != StrategyDescriptorSchemaVersion || manifest.Strategy.Descriptor.ID == "" || manifest.Strategy.Descriptor.Version == "" {
+		return RunManifest{}, fmt.Errorf("manifest strategy descriptor is missing or unsupported")
 	}
 	if manifest.Artifacts.SchemaVersion != ArtifactSchemaVersion {
 		return RunManifest{}, fmt.Errorf("unsupported artifact schema %q", manifest.Artifacts.SchemaVersion)

@@ -157,6 +157,9 @@ type BacktestOptimizationPromptOptions struct {
 }
 
 func GenerateBacktestOptimizationProposals(input BacktestOptimizationInput) (interface{}, error) {
+	if err := requireBaselineRelativeOptimizationEvidence(input.SummaryJSON); err != nil {
+		return nil, fiber.NewError(409, err.Error())
+	}
 	var llmConfig database.LLMConfig
 	if err := database.DB.First(&llmConfig).Error; err != nil {
 		return nil, fiber.NewError(500, "LLM config not found")
@@ -295,6 +298,65 @@ func GenerateBacktestOptimizationProposals(input BacktestOptimizationInput) (int
 		"attempt_mode":  attemptMode,
 		"used_fallback": usedFallback,
 	}, nil
+}
+
+func requireBaselineRelativeOptimizationEvidence(summaryJSON string) error {
+	if strings.TrimSpace(summaryJSON) == "" {
+		return fmt.Errorf("optimization_blocked: baseline-relative comparison evidence is missing")
+	}
+	var evidence struct {
+		SchemaVersion string `json:"schema_version"`
+		ManifestID    string `json:"manifest_id"`
+		Candidate     string `json:"candidate"`
+		Assumptions   struct {
+			DatasetManifestID string `json:"dataset_manifest_id"`
+		} `json:"normalized_assumptions"`
+		Rows []struct {
+			StrategyID       string `json:"strategy_id"`
+			ManifestIdentity string `json:"manifest_identity"`
+			Metrics          struct {
+				Reconciled  bool `json:"reconciled"`
+				TotalReturn struct {
+					Available bool `json:"available"`
+				} `json:"total_return"`
+			} `json:"metrics"`
+		} `json:"rows"`
+		Governance struct {
+			SchemaVersion       string   `json:"schema_version"`
+			OptimizationAllowed bool     `json:"optimization_allowed"`
+			Reasons             []string `json:"reasons"`
+		} `json:"governance"`
+	}
+	if err := json.Unmarshal([]byte(summaryJSON), &evidence); err != nil {
+		return fmt.Errorf("optimization_blocked: baseline-relative comparison evidence is invalid")
+	}
+	if evidence.SchemaVersion != "strategy-comparison-v1" || evidence.Governance.SchemaVersion != "baseline-governance-gate-v1" {
+		return fmt.Errorf("optimization_blocked: Stage 05 baseline-relative comparison evidence is required")
+	}
+	candidateID := strings.SplitN(evidence.Candidate, "@", 2)[0]
+	seenCash, seenMarket, seenCandidate := false, false, false
+	if evidence.ManifestID == "" || evidence.Assumptions.DatasetManifestID != evidence.ManifestID || candidateID == "" {
+		return fmt.Errorf("optimization_blocked: normalized manifest identity evidence is incomplete")
+	}
+	for _, row := range evidence.Rows {
+		if row.ManifestIdentity != evidence.ManifestID || !row.Metrics.Reconciled || !row.Metrics.TotalReturn.Available {
+			continue
+		}
+		seenCash = seenCash || row.StrategyID == "cash"
+		seenMarket = seenMarket || row.StrategyID == "benchmark_buy_hold"
+		seenCandidate = seenCandidate || row.StrategyID == candidateID
+	}
+	if !seenCash || !seenMarket || !seenCandidate {
+		return fmt.Errorf("optimization_blocked: reconciled cash, market, and candidate metric rows are required")
+	}
+	if !evidence.Governance.OptimizationAllowed {
+		reason := "baseline-relative value was not established"
+		if len(evidence.Governance.Reasons) > 0 {
+			reason = strings.Join(evidence.Governance.Reasons, ",")
+		}
+		return fmt.Errorf("optimization_blocked: %s", reason)
+	}
+	return nil
 }
 
 type AnalysisSummary struct {
@@ -591,19 +653,19 @@ func isAIAdjustableSettingKey(key string) bool {
 
 // governanceAllowedParameterKeys lists the only parameter keys the AI is permitted to propose changes to.
 var governanceAllowedParameterKeys = map[string]bool{
-	"selection_policy_top_k":            true,
-	"selection_policy_min_prob":         true,
-	"selection_policy_min_ev":           true,
-	"risk_per_trade":                    true,
-	"stop_mult":                         true,
-	"tp_mult":                           true,
-	"max_position_value":                true,
-	"universe_top_k":                    true,
-	"universe_analyze_top_n":            true,
-	"universe_min_daily_quote_volume":   true,
-	"time_stop_bars":                    true,
-	"max_positions":                     true,
-	"model_rollout_state":               true,
+	"selection_policy_top_k":          true,
+	"selection_policy_min_prob":       true,
+	"selection_policy_min_ev":         true,
+	"risk_per_trade":                  true,
+	"stop_mult":                       true,
+	"tp_mult":                         true,
+	"max_position_value":              true,
+	"universe_top_k":                  true,
+	"universe_analyze_top_n":          true,
+	"universe_min_daily_quote_volume": true,
+	"time_stop_bars":                  true,
+	"max_positions":                   true,
+	"model_rollout_state":             true,
 }
 
 // deprecatedParameterPrefixes lists prefixes that mark a parameter as deprecated and not proposable.

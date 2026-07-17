@@ -100,6 +100,68 @@ func StartBacktestJob() (*database.BacktestJob, error) {
 	return &job, nil
 }
 
+// StartStage05ComparisonJob uses the existing bounded BacktestJob runtime and
+// persists only the compact machine-readable comparison, never the unbounded
+// per-strategy curves/artifacts.
+func StartStage05ComparisonJob(request Stage05RunRequest, overrides map[string]string) (*database.BacktestJob, error) {
+	job := database.BacktestJob{Status: "pending", Progress: 0, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	if err := database.DB.Create(&job).Error; err != nil {
+		return nil, err
+	}
+	go runStage05ComparisonJob(job.ID, request, cloneStringMap(overrides))
+	return &job, nil
+}
+
+func runStage05ComparisonJob(jobID uint, request Stage05RunRequest, overrides map[string]string) {
+	updateBacktestJob(jobID, "running", .05, "Validating Stage 05 manifest and strategy declarations")
+	settings := services.GetAllSettings()
+	for key, value := range overrides {
+		if strings.TrimSpace(value) != "" {
+			settings[key] = value
+		}
+	}
+	config, series, err := prepareBacktestInputsWithSettings(settings)
+	if err != nil {
+		failBacktestJob(jobID, err)
+		return
+	}
+	if !config.DatasetManifestRequired || !config.DatasetManifestValidated {
+		failBacktestJob(jobID, &StrategyDiagnosticError{Code: DiagnosticManifestRequired, Strategy: request.StrategyID, Details: "production Stage 05 job requires Stage 04 evidence"})
+		return
+	}
+	database.DB.Model(&database.BacktestJob{}).Where("id=?", jobID).Update("dataset_manifest_id", config.DatasetManifestID)
+	updateBacktestJob(jobID, "running", .35, "Running normalized candidate and market baselines")
+	comparison, err := RunStage05Comparison(config, series, request)
+	if err != nil {
+		failBacktestJob(jobID, err)
+		return
+	}
+	encoded, err := MarshalComparisonArtifact(comparison)
+	if err != nil {
+		failBacktestJob(jobID, err)
+		return
+	}
+	message := "Stage 05 comparison completed; governance gate blocked"
+	if comparison.Governance.OptimizationAllowed {
+		message = "Stage 05 comparison completed; baseline-relative gate passed"
+	}
+	updateBacktestJobWithSummary(jobID, "completed", 1, message, string(encoded), string(encoded))
+}
+
+func RunStage05ComparisonSyncWithOverrides(request Stage05RunRequest, overrides map[string]string) (ComparisonArtifact, error) {
+	settings := services.GetAllSettings()
+	for key, value := range overrides {
+		if strings.TrimSpace(value) != "" {
+			settings[key] = value
+		}
+	}
+	config, series, err := prepareBacktestInputsWithSettings(settings)
+	if err != nil {
+		return ComparisonArtifact{}, err
+	}
+	return RunStage05Comparison(config, series, request)
+}
+
 func GetBacktestJob(id uint) (*database.BacktestJob, error) {
 	var job database.BacktestJob
 	if err := database.DB.First(&job, id).Error; err != nil {

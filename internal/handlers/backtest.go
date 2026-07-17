@@ -27,6 +27,30 @@ func StartBacktest(c *fiber.Ctx) error {
 	return c.JSON(response)
 }
 
+func ListBacktestStrategies(c *fiber.Ctx) error {
+	return c.JSON(fiber.Map{"schema_version": backtest.StrategyDescriptorSchemaVersion, "strategies": backtest.DefaultStrategyRegistry.List()})
+}
+
+func StartStage05Comparison(c *fiber.Ctx) error {
+	type requestBody struct {
+		backtest.Stage05RunRequest
+		Overrides map[string]string `json:"overrides,omitempty"`
+	}
+	var request requestBody
+	if err := c.BodyParser(&request); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "Invalid Stage 05 comparison request"})
+	}
+	job, err := backtest.StartStage05ComparisonJob(request.Stage05RunRequest, request.Overrides)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+	}
+	response, err := backtest.BuildBacktestJobResponse(job)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "Failed to prepare Stage 05 job response"})
+	}
+	return c.Status(fiber.StatusAccepted).JSON(response)
+}
+
 func GetBacktestStatus(c *fiber.Ctx) error {
 	idStr := c.Params("id")
 	id, err := strconv.Atoi(idStr)

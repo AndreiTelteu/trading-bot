@@ -48,6 +48,7 @@ type BacktestJobResponse struct {
 	Progress          float64             `json:"progress"`
 	Message           *string             `json:"message,omitempty"`
 	Summary           *BacktestJobSummary `json:"summary,omitempty"`
+	Comparison        *ComparisonArtifact `json:"comparison,omitempty"`
 	Error             *string             `json:"error,omitempty"`
 	StartedAt         *time.Time          `json:"started_at,omitempty"`
 	FinishedAt        *time.Time          `json:"finished_at,omitempty"`
@@ -115,11 +116,25 @@ func BuildBacktestJobResponse(job *database.BacktestJob) (*BacktestJobResponse, 
 		return nil, err
 	}
 	if compactJSON != "" {
-		var summary BacktestJobSummary
-		if err := json.Unmarshal([]byte(compactJSON), &summary); err != nil {
+		var header struct {
+			SchemaVersion string `json:"schema_version"`
+		}
+		if err := json.Unmarshal([]byte(compactJSON), &header); err != nil {
 			return nil, err
 		}
-		response.Summary = &summary
+		if header.SchemaVersion == ComparisonSchemaVersion {
+			comparison, err := UnmarshalComparisonArtifact([]byte(compactJSON))
+			if err != nil {
+				return nil, err
+			}
+			response.Comparison = &comparison
+		} else {
+			var summary BacktestJobSummary
+			if err := json.Unmarshal([]byte(compactJSON), &summary); err != nil {
+				return nil, err
+			}
+			response.Summary = &summary
+		}
 	}
 
 	return response, nil

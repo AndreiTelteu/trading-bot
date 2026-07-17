@@ -178,6 +178,8 @@ func setupRoutes(app *fiber.App, cfg *config.Config, authManager *middleware.Aut
 
 	backtest := api.Group("/backtest")
 	backtest.Post("/start", handlers.StartBacktest)
+	backtest.Post("/compare", handlers.StartStage05Comparison)
+	backtest.Get("/strategies", handlers.ListBacktestStrategies)
 	backtest.Get("/jobs", handlers.ListBacktestJobs)
 	backtest.Get("/status/:id", handlers.GetBacktestStatus)
 	backtest.Get("/latest", handlers.GetLatestBacktestStatus)
