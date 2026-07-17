@@ -25,7 +25,7 @@ func (f *fixtureClient) FetchBars(_ context.Context, _ string, _ string, start, 
 	}
 	out := []Bar{}
 	for _, b := range f.bars {
-		if !b.OpenTime.Before(start) && !b.OpenTime.After(end) {
+		if !b.OpenTime.Before(start) && b.OpenTime.Before(end) {
 			out = append(out, b)
 			if len(out) == limit {
 				break
@@ -39,7 +39,7 @@ func TestPointInTimeLifecycleImmutableDataManifestResumeAndConstraints(t *testin
 	db := testutil.SetupPostgresDB(t)
 	base := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	retrieved := base.Add(365 * 24 * time.Hour)
-	assets := []database.Asset{{ID: "asset-usdt", CanonicalCode: "USDT", Source: "fixture", RetrievedAt: retrieved}, {ID: "asset-a", CanonicalCode: "AAA", Source: "fixture", RetrievedAt: retrieved}, {ID: "asset-btc", CanonicalCode: "BTC", Source: "fixture", RetrievedAt: retrieved}}
+	assets := []database.Asset{{ID: "asset-usdt", CanonicalCode: "USDT", Source: "fixture", AvailableAt: base, RetrievedAt: retrieved}, {ID: "asset-a", CanonicalCode: "AAA", Source: "fixture", AvailableAt: base, RetrievedAt: retrieved}, {ID: "asset-btc", CanonicalCode: "BTC", Source: "fixture", AvailableAt: base.Add(-1000 * 24 * time.Hour), RetrievedAt: retrieved}}
 	delist := base.Add(5 * 24 * time.Hour)
 	symbols := []database.ExchangeSymbol{{ID: "symbol-a-old", VenueID: "fixture", Ticker: "AAAOLDUSDT", AssetID: "asset-a", BaseAssetID: "asset-a", QuoteAssetID: "asset-usdt", ListedAt: base, DelistedAt: &delist, Version: 1, Source: "fixture", RetrievedAt: retrieved}, {ID: "symbol-a-new", VenueID: "fixture", Ticker: "AAAUSDT", AssetID: "asset-a", BaseAssetID: "asset-a", QuoteAssetID: "asset-usdt", ListedAt: delist, Version: 1, Source: "fixture", RetrievedAt: retrieved}, {ID: "symbol-btc", VenueID: "fixture", Ticker: "BTCUSDT", AssetID: "asset-btc", BaseAssetID: "asset-btc", QuoteAssetID: "asset-usdt", ListedAt: base.Add(-1000 * 24 * time.Hour), Version: 1, Source: "fixture", RetrievedAt: retrieved}}
 	intervals := []database.TradabilityInterval{{ExchangeSymbolID: "symbol-a-old", EffectiveFrom: base, EffectiveTo: &delist, SpotTradable: true, Status: "TRADING", Source: "fixture", RetrievedAt: retrieved}, {ExchangeSymbolID: "symbol-a-new", EffectiveFrom: delist, SpotTradable: true, Status: "TRADING", Source: "fixture", RetrievedAt: retrieved}, {ExchangeSymbolID: "symbol-btc", EffectiveFrom: base.Add(-1000 * 24 * time.Hour), SpotTradable: true, Status: "TRADING", Source: "fixture", RetrievedAt: retrieved}}
@@ -50,7 +50,8 @@ func TestPointInTimeLifecycleImmutableDataManifestResumeAndConstraints(t *testin
 	}
 	request := func(id, ticker, role, frame string, bars []Bar) IngestResult {
 		client := &fixtureClient{bars: bars}
-		result, err := (Ingester{DB: db, Client: client, Sleep: func(context.Context, time.Duration) error { return nil }, Now: func() time.Time { return retrieved }}).Run(context.Background(), IngestRequest{DatasetVersion: "fixture-v1", ExchangeSymbolID: id, Ticker: ticker, Timeframe: frame, Role: role, Source: "fixture", Start: bars[0].OpenTime, End: bars[len(bars)-1].OpenTime, PageSize: 2})
+		step, _ := timeframeDuration(frame)
+		result, err := (Ingester{DB: db, Client: client, Sleep: func(context.Context, time.Duration) error { return nil }, Now: func() time.Time { return retrieved }}).Run(context.Background(), IngestRequest{DatasetVersion: "fixture-v1", ExchangeSymbolID: id, Ticker: ticker, Timeframe: frame, Role: role, Source: "fixture", Start: bars[0].OpenTime, End: bars[len(bars)-1].OpenTime.Add(step), PageSize: 2})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -64,11 +65,11 @@ func TestPointInTimeLifecycleImmutableDataManifestResumeAndConstraints(t *testin
 	request("symbol-a-new", "AAAUSDT", RoleDecision, "1h", hourly[5*24:])
 	request("symbol-btc", "BTCUSDT", RoleBenchmark, "1d", daily)
 	request("symbol-btc", "BTCUSDT", RoleBenchmark, "1h", hourly)
-	manifest, err := BuildManifest(db, BuildRequest{DatasetVersion: "fixture-v1", RequestedStart: base, RequestedEnd: base.Add(6 * 24 * time.Hour), Source: "fixture", BuildVersion: "test"})
+	manifest, err := BuildManifest(db, BuildRequest{DatasetVersion: "fixture-v1", RequestedStart: base, RequestedEnd: base.Add(7 * 24 * time.Hour), Source: "fixture", BuildVersion: "test"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	again, err := BuildManifest(db, BuildRequest{DatasetVersion: "fixture-v1", RequestedStart: base, RequestedEnd: base.Add(6 * 24 * time.Hour), Source: "fixture", BuildVersion: "test"})
+	again, err := BuildManifest(db, BuildRequest{DatasetVersion: "fixture-v1", RequestedStart: base, RequestedEnd: base.Add(7 * 24 * time.Hour), Source: "fixture", BuildVersion: "test"})
 	if err != nil || again.ID != manifest.ID {
 		t.Fatalf("manifest not deterministic: %s %s %v", manifest.ID, again.ID, err)
 	}
@@ -104,20 +105,20 @@ func TestPointInTimeLifecycleImmutableDataManifestResumeAndConstraints(t *testin
 	}
 	conflict := daily[0]
 	conflict.Close = "999"
-	_, err = (Ingester{DB: db, Client: &fixtureClient{bars: []Bar{conflict}}, Now: func() time.Time { return retrieved }}).Run(context.Background(), IngestRequest{DatasetVersion: "fixture-v1", ExchangeSymbolID: "symbol-a-old", Ticker: "AAAOLDUSDT", Timeframe: "1d", Role: RoleDecision, Source: "fixture", Start: base, End: base})
+	_, err = (Ingester{DB: db, Client: &fixtureClient{bars: []Bar{conflict}}, Now: func() time.Time { return retrieved }}).Run(context.Background(), IngestRequest{DatasetVersion: "fixture-v1", ExchangeSymbolID: "symbol-a-old", Ticker: "AAAOLDUSDT", Timeframe: "1d", Role: RoleDecision, Source: "fixture", Start: base, End: base.Add(24 * time.Hour)})
 	if !errors.Is(err, ErrBarConflict) {
 		t.Fatalf("conflict=%v", err)
 	}
 	resumeBars := bars(base, 5, time.Hour, 20, 10)
 	interrupted := &fixtureClient{bars: resumeBars, failAfter: 1}
-	first, err := (Ingester{DB: db, Client: interrupted, Sleep: func(context.Context, time.Duration) error { return nil }}).Run(context.Background(), IngestRequest{DatasetVersion: "resume-v1", ExchangeSymbolID: "symbol-a-old", Ticker: "AAAOLDUSDT", Timeframe: "1h", Role: RoleExecution, Source: "fixture", Start: base, End: base.Add(4 * time.Hour), PageSize: 2})
+	first, err := (Ingester{DB: db, Client: interrupted, Sleep: func(context.Context, time.Duration) error { return nil }}).Run(context.Background(), IngestRequest{DatasetVersion: "resume-v1", ExchangeSymbolID: "symbol-a-old", Ticker: "AAAOLDUSDT", Timeframe: "1h", Role: RoleExecution, Source: "fixture", Start: base, End: base.Add(5 * time.Hour), PageSize: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(first.Unresolved) == 0 {
 		t.Fatal("interruption not explicit")
 	}
-	second, err := (Ingester{DB: db, Client: &fixtureClient{bars: resumeBars}}).Run(context.Background(), IngestRequest{DatasetVersion: "resume-v1", ExchangeSymbolID: "symbol-a-old", Ticker: "AAAOLDUSDT", Timeframe: "1h", Role: RoleExecution, Source: "fixture", Start: base, End: base.Add(4 * time.Hour), PageSize: 2})
+	second, err := (Ingester{DB: db, Client: &fixtureClient{bars: resumeBars}}).Run(context.Background(), IngestRequest{DatasetVersion: "resume-v1", ExchangeSymbolID: "symbol-a-old", Ticker: "AAAOLDUSDT", Timeframe: "1h", Role: RoleExecution, Source: "fixture", Start: base, End: base.Add(5 * time.Hour), PageSize: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +133,7 @@ func TestManifestGapsAndUniverseNoFutureRankOrBenchmarkTrade(t *testing.T) {
 	db := testutil.SetupPostgresDB(t)
 	base := time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)
 	retrieved := base.AddDate(1, 0, 0)
-	assets := []database.Asset{{ID: "q", CanonicalCode: "USDT", Source: "f", RetrievedAt: retrieved}, {ID: "a", CanonicalCode: "AAA", Source: "f", RetrievedAt: retrieved}, {ID: "b", CanonicalCode: "BBB", Source: "f", RetrievedAt: retrieved}, {ID: "btc", CanonicalCode: "BTC", Source: "f", RetrievedAt: retrieved}}
+	assets := []database.Asset{{ID: "q", CanonicalCode: "USDT", Source: "f", AvailableAt: base, RetrievedAt: retrieved}, {ID: "a", CanonicalCode: "AAA", Source: "f", AvailableAt: base, RetrievedAt: retrieved}, {ID: "b", CanonicalCode: "BBB", Source: "f", AvailableAt: base.Add(3 * 24 * time.Hour), RetrievedAt: retrieved}, {ID: "btc", CanonicalCode: "BTC", Source: "f", AvailableAt: base.Add(-1000 * 24 * time.Hour), RetrievedAt: retrieved}}
 	symbols := []database.ExchangeSymbol{{ID: "a-s", VenueID: "f", Ticker: "AAAUSDT", AssetID: "a", BaseAssetID: "a", QuoteAssetID: "q", ListedAt: base, Source: "f", RetrievedAt: retrieved}, {ID: "b-s", VenueID: "f", Ticker: "BBBUSDT", AssetID: "b", BaseAssetID: "b", QuoteAssetID: "q", ListedAt: base.Add(3 * 24 * time.Hour), Source: "f", RetrievedAt: retrieved}, {ID: "btc-s", VenueID: "f", Ticker: "BTCUSDT", AssetID: "btc", BaseAssetID: "btc", QuoteAssetID: "q", ListedAt: base.Add(-1000 * 24 * time.Hour), Source: "f", RetrievedAt: retrieved}}
 	intervals := []database.TradabilityInterval{}
 	for _, s := range symbols {
@@ -142,7 +143,8 @@ func TestManifestGapsAndUniverseNoFutureRankOrBenchmarkTrade(t *testing.T) {
 		t.Fatal(err)
 	}
 	ingest := func(id, role, frame string, values []Bar) {
-		_, err := (Ingester{DB: db, Client: &fixtureClient{bars: values}}).Run(context.Background(), IngestRequest{DatasetVersion: "u-v1", ExchangeSymbolID: id, Ticker: id, Timeframe: frame, Role: role, Source: "f", Start: values[0].OpenTime, End: values[len(values)-1].OpenTime, PageSize: 1000})
+		step, _ := timeframeDuration(frame)
+		_, err := (Ingester{DB: db, Client: &fixtureClient{bars: values}}).Run(context.Background(), IngestRequest{DatasetVersion: "u-v1", ExchangeSymbolID: id, Timeframe: frame, Role: role, Source: "f", Start: values[0].OpenTime, End: values[len(values)-1].OpenTime.Add(step), PageSize: 1000})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -153,12 +155,15 @@ func TestManifestGapsAndUniverseNoFutureRankOrBenchmarkTrade(t *testing.T) {
 	ingest("b-s", RoleDecision, "1h", bars(base.Add(3*24*time.Hour), 5*24, time.Hour, 10, 100))
 	ingest("btc-s", RoleBenchmark, "1d", bars(base, 8, 24*time.Hour, 20, 100))
 	ingest("btc-s", RoleBenchmark, "1h", bars(base, 8*24, time.Hour, 20, 100))
-	manifest, err := BuildManifest(db, BuildRequest{DatasetVersion: "u-v1", RequestedStart: base, RequestedEnd: base.Add(7 * 24 * time.Hour), Source: "f"})
+	manifest, err := BuildManifest(db, BuildRequest{DatasetVersion: "u-v1", RequestedStart: base, RequestedEnd: base.Add(8 * 24 * time.Hour), Source: "f"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	policy := services.UniversePolicy{MinListingDays: 0, MaxGapRatio: 1, VolRatioMax: 100, Max24hMove: 100, TopK: 10, AnalyzeTopN: 10, RebalanceIntervalLabel: "1d"}
 	snapAt := base.Add(2 * 24 * time.Hour)
+	if _, err := BuildUniverseSnapshot(db, UniverseBuildRequest{ManifestID: manifest.ID, EffectiveAt: snapAt, PolicyVersion: "p1", Policy: policy}); err == nil {
+		t.Fatal("snapshot without exact benchmark identity was accepted")
+	}
 	first, err := BuildUniverseSnapshot(db, UniverseBuildRequest{ManifestID: manifest.ID, EffectiveAt: snapAt, PolicyVersion: "p1", Policy: policy, BenchmarkSymbolID: "btc-s", BenchmarkAssetID: "btc"})
 	if err != nil {
 		t.Fatal(err)
@@ -179,10 +184,33 @@ func TestManifestGapsAndUniverseNoFutureRankOrBenchmarkTrade(t *testing.T) {
 	if second.Snapshot.ID != first.Snapshot.ID || EncodeJSON(second.Members) != EncodeJSON(first.Members) {
 		t.Fatalf("snapshot not deterministic/idempotent\nfirst=%s\nsecond=%s\nfirst_snapshot=%+v\nsecond_snapshot=%+v", EncodeJSON(first.Members), EncodeJSON(second.Members), first.Snapshot, second.Snapshot)
 	}
+	var snapshotCount int64
+	db.Model(&database.UniverseSnapshot{}).Count(&snapshotCount)
+	dryRange, err := BuildUniverseSnapshotRange(db, UniverseRangeRequest{Start: snapAt, End: snapAt.Add(24 * time.Hour), Step: 24 * time.Hour, DryRun: true, Build: UniverseBuildRequest{ManifestID: manifest.ID, PolicyVersion: "p1", Policy: policy, BenchmarkSymbolID: "btc-s", BenchmarkAssetID: "btc"}})
+	if err != nil || dryRange.Built != 1 {
+		t.Fatalf("dry range=%+v err=%v", dryRange, err)
+	}
+	var afterDry int64
+	db.Model(&database.UniverseSnapshot{}).Count(&afterDry)
+	if afterDry != snapshotCount {
+		t.Fatalf("dry range persisted snapshots: before=%d after=%d", snapshotCount, afterDry)
+	}
+	resumed, err := BuildUniverseSnapshotRange(db, UniverseRangeRequest{Start: snapAt, End: snapAt.Add(24 * time.Hour), Step: 24 * time.Hour, Build: UniverseBuildRequest{ManifestID: manifest.ID, PolicyVersion: "p1", Policy: policy, BenchmarkSymbolID: "btc-s", BenchmarkAssetID: "btc"}})
+	if err != nil || resumed.Built != 1 {
+		t.Fatalf("range=%+v err=%v", resumed, err)
+	}
+	againRange, err := BuildUniverseSnapshotRange(db, UniverseRangeRequest{Start: snapAt, End: snapAt.Add(24 * time.Hour), Step: 24 * time.Hour, Build: UniverseBuildRequest{ManifestID: manifest.ID, PolicyVersion: "p1", Policy: policy, BenchmarkSymbolID: "btc-s", BenchmarkAssetID: "btc"}})
+	if err != nil || againRange.Built != 0 || againRange.ResumedFrom == nil {
+		t.Fatalf("range resume=%+v err=%v", againRange, err)
+	}
 	gapValues := bars(base, 3, time.Hour, 1, 1)
 	gapValues = append(gapValues[:1], gapValues[2:]...)
 	ingest("a-s", RoleExecution, "1h", gapValues)
-	gapManifest, err := BuildManifest(db, BuildRequest{DatasetVersion: "u-v1", RequestedStart: base, RequestedEnd: base.Add(2 * time.Hour), Source: "f", Series: []SeriesKey{{ExchangeSymbolID: "a-s", AssetID: "a", Ticker: "AAAUSDT", Role: RoleExecution, Timeframe: "1h"}}})
+	// Sparse ingestion stops at the first missing interval instead of advancing
+	// its checkpoint. Ingest the later bounded interval separately so the
+	// manifest still proves that a persisted internal gap is diagnosed.
+	ingest("a-s", RoleExecution, "1h", gapValues[1:])
+	gapManifest, err := BuildManifest(db, BuildRequest{DatasetVersion: "u-v1", RequestedStart: base, RequestedEnd: base.Add(3 * time.Hour), Source: "f", Series: []SeriesKey{{ExchangeSymbolID: "a-s", AssetID: "a", Ticker: "AAAUSDT", Role: RoleExecution, Timeframe: "1h"}}})
 	if err != nil {
 		t.Fatal(err)
 	}

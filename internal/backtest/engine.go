@@ -115,7 +115,11 @@ func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (Bac
 			if config.BenchmarkRequired {
 				roles[pointintime.RoleBenchmark] = config.Timeframe
 			}
-			_, _, manifestErr := pointintime.ValidateManifest(database.DB, pointintime.ManifestRequirement{ManifestID: config.DatasetManifestID, Start: config.Start, End: config.End, Symbols: config.Symbols, Roles: roles, RequireComplete: true})
+			exact := make([]pointintime.SeriesKey, 0, len(config.DatasetSeries))
+			for _, series := range config.DatasetSeries {
+				exact = append(exact, pointintime.SeriesKey{ExchangeSymbolID: series.ExchangeSymbolID, AssetID: series.AssetID, Ticker: series.Ticker, Role: series.Role, Timeframe: series.Timeframe})
+			}
+			_, _, manifestErr := pointintime.ValidateManifest(database.DB, pointintime.ManifestRequirement{ManifestID: config.DatasetManifestID, Start: config.Start, End: config.End, Symbols: config.Symbols, Roles: roles, Series: exact, RequireComplete: true})
 			if manifestErr != nil {
 				coverage := CoverageReport{SchemaVersion: CoverageSchemaVersion, PolicyVersion: config.CoveragePolicy.Version, Passed: false, Reasons: []CoverageReason{CoverageManifestIncompatible}, Diagnostics: []CoverageDiagnostic{{Dataset: "manifest", Status: "failed", Reason: CoverageManifestIncompatible}}}
 				result := BacktestResult{Classification: RunCoverageFailed, Coverage: coverage, Manifest: buildManifest(config, coverage, RunCoverageFailed, config.DatasetManifestID)}
@@ -369,7 +373,7 @@ func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (Bac
 			if config.EngineMode == EngineShared {
 				signalAt := time.UnixMilli(bar.CloseTime)
 				execBar, fillAt, executable := nextExecutable(config, states[symbol], symbol, signalAt)
-				if !executable || !config.End.IsZero() && fillAt.After(config.End) {
+				if !executable || !config.End.IsZero() && !fillAt.Before(config.End) {
 					continue
 				}
 				if err := runSharedBacktestExit(sharedLedger, config, pos, bar.Close, execBar.Open, signalAt, signalAt, signalAt, fillAt, decision.Reason); err != nil {
@@ -421,7 +425,7 @@ func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (Bac
 				}
 				signalAt := time.UnixMilli(bar.CloseTime)
 				execBar, fillAt, executable := nextExecutable(config, states[symbol], symbol, signalAt)
-				if !executable || !config.End.IsZero() && fillAt.After(config.End) {
+				if !executable || !config.End.IsZero() && !fillAt.Before(config.End) {
 					continue
 				}
 				if err := runSharedBacktestExit(sharedLedger, config, pos, bar.Close, execBar.Open, signalAt, signalAt, signalAt, fillAt, "final_liquidation"); err != nil {
@@ -479,7 +483,7 @@ func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (Bac
 			if config.EngineMode == EngineShared {
 				signalAt := time.UnixMilli(bar.CloseTime)
 				execBar, fillAt, executable := nextExecutable(config, states[symbol], symbol, signalAt)
-				if !executable || !config.End.IsZero() && fillAt.After(config.End) {
+				if !executable || !config.End.IsZero() && !fillAt.Before(config.End) {
 					continue
 				}
 				if _, err := runSharedBacktestEntry(sharedLedger, config, candidate, ctx, currentUniverse, positions, states, cash, signalAt, signalAt, fillAt, bar.Close, execBar.Open); err != nil {

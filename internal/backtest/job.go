@@ -805,38 +805,72 @@ func preparePointInTimeBacktestInputs(settings map[string]string) (BacktestConfi
 	if err != nil {
 		return BacktestConfig{DatasetManifestID: manifestID, DatasetManifestRequired: true, DatasetLimitations: report.Limitations}, nil, err
 	}
-	hasExactSeries := func(ticker, role, frame string) bool {
+	manifestSeries := func(ticker, role, frame string) []pointintime.SeriesCoverage {
+		var result []pointintime.SeriesCoverage
 		for _, covered := range validated.Series {
 			if strings.EqualFold(covered.Ticker, ticker) && covered.Role == role && covered.Timeframe == frame && covered.Complete {
-				return true
+				result = append(result, covered)
 			}
 		}
-		return false
+		return result
 	}
+	requiredSeries := []pointintime.SeriesKey{}
 	for _, symbol := range symbols {
-		if !hasExactSeries(symbol, pointintime.RoleDecision, "15m") {
+		decisionSeries := manifestSeries(symbol, pointintime.RoleDecision, "15m")
+		if len(decisionSeries) == 0 {
 			report.Compatible = false
 			report.Failures = append(report.Failures, pointintime.CoverageFailure{Code: "symbol_role_timeframe_missing", Series: symbol + ":decision:15m", Details: "required tradable decision series is absent or incomplete"})
 		}
-		if fetchExecution && !hasExactSeries(symbol, pointintime.RoleExecution, "1m") {
+		for _, covered := range decisionSeries {
+			requiredSeries = append(requiredSeries, covered.SeriesKey)
+		}
+		executionSeries := manifestSeries(symbol, pointintime.RoleExecution, "1m")
+		if fetchExecution && len(executionSeries) == 0 {
 			report.Compatible = false
 			report.Failures = append(report.Failures, pointintime.CoverageFailure{Code: "symbol_role_timeframe_missing", Series: symbol + ":execution:1m", Details: "required tradable execution series is absent or incomplete"})
 		}
+		if fetchExecution {
+			for _, covered := range executionSeries {
+				requiredSeries = append(requiredSeries, covered.SeriesKey)
+			}
+		}
 	}
-	if !hasExactSeries(benchmark, pointintime.RoleBenchmark, "15m") {
+	benchmarkSeries := manifestSeries(benchmark, pointintime.RoleBenchmark, "15m")
+	if len(benchmarkSeries) == 0 {
 		report.Compatible = false
 		report.Failures = append(report.Failures, pointintime.CoverageFailure{Code: "benchmark_role_timeframe_missing", Series: benchmark + ":benchmark:15m", Details: "required benchmark series is absent or incomplete"})
+	}
+	for _, covered := range benchmarkSeries {
+		requiredSeries = append(requiredSeries, covered.SeriesKey)
 	}
 	if !report.Compatible {
 		return BacktestConfig{DatasetManifestID: manifestID, DatasetManifestRequired: true, DatasetLimitations: report.Limitations}, nil, &pointintime.CoverageError{Report: report}
 	}
+	if _, exactReport, err := pointintime.ValidateManifest(database.DB, pointintime.ManifestRequirement{ManifestID: manifestID, Start: start, End: end, Series: requiredSeries, RequireComplete: true}); err != nil {
+		return BacktestConfig{DatasetManifestID: manifestID, DatasetManifestRequired: true, DatasetLimitations: exactReport.Limitations}, nil, err
+	}
 	var exchangeSymbols []database.ExchangeSymbol
-	if err := database.DB.Where("ticker IN ?", append(append([]string(nil), symbols...), benchmark)).Order("listed_at ASC").Find(&exchangeSymbols).Error; err != nil {
-		return BacktestConfig{}, nil, err
+	seenSymbolID := map[string]bool{}
+	knowledgeCutoff, _ := time.Parse(time.RFC3339Nano, validated.KnowledgeCutoff)
+	for _, covered := range validated.Series {
+		if seenSymbolID[covered.ExchangeSymbolID] {
+			continue
+		}
+		seenSymbolID[covered.ExchangeSymbolID] = true
+		var row database.ExchangeSymbol
+		if err := database.DB.Where("id=? AND retrieved_at<=?", covered.ExchangeSymbolID, knowledgeCutoff).First(&row).Error; err != nil {
+			return BacktestConfig{}, nil, err
+		}
+		if row.AssetID != covered.AssetID || !strings.EqualFold(row.Ticker, covered.Ticker) || row.Version != covered.SymbolVersion {
+			return BacktestConfig{}, nil, &pointintime.CoverageError{Report: pointintime.CoverageReport{SchemaVersion: pointintime.CoverageSchemaVersion, ManifestID: manifestID, Compatible: false, Failures: []pointintime.CoverageFailure{{Code: "manifest_symbol_identity_mismatch", Series: covered.ExchangeSymbolID, Details: "pinned symbol lifecycle differs"}}}}
+		}
+		exchangeSymbols = append(exchangeSymbols, row)
 	}
 	byTicker := map[string][]database.ExchangeSymbol{}
+	byID := map[string]database.ExchangeSymbol{}
 	for _, s := range exchangeSymbols {
 		byTicker[s.Ticker] = append(byTicker[s.Ticker], s)
+		byID[s.ID] = s
 	}
 	repo := pointintime.Repository{DB: database.DB}
 	series := map[string][]services.OHLCV{}
@@ -845,17 +879,22 @@ func preparePointInTimeBacktestInputs(settings map[string]string) (BacktestConfi
 	economicIdentities := map[string]string{}
 	lifecycles := map[string]SymbolLifecycle{}
 	loadTicker := func(ticker, role, frame string) ([]services.OHLCV, error) {
-		rows := byTicker[ticker]
 		combined := []services.OHLCV{}
-		for _, s := range rows {
+		for _, covered := range manifestSeries(ticker, role, frame) {
+			s, ok := byID[covered.ExchangeSymbolID]
+			if !ok {
+				return nil, fmt.Errorf("manifest-pinned exchange symbol %s was not loaded", covered.ExchangeSymbolID)
+			}
 			bars, e := repo.Bars(manifestID, s.ID, role, frame, start, end, end)
 			if e != nil {
 				return nil, e
 			}
 			combined = append(combined, bars...)
-			identities[ticker] = s.ID
-			economicIdentities[ticker] = s.AssetID
-			lifecycles[ticker] = SymbolLifecycle{ListedAt: s.ListedAt, DelistedAt: s.DelistedAt}
+			if _, exists := identities[ticker]; !exists {
+				identities[ticker] = s.ID
+				economicIdentities[ticker] = s.AssetID
+				lifecycles[ticker] = SymbolLifecycle{ListedAt: s.ListedAt, DelistedAt: s.DelistedAt}
+			}
 		}
 		sort.Slice(combined, func(i, j int) bool { return combined[i].OpenTime < combined[j].OpenTime })
 		return combined, nil
@@ -895,25 +934,27 @@ func preparePointInTimeBacktestInputs(settings map[string]string) (BacktestConfi
 		return BacktestConfig{}, nil, err
 	}
 	policy := services.GetUniversePolicy(settings)
-	resolver := func(symbol string, at time.Time) (SymbolConstraints, bool) {
+	resolver := func(symbol string, at time.Time) (SymbolConstraints, error) {
 		id := ""
 		for _, candidate := range byTicker[symbol] {
 			if !candidate.ListedAt.After(at) && (candidate.DelistedAt == nil || candidate.DelistedAt.After(at)) {
 				id = candidate.ID
+				break
 			}
 		}
 		if id == "" {
-			return SymbolConstraints{}, false
+			return SymbolConstraints{}, fmt.Errorf("no manifest-pinned symbol lifecycle for %s at %s", symbol, at.UTC().Format(time.RFC3339Nano))
 		}
-		value, e := repo.ConstraintAsOf(id, at)
+		value, e := repo.ConstraintAsOfManifest(manifestID, id, at)
 		if e != nil {
-			return SymbolConstraints{}, false
+			return SymbolConstraints{}, fmt.Errorf("historical constraints missing for %s at %s: %w", symbol, at.UTC().Format(time.RFC3339Nano), e)
 		}
-		return SymbolConstraints{QuantityStep: value.QuantityStep, PriceTick: value.PriceTick, MinQuantity: value.MinQuantity, MinNotional: value.MinNotional}, true
+		return SymbolConstraints{QuantityStep: value.QuantityStep, PriceTick: value.PriceTick, MinQuantity: value.MinQuantity, MinNotional: value.MinNotional}, nil
 	}
 	constraintsAvailable := true
 	for _, symbol := range symbols {
-		for _, version := range byTicker[symbol] {
+		for _, covered := range manifestSeries(symbol, pointintime.RoleDecision, "15m") {
+			version := byID[covered.ExchangeSymbolID]
 			coverageStart, coverageEnd := start, end
 			if version.ListedAt.After(coverageStart) {
 				coverageStart = version.ListedAt
@@ -921,15 +962,21 @@ func preparePointInTimeBacktestInputs(settings map[string]string) (BacktestConfi
 			if version.DelistedAt != nil && version.DelistedAt.Before(coverageEnd) {
 				coverageEnd = *version.DelistedAt
 			}
-			if coverageEnd.After(coverageStart) && !repo.ConstraintsCover(version.ID, coverageStart, coverageEnd) {
+			if coverageEnd.After(coverageStart) && (!covered.ConstraintsComplete || !repo.ConstraintsCoverManifest(manifestID, version.ID, coverageStart, coverageEnd)) {
 				constraintsAvailable = false
+				report.Compatible = false
+				report.Failures = append(report.Failures, pointintime.CoverageFailure{Code: "historical_constraints_incomplete", Series: version.ID, Details: "constraints do not cover the executable interval at the manifest knowledge cutoff"})
 			}
 		}
 	}
-	config := BacktestConfig{EngineMode: engineMode, CodeRevision: revision, ConfigVersion: getSettingString(settings, "backtest_config_version", "backtest-config-v1"), StrategyVersion: "legacy-rule-strategy-v1", Seed: int64(getSettingInt(settings, "backtest_seed", 0)), AccountID: "backtest", SettlementCurrency: getSettingString(settings, "backtest_settlement_currency", "USDT"), VenueID: getSettingString(settings, "backtest_venue_id", "binance"), BacktestMode: resolveBacktestMode(UniverseDynamicReplay, modelArtifact != nil), ExecutionSeries: execution, ExecutionSeriesRequired: fetchExecution, ExecutionTimeframe: "1m", ExecutionTimeframeMins: 1, BenchmarkSymbol: benchmark, BenchmarkSeries: benchmarkBars, BenchmarkRequired: true, ConstraintsAvailable: constraintsAvailable, Symbols: symbols, UniverseMode: UniverseDynamicReplay, UniversePolicy: policy, Governance: governance, Start: start, End: end, IndicatorConfig: services.GetIndicatorSettings(), IndicatorWeights: services.GetIndicatorWeights(), Timeframe: "15m", TimeframeMinutes: 15, InitialBalance: 1000, FeeBps: getSettingFloat(settings, "backtest_fee_bps", 10), SlippageBps: getSettingFloat(settings, "backtest_slippage_bps", 5), ModelArtifact: modelArtifact, ModelPolicy: services.GetModelSelectionPolicy(settings), MaxPositions: getSettingInt(settings, "max_positions", 5), TimeStopBars: getSettingInt(settings, "time_stop_bars", 0), EntryPercent: getSettingFloat(settings, "entry_percent", 5), StopLossPercent: getSettingFloat(settings, "stop_loss_percent", 5), TakeProfitPercent: getSettingFloat(settings, "take_profit_percent", 30), RiskPerTrade: getSettingFloat(settings, "risk_per_trade", .5), StopMult: getSettingFloat(settings, "stop_mult", 1.5), TpMult: getSettingFloat(settings, "tp_mult", 3), MaxPositionValue: getSettingFloat(settings, "max_position_value", 0), AtrPeriod: getSettingInt(settings, "atr_trailing_period", 14), AtrTrailingEnabled: getSettingBool(settings, "atr_trailing_enabled", false), AtrTrailingMult: getSettingFloat(settings, "atr_trailing_mult", 1), AtrAnnualizationEnabled: getSettingBool(settings, "atr_annualization_enabled", false), AtrAnnualizationDays: getSettingInt(settings, "atr_annualization_days", 365), BuyOnlyStrong: getSettingBool(settings, "buy_only_strong", true), MinConfidenceToBuy: getSettingFloat(settings, "min_confidence_to_buy", 4), SellOnSignal: getSettingBool(settings, "sell_on_signal", true), MinConfidenceToSell: getSettingFloat(settings, "min_confidence_to_sell", 3.5), AllowSellAtLoss: getSettingBool(settings, "allow_sell_at_loss", false), TrailingStopEnabled: getSettingBool(settings, "trailing_stop_enabled", false), TrailingStopPercent: getSettingFloat(settings, "trailing_stop_percent", 10), ExecutionPolicy: ExecutionPolicy{Version: "backtest-execution-v1", Timing: ExecutionNextExecutable, Liquidity: LiquidityFullFillOHLCV, CostVersion: "backtest-cost-v1", Constraints: map[string]SymbolConstraints{}}, DatasetManifestID: validated.ID, DatasetManifestValidated: true, DatasetManifestRequired: true, DatasetLimitations: validated.Limitations, SymbolIdentities: identities, EconomicAssetIdentities: economicIdentities, SymbolLifecycles: lifecycles, ConstraintResolver: resolver}
 	if !constraintsAvailable {
-		config.DatasetLimitations = append(config.DatasetLimitations, "historical_symbol_constraints_incomplete_safe_fallback")
+		return BacktestConfig{DatasetManifestID: manifestID, DatasetManifestRequired: true, DatasetLimitations: report.Limitations}, nil, &pointintime.CoverageError{Report: report}
 	}
+	auditSeries := make([]DatasetSeriesIdentity, 0, len(validated.Series))
+	for _, s := range validated.Series {
+		auditSeries = append(auditSeries, DatasetSeriesIdentity{ExchangeSymbolID: s.ExchangeSymbolID, SymbolVersion: s.SymbolVersion, AssetID: s.AssetID, Ticker: s.Ticker, Role: s.Role, Timeframe: s.Timeframe, ListedAt: s.ListedAt, DelistedAt: s.DelistedAt, SymbolAvailableAt: s.SymbolAvailableAt, AssetAvailableAt: s.AssetAvailableAt, Rows: s.Rows, SeriesHash: s.SeriesHash, TradabilityRows: s.TradabilityRows, TradabilityHash: s.TradabilityHash, ConstraintRows: s.ConstraintRows, ConstraintHash: s.ConstraintHash})
+	}
+	config := BacktestConfig{EngineMode: engineMode, CodeRevision: revision, ConfigVersion: getSettingString(settings, "backtest_config_version", "backtest-config-v1"), StrategyVersion: "legacy-rule-strategy-v1", Seed: int64(getSettingInt(settings, "backtest_seed", 0)), AccountID: "backtest", SettlementCurrency: getSettingString(settings, "backtest_settlement_currency", "USDT"), VenueID: getSettingString(settings, "backtest_venue_id", "binance"), BacktestMode: resolveBacktestMode(UniverseDynamicReplay, modelArtifact != nil), ExecutionSeries: execution, ExecutionSeriesRequired: fetchExecution, ExecutionTimeframe: "1m", ExecutionTimeframeMins: 1, BenchmarkSymbol: benchmark, BenchmarkSeries: benchmarkBars, BenchmarkRequired: true, ConstraintsAvailable: constraintsAvailable, Symbols: symbols, UniverseMode: UniverseDynamicReplay, UniversePolicy: policy, Governance: governance, Start: start, End: end, IndicatorConfig: services.GetIndicatorSettings(), IndicatorWeights: services.GetIndicatorWeights(), Timeframe: "15m", TimeframeMinutes: 15, InitialBalance: 1000, FeeBps: getSettingFloat(settings, "backtest_fee_bps", 10), SlippageBps: getSettingFloat(settings, "backtest_slippage_bps", 5), ModelArtifact: modelArtifact, ModelPolicy: services.GetModelSelectionPolicy(settings), MaxPositions: getSettingInt(settings, "max_positions", 5), TimeStopBars: getSettingInt(settings, "time_stop_bars", 0), EntryPercent: getSettingFloat(settings, "entry_percent", 5), StopLossPercent: getSettingFloat(settings, "stop_loss_percent", 5), TakeProfitPercent: getSettingFloat(settings, "take_profit_percent", 30), RiskPerTrade: getSettingFloat(settings, "risk_per_trade", .5), StopMult: getSettingFloat(settings, "stop_mult", 1.5), TpMult: getSettingFloat(settings, "tp_mult", 3), MaxPositionValue: getSettingFloat(settings, "max_position_value", 0), AtrPeriod: getSettingInt(settings, "atr_trailing_period", 14), AtrTrailingEnabled: getSettingBool(settings, "atr_trailing_enabled", false), AtrTrailingMult: getSettingFloat(settings, "atr_trailing_mult", 1), AtrAnnualizationEnabled: getSettingBool(settings, "atr_annualization_enabled", false), AtrAnnualizationDays: getSettingInt(settings, "atr_annualization_days", 365), BuyOnlyStrong: getSettingBool(settings, "buy_only_strong", true), MinConfidenceToBuy: getSettingFloat(settings, "min_confidence_to_buy", 4), SellOnSignal: getSettingBool(settings, "sell_on_signal", true), MinConfidenceToSell: getSettingFloat(settings, "min_confidence_to_sell", 3.5), AllowSellAtLoss: getSettingBool(settings, "allow_sell_at_loss", false), TrailingStopEnabled: getSettingBool(settings, "trailing_stop_enabled", false), TrailingStopPercent: getSettingFloat(settings, "trailing_stop_percent", 10), ExecutionPolicy: ExecutionPolicy{Version: "backtest-execution-v1", Timing: ExecutionNextExecutable, Liquidity: LiquidityFullFillOHLCV, CostVersion: "backtest-cost-v1", Constraints: map[string]SymbolConstraints{}}, DatasetManifestID: validated.ID, DatasetManifestValidated: true, DatasetManifestRequired: true, DatasetLimitations: validated.Limitations, SymbolIdentities: identities, EconomicAssetIdentities: economicIdentities, SymbolLifecycles: lifecycles, ConstraintResolver: resolver, DatasetKnowledgeCutoff: validated.KnowledgeCutoff, DatasetSeries: auditSeries}
 	if modelArtifact != nil {
 		for _, feature := range modelArtifact.Features {
 			config.CoveragePolicy.RequiredModelFeatures = append(config.CoveragePolicy.RequiredModelFeatures, feature.Name)

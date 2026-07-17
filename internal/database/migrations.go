@@ -1,6 +1,7 @@
 package database
 
 import (
+	"fmt"
 	"github.com/go-gormigrate/gormigrate/v2"
 	"gorm.io/gorm"
 )
@@ -32,6 +33,7 @@ func schemaModels() []interface{} {
 		&HistoricalBar{},
 		&DatasetManifest{},
 		&IngestionCheckpoint{},
+		&UniverseBuildCheckpoint{},
 		&ModelArtifact{},
 		&PolicyConfig{},
 		&ExperimentRun{},
@@ -46,6 +48,10 @@ func schemaModels() []interface{} {
 
 func migrateSchema(db *gorm.DB) error {
 	return db.AutoMigrate(schemaModels()...)
+}
+
+func Stage04RollbackError() error {
+	return fmt.Errorf("Stage 04 point-in-time market history is intentionally irreversible; export and manually remove immutable history/manifests, dependent foreign keys, exclusion constraints, and triggers before deleting migration history")
 }
 
 func RunMigrations(db *gorm.DB) error {
@@ -401,7 +407,66 @@ func RunMigrations(db *gorm.DB) error {
 					CREATE TRIGGER constraints_no_overlap BEFORE INSERT OR UPDATE ON symbol_constraint_versions FOR EACH ROW EXECUTE FUNCTION reject_overlapping_effective_interval();
 				`).Error
 			},
-			Rollback: func(tx *gorm.DB) error { return nil },
+			Rollback: func(tx *gorm.DB) error {
+				return Stage04RollbackError()
+			},
+		},
+		{
+			ID: "202607170500_point_in_time_review_remediation",
+			Migrate: func(tx *gorm.DB) error {
+				if err := tx.AutoMigrate(&UniverseBuildCheckpoint{}); err != nil {
+					return err
+				}
+				return tx.Exec(`
+					CREATE EXTENSION IF NOT EXISTS btree_gist;
+					ALTER TABLE assets ADD COLUMN IF NOT EXISTS available_at timestamptz;
+					ALTER TABLE exchange_symbols ADD COLUMN IF NOT EXISTS available_at timestamptz;
+					ALTER TABLE tradability_intervals ADD COLUMN IF NOT EXISTS available_at timestamptz;
+					ALTER TABLE symbol_constraint_versions ADD COLUMN IF NOT EXISTS available_at timestamptz;
+					ALTER TABLE historical_bars ADD COLUMN IF NOT EXISTS available_at timestamptz;
+					ALTER TABLE dataset_manifests ADD COLUMN IF NOT EXISTS knowledge_cutoff timestamptz;
+					UPDATE assets SET available_at=retrieved_at WHERE available_at IS NULL;
+					UPDATE exchange_symbols SET available_at=listed_at WHERE available_at IS NULL;
+					UPDATE tradability_intervals SET available_at=effective_from WHERE available_at IS NULL;
+					UPDATE symbol_constraint_versions SET available_at=effective_from WHERE available_at IS NULL;
+					UPDATE historical_bars SET available_at=open_time + CASE timeframe WHEN '1m' THEN interval '1 minute' WHEN '15m' THEN interval '15 minutes' WHEN '1h' THEN interval '1 hour' WHEN '1d' THEN interval '1 day' ELSE interval '1 millisecond' END - interval '1 millisecond' WHERE available_at IS NULL;
+					UPDATE dataset_manifests SET knowledge_cutoff=created_at WHERE knowledge_cutoff IS NULL;
+					ALTER TABLE assets ALTER COLUMN available_at SET NOT NULL;
+					ALTER TABLE exchange_symbols ALTER COLUMN available_at SET NOT NULL;
+					ALTER TABLE tradability_intervals ALTER COLUMN available_at SET NOT NULL;
+					ALTER TABLE symbol_constraint_versions ALTER COLUMN available_at SET NOT NULL;
+					ALTER TABLE historical_bars ALTER COLUMN available_at SET NOT NULL;
+					ALTER TABLE dataset_manifests ALTER COLUMN knowledge_cutoff SET NOT NULL;
+					ALTER TABLE dataset_manifests DROP CONSTRAINT IF EXISTS dataset_manifests_interval_check;
+					ALTER TABLE dataset_manifests ADD CONSTRAINT dataset_manifests_interval_check CHECK (((schema_version='point-in-time-dataset-manifest-v1' AND requested_end>=requested_start) OR (schema_version<>'point-in-time-dataset-manifest-v1' AND requested_end>requested_start)) AND effective_end>=effective_start AND dataset_version<>'' AND source<>'' AND id=content_hash AND length(content_hash)=64);
+					DROP TRIGGER IF EXISTS tradability_no_overlap ON tradability_intervals;
+					DROP TRIGGER IF EXISTS constraints_no_overlap ON symbol_constraint_versions;
+					DROP FUNCTION IF EXISTS reject_overlapping_effective_interval();
+					DO $$ BEGIN
+					 IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='tradability_intervals_no_overlap') THEN
+					  ALTER TABLE tradability_intervals ADD CONSTRAINT tradability_intervals_no_overlap EXCLUDE USING gist (exchange_symbol_id WITH =, tstzrange(effective_from,effective_to,'[)') WITH &&);
+					 END IF;
+					 IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='symbol_constraint_versions_no_overlap') THEN
+					  ALTER TABLE symbol_constraint_versions ADD CONSTRAINT symbol_constraint_versions_no_overlap EXCLUDE USING gist (exchange_symbol_id WITH =, tstzrange(effective_from,effective_to,'[)') WITH &&);
+					 END IF;
+					END $$;
+					CREATE OR REPLACE FUNCTION market_timeframe_interval(value text) RETURNS interval AS $$
+					 SELECT CASE
+					  WHEN value='1d' THEN interval '1 day'
+					  WHEN value ~ '^[1-9][0-9]*ms$' THEN substring(value from '^[0-9]+')::bigint * interval '1 millisecond'
+					  WHEN value ~ '^[1-9][0-9]*s$' THEN substring(value from '^[0-9]+')::bigint * interval '1 second'
+					  WHEN value ~ '^[1-9][0-9]*m$' THEN substring(value from '^[0-9]+')::bigint * interval '1 minute'
+					  WHEN value ~ '^[1-9][0-9]*h$' THEN substring(value from '^[0-9]+')::bigint * interval '1 hour'
+					 END;
+					$$ LANGUAGE sql IMMUTABLE STRICT;
+					ALTER TABLE historical_bars DROP CONSTRAINT IF EXISTS historical_bars_availability_check;
+					ALTER TABLE historical_bars ADD CONSTRAINT historical_bars_availability_check CHECK (market_timeframe_interval(timeframe) IS NOT NULL AND available_at >= open_time + market_timeframe_interval(timeframe) - interval '1 millisecond');
+					CREATE INDEX IF NOT EXISTS idx_historical_bars_manifest_lookup ON historical_bars(dataset_version,exchange_symbol_id,role,timeframe,open_time,available_at,retrieved_at);
+				`).Error
+			},
+			Rollback: func(tx *gorm.DB) error {
+				return Stage04RollbackError()
+			},
 		},
 	})
 

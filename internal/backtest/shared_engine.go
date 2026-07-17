@@ -107,7 +107,10 @@ func runSharedBacktestEntry(ledger *backtestMemoryLedger, config BacktestConfig,
 	if config.MaxPositionValue <= 0 {
 		maxPosition = mustAmount(0)
 	}
-	lotSize, priceTick, minQuantity, minNotional := constraintValues(config, candidate.Symbol, fillAt)
+	lotSize, priceTick, minQuantity, minNotional, err := constraintValues(config, candidate.Symbol, fillAt)
+	if err != nil {
+		return tradingcore.RunResult{}, err
+	}
 	policy := tradingcore.RiskPolicy{Version: policyVersion, MaxPositions: config.MaxPositions, MaxGrossExposure: maxGross, MaxPositionValue: maxPosition, MaxTurnover: mustAmount(0), CashReserve: mustAmount(0), MaxConcurrentOrders: config.MaxPositions, LotSize: mustQuantity(lotSize), ExecutionCosts: tradingcore.ExecutionCostPolicy{Version: config.ExecutionPolicy.CostVersion, FeeBPS: int64(config.FeeBps), AdverseSlippageBPS: int64(config.SlippageBps)}}
 	execPrice, err := corePrice(executionPrice)
 	if err != nil {
@@ -307,7 +310,10 @@ func runSharedBacktestExit(ledger *backtestMemoryLedger, config BacktestConfig, 
 	batch, _ := tradingcore.NewDecisionBatch([]tradingcore.OrderIntent{intent})
 	result := tradingcore.NewStrategyResult(batch, nil)
 	limit := mustAmount(999999999999)
-	lotSize, priceTick, minQuantity, minNotional := constraintValues(config, pos.Symbol, fillAt)
+	lotSize, priceTick, minQuantity, minNotional, err := constraintValues(config, pos.Symbol, fillAt)
+	if err != nil {
+		return err
+	}
 	policy := tradingcore.RiskPolicy{Version: policyVersion, MaxPositions: config.MaxPositions, MaxGrossExposure: limit, MaxPositionValue: limit, MaxTurnover: mustAmount(0), CashReserve: mustAmount(0), MaxConcurrentOrders: config.MaxPositions, LotSize: mustQuantity(lotSize), ExecutionCosts: tradingcore.ExecutionCostPolicy{Version: config.ExecutionPolicy.CostVersion, FeeBPS: int64(config.FeeBps), AdverseSlippageBPS: int64(config.SlippageBps)}}
 	execPrice, err := corePrice(executionPrice)
 	if err != nil {
@@ -323,16 +329,24 @@ func runSharedBacktestExit(ledger *backtestMemoryLedger, config BacktestConfig, 
 	return err
 }
 
-func constraintValues(config BacktestConfig, symbol string, at time.Time) (float64, string, string, string) {
+func constraintValues(config BacktestConfig, symbol string, at time.Time) (float64, string, string, string, error) {
 	constraint, ok := SymbolConstraints{}, false
 	if config.ConstraintResolver != nil {
-		constraint, ok = config.ConstraintResolver(symbol, at)
+		var err error
+		constraint, err = config.ConstraintResolver(symbol, at)
+		if err != nil {
+			return 0, "", "", "", err
+		}
+		ok = true
 	}
 	if !ok {
 		constraint, ok = config.ExecutionPolicy.Constraints[symbol]
 	}
 	if !ok {
-		return .00000001, "", "", ""
+		if config.DatasetManifestRequired {
+			return 0, "", "", "", fmt.Errorf("historical constraints unavailable for %s at %s", symbol, at.UTC().Format(time.RFC3339Nano))
+		}
+		return .00000001, "", "", "", nil
 	}
 	lot := constraint.QuantityStep
 	if lot <= 0 {
@@ -350,7 +364,10 @@ func constraintValues(config BacktestConfig, symbol string, at time.Time) (float
 	if constraint.MinNotional > 0 {
 		minimumNotional = decimalString(constraint.MinNotional)
 	}
-	return lot, tick, minimum, minimumNotional
+	if config.DatasetManifestRequired && (constraint.QuantityStep <= 0 || constraint.PriceTick <= 0 || constraint.MinQuantity <= 0) {
+		return 0, "", "", "", fmt.Errorf("invalid historical constraints for %s at %s", symbol, at.UTC().Format(time.RFC3339Nano))
+	}
+	return lot, tick, minimum, minimumNotional, nil
 }
 
 func backtestPolicyVersion(config BacktestConfig) string {

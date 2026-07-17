@@ -18,7 +18,7 @@ import (
 
 const (
 	CoverageSchemaVersion = "backtest-coverage-v1"
-	ManifestSchemaVersion = "backtest-run-manifest-v2"
+	ManifestSchemaVersion = "backtest-run-manifest-v3"
 	ArtifactSchemaVersion = "backtest-artifacts-v1"
 )
 
@@ -338,7 +338,7 @@ func nextExecutable(config BacktestConfig, state *symbolState, symbol string, in
 func isLastLiquidationOpportunity(config BacktestConfig, state *symbolState, symbol string, bar services.OHLCV) bool {
 	informationAt := time.UnixMilli(bar.CloseTime)
 	_, fillAt, ok := nextExecutable(config, state, symbol, informationAt)
-	if !ok || !config.End.IsZero() && fillAt.After(config.End) {
+	if !ok || !config.End.IsZero() && !fillAt.Before(config.End) {
 		return false
 	}
 	if bars := config.ExecutionSeries[symbol]; len(bars) > 0 {
@@ -347,10 +347,10 @@ func isLastLiquidationOpportunity(config BacktestConfig, state *symbolState, sym
 			return true
 		}
 		_, laterFill, later := nextExecutable(config, state, symbol, time.UnixMilli(state.series[nextDecision].CloseTime))
-		return !later || !config.End.IsZero() && laterFill.After(config.End)
+		return !later || !config.End.IsZero() && !laterFill.Before(config.End)
 	}
 	_, laterAt, later := nextExecutable(config, state, symbol, time.UnixMilli(state.series[state.currentIndex+1].CloseTime))
-	return !later || !config.End.IsZero() && laterAt.After(config.End)
+	return !later || !config.End.IsZero() && !laterAt.Before(config.End)
 }
 
 func inlineDatasetManifestID(config BacktestConfig, decision map[string][]services.OHLCV, replay []replaySnapshotEntry) string {
@@ -396,11 +396,11 @@ func buildManifest(config BacktestConfig, coverage CoverageReport, classificatio
 		limitations = append(limitations, "in_memory_fixture_manifest_not_persisted")
 	}
 	if !config.ConstraintsAvailable {
-		limitations = append(limitations, "symbol_constraints_metadata_unavailable_using_explicit_safe_fallback")
+		limitations = append(limitations, "legacy_non_manifest_fixture_symbol_constraints_fallback")
 	}
 	limitations = append(limitations, "ohlcv_full_fill_no_order_book_model")
 	sort.Strings(limitations)
-	return RunManifest{SchemaVersion: ManifestSchemaVersion, Classification: classification, CodeRevision: config.CodeRevision, ConfigVersion: config.ConfigVersion, StrategyVersion: config.StrategyVersion, PolicyVersion: backtestPolicyVersion(config), CostVersion: config.ExecutionPolicy.CostVersion, DatasetManifestID: config.DatasetManifestID, UniverseMode: config.UniverseMode, BenchmarkSymbol: config.BenchmarkSymbol, Seed: config.Seed, FeeBPS: config.FeeBps, SlippageBPS: config.SlippageBps, CoveragePolicy: config.CoveragePolicy, ExecutionPolicy: config.ExecutionPolicy, Start: canonicalTime(config.Start), End: canonicalTime(config.End), Coverage: coverage, Limitations: limitations, Artifacts: ArtifactRefs{SchemaVersion: ArtifactSchemaVersion, Manifest: "manifest.json", Decisions: "decisions.json", Orders: "orders.json", Fills: "fills.json", Trades: "trades.json", Ledger: "ledger.json", Equity: "equity.json", Metrics: "metrics.json", Exposure: "exposure.json"}}
+	return RunManifest{SchemaVersion: ManifestSchemaVersion, Classification: classification, CodeRevision: config.CodeRevision, ConfigVersion: config.ConfigVersion, StrategyVersion: config.StrategyVersion, PolicyVersion: backtestPolicyVersion(config), CostVersion: config.ExecutionPolicy.CostVersion, DatasetManifestID: config.DatasetManifestID, Dataset: DatasetAudit{ManifestID: config.DatasetManifestID, KnowledgeCutoff: config.DatasetKnowledgeCutoff, Series: append([]DatasetSeriesIdentity(nil), config.DatasetSeries...)}, UniverseMode: config.UniverseMode, BenchmarkSymbol: config.BenchmarkSymbol, Seed: config.Seed, FeeBPS: config.FeeBps, SlippageBPS: config.SlippageBps, CoveragePolicy: config.CoveragePolicy, ExecutionPolicy: config.ExecutionPolicy, Start: canonicalTime(config.Start), End: canonicalTime(config.End), Coverage: coverage, Limitations: limitations, Artifacts: ArtifactRefs{SchemaVersion: ArtifactSchemaVersion, Manifest: "manifest.json", Decisions: "decisions.json", Orders: "orders.json", Fills: "fills.json", Trades: "trades.json", Ledger: "ledger.json", Equity: "equity.json", Metrics: "metrics.json", Exposure: "exposure.json"}}
 }
 
 func MarshalArtifactBytes(result BacktestResult) (ArtifactBytes, error) {

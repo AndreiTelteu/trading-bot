@@ -38,12 +38,21 @@ func BuildUniverseSnapshot(db *gorm.DB, request UniverseBuildRequest) (UniverseB
 	if request.LiquidityTimeframe == "" {
 		request.LiquidityTimeframe = "1h"
 	}
-	if request.PolicyVersion == "" {
-		return UniverseBuildResult{}, fmt.Errorf("policy version is required")
+	if request.PolicyVersion == "" || request.BenchmarkSymbolID == "" || request.BenchmarkAssetID == "" {
+		return UniverseBuildResult{}, fmt.Errorf("policy version and exact benchmark symbol/asset identities are required")
 	}
 	manifest, report, err := ValidateManifest(db, ManifestRequirement{ManifestID: request.ManifestID, Start: request.EffectiveAt, End: request.EffectiveAt, RequireComplete: false})
 	if err != nil {
 		return UniverseBuildResult{Coverage: report}, err
+	}
+	var benchmarkMeta database.ExchangeSymbol
+	if err := db.Where("id=? AND asset_id=?", request.BenchmarkSymbolID, request.BenchmarkAssetID).First(&benchmarkMeta).Error; err != nil {
+		return UniverseBuildResult{Coverage: report}, &CoverageError{CoverageReport{SchemaVersion: CoverageSchemaVersion, ManifestID: request.ManifestID, Compatible: false, Failures: []CoverageFailure{{Code: "benchmark_identity_mismatch", Series: request.BenchmarkSymbolID, Details: "benchmark symbol and asset identity do not match"}}}}
+	}
+	for _, key := range []SeriesKey{{ExchangeSymbolID: request.BenchmarkSymbolID, Role: RoleBenchmark, Timeframe: request.DecisionTimeframe}, {ExchangeSymbolID: request.BenchmarkSymbolID, Role: RoleBenchmark, Timeframe: request.LiquidityTimeframe}} {
+		if _, _, err := ValidateManifest(db, ManifestRequirement{ManifestID: request.ManifestID, Series: []SeriesKey{key}, RequireComplete: true}); err != nil {
+			return UniverseBuildResult{Coverage: report}, err
+		}
 	}
 	repo := Repository{DB: db}
 	symbols, err := repo.SymbolsAsOf(request.ManifestID, request.EffectiveAt, true)
@@ -224,6 +233,87 @@ func BuildUniverseSnapshot(db *gorm.DB, request UniverseBuildRequest) (UniverseB
 	result := UniverseBuildResult{snapshot, members, report}
 	if !coverageComplete {
 		return result, &CoverageError{report}
+	}
+	return result, nil
+}
+
+type UniverseRangeRequest struct {
+	Start, End time.Time // half-open snapshot timestamps [Start,End)
+	Step       time.Duration
+	DryRun     bool
+	Build      UniverseBuildRequest
+}
+type UniverseRangeResult struct {
+	Built       int        `json:"built"`
+	ResumedFrom *time.Time `json:"resumed_from,omitempty"`
+	Unresolved  []string   `json:"unresolved,omitempty"`
+}
+
+// BuildUniverseSnapshotRange is bounded and checkpointed independently from
+// market-data download. Snapshot identity remains enforced by the snapshot
+// table, while this checkpoint makes interruption/restart operationally cheap.
+func BuildUniverseSnapshotRange(db *gorm.DB, request UniverseRangeRequest) (UniverseRangeResult, error) {
+	if db == nil || request.Start.IsZero() || !request.End.After(request.Start) || request.Step <= 0 || request.Build.ManifestID == "" || request.Build.PolicyVersion == "" {
+		return UniverseRangeResult{}, fmt.Errorf("invalid universe range request")
+	}
+	label := request.Step.String()
+	cursor := request.Start.UTC()
+	result := UniverseRangeResult{}
+	var cp database.UniverseBuildCheckpoint
+	err := db.Where("dataset_manifest_id=? AND policy_version=? AND interval_label=?", request.Build.ManifestID, request.Build.PolicyVersion, label).First(&cp).Error
+	if err == nil && cp.LastSnapshotAt != nil && !cp.LastSnapshotAt.Before(cursor) {
+		cursor = cp.LastSnapshotAt.Add(request.Step)
+		copy := cursor
+		result.ResumedFrom = &copy
+	} else if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return result, err
+	}
+	for cursor.Before(request.End) {
+		build := request.Build
+		build.EffectiveAt = cursor
+		if request.DryRun {
+			rollback := errors.New("universe range dry-run rollback")
+			var buildErr error
+			err = db.Transaction(func(tx *gorm.DB) error {
+				_, buildErr = BuildUniverseSnapshot(tx, build)
+				if buildErr != nil {
+					return buildErr
+				}
+				return rollback
+			})
+			if err != nil && !errors.Is(err, rollback) {
+				result.Unresolved = append(result.Unresolved, canonicalTime(cursor)+":"+err.Error())
+				return result, err
+			}
+		} else {
+			if _, err := BuildUniverseSnapshot(db, build); err != nil {
+				result.Unresolved = append(result.Unresolved, canonicalTime(cursor)+":"+err.Error())
+				return result, err
+			}
+			at := cursor
+			err = db.Transaction(func(tx *gorm.DB) error {
+				lock := request.Build.ManifestID + "|" + request.Build.PolicyVersion + "|" + label
+				if e := tx.Exec("SELECT pg_advisory_xact_lock(hashtextextended(?,0))", lock).Error; e != nil {
+					return e
+				}
+				row := database.UniverseBuildCheckpoint{DatasetManifestID: request.Build.ManifestID, PolicyVersion: request.Build.PolicyVersion, IntervalLabel: label, LastSnapshotAt: &at, Status: "running", UnresolvedJSON: EncodeJSON(result.Unresolved), UpdatedAt: time.Now().UTC()}
+				return tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "dataset_manifest_id"}, {Name: "policy_version"}, {Name: "interval_label"}}, DoUpdates: clause.Assignments(map[string]any{"last_snapshot_at": gorm.Expr("GREATEST(COALESCE(universe_build_checkpoints.last_snapshot_at, EXCLUDED.last_snapshot_at), EXCLUDED.last_snapshot_at)"), "status": "running", "unresolved_json": EncodeJSON(result.Unresolved), "updated_at": time.Now().UTC()})}).Create(&row).Error
+			})
+			if err != nil {
+				return result, err
+			}
+		}
+		result.Built++
+		cursor = cursor.Add(request.Step)
+	}
+	if !request.DryRun {
+		update := db.Model(&database.UniverseBuildCheckpoint{}).Where("dataset_manifest_id=? AND policy_version=? AND interval_label=?", request.Build.ManifestID, request.Build.PolicyVersion, label).Updates(map[string]any{"status": "complete", "updated_at": time.Now().UTC()})
+		if update.Error != nil {
+			return result, update.Error
+		}
+		if update.RowsAffected != 1 {
+			return result, fmt.Errorf("universe range checkpoint finalization affected %d rows", update.RowsAffected)
+		}
 	}
 	return result, nil
 }

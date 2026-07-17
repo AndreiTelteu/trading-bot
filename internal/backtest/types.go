@@ -97,7 +97,9 @@ type BacktestConfig struct {
 	SymbolIdentities                       map[string]string
 	EconomicAssetIdentities                map[string]string
 	SymbolLifecycles                       map[string]SymbolLifecycle
-	ConstraintResolver                     func(symbol string, at time.Time) (SymbolConstraints, bool)
+	ConstraintResolver                     func(symbol string, at time.Time) (SymbolConstraints, error)
+	DatasetKnowledgeCutoff                 string
+	DatasetSeries                          []DatasetSeriesIdentity
 	CodeRevision                           string
 	ConfigVersion                          string
 	StrategyVersion                        string
@@ -133,6 +135,31 @@ type SymbolConstraints struct {
 type SymbolLifecycle struct {
 	ListedAt   time.Time
 	DelistedAt *time.Time
+}
+
+type DatasetSeriesIdentity struct {
+	ExchangeSymbolID  string `json:"exchange_symbol_id"`
+	SymbolVersion     int    `json:"symbol_version"`
+	AssetID           string `json:"asset_id"`
+	Ticker            string `json:"ticker"`
+	Role              string `json:"role"`
+	Timeframe         string `json:"timeframe"`
+	ListedAt          string `json:"listed_at"`
+	DelistedAt        string `json:"delisted_at,omitempty"`
+	SymbolAvailableAt string `json:"symbol_available_at"`
+	AssetAvailableAt  string `json:"asset_available_at"`
+	Rows              int    `json:"rows"`
+	SeriesHash        string `json:"series_hash"`
+	TradabilityRows   int    `json:"tradability_rows"`
+	TradabilityHash   string `json:"tradability_hash"`
+	ConstraintRows    int    `json:"constraint_rows"`
+	ConstraintHash    string `json:"constraint_hash"`
+}
+
+type DatasetAudit struct {
+	ManifestID      string                  `json:"manifest_id"`
+	KnowledgeCutoff string                  `json:"knowledge_cutoff"`
+	Series          []DatasetSeriesIdentity `json:"series"`
 }
 
 type ReplaySnapshot struct {
@@ -239,6 +266,7 @@ type RunManifest struct {
 	PolicyVersion     string            `json:"policy_version"`
 	CostVersion       string            `json:"cost_version"`
 	DatasetManifestID string            `json:"dataset_manifest_id"`
+	Dataset           DatasetAudit      `json:"dataset"`
 	UniverseMode      UniverseMode      `json:"universe_mode"`
 	BenchmarkSymbol   string            `json:"benchmark_symbol,omitempty"`
 	Seed              int64             `json:"seed"`

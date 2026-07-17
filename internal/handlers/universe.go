@@ -4,6 +4,7 @@ import (
 	"strconv"
 	"time"
 	"trading-go/internal/database"
+	"trading-go/internal/pointintime"
 
 	"github.com/gofiber/fiber/v2"
 )
@@ -78,13 +79,13 @@ func GetUniverseSymbols(c *fiber.Ctx) error {
 	if asOf, err := parseUniverseAsOf(c); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "Invalid as_of"})
 	} else if asOf != nil {
-		var symbols []database.ExchangeSymbol
-		query := database.DB.Where("listed_at <= ? AND (delisted_at IS NULL OR delisted_at > ?)", *asOf, *asOf)
-		if c.Query("eligible") == "true" {
-			query = query.Where(`EXISTS (SELECT 1 FROM tradability_intervals ti WHERE ti.exchange_symbol_id=exchange_symbols.id AND ti.spot_tradable=true AND ti.effective_from<=? AND (ti.effective_to IS NULL OR ti.effective_to>?))`, *asOf, *asOf)
+		manifestID := c.Query("manifest_id")
+		if manifestID == "" {
+			return c.Status(400).JSON(fiber.Map{"error": "manifest_id is required with as_of"})
 		}
-		if err := query.Order("ticker ASC").Find(&symbols).Error; err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": "Failed to fetch point-in-time symbols"})
+		symbols, err := (pointintime.Repository{DB: database.DB}).SymbolsAsOf(manifestID, *asOf, c.Query("eligible") == "true")
+		if err != nil {
+			return c.Status(422).JSON(fiber.Map{"error": err.Error()})
 		}
 		return c.JSON(symbols)
 	}

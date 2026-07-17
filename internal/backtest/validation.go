@@ -538,7 +538,7 @@ func filterSeriesByTime(series map[string][]services.OHLCV, start time.Time, end
 	for symbol, candles := range series {
 		var filtered []services.OHLCV
 		for _, c := range candles {
-			if c.OpenTime >= startMs && c.OpenTime <= endMs {
+			if c.OpenTime >= startMs && c.OpenTime < endMs {
 				filtered = append(filtered, c)
 			}
 		}

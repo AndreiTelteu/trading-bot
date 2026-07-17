@@ -20,59 +20,99 @@ func (r Repository) SymbolsAsOf(manifestID string, asOf time.Time, tradableOnly 
 	if err != nil {
 		return nil, err
 	}
+	cutoff := mustTime(manifest.KnowledgeCutoff)
+	ids := make([]string, 0, len(manifest.Series))
+	seenID := map[string]bool{}
+	for _, s := range manifest.Series {
+		if !seenID[s.ExchangeSymbolID] {
+			ids = append(ids, s.ExchangeSymbolID)
+			seenID[s.ExchangeSymbolID] = true
+		}
+	}
+	if len(ids) == 0 {
+		return []database.ExchangeSymbol{}, nil
+	}
 	query := r.DB.Model(&database.ExchangeSymbol{}).
-		Where("listed_at<=? AND (delisted_at IS NULL OR delisted_at>?)", asOf, asOf).
-		Where("ticker IN ?", manifest.Symbols)
+		Where("id IN ? AND listed_at<=? AND available_at<=? AND retrieved_at<=? AND (delisted_at IS NULL OR delisted_at>?)", ids, asOf, asOf, cutoff, asOf).
+		Where(`EXISTS (SELECT 1 FROM assets a WHERE a.id=exchange_symbols.asset_id AND a.available_at<=? AND a.retrieved_at<=?)`, asOf, cutoff)
 	if tradableOnly {
-		query = query.Where(`EXISTS (SELECT 1 FROM tradability_intervals ti WHERE ti.exchange_symbol_id=exchange_symbols.id AND ti.spot_tradable=true AND ti.effective_from<=? AND (ti.effective_to IS NULL OR ti.effective_to>?))`, asOf, asOf)
+		query = query.Where(`EXISTS (SELECT 1 FROM tradability_intervals ti WHERE ti.exchange_symbol_id=exchange_symbols.id AND ti.spot_tradable=true AND ti.effective_from<=? AND (ti.effective_to IS NULL OR ti.effective_to>?) AND ti.available_at<=? AND ti.retrieved_at<=?)`, asOf, asOf, asOf, cutoff)
 	}
 	var rows []database.ExchangeSymbol
-	if err := query.Order("asset_id ASC,ticker ASC,version DESC").Find(&rows).Error; err != nil {
+	if err := query.Order("asset_id ASC,ticker ASC,version DESC,id ASC").Find(&rows).Error; err != nil {
 		return nil, err
 	}
-	// One economic identity per as-of result. A malformed overlapping rename is
-	// deterministic and cannot duplicate portfolio exposure.
-	seen := map[string]bool{}
+	seenAsset := map[string]bool{}
 	out := make([]database.ExchangeSymbol, 0, len(rows))
 	for _, row := range rows {
-		if seen[row.AssetID] {
+		if seenAsset[row.AssetID] {
 			continue
 		}
-		seen[row.AssetID] = true
+		seenAsset[row.AssetID] = true
+		if row.DelistedAt != nil && row.DelistedAt.After(asOf) {
+			row.DelistedAt = nil
+		}
 		out = append(out, row)
 	}
 	return out, nil
 }
 
 func (r Repository) Bars(manifestID, symbolID, role, timeframe string, start, end, asOf time.Time) ([]services.OHLCV, error) {
-	manifest, _, err := ValidateManifest(r.DB, ManifestRequirement{ManifestID: manifestID, Start: start, End: end, Roles: map[string]string{role: timeframe}})
+	values, _, err := r.BarPage(manifestID, symbolID, role, timeframe, start, end, asOf, time.Time{}, 1_000_000)
+	return values, err
+}
+
+// BarPage applies the half-open range and keyset cursor in SQL. The cursor is
+// exclusive and the returned next cursor is the last emitted open timestamp.
+func (r Repository) BarPage(manifestID, symbolID, role, timeframe string, start, end, asOf, cursor time.Time, limit int) ([]services.OHLCV, *time.Time, error) {
+	if limit < 1 || limit > 1000_000 {
+		return nil, nil, fmt.Errorf("limit out of range")
+	}
+	wanted := SeriesKey{ExchangeSymbolID: symbolID, Role: role, Timeframe: timeframe}
+	manifest, _, err := ValidateManifest(r.DB, ManifestRequirement{ManifestID: manifestID, Start: start, End: end, Series: []SeriesKey{wanted}})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if end.After(asOf) {
-		return nil, ErrFutureData
+		return nil, nil, ErrFutureData
 	}
 	duration, ok := timeframeDuration(timeframe)
 	if !ok {
-		return nil, fmt.Errorf("unsupported timeframe %q", timeframe)
+		return nil, nil, fmt.Errorf("unsupported timeframe %q", timeframe)
 	}
-	availableEnd := asOf.Add(-duration).Add(time.Millisecond)
-	if availableEnd.Before(end) {
-		end = availableEnd
+	var covered SeriesCoverage
+	found := false
+	for _, s := range manifest.Series {
+		if sameSeries(s.SeriesKey, wanted) {
+			covered = s
+			found = true
+			break
+		}
 	}
-	var symbol database.ExchangeSymbol
-	if err := r.DB.First(&symbol, "id=?", symbolID).Error; err != nil {
-		return nil, err
+	if !found {
+		return nil, nil, &CoverageError{CoverageReport{SchemaVersion: CoverageSchemaVersion, ManifestID: manifestID, Compatible: false, Failures: []CoverageFailure{{Code: "exact_series_missing", Series: seriesID(wanted), Details: "series absent from manifest"}}}}
 	}
-	if symbol.ListedAt.After(start) {
-		start = symbol.ListedAt
+	if listed := mustTime(covered.ListedAt); listed.After(start) {
+		start = listed
 	}
-	if symbol.DelistedAt != nil && !symbol.DelistedAt.After(end) {
-		end = symbol.DelistedAt.Add(-duration)
+	if covered.DelistedAt != "" {
+		if delisted := mustTime(covered.DelistedAt); delisted.Before(end) {
+			end = delisted
+		}
+	}
+	query := r.DB.Where("dataset_version=? AND exchange_symbol_id=? AND role=? AND timeframe=? AND open_time>=? AND open_time<? AND available_at<=? AND retrieved_at<=?", manifest.DatasetVersion, symbolID, role, timeframe, start, end, asOf, mustTime(manifest.KnowledgeCutoff))
+	if !cursor.IsZero() {
+		query = query.Where("open_time>?", cursor.UTC())
 	}
 	var rows []database.HistoricalBar
-	if err := r.DB.Where("dataset_version=? AND exchange_symbol_id=? AND role=? AND timeframe=? AND open_time>=? AND open_time<=? AND open_time<=?", manifest.DatasetVersion, symbolID, role, timeframe, start, end, asOf).Order("open_time ASC").Find(&rows).Error; err != nil {
-		return nil, err
+	if err := query.Order("open_time ASC,id ASC").Limit(limit + 1).Find(&rows).Error; err != nil {
+		return nil, nil, err
+	}
+	var next *time.Time
+	if len(rows) > limit {
+		rows = rows[:limit]
+		value := rows[len(rows)-1].OpenTime.UTC()
+		next = &value
 	}
 	out := make([]services.OHLCV, 0, len(rows))
 	for _, row := range rows {
@@ -81,121 +121,184 @@ func (r Repository) Bars(manifestID, symbolID, role, timeframe string, start, en
 		low, _ := strconv.ParseFloat(row.Low, 64)
 		closeValue, _ := strconv.ParseFloat(row.Close, 64)
 		volume, _ := strconv.ParseFloat(row.Volume, 64)
-		quote, _ := strconv.ParseFloat(row.QuoteVolume, 64)
-		_ = quote // retained canonically in persistence; services.OHLCV has base volume only.
 		out = append(out, services.OHLCV{OpenTime: row.OpenTime.UnixMilli(), CloseTime: row.OpenTime.Add(duration).UnixMilli() - 1, Open: open, High: high, Low: low, Close: closeValue, Volume: volume})
 	}
-	return out, nil
+	return out, next, nil
 }
 
-func (r Repository) ConstraintAsOf(symbolID string, asOf time.Time) (Constraint, error) {
-	var row database.SymbolConstraintVersion
-	err := r.DB.Where("exchange_symbol_id=? AND effective_from<=? AND (effective_to IS NULL OR effective_to>?)", symbolID, asOf, asOf).Order("effective_from DESC").First(&row).Error
+func (r Repository) ConstraintAsOfManifest(manifestID, symbolID string, asOf time.Time) (Constraint, error) {
+	manifest, _, err := ValidateManifest(r.DB, ManifestRequirement{ManifestID: manifestID, Series: []SeriesKey{{ExchangeSymbolID: symbolID, Role: RoleDecision, Timeframe: "15m"}}})
 	if err != nil {
 		return Constraint{}, err
 	}
-	parse := func(v string) float64 { f, _ := strconv.ParseFloat(v, 64); return f }
-	return Constraint{row.ExchangeSymbolID, row.EffectiveFrom, parse(row.QuantityStep), parse(row.PriceTick), parse(row.MinQuantity), parse(row.MinNotional)}, nil
+	return r.constraintAsOf(symbolID, asOf, mustTime(manifest.KnowledgeCutoff))
 }
 
-func (r Repository) ConstraintsCover(symbolID string, start, end time.Time) bool {
-	var rows []database.SymbolConstraintVersion
-	if r.DB.Where("exchange_symbol_id=? AND effective_from<=? AND (effective_to IS NULL OR effective_to>?)", symbolID, end, start).Order("effective_from ASC").Find(&rows).Error != nil || len(rows) == 0 {
+// ConstraintAsOf is retained for isolated fixtures. Production manifest-backed
+// execution must use ConstraintAsOfManifest so the retrieval cutoff is pinned.
+func (r Repository) ConstraintAsOf(symbolID string, asOf time.Time) (Constraint, error) {
+	return r.constraintAsOf(symbolID, asOf, time.Time{})
+}
+func (r Repository) constraintAsOf(symbolID string, asOf, cutoff time.Time) (Constraint, error) {
+	query := r.DB.Where("exchange_symbol_id=? AND effective_from<=? AND (effective_to IS NULL OR effective_to>?) AND available_at<=?", symbolID, asOf, asOf, asOf)
+	if !cutoff.IsZero() {
+		query = query.Where("retrieved_at<=?", cutoff)
+	}
+	var row database.SymbolConstraintVersion
+	if err := query.Order("effective_from DESC,id DESC").First(&row).Error; err != nil {
+		return Constraint{}, err
+	}
+	parse := func(v string) float64 { f, _ := strconv.ParseFloat(v, 64); return f }
+	return Constraint{ExchangeSymbolID: row.ExchangeSymbolID, EffectiveFrom: row.EffectiveFrom, AvailableAt: row.AvailableAt, QuantityStep: parse(row.QuantityStep), PriceTick: parse(row.PriceTick), MinQuantity: parse(row.MinQuantity), MinNotional: parse(row.MinNotional)}, nil
+}
+
+func (r Repository) ConstraintsCoverManifest(manifestID, symbolID string, start, end time.Time) bool {
+	manifest, err := LoadManifest(r.DB, manifestID)
+	if err != nil {
 		return false
 	}
-	cursor := start
-	for _, row := range rows {
-		if row.EffectiveFrom.After(cursor) {
-			return false
-		}
-		if row.EffectiveTo == nil {
-			return true
-		}
-		if row.EffectiveTo.After(cursor) {
-			cursor = *row.EffectiveTo
-		}
-		if !cursor.Before(end) {
-			return true
-		}
+	rows, e := constraintRowsAtCutoff(r.DB, symbolID, start, end, mustTime(manifest.KnowledgeCutoff))
+	return e == nil && constraintsCoverRows(rows, start, end)
+}
+func (r Repository) ConstraintsCover(symbolID string, start, end time.Time) bool {
+	var rows []database.SymbolConstraintVersion
+	if r.DB.Where("exchange_symbol_id=? AND effective_from<? AND (effective_to IS NULL OR effective_to>?)", symbolID, end, start).Order("effective_from ASC").Find(&rows).Error != nil {
+		return false
 	}
-	return !cursor.Before(end)
+	return constraintsCoverRows(rows, start, end)
 }
 
 func UpsertAssetLifecycle(db *gorm.DB, assets []database.Asset, symbols []database.ExchangeSymbol, intervals []database.TradabilityInterval, constraints []database.SymbolConstraintVersion) error {
 	return db.Transaction(func(tx *gorm.DB) error {
 		for i := range assets {
-			if assets[i].ProvenanceJSON == "" {
-				assets[i].ProvenanceJSON = "{}"
+			a := &assets[i]
+			a.AvailableAt, a.RetrievedAt = databaseTime(a.AvailableAt), databaseTime(a.RetrievedAt)
+			if a.ID == "" || a.CanonicalCode == "" || a.Source == "" || a.RetrievedAt.IsZero() {
+				return fmt.Errorf("invalid asset metadata")
+			}
+			if a.AvailableAt.IsZero() {
+				a.AvailableAt = a.RetrievedAt
+			}
+			if a.AvailableAt.After(a.RetrievedAt) {
+				return fmt.Errorf("asset available_at cannot follow retrieved_at")
+			}
+			if a.ProvenanceJSON == "" {
+				a.ProvenanceJSON = "{}"
 			}
 			var existing database.Asset
-			err := tx.First(&existing, "id=?", assets[i].ID).Error
+			err := tx.First(&existing, "id=?", a.ID).Error
 			if err == nil {
-				if existing.CanonicalCode != assets[i].CanonicalCode || existing.Name != assets[i].Name || existing.Source != assets[i].Source || existing.ProvenanceJSON != assets[i].ProvenanceJSON {
-					return fmt.Errorf("%w: asset %s", ErrMetadataConflict, assets[i].ID)
+				if existing.CanonicalCode != a.CanonicalCode || existing.Name != a.Name || existing.Source != a.Source || existing.ProvenanceJSON != a.ProvenanceJSON || !existing.AvailableAt.Equal(a.AvailableAt) || !existing.RetrievedAt.Equal(a.RetrievedAt) {
+					return fmt.Errorf("%w: asset %s", ErrMetadataConflict, a.ID)
 				}
 				continue
 			}
 			if !errors.Is(err, gorm.ErrRecordNotFound) {
 				return err
 			}
-			if err := tx.Create(&assets[i]).Error; err != nil {
+			if err := tx.Create(a).Error; err != nil {
 				return err
 			}
 		}
 		for i := range symbols {
-			if symbols[i].ProvenanceJSON == "" {
-				symbols[i].ProvenanceJSON = "{}"
+			s := &symbols[i]
+			s.ListedAt, s.AvailableAt, s.RetrievedAt = databaseTime(s.ListedAt), databaseTime(s.AvailableAt), databaseTime(s.RetrievedAt)
+			if s.DelistedAt != nil {
+				value := databaseTime(*s.DelistedAt)
+				s.DelistedAt = &value
+			}
+			if s.ID == "" || s.Ticker == "" || s.AssetID == "" || s.BaseAssetID == "" || s.QuoteAssetID == "" || s.Source == "" || s.ListedAt.IsZero() || s.RetrievedAt.IsZero() {
+				return fmt.Errorf("invalid exchange symbol metadata")
+			}
+			if s.AvailableAt.IsZero() {
+				s.AvailableAt = s.ListedAt
+			}
+			if s.AvailableAt.After(s.RetrievedAt) {
+				return fmt.Errorf("symbol available_at cannot follow retrieved_at")
+			}
+			if s.ProvenanceJSON == "" {
+				s.ProvenanceJSON = "{}"
 			}
 			var existing database.ExchangeSymbol
-			err := tx.First(&existing, "id=?", symbols[i].ID).Error
+			err := tx.First(&existing, "id=?", s.ID).Error
 			if err == nil {
-				if existing.VenueID != symbols[i].VenueID || existing.Ticker != symbols[i].Ticker || existing.AssetID != symbols[i].AssetID || existing.BaseAssetID != symbols[i].BaseAssetID || existing.QuoteAssetID != symbols[i].QuoteAssetID || !existing.ListedAt.Equal(symbols[i].ListedAt) || !equalTimePointers(existing.DelistedAt, symbols[i].DelistedAt) || existing.Version != symbols[i].Version || existing.Source != symbols[i].Source || existing.ProvenanceJSON != symbols[i].ProvenanceJSON {
-					return fmt.Errorf("%w: symbol %s", ErrMetadataConflict, symbols[i].ID)
+				if existing.VenueID != s.VenueID || existing.Ticker != s.Ticker || existing.AssetID != s.AssetID || existing.BaseAssetID != s.BaseAssetID || existing.QuoteAssetID != s.QuoteAssetID || !existing.ListedAt.Equal(s.ListedAt) || !equalTimePointers(existing.DelistedAt, s.DelistedAt) || existing.Version != s.Version || existing.Source != s.Source || existing.ProvenanceJSON != s.ProvenanceJSON || !existing.AvailableAt.Equal(s.AvailableAt) || !existing.RetrievedAt.Equal(s.RetrievedAt) {
+					return fmt.Errorf("%w: symbol %s", ErrMetadataConflict, s.ID)
 				}
 				continue
 			}
 			if !errors.Is(err, gorm.ErrRecordNotFound) {
 				return err
 			}
-			if err := tx.Create(&symbols[i]).Error; err != nil {
+			if err := tx.Create(s).Error; err != nil {
 				return err
 			}
 		}
 		for i := range intervals {
-			if intervals[i].ProvenanceJSON == "" {
-				intervals[i].ProvenanceJSON = "{}"
+			v := &intervals[i]
+			v.EffectiveFrom, v.AvailableAt, v.RetrievedAt = databaseTime(v.EffectiveFrom), databaseTime(v.AvailableAt), databaseTime(v.RetrievedAt)
+			if v.EffectiveTo != nil {
+				value := databaseTime(*v.EffectiveTo)
+				v.EffectiveTo = &value
+			}
+			if v.ExchangeSymbolID == "" || v.EffectiveFrom.IsZero() || v.Source == "" || v.RetrievedAt.IsZero() {
+				return fmt.Errorf("invalid tradability metadata")
+			}
+			if v.AvailableAt.IsZero() {
+				v.AvailableAt = v.EffectiveFrom
+			}
+			if v.AvailableAt.After(v.RetrievedAt) {
+				return fmt.Errorf("tradability available_at cannot follow retrieved_at")
+			}
+			if v.ProvenanceJSON == "" {
+				v.ProvenanceJSON = "{}"
 			}
 			var existing database.TradabilityInterval
-			err := tx.Where("exchange_symbol_id=? AND effective_from=?", intervals[i].ExchangeSymbolID, intervals[i].EffectiveFrom).First(&existing).Error
+			err := tx.Where("exchange_symbol_id=? AND effective_from=?", v.ExchangeSymbolID, v.EffectiveFrom).First(&existing).Error
 			if err == nil {
-				if !equalTimePointers(existing.EffectiveTo, intervals[i].EffectiveTo) || existing.SpotTradable != intervals[i].SpotTradable || existing.Status != intervals[i].Status || existing.Source != intervals[i].Source || existing.ProvenanceJSON != intervals[i].ProvenanceJSON {
-					return fmt.Errorf("%w: tradability %s", ErrMetadataConflict, intervals[i].ExchangeSymbolID)
+				if !equalTimePointers(existing.EffectiveTo, v.EffectiveTo) || existing.SpotTradable != v.SpotTradable || existing.Status != v.Status || existing.Source != v.Source || existing.ProvenanceJSON != v.ProvenanceJSON || !existing.AvailableAt.Equal(v.AvailableAt) || !existing.RetrievedAt.Equal(v.RetrievedAt) {
+					return fmt.Errorf("%w: tradability %s", ErrMetadataConflict, v.ExchangeSymbolID)
 				}
 				continue
 			}
 			if !errors.Is(err, gorm.ErrRecordNotFound) {
 				return err
 			}
-			if err := tx.Create(&intervals[i]).Error; err != nil {
+			if err := tx.Create(v).Error; err != nil {
 				return err
 			}
 		}
 		for i := range constraints {
-			if constraints[i].ProvenanceJSON == "" {
-				constraints[i].ProvenanceJSON = "{}"
+			v := &constraints[i]
+			v.EffectiveFrom, v.AvailableAt, v.RetrievedAt = databaseTime(v.EffectiveFrom), databaseTime(v.AvailableAt), databaseTime(v.RetrievedAt)
+			if v.EffectiveTo != nil {
+				value := databaseTime(*v.EffectiveTo)
+				v.EffectiveTo = &value
+			}
+			if v.ExchangeSymbolID == "" || v.EffectiveFrom.IsZero() || v.Source == "" || v.RetrievedAt.IsZero() {
+				return fmt.Errorf("invalid constraint metadata")
+			}
+			if v.AvailableAt.IsZero() {
+				v.AvailableAt = v.EffectiveFrom
+			}
+			if v.AvailableAt.After(v.RetrievedAt) {
+				return fmt.Errorf("constraint available_at cannot follow retrieved_at")
+			}
+			if v.ProvenanceJSON == "" {
+				v.ProvenanceJSON = "{}"
 			}
 			var existing database.SymbolConstraintVersion
-			err := tx.Where("exchange_symbol_id=? AND effective_from=?", constraints[i].ExchangeSymbolID, constraints[i].EffectiveFrom).First(&existing).Error
+			err := tx.Where("exchange_symbol_id=? AND effective_from=?", v.ExchangeSymbolID, v.EffectiveFrom).First(&existing).Error
 			if err == nil {
-				if !equalTimePointers(existing.EffectiveTo, constraints[i].EffectiveTo) || existing.QuantityStep != constraints[i].QuantityStep || existing.PriceTick != constraints[i].PriceTick || existing.MinQuantity != constraints[i].MinQuantity || existing.MinNotional != constraints[i].MinNotional || existing.Source != constraints[i].Source || existing.ProvenanceJSON != constraints[i].ProvenanceJSON {
-					return fmt.Errorf("%w: constraints %s", ErrMetadataConflict, constraints[i].ExchangeSymbolID)
+				if !equalTimePointers(existing.EffectiveTo, v.EffectiveTo) || existing.QuantityStep != v.QuantityStep || existing.PriceTick != v.PriceTick || existing.MinQuantity != v.MinQuantity || existing.MinNotional != v.MinNotional || existing.Source != v.Source || existing.ProvenanceJSON != v.ProvenanceJSON || !existing.AvailableAt.Equal(v.AvailableAt) || !existing.RetrievedAt.Equal(v.RetrievedAt) {
+					return fmt.Errorf("%w: constraints %s", ErrMetadataConflict, v.ExchangeSymbolID)
 				}
 				continue
 			}
 			if !errors.Is(err, gorm.ErrRecordNotFound) {
 				return err
 			}
-			if err := tx.Create(&constraints[i]).Error; err != nil {
+			if err := tx.Create(v).Error; err != nil {
 				return err
 			}
 		}
@@ -203,10 +306,70 @@ func UpsertAssetLifecycle(db *gorm.DB, assets []database.Asset, symbols []databa
 	})
 }
 
+var errDryRunRollback = errors.New("point-in-time metadata dry-run rollback")
+
+type MetadataIngestRequest struct {
+	Assets      []database.Asset
+	Symbols     []database.ExchangeSymbol
+	Tradability []database.TradabilityInterval
+	Constraints []database.SymbolConstraintVersion
+	Start, End  time.Time
+	DryRun      bool
+}
+
+func IngestMetadata(db *gorm.DB, request MetadataIngestRequest) error {
+	if db == nil || request.Start.IsZero() || !request.End.After(request.Start) {
+		return fmt.Errorf("metadata ingestion requires a bounded half-open interval")
+	}
+	inside := func(at time.Time) bool { return !at.Before(request.Start) && at.Before(request.End) }
+	for _, v := range request.Assets {
+		if !inside(v.AvailableAt) {
+			return fmt.Errorf("asset %s availability is outside metadata bounds", v.ID)
+		}
+	}
+	for _, v := range request.Symbols {
+		if !inside(v.ListedAt) {
+			return fmt.Errorf("symbol %s listing is outside metadata bounds", v.ID)
+		}
+	}
+	for _, v := range request.Tradability {
+		if !inside(v.EffectiveFrom) {
+			return fmt.Errorf("tradability %s effective time is outside metadata bounds", v.ExchangeSymbolID)
+		}
+	}
+	for _, v := range request.Constraints {
+		if !inside(v.EffectiveFrom) {
+			return fmt.Errorf("constraint %s effective time is outside metadata bounds", v.ExchangeSymbolID)
+		}
+	}
+	if request.DryRun {
+		return ValidateAssetLifecycle(db, request.Assets, request.Symbols, request.Tradability, request.Constraints)
+	}
+	return UpsertAssetLifecycle(db, request.Assets, request.Symbols, request.Tradability, request.Constraints)
+}
+
+func ValidateAssetLifecycle(db *gorm.DB, assets []database.Asset, symbols []database.ExchangeSymbol, intervals []database.TradabilityInterval, constraints []database.SymbolConstraintVersion) error {
+	err := db.Transaction(func(tx *gorm.DB) error {
+		if err := UpsertAssetLifecycle(tx, assets, symbols, intervals, constraints); err != nil {
+			return err
+		}
+		return errDryRunRollback
+	})
+	if errors.Is(err, errDryRunRollback) {
+		return nil
+	}
+	return err
+}
 func EncodeJSON(value any) string { b, _ := json.Marshal(value); return string(b) }
 func equalTimePointers(a, b *time.Time) bool {
 	if a == nil || b == nil {
-		return a == nil && b == nil
+		return a == b
 	}
 	return a.Equal(*b)
+}
+func databaseTime(value time.Time) time.Time {
+	if value.IsZero() {
+		return value
+	}
+	return value.UTC().Truncate(time.Microsecond)
 }

@@ -339,6 +339,7 @@ type Asset struct {
 	Name           string    `json:"name" gorm:"size:200"`
 	Source         string    `json:"source" gorm:"size:100;not null"`
 	ProvenanceJSON string    `json:"provenance" gorm:"column:provenance_json;type:jsonb;not null;default:'{}'"`
+	AvailableAt    time.Time `json:"available_at" gorm:"not null;index"`
 	RetrievedAt    time.Time `json:"retrieved_at" gorm:"not null;index"`
 	CreatedAt      time.Time `json:"created_at"`
 }
@@ -355,6 +356,7 @@ type ExchangeSymbol struct {
 	Version        int        `json:"version" gorm:"not null;default:1;uniqueIndex:idx_exchange_symbol_version,priority:3"`
 	Source         string     `json:"source" gorm:"size:100;not null"`
 	ProvenanceJSON string     `json:"provenance" gorm:"column:provenance_json;type:jsonb;not null;default:'{}'"`
+	AvailableAt    time.Time  `json:"available_at" gorm:"not null;index"`
 	RetrievedAt    time.Time  `json:"retrieved_at" gorm:"not null;index"`
 	CreatedAt      time.Time  `json:"created_at"`
 }
@@ -368,6 +370,7 @@ type TradabilityInterval struct {
 	Status           string     `json:"status" gorm:"size:30;not null"`
 	Source           string     `json:"source" gorm:"size:100;not null"`
 	ProvenanceJSON   string     `json:"provenance" gorm:"column:provenance_json;type:jsonb;not null;default:'{}'"`
+	AvailableAt      time.Time  `json:"available_at" gorm:"not null;index"`
 	RetrievedAt      time.Time  `json:"retrieved_at" gorm:"not null;index"`
 }
 
@@ -382,6 +385,7 @@ type SymbolConstraintVersion struct {
 	MinNotional      string     `json:"min_notional" gorm:"type:numeric(38,18);not null;default:0"`
 	Source           string     `json:"source" gorm:"size:100;not null"`
 	ProvenanceJSON   string     `json:"provenance" gorm:"column:provenance_json;type:jsonb;not null;default:'{}'"`
+	AvailableAt      time.Time  `json:"available_at" gorm:"not null;index"`
 	RetrievedAt      time.Time  `json:"retrieved_at" gorm:"not null;index"`
 }
 
@@ -403,6 +407,7 @@ type HistoricalBar struct {
 	QualityFlagsJSON string    `json:"quality_flags" gorm:"column:quality_flags_json;type:jsonb;not null;default:'[]'"`
 	Source           string    `json:"source" gorm:"size:100;not null;index"`
 	ProvenanceJSON   string    `json:"provenance" gorm:"column:provenance_json;type:jsonb;not null;default:'{}'"`
+	AvailableAt      time.Time `json:"available_at" gorm:"not null;index"`
 	RetrievedAt      time.Time `json:"retrieved_at" gorm:"not null;index"`
 	ContentHash      string    `json:"content_hash" gorm:"size:64;not null"`
 	CreatedAt        time.Time `json:"created_at"`
@@ -416,6 +421,7 @@ type DatasetManifest struct {
 	RequestedEnd        time.Time `json:"requested_end" gorm:"not null;index"`
 	EffectiveStart      time.Time `json:"effective_start" gorm:"not null"`
 	EffectiveEnd        time.Time `json:"effective_end" gorm:"not null"`
+	KnowledgeCutoff     time.Time `json:"knowledge_cutoff" gorm:"not null;index"`
 	Source              string    `json:"source" gorm:"size:100;not null"`
 	ProvenanceJSON      string    `json:"provenance" gorm:"column:provenance_json;type:jsonb;not null;default:'{}'"`
 	BuildVersion        string    `json:"build_version" gorm:"size:100;not null"`
@@ -438,6 +444,20 @@ type IngestionCheckpoint struct {
 	Status           string     `json:"status" gorm:"size:30;not null;index"`
 	UnresolvedJSON   string     `json:"unresolved" gorm:"column:unresolved_json;type:jsonb;not null;default:'[]'"`
 	UpdatedAt        time.Time  `json:"updated_at"`
+}
+
+// UniverseBuildCheckpoint makes bounded snapshot-range generation resumable.
+// Its identity includes the manifest and policy, so retries cannot cross data
+// or policy versions.
+type UniverseBuildCheckpoint struct {
+	ID                uint       `json:"id" gorm:"primaryKey;autoIncrement"`
+	DatasetManifestID string     `json:"dataset_manifest_id" gorm:"size:64;not null;uniqueIndex:idx_universe_build_checkpoint,priority:1"`
+	PolicyVersion     string     `json:"policy_version" gorm:"size:100;not null;uniqueIndex:idx_universe_build_checkpoint,priority:2"`
+	IntervalLabel     string     `json:"interval_label" gorm:"size:20;not null;uniqueIndex:idx_universe_build_checkpoint,priority:3"`
+	LastSnapshotAt    *time.Time `json:"last_snapshot_at,omitempty"`
+	Status            string     `json:"status" gorm:"size:30;not null;index"`
+	UnresolvedJSON    string     `json:"unresolved" gorm:"column:unresolved_json;type:jsonb;not null;default:'[]'"`
+	UpdatedAt         time.Time  `json:"updated_at"`
 }
 
 type ModelArtifact struct {

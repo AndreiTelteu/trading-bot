@@ -25,6 +25,17 @@ func GetDatasetManifest(c *fiber.Ctx) error {
 		if e == nil && effective.After(asOf) {
 			return c.Status(404).JSON(fiber.Map{"error": "manifest contains records effective after requested as_of"})
 		}
+		for _, series := range manifest.Series {
+			for _, raw := range []string{series.ListedAt, series.SymbolAvailableAt, series.AssetAvailableAt, series.DelistedAt} {
+				if raw == "" {
+					continue
+				}
+				at, parseErr := time.Parse(time.RFC3339Nano, raw)
+				if parseErr == nil && at.After(asOf) {
+					return c.Status(404).JSON(fiber.Map{"error": "manifest lifecycle contains records effective after requested as_of"})
+				}
+			}
+		}
 	}
 	return c.JSON(manifest)
 }
@@ -45,20 +56,33 @@ func ListHistoricalBars(c *fiber.Ctx) error {
 			return c.Status(400).JSON(fiber.Map{"error": "invalid as_of"})
 		}
 	}
-	bars, e := (pointintime.Repository{DB: database.DB}).Bars(c.Query("manifest_id"), c.Query("symbol_id"), c.Query("role"), c.Query("timeframe"), start, end, asOf)
+	limit := 1000
+	if raw := c.Query("limit"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 1 || parsed > 1000 {
+			return c.Status(400).JSON(fiber.Map{"error": "limit must be an integer from 1 through 1000"})
+		}
+		limit = parsed
+	}
+	cursor := time.Time{}
+	if raw := c.Query("cursor"); raw != "" {
+		cursor, e = time.Parse(time.RFC3339Nano, raw)
+		if e != nil {
+			return c.Status(400).JSON(fiber.Map{"error": "invalid cursor"})
+		}
+		if cursor.Before(start) || !cursor.Before(end) {
+			return c.Status(400).JSON(fiber.Map{"error": "cursor is outside [start,end)"})
+		}
+	}
+	bars, next, e := (pointintime.Repository{DB: database.DB}).BarPage(c.Query("manifest_id"), c.Query("symbol_id"), c.Query("role"), c.Query("timeframe"), start, end, asOf, cursor, limit)
 	if e != nil {
 		return c.Status(422).JSON(fiber.Map{"error": e.Error()})
 	}
-	limit := 1000
-	if raw := c.Query("limit"); raw != "" {
-		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 && parsed < limit {
-			limit = parsed
-		}
+	nextCursor := ""
+	if next != nil {
+		nextCursor = next.UTC().Format(time.RFC3339Nano)
 	}
-	if len(bars) > limit {
-		bars = bars[:limit]
-	}
-	return c.JSON(fiber.Map{"schema_version": "point-in-time-bars-v1", "count": len(bars), "bars": bars})
+	return c.JSON(fiber.Map{"schema_version": pointintime.BarsSchemaVersion, "count": len(bars), "bars": bars, "next_cursor": nextCursor})
 }
 
 // InspectDatasetCoverage returns compact, schema-versioned manifest diagnostics.
@@ -72,7 +96,7 @@ func InspectDatasetCoverage(c *fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid end"})
 	}
-	requirement := pointintime.ManifestRequirement{ManifestID: strings.TrimSpace(c.Query("manifest_id")), DatasetVersion: strings.TrimSpace(c.Query("dataset_version")), Start: start, End: end, Symbols: splitNonEmpty(c.Query("symbols")), Roles: parseRoles(c.Query("roles")), RequireComplete: c.Query("require_complete", "true") != "false"}
+	requirement := pointintime.ManifestRequirement{ManifestID: strings.TrimSpace(c.Query("manifest_id")), DatasetVersion: strings.TrimSpace(c.Query("dataset_version")), Start: start, End: end, Symbols: splitNonEmpty(c.Query("symbols")), Roles: parseRoles(c.Query("roles")), Series: parseExactSeries(c.Query("series")), RequireComplete: c.Query("require_complete", "true") != "false"}
 	if raw := c.Query("as_of"); raw != "" {
 		asOf, e := time.Parse(time.RFC3339, raw)
 		if e != nil {
@@ -83,6 +107,17 @@ func InspectDatasetCoverage(c *fiber.Ctx) error {
 			effective, _ := time.Parse(time.RFC3339Nano, manifest.EffectiveEnd)
 			if effective.After(asOf) {
 				return c.Status(fiber.StatusUnprocessableEntity).JSON(pointintime.CoverageReport{SchemaVersion: pointintime.CoverageSchemaVersion, ManifestID: requirement.ManifestID, Compatible: false, Failures: []pointintime.CoverageFailure{{Code: "as_of_precedes_manifest_effective_end", Details: manifest.EffectiveEnd}}})
+			}
+			for _, series := range manifest.Series {
+				for _, raw := range []string{series.ListedAt, series.SymbolAvailableAt, series.AssetAvailableAt, series.DelistedAt} {
+					if raw == "" {
+						continue
+					}
+					at, parseErr := time.Parse(time.RFC3339Nano, raw)
+					if parseErr == nil && at.After(asOf) {
+						return c.Status(fiber.StatusUnprocessableEntity).JSON(pointintime.CoverageReport{SchemaVersion: pointintime.CoverageSchemaVersion, ManifestID: requirement.ManifestID, Compatible: false, Failures: []pointintime.CoverageFailure{{Code: "as_of_precedes_manifest_lifecycle", Series: series.ExchangeSymbolID, Details: raw}}})
+					}
+				}
 			}
 		}
 	}
@@ -114,6 +149,16 @@ func parseRoles(value string) map[string]string {
 		parts := strings.SplitN(v, ":", 2)
 		if len(parts) == 2 {
 			out[parts[0]] = parts[1]
+		}
+	}
+	return out
+}
+func parseExactSeries(value string) []pointintime.SeriesKey {
+	out := []pointintime.SeriesKey{}
+	for _, v := range splitNonEmpty(value) {
+		parts := strings.Split(v, ":")
+		if len(parts) == 3 {
+			out = append(out, pointintime.SeriesKey{ExchangeSymbolID: parts[0], Role: parts[1], Timeframe: parts[2]})
 		}
 	}
 	return out

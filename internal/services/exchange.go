@@ -460,6 +460,25 @@ func (s *ExchangeService) FetchOHLCVRange(symbol, interval string, start time.Ti
 	return result, nil
 }
 
+// FetchOHLCVPage performs exactly one bounded public request. end is exclusive
+// in the trading-core contract; Binance's endTime is inclusive, so one
+// millisecond is subtracted at the adapter boundary.
+func (s *ExchangeService) FetchOHLCVPage(symbol, interval string, start, end time.Time, limit int) ([]OHLCV, error) {
+	if start.IsZero() || !end.After(start) || limit < 1 || limit > 1000 {
+		return nil, fmt.Errorf("invalid bounded OHLCV page request")
+	}
+	params := map[string]string{"symbol": symbol, "interval": interval, "limit": strconv.Itoa(limit), "startTime": strconv.FormatInt(start.UnixMilli(), 10), "endTime": strconv.FormatInt(end.UnixMilli()-1, 10)}
+	data, err := s.makeRequest("GET", "/api/v3/klines", params)
+	if err != nil {
+		return nil, err
+	}
+	var klines [][]interface{}
+	if err := json.Unmarshal(data, &klines); err != nil {
+		return nil, fmt.Errorf("failed to parse klines response: %w", err)
+	}
+	return parseOHLCV(klines), nil
+}
+
 func (s *ExchangeService) FetchExchangeInfo() (*ExchangeInfo, error) {
 	data, err := s.makeRequest("GET", "/api/v3/exchangeInfo", nil)
 	if err != nil {

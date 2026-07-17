@@ -2,6 +2,7 @@ package database_test
 
 import (
 	"gorm.io/gorm"
+	"strings"
 	"testing"
 	"trading-go/internal/database"
 	"trading-go/internal/testutil"
@@ -34,6 +35,13 @@ func TestFreshLedgerMigrationAndSeedCreatesOpeningCapital(t *testing.T) {
 	assertTrigger(t, db, "ledger_batches_immutable")
 	assertTrigger(t, db, "positions_economic_guard")
 	assertTrigger(t, db, "wallets_economic_guard")
+}
+
+func TestStage04AutomaticRollbackIsExplicitlyRejected(t *testing.T) {
+	err := database.Stage04RollbackError()
+	if err == nil || !strings.Contains(err.Error(), "manually remove") || !strings.Contains(err.Error(), "migration history") {
+		t.Fatalf("rollback error=%v", err)
+	}
 }
 
 func TestGenuinePreLedgerPopulatedSchemaUpgradeDoesNotFabricateHistory(t *testing.T) {
@@ -113,6 +121,19 @@ func TestStage03ShapedSchemaUpgradesToPointInTimeWithoutDestructiveRewrite(t *te
 	testutil.ResetPublicSchema(t, db)
 	for _, statement := range []string{
 		`CREATE TABLE schema_migrations (id varchar(255) PRIMARY KEY)`,
+		`CREATE TABLE ledger_batches (id bigserial PRIMARY KEY,account_id varchar(100) NOT NULL)`,
+		`CREATE TABLE orders (id bigserial PRIMARY KEY,account_id varchar(100) NOT NULL,symbol varchar(20) NOT NULL)`,
+		`CREATE TABLE positions (id bigserial PRIMARY KEY,account_id varchar(100) NOT NULL,symbol varchar(20) NOT NULL)`,
+		`CREATE TABLE fills (id bigserial PRIMARY KEY,ledger_batch_id bigint NOT NULL,order_id bigint NOT NULL,position_id bigint NOT NULL,account_id varchar(100) NOT NULL,venue_id varchar(50) NOT NULL,provider_fill_id varchar(160))`,
+		`CREATE TABLE ledger_events (id bigserial PRIMARY KEY,ledger_batch_id bigint NOT NULL,fill_id bigint,account_id varchar(100) NOT NULL,payload text)`,
+		`ALTER TABLE fills ADD CONSTRAINT stage03_fixture_fill_batch_fk FOREIGN KEY(ledger_batch_id) REFERENCES ledger_batches(id) ON DELETE RESTRICT`,
+		`ALTER TABLE ledger_events ADD CONSTRAINT stage03_fixture_event_batch_fk FOREIGN KEY(ledger_batch_id) REFERENCES ledger_batches(id) ON DELETE RESTRICT`,
+		`CREATE UNIQUE INDEX idx_fills_provider_identity ON fills(account_id,venue_id,provider_fill_id) WHERE provider_fill_id IS NOT NULL`,
+		`CREATE FUNCTION reject_ledger_mutation() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION 'ledger rows are immutable'; END; $$ LANGUAGE plpgsql`,
+		`CREATE TRIGGER ledger_events_immutable BEFORE UPDATE OR DELETE ON ledger_events FOR EACH ROW EXECUTE FUNCTION reject_ledger_mutation()`,
+		`CREATE TRIGGER fills_immutable BEFORE UPDATE OR DELETE ON fills FOR EACH ROW EXECUTE FUNCTION reject_ledger_mutation()`,
+		`INSERT INTO ledger_batches(id,account_id) VALUES(11,'primary')`,
+		`INSERT INTO ledger_events(id,ledger_batch_id,account_id,payload) VALUES(12,11,'primary','stage01-preserved')`,
 		`CREATE TABLE backtest_jobs (id bigserial PRIMARY KEY,status varchar(20),progress double precision,created_at timestamptz,updated_at timestamptz)`,
 		`CREATE TABLE universe_snapshots (id bigserial PRIMARY KEY,snapshot_time timestamptz,regime_state varchar(20),breadth_ratio double precision,eligible_count bigint,candidate_count bigint,ranked_count bigint,shortlist_count bigint,rebalance_interval varchar(20),created_at timestamptz,updated_at timestamptz)`,
 		`CREATE TABLE universe_members (id bigserial PRIMARY KEY,universe_snapshot_id bigint,symbol varchar(20),stage varchar(20),rank_score double precision,shortlisted boolean,created_at timestamptz,updated_at timestamptz)`,
@@ -139,6 +160,20 @@ func TestStage03ShapedSchemaUpgradesToPointInTimeWithoutDestructiveRewrite(t *te
 	var legacy database.UniverseMember
 	if err := db.First(&legacy, "symbol=?", "LEGACYUSDT").Error; err != nil || legacy.UniverseSnapshotID != 7 {
 		t.Fatalf("legacy snapshot member was not preserved: %+v %v", legacy, err)
+	}
+	assertTrigger(t, db, "ledger_events_immutable")
+	assertTrigger(t, db, "fills_immutable")
+	var indexCount int64
+	if err := db.Raw(`SELECT count(*) FROM pg_indexes WHERE indexname='idx_fills_provider_identity'`).Scan(&indexCount).Error; err != nil || indexCount != 1 {
+		t.Fatalf("Stage 01 provider identity index changed: %d %v", indexCount, err)
+	}
+	var fkCount int64
+	if err := db.Raw(`SELECT count(*) FROM pg_constraint WHERE conname IN ('stage03_fixture_fill_batch_fk','stage03_fixture_event_batch_fk')`).Scan(&fkCount).Error; err != nil || fkCount != 2 {
+		t.Fatalf("Stage 01 FKs changed: %d %v", fkCount, err)
+	}
+	var payload string
+	if err := db.Raw(`SELECT payload FROM ledger_events WHERE id=12`).Scan(&payload).Error; err != nil || payload != "stage01-preserved" {
+		t.Fatalf("immutable ledger row changed: %q %v", payload, err)
 	}
 }
 
