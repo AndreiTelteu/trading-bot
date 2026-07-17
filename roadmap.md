@@ -118,14 +118,14 @@ Detailed plan: [`docs/reimplementation/stage-06-trend-momentum-strategy.md`](doc
 
 Detailed plan: [`docs/reimplementation/stage-07-validation-governance.md`](docs/reimplementation/stage-07-validation-governance.md)
 
-- [ ] Add purged multi-window walk-forward validation
-- [ ] Bootstrap the correct statistical unit and reject insufficient samples
-- [ ] Define immutable experiment manifests and promotion gates
-- [ ] Add calibration/ranking diagnostics for shadow models
-- [ ] Prevent bootstrap/test artifacts from controlling execution
-- [ ] Require rollback criteria and human approval for promotion
-- [ ] Add validation, governance, and negative-path tests
-- [ ] Complete independent review and one feedback pass
+- [x] Add purged multi-window walk-forward validation
+- [x] Bootstrap the correct statistical unit and reject insufficient samples
+- [x] Define immutable experiment manifests and promotion gates
+- [x] Add calibration/ranking diagnostics for shadow models
+- [x] Prevent bootstrap/test artifacts from controlling execution
+- [x] Require rollback criteria and human approval for promotion
+- [x] Add validation, governance, and negative-path tests
+- [x] Complete independent review and one feedback pass
 
 ## Stage 08 — Migration, cutover, and operations
 
