@@ -66,14 +66,14 @@ Detailed plan: [`docs/reimplementation/stage-02-shared-engine.md`](docs/reimplem
 
 Detailed plan: [`docs/reimplementation/stage-03-backtest-realism.md`](docs/reimplementation/stage-03-backtest-realism.md)
 
-- [ ] Fail fast on missing/empty replay and benchmark coverage
-- [ ] Separate signal time from next executable fill time
-- [ ] Support lower-resolution execution data when configured
-- [ ] Apply deterministic fees, slippage, partial-fill policy, and exit precedence
-- [ ] Require benchmark/regime data independently of tradable symbols
-- [ ] Produce compact, versioned, auditable run manifests
-- [ ] Add no-lookahead, coverage, determinism, and parity tests
-- [ ] Complete independent review and one feedback pass
+- [x] Fail fast on missing/empty replay and benchmark coverage
+- [x] Separate signal time from next executable fill time
+- [x] Support lower-resolution execution data when configured
+- [x] Apply deterministic fees, slippage, partial-fill policy, and exit precedence
+- [x] Require benchmark/regime data independently of tradable symbols
+- [x] Produce compact, versioned, auditable run manifests
+- [x] Add no-lookahead, coverage, determinism, and parity tests
+- [x] Complete independent review and one feedback pass
 
 ## Stage 04 — Point-in-time market data and universe
 
