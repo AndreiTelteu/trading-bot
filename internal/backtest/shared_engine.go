@@ -132,16 +132,17 @@ type backtestLedgerEvent struct {
 	CashAfter                                               string
 }
 type backtestMemoryLedger struct {
-	cash         float64
-	positions    map[string]*positionState
-	trades       []Trade
-	events       []backtestLedgerEvent
-	turnover     float64
-	runs         int
-	observations []tradingcore.Observation
-	config       BacktestConfig
-	runRecords   []backtestRunRecord
-	evidence     RunEvidence
+	cash                       float64
+	positions                  map[string]*positionState
+	trades                     []Trade
+	events                     []backtestLedgerEvent
+	turnover                   float64
+	runs                       int
+	observations               []tradingcore.Observation
+	config                     BacktestConfig
+	runRecords                 []backtestRunRecord
+	stage06PaperShadowApproved []Stage06OrderSemantic
+	evidence                   RunEvidence
 }
 
 type backtestRunRecord struct {

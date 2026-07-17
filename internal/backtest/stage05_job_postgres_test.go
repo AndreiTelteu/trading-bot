@@ -168,6 +168,63 @@ func TestStage05PersistedJobUsesCommonBenchmarkAndCandidateExecutionClock(t *tes
 	}
 }
 
+func TestStage06CandidateRunsThroughPersistedManifestUniverseAndConstraintPath(t *testing.T) {
+	db := testutil.SetupPostgresDB(t)
+	base := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	count := 16*35 + 8
+	end := base.Add(time.Duration(count) * 15 * time.Minute)
+	manifestID := strings.Repeat("6", 64)
+	manifest := database.DatasetManifest{ID: manifestID, ContentHash: manifestID, SchemaVersion: "point-in-time-dataset-manifest-v2", DatasetVersion: "stage06-production-fixture", RequestedStart: base, RequestedEnd: end, EffectiveStart: base, EffectiveEnd: end, KnowledgeCutoff: end.Add(time.Hour), Source: "fixture", ProvenanceJSON: "{}", BuildVersion: "fixture", SymbolsJSON: "[]", AssetsJSON: "[]", RolesTimeframesJSON: "[]", CoverageJSON: "[]", LimitationsJSON: "[]", CreatedAt: end}
+	if err := db.Create(&manifest).Error; err != nil {
+		t.Fatal(err)
+	}
+	retrieved := end.Add(time.Hour)
+	assets := []database.Asset{
+		{ID: "asset-aaa", CanonicalCode: "AAA", Source: "fixture", AvailableAt: base, RetrievedAt: retrieved},
+		{ID: "asset-usdt", CanonicalCode: "USDT", Source: "fixture", AvailableAt: base, RetrievedAt: retrieved},
+	}
+	if err := db.Create(&assets).Error; err != nil {
+		t.Fatal(err)
+	}
+	symbol := database.ExchangeSymbol{ID: "symbol-aaa", VenueID: "fixture", Ticker: "AAAUSDT", AssetID: "asset-aaa", BaseAssetID: "asset-aaa", QuoteAssetID: "asset-usdt", ListedAt: base, Version: 1, Source: "fixture", AvailableAt: base, RetrievedAt: retrieved}
+	if err := db.Create(&symbol).Error; err != nil {
+		t.Fatal(err)
+	}
+	for at := base; at.Before(end); at = at.Add(24 * time.Hour) {
+		snapshot := database.UniverseSnapshot{SnapshotTime: at, PolicyVersion: "stage06-fixture", DatasetManifestID: &manifestID, CoverageState: "complete", CoverageJSON: "{}", CandidatePoolJSON: "[]", RebalanceInterval: "24h"}
+		if err := db.Create(&snapshot).Error; err != nil {
+			t.Fatal(err)
+		}
+		assetID, symbolID := "asset-aaa", "symbol-aaa"
+		if err := db.Create(&database.UniverseMember{UniverseSnapshotID: snapshot.ID, AssetID: &assetID, ExchangeSymbolID: &symbolID, Symbol: "AAAUSDT", Stage: "active", Rank: 1}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	benchmarkPrices, assetPrices := make([]float64, count), make([]float64, count)
+	for i := range benchmarkPrices {
+		benchmarkPrices[i], assetPrices[i] = 100+float64(i)*.1, 20+float64(i)*.04
+	}
+	config, series := stage05Fixture(map[string][]float64{"AAAUSDT": assetPrices}, benchmarkPrices, 8, 3)
+	config.DatasetManifestID, config.Start, config.End = manifestID, base, end
+	config.BenchmarkSeries, series["AAAUSDT"] = stage05Bars(base, benchmarkPrices), stage05Bars(base, assetPrices)
+	config.ExecutionSeriesRequired, config.ExecutionTimeframe, config.ExecutionTimeframeMins = true, "1m", 1
+	config.ExecutionSeries = map[string][]services.OHLCV{"AAAUSDT": stage05MinuteBars(base, count*15, 20), "BTCUSDT": stage05MinuteBars(base, count*15, 100)}
+	config.ConstraintResolver = func(string, time.Time) (SymbolConstraints, error) {
+		return SymbolConstraints{QuantityStep: .0001, PriceTick: .01, MinQuantity: .0001, MinNotional: .001}, nil
+	}
+	config.SymbolIdentities = map[string]string{"AAAUSDT": "symbol-aaa", "BTCUSDT": "symbol-btc"}
+	config.EconomicAssetIdentities = map[string]string{"AAAUSDT": "asset-aaa", "BTCUSDT": "asset-btc"}
+	config.DatasetSeries = []DatasetSeriesIdentity{{ExchangeSymbolID: "symbol-aaa", AssetID: "asset-aaa", Ticker: "AAAUSDT", Role: "decision", Timeframe: "15m", Rows: count, SeriesHash: "decision-aaa"}, {ExchangeSymbolID: "symbol-aaa", AssetID: "asset-aaa", Ticker: "AAAUSDT", Role: "execution", Timeframe: "1m", Rows: count * 15, SeriesHash: "execution-aaa"}, {ExchangeSymbolID: "symbol-btc", AssetID: "asset-btc", Ticker: "BTCUSDT", Role: "benchmark", Timeframe: "15m", Rows: count, SeriesHash: "benchmark-btc"}, {ExchangeSymbolID: "symbol-btc", AssetID: "asset-btc", Ticker: "BTCUSDT", Role: "execution", Timeframe: "1m", Rows: count * 15, SeriesHash: "execution-btc"}}
+	comparison, err := RunStage05Comparison(config, series, Stage05RunRequest{StrategyID: StrategyTrendMomentumCandidate, StrategyVersion: "1.0.0", Parameters: map[string]string{"lookback_bars": "20", "trend_bars": "20", "regime_bars": "20", "turnover_budget": "1"}, TargetGrossExposure: "0.75", MaxNetExposure: "0.75", FinalPolicy: "liquidate"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := comparison.Results[StrategyTrendMomentumCandidate]
+	if result.Manifest.DatasetManifestID != manifestID || len(result.Factors) == 0 || !result.Metrics.Reconciled || comparison.Governance.PromotionAllowed {
+		t.Fatalf("stage06 production evidence=%+v governance=%+v", result, comparison.Governance)
+	}
+}
+
 func stage05MinuteBars(start time.Time, count int, price float64) []services.OHLCV {
 	result := make([]services.OHLCV, 0, count)
 	for i := 0; i < count; i++ {

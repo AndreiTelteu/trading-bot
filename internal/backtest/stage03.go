@@ -609,7 +609,7 @@ func buildBacktestArtifacts(ledger *backtestMemoryLedger, positions map[string]*
 		for _, intent := range run.Strategy.Intents().Intents() {
 			intents[intent.ID.String()] = intent
 			artifacts.Decisions = append(artifacts.Decisions, decisionFromIntent(intent, "strategy", "intent_generated"))
-			artifacts.Orders = append(artifacts.Orders, OrderArtifact{SignalAt: canonicalTime(intent.SignalAt), DecisionAt: canonicalTime(intent.DecisionAt), OrderAt: canonicalTime(intent.CreatedAt), Symbol: intent.Instrument.VenueSymbol, Side: string(intent.Side), Quantity: intent.Quantity.Decimal().String(), Reason: intent.Reason})
+			artifacts.Orders = append(artifacts.Orders, OrderArtifact{SignalAt: canonicalTime(intent.SignalAt), DecisionAt: canonicalTime(intent.DecisionAt), OrderAt: canonicalTime(intent.CreatedAt), Symbol: intent.Instrument.VenueSymbol, Side: string(intent.Side), Quantity: intent.Quantity.Decimal().String(), Reason: intent.Reason, Metadata: intent.Metadata()})
 		}
 		for _, rejection := range run.Risk.Rejected() {
 			intent := intents[rejection.OrderID.String()]

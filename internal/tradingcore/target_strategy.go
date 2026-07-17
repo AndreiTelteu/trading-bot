@@ -71,7 +71,13 @@ func (TargetAllocationStrategy) Decide(_ context.Context, snapshot DecisionConte
 		if reason == "" {
 			reason = "target_allocation"
 		}
-		intent, err := NewOrderIntent(OrderIntent{ID: orderID, IdempotencyKey: idempotency, AccountID: portfolio.AccountID(), Instrument: instrument, Side: side, Type: MarketOrder, Quantity: quantity, ReferencePrice: SomePrice(quote.Last), SignalAt: snapshot.SignalAt(), DecisionAt: snapshot.DecisionAt(), CreatedAt: snapshot.DecisionAt(), ExecutionMode: portfolio.ExecutionMode(), QuantitySemantics: semantics, Priority: priority, Reason: reason, Horizon: settings["strategy_horizon"], Versions: snapshot.Versions(), Provenance: Provenance{Source: "target_allocation", Actor: snapshot.Versions().Strategy, Reason: reason}}, map[string]string{"target_weight": settings["target_weight."+key], "regime_state": settings["target_regime."+key], "execution_reference_price": settings["execution_reference_price."+key]})
+		metadata := map[string]string{"target_weight": settings["target_weight."+key], "regime_state": settings["target_regime."+key], "execution_reference_price": settings["execution_reference_price."+key]}
+		for setting, value := range settings {
+			if strings.HasPrefix(setting, "intent_metadata.") {
+				metadata[strings.TrimPrefix(setting, "intent_metadata.")] = value
+			}
+		}
+		intent, err := NewOrderIntent(OrderIntent{ID: orderID, IdempotencyKey: idempotency, AccountID: portfolio.AccountID(), Instrument: instrument, Side: side, Type: MarketOrder, Quantity: quantity, ReferencePrice: SomePrice(quote.Last), SignalAt: snapshot.SignalAt(), DecisionAt: snapshot.DecisionAt(), CreatedAt: snapshot.DecisionAt(), ExecutionMode: portfolio.ExecutionMode(), QuantitySemantics: semantics, Priority: priority, Reason: reason, Horizon: settings["strategy_horizon"], Versions: snapshot.Versions(), Provenance: Provenance{Source: "target_allocation", Actor: snapshot.Versions().Strategy, Reason: reason}}, metadata)
 		if err != nil {
 			return StrategyResult{}, err
 		}

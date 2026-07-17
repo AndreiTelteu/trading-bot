@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"math/big"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -71,12 +72,18 @@ type ComparableMetrics struct {
 }
 
 type Stage05StrategyResult struct {
-	Manifest  RunManifest       `json:"manifest"`
-	Metrics   ComparableMetrics `json:"metrics"`
-	Artifacts BacktestArtifacts `json:"artifacts"`
-	Equity    []EquityPoint     `json:"equity"`
-	Trades    []Trade           `json:"trades"`
-	Rankings  []RankingArtifact `json:"rankings,omitempty"`
+	Manifest    RunManifest                `json:"manifest"`
+	Metrics     ComparableMetrics          `json:"metrics"`
+	Artifacts   BacktestArtifacts          `json:"artifacts"`
+	Equity      []EquityPoint              `json:"equity"`
+	Trades      []Trade                    `json:"trades"`
+	Rankings    []RankingArtifact          `json:"rankings,omitempty"`
+	Factors     []FactorTrace              `json:"factor_traces,omitempty"`
+	Regimes     []RegimeObservation        `json:"regime_observations,omitempty"`
+	ExitReasons map[string]ExitReasonTrace `json:"exit_reasons,omitempty"`
+	Diagnostics []StrategyTraceDiagnostic  `json:"diagnostics,omitempty"`
+	Sensitivity []SensitivityRow           `json:"sensitivity,omitempty"`
+	Parity      *Stage06ParityEvidence     `json:"parity,omitempty"`
 }
 
 type RankingArtifact struct {
@@ -139,15 +146,16 @@ type GovernanceGate struct {
 }
 
 type ComparisonArtifact struct {
-	SchemaVersion  string                           `json:"schema_version"`
-	ManifestID     string                           `json:"manifest_id"`
-	Candidate      string                           `json:"candidate"`
-	Assumptions    NormalizedAssumptions            `json:"normalized_assumptions"`
-	Rows           []ComparisonRow                  `json:"rows"`
-	Governance     GovernanceGate                   `json:"governance"`
-	Results        map[string]Stage05StrategyResult `json:"-"`
-	Limitations    []string                         `json:"limitations"`
-	ArtifactDigest string                           `json:"artifact_digest"`
+	SchemaVersion     string                           `json:"schema_version"`
+	ManifestID        string                           `json:"manifest_id"`
+	Candidate         string                           `json:"candidate"`
+	Assumptions       NormalizedAssumptions            `json:"normalized_assumptions"`
+	Rows              []ComparisonRow                  `json:"rows"`
+	Governance        GovernanceGate                   `json:"governance"`
+	Results           map[string]Stage05StrategyResult `json:"-"`
+	Limitations       []string                         `json:"limitations"`
+	ArtifactDigest    string                           `json:"artifact_digest"`
+	CandidateEvidence *Stage06CandidateEvidence        `json:"candidate_evidence,omitempty"`
 }
 
 func RunStage05Comparison(config BacktestConfig, series map[string][]services.OHLCV, request Stage05RunRequest) (ComparisonArtifact, error) {
@@ -252,7 +260,7 @@ func validateComparableInputs(config BacktestConfig, series map[string][]service
 }
 
 func strategyNeedsUniverse(id string) bool {
-	return id == StrategyEqualWeightID || id == StrategyMomentumID || id == StrategyLegacyCompatibility
+	return id == StrategyEqualWeightID || id == StrategyMomentumID || id == StrategyLegacyCompatibility || id == StrategyTrendMomentumCandidate
 }
 
 type stage05Replay struct {
@@ -286,6 +294,11 @@ func runStage05StrategyWithPlanner(config BacktestConfig, series map[string][]se
 			sample, _ := strconv.Atoi(parameters["sample_bars"])
 			warmup = lookback*sample + 1
 		}
+		if selected.Descriptor.ID == StrategyTrendMomentumCandidate {
+			trend, _ := strconv.Atoi(parameters["trend_bars"])
+			regime, _ := strconv.Atoi(parameters["regime_bars"])
+			warmup = maxInt(lookback+1, maxInt(trend, regime)) * 16
+		}
 	}
 	reference := stage05ReferenceSeries(config, series, selected.Descriptor.ID)
 	if len(reference) <= warmup {
@@ -305,6 +318,10 @@ func runStage05StrategyWithPlanner(config BacktestConfig, series map[string][]se
 	ledger := newBacktestMemoryLedger(runConfig)
 	equity := []EquityPoint{{Time: config.Start.UTC(), Value: config.InitialBalance}}
 	rankings := []RankingArtifact{}
+	factors := []FactorTrace{}
+	regimes := []RegimeObservation{}
+	exitReasons := map[string]ExitReasonTrace{}
+	diagnostics := []StrategyTraceDiagnostic{}
 	lastTargets := []string{}
 	lastRebalance := time.Time{}
 	allSeries := cloneOHLCVSeries(series)
@@ -333,12 +350,24 @@ func runStage05StrategyWithPlanner(config BacktestConfig, series map[string][]se
 			equity = appendEquity(equity, signalAt, portfolioEquity(ledger, marks))
 			continue
 		}
-		plan, decisionErr := planner.Plan(Stage05PlanningContext{Selected: selected, Reference: reference[:i+1], Series: series, Config: config, Replays: replays, At: signalAt, LastRebalance: lastRebalance, LastTargets: lastTargets, Fixture: fixture})
+		positionQuantities, positionEntries := map[string]float64{}, map[string]float64{}
+		for symbol, position := range ledger.positions {
+			positionQuantities[symbol], positionEntries[symbol] = position.Size, position.EntryPrice
+		}
+		plan, decisionErr := planner.Plan(Stage05PlanningContext{Selected: selected, Reference: reference[:i+1], Series: series, Config: config, Replays: replays, At: signalAt, LastRebalance: lastRebalance, LastTargets: lastTargets, Positions: positionQuantities, PositionEntries: positionEntries, Marks: marks, Fixture: fixture})
 		if decisionErr != nil {
 			return Stage05StrategyResult{}, decisionErr
 		}
 		targets, ranked, decide := plan.Targets, plan.Rankings, plan.Decide
 		rankings = append(rankings, ranked...)
+		factors = append(factors, plan.Factors...)
+		diagnostics = append(diagnostics, plan.Diagnostics...)
+		for symbol, reason := range plan.ExitReasons {
+			exitReasons[canonicalTime(signalAt)+"|"+symbol] = reason
+		}
+		if plan.RegimeObservation != nil {
+			regimes = append(regimes, *plan.RegimeObservation)
+		}
 		transitionEconomicPositions(ledger, targets, config, signalAt)
 		if !decide {
 			equity = appendEquity(equity, signalAt, portfolioEquity(ledger, marks))
@@ -348,15 +377,29 @@ func runStage05StrategyWithPlanner(config BacktestConfig, series map[string][]se
 		if !ok || (finalPolicy == "liquidate" && fillAt.Equal(lastExecutableAt)) {
 			break
 		}
-		regime := "unknown"
-		if snapshot, found := replayAsOf(replays, signalAt); found && snapshot.regime != "" {
+		regime := plan.Regime
+		if regime == "" {
+			regime = "unknown"
+		}
+		if snapshot, found := replayAsOf(replays, signalAt); selected.Descriptor.ID != StrategyTrendMomentumCandidate && found && snapshot.regime != "" {
 			regime = snapshot.regime
 		}
-		if err := rebalanceStage05(ledger, runConfig, strategy, targets, marks, fillPrices, signalAt, fillAt, parameters, regime); err != nil {
-			return Stage05StrategyResult{}, err
+		if plan.RiskStopOnly {
+			if err := executeStage06RiskStops(ledger, runConfig, strategy, plan.ExitReasons, plan.Factors, marks, fillPrices, signalAt, fillAt); err != nil {
+				return Stage05StrategyResult{}, err
+			}
+		} else {
+			if err := rebalanceStage05(ledger, runConfig, strategy, targets, plan.TargetWeights, plan.Factors, plan.ExitReasons, marks, fillPrices, signalAt, fillAt, parameters, regime); err != nil {
+				return Stage05StrategyResult{}, err
+			}
+		}
+		for symbol, reason := range plan.ExitReasons {
+			exitReasons[canonicalTime(signalAt)+"|"+symbol] = completedExitReasonTrace(ledger, signalAt, symbol, fillPrices[symbol], reason)
 		}
 		lastTargets = append([]string(nil), targets...)
-		lastRebalance = signalAt
+		if !plan.RiskStopOnly {
+			lastRebalance = signalAt
+		}
 		equity = appendEquity(equity, fillAt, portfolioEquity(ledger, marksAsOf(allSeries, fillAt)))
 	}
 	if finalPolicy == "liquidate" && len(ledger.positions) > 0 {
@@ -387,12 +430,30 @@ func runStage05StrategyWithPlanner(config BacktestConfig, series map[string][]se
 	manifest := buildManifest(runConfig, coverage, classification, config.DatasetManifestID)
 	manifest.Strategy = selected
 	manifest.StrategyVersion = selected.Descriptor.Version
+	manifest.ExecutionIntent = parameters["execution_intent"]
+	manifest.PromotionAllowed = false
+	manifest.FactorTraceSchema = selected.Descriptor.FactorTraceSchema
+	if selected.Descriptor.ID == StrategyTrendMomentumCandidate {
+		manifest.Hypothesis = "persistent_relative_and_absolute_trend_in_supportive_benchmark_regime"
+		manifest.Ablation = parameters["variant"]
+	}
 	manifest.Artifacts.Comparison = "comparison.json"
 	metrics := computeComparableMetrics(runConfig, ledger, equity, endMarks, allSeries)
 	if !metrics.Reconciled {
 		return Stage05StrategyResult{}, fmt.Errorf("stage05 ledger/equity reconciliation failed for %s", selected.Descriptor.ID)
 	}
-	return Stage05StrategyResult{Manifest: manifest, Metrics: metrics, Artifacts: artifacts, Equity: equity, Trades: append([]Trade(nil), ledger.trades...), Rankings: rankings}, nil
+	sensitivity := []SensitivityRow{}
+	var parity *Stage06ParityEvidence
+	if selected.Descriptor.ID == StrategyTrendMomentumCandidate {
+		lookback, _ := strconv.Atoi(parameters["lookback_bars"])
+		sensitivity = append(sensitivity, SensitivityRow{SchemaVersion: "trend-momentum-sensitivity-v1", Ablation: parameters["variant"], VolNormalized: parameters["vol_normalization"] == "true", LookbackBars: lookback, Rebalance: parameters["rebalance"], Turnover: metrics.Turnover, TotalCosts: metrics.TotalCosts, FeeBPS: config.FeeBps, SlippageBPS: config.SlippageBps})
+		evidence, parityErr := buildStage06ParityEvidence(ledger)
+		if parityErr != nil {
+			return Stage05StrategyResult{}, parityErr
+		}
+		parity = &evidence
+	}
+	return Stage05StrategyResult{Manifest: manifest, Metrics: metrics, Artifacts: artifacts, Equity: equity, Trades: append([]Trade(nil), ledger.trades...), Rankings: rankings, Factors: factors, Regimes: regimes, ExitReasons: exitReasons, Diagnostics: diagnostics, Sensitivity: sensitivity, Parity: parity}, nil
 }
 
 func validateStrategyDataRequirements(config BacktestConfig, selected SelectedStrategy, fixture bool) error {
@@ -655,8 +716,11 @@ func transitionEconomicPositions(ledger *backtestMemoryLedger, targets []string,
 	}
 }
 
-func rebalanceStage05(ledger *backtestMemoryLedger, config BacktestConfig, strategy tradingcore.Strategy, targets []string, marks, fills map[string]float64, signalAt, fillAt time.Time, parameters map[string]string, regime string) error {
+func rebalanceStage05(ledger *backtestMemoryLedger, config BacktestConfig, strategy tradingcore.Strategy, targets []string, targetWeights map[string]float64, factors []FactorTrace, exitReasons map[string]ExitReasonTrace, marks, fills map[string]float64, signalAt, fillAt time.Time, parameters map[string]string, regime string) error {
 	gross, _ := strconv.ParseFloat(parameters["target_gross"], 64)
+	if configured, err := strconv.ParseFloat(parameters["max_gross"], 64); err == nil {
+		gross = math.Min(gross, configured)
+	}
 	// Selection is fixed at signalAt. The execution adapter then computes every
 	// target simultaneously from pre-trade equity and the common next-executable
 	// evidence, eliminating stale-mark and symbol-order sizing bias.
@@ -673,6 +737,10 @@ func rebalanceStage05(ledger *backtestMemoryLedger, config BacktestConfig, strat
 		weight = gross / float64(len(targets))
 	}
 	for _, symbol := range targets {
+		symbolWeight := weight
+		if targetWeights != nil {
+			symbolWeight = targetWeights[symbol]
+		}
 		fill := fills[symbol]
 		if fill <= 0 {
 			return &StrategyDiagnosticError{Code: DiagnosticManifestIncompatible, Strategy: config.StrategyID, Field: symbol, Details: "next executable price unavailable"}
@@ -685,33 +753,82 @@ func rebalanceStage05(ledger *backtestMemoryLedger, config BacktestConfig, strat
 		if parsed, parseErr := strconv.ParseFloat(tick, 64); parseErr == nil && parsed > 0 {
 			adverse = math.Ceil(adverse/parsed-1e-12) * parsed
 		}
-		quantity := executableEquity * weight / (adverse * (1 + config.FeeBps/10000))
+		quantity := executableEquity * symbolWeight / (adverse * (1 + config.FeeBps/10000))
 		if lot > 0 {
 			quantity = math.Floor(quantity/lot+1e-12) * lot
 		}
 		targetQuantities[symbol] = stage05EconomicFloat(quantity)
 	}
+	skipFraction, _ := strconv.ParseFloat(parameters["skip_delta"], 64)
+	turnoverFraction, budgetErr := strconv.ParseFloat(parameters["turnover_budget"], 64)
+	remainingBudget := math.Inf(1)
+	if budgetErr == nil {
+		remainingBudget = executableEquity * turnoverFraction
+	}
+	factorBySymbol := map[string]*FactorTrace{}
+	for i := range factors {
+		factorBySymbol[factors[i].Symbol] = &factors[i]
+	}
 	// Reductions are always completed before additions. Unchanged positions
 	// produce no intent, fill, turnover, fee, or slippage.
-	for _, symbol := range sortedPositionSymbols(ledger.positions) {
+	for _, symbol := range sortedPositionSymbolsByIdentity(ledger.positions, config) {
 		current, desired := ledger.positions[symbol].Size, targetQuantities[symbol]
 		if current-desired > 1e-10 {
-			if err := runStage05Target(ledger, config, strategy, symbol, tradingcore.Sell, current-desired, marks[symbol], fills[symbol], signalAt, fillAt, 0, weight, "rebalance_reduction", regime, fills); err != nil {
+			delta := current - desired
+			notional := delta * fills[symbol]
+			reason := "rebalance_reduction"
+			if trace, ok := exitReasons[symbol]; ok {
+				reason = trace.Primary + concurrentReasonSuffix(trace.Concurrent)
+			}
+			riskExit := strings.HasPrefix(reason, "risk_stop")
+			if !riskExit && notional < executableEquity*skipFraction {
+				continue
+			}
+			if !riskExit && notional > remainingBudget {
+				delta = math.Floor((remainingBudget/fills[symbol])/1e-12) * 1e-12
+				notional = delta * fills[symbol]
+			}
+			if delta <= 1e-10 {
+				continue
+			}
+			symbolWeight := weight
+			if targetWeights != nil {
+				symbolWeight = targetWeights[symbol]
+			}
+			if err := runStage05Target(ledger, config, strategy, symbol, tradingcore.Sell, delta, marks[symbol], fills[symbol], signalAt, fillAt, 0, symbolWeight, reason, regime, fills, factorBySymbol[symbol]); err != nil {
 				return err
 			}
+			remainingBudget -= notional
 		}
 	}
 	sortedTargets := append([]string(nil), targets...)
-	sort.Strings(sortedTargets)
+	sort.Slice(sortedTargets, func(i, j int) bool { return economicSymbolLess(config, sortedTargets[i], sortedTargets[j]) })
 	for rank, symbol := range sortedTargets {
 		current := 0.0
 		if position := ledger.positions[symbol]; position != nil {
 			current = position.Size
 		}
 		if targetQuantities[symbol]-current > 1e-10 {
-			if err := runStage05Target(ledger, config, strategy, symbol, tradingcore.Buy, targetQuantities[symbol]-current, marks[symbol], fills[symbol], signalAt, fillAt, rank+1, weight, "rebalance_addition", regime, fills); err != nil {
+			delta := targetQuantities[symbol] - current
+			notional := delta * fills[symbol]
+			if notional < executableEquity*skipFraction {
+				continue
+			}
+			if notional > remainingBudget {
+				delta = math.Floor((remainingBudget/fills[symbol])/1e-12) * 1e-12
+				notional = delta * fills[symbol]
+			}
+			if delta <= 1e-10 {
+				continue
+			}
+			symbolWeight := weight
+			if targetWeights != nil {
+				symbolWeight = targetWeights[symbol]
+			}
+			if err := runStage05Target(ledger, config, strategy, symbol, tradingcore.Buy, delta, marks[symbol], fills[symbol], signalAt, fillAt, rank+1, symbolWeight, "rebalance_addition", regime, fills, factorBySymbol[symbol]); err != nil {
 				return err
 			}
+			remainingBudget -= notional
 		}
 	}
 	achievedGross := 0.0
@@ -724,6 +841,76 @@ func rebalanceStage05(ledger *backtestMemoryLedger, config BacktestConfig, strat
 	return nil
 }
 
+func concurrentReasonSuffix(values []string) string {
+	if len(values) == 0 {
+		return ""
+	}
+	return ";concurrent=" + strings.Join(values, ",")
+}
+
+func executeStage06RiskStops(ledger *backtestMemoryLedger, config BacktestConfig, strategy tradingcore.Strategy, exits map[string]ExitReasonTrace, factors []FactorTrace, marks, fills map[string]float64, signalAt, fillAt time.Time) error {
+	factorBySymbol := map[string]*FactorTrace{}
+	for i := range factors {
+		factorBySymbol[factors[i].Symbol] = &factors[i]
+	}
+	symbols := make([]string, 0, len(exits))
+	for symbol := range exits {
+		symbols = append(symbols, symbol)
+	}
+	sort.Slice(symbols, func(i, j int) bool { return economicSymbolLess(config, symbols[i], symbols[j]) })
+	for i, symbol := range symbols {
+		position := ledger.positions[symbol]
+		if position == nil {
+			continue
+		}
+		reason := exits[symbol].Primary + concurrentReasonSuffix(exits[symbol].Concurrent)
+		if err := runStage05Target(ledger, config, strategy, symbol, tradingcore.Sell, position.Size, marks[symbol], fills[symbol], signalAt, fillAt, i, 0, reason, "risk_stop", fills, factorBySymbol[symbol]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func completedExitReasonTrace(ledger *backtestMemoryLedger, at time.Time, symbol string, fillPrice float64, trace ExitReasonTrace) ExitReasonTrace {
+	requested, approved, filled := new(big.Rat), new(big.Rat), new(big.Rat)
+	for _, record := range ledger.runRecords {
+		if !record.SignalAt.Equal(at) {
+			continue
+		}
+		for _, intent := range record.Result.Strategy.Intents().Intents() {
+			if intent.Instrument.VenueSymbol == symbol && intent.Side == tradingcore.Sell {
+				requested.Add(requested, decimalRatLocal(intent.Quantity.Decimal().String()))
+			}
+		}
+		for _, intent := range record.Result.Risk.Approved().Intents() {
+			if intent.Instrument.VenueSymbol == symbol && intent.Side == tradingcore.Sell {
+				approved.Add(approved, decimalRatLocal(intent.Quantity.Decimal().String()))
+			}
+		}
+		for _, order := range record.Result.Broker.Accepted() {
+			for _, fill := range order.Fills() {
+				if fill.Instrument.VenueSymbol == symbol && fill.Side == tradingcore.Sell {
+					filled.Add(filled, decimalRatLocal(fill.Quantity.Decimal().String()))
+				}
+			}
+		}
+	}
+	remaining := 0.0
+	if position := ledger.positions[symbol]; position != nil {
+		remaining = position.Size * fillPrice
+	}
+	trace.DecisionAt, trace.RequestedQuantity, trace.ApprovedQuantity, trace.FilledQuantity, trace.ResultingExposure = canonicalTime(at), ratDecimal(requested, 18), ratDecimal(approved, 18), ratDecimal(filled, 18), decimalString(remaining)
+	return trace
+}
+
+func decimalRatLocal(raw string) *big.Rat {
+	value, ok := new(big.Rat).SetString(raw)
+	if !ok {
+		return new(big.Rat)
+	}
+	return value
+}
+
 func sortedPositionSymbols(positions map[string]*positionState) []string {
 	result := make([]string, 0, len(positions))
 	for symbol := range positions {
@@ -731,6 +918,36 @@ func sortedPositionSymbols(positions map[string]*positionState) []string {
 	}
 	sort.Strings(result)
 	return result
+}
+
+func sortedPositionSymbolsByIdentity(positions map[string]*positionState, config BacktestConfig) []string {
+	result := make([]string, 0, len(positions))
+	for symbol := range positions {
+		result = append(result, symbol)
+	}
+	sort.Slice(result, func(i, j int) bool { return economicSymbolLess(config, result[i], result[j]) })
+	return result
+}
+
+func economicSymbolLess(config BacktestConfig, left, right string) bool {
+	leftAsset, rightAsset := config.EconomicAssetIdentities[left], config.EconomicAssetIdentities[right]
+	if leftAsset == "" {
+		leftAsset = left
+	}
+	if rightAsset == "" {
+		rightAsset = right
+	}
+	if leftAsset != rightAsset {
+		return leftAsset < rightAsset
+	}
+	leftSymbol, rightSymbol := config.SymbolIdentities[left], config.SymbolIdentities[right]
+	if leftSymbol == "" {
+		leftSymbol = left
+	}
+	if rightSymbol == "" {
+		rightSymbol = right
+	}
+	return leftSymbol < rightSymbol
 }
 
 func liquidateStage05(ledger *backtestMemoryLedger, config BacktestConfig, strategy tradingcore.Strategy, marks, fills map[string]float64, signalAt, fillAt time.Time, regime string) error {
@@ -745,14 +962,14 @@ func liquidateStage05(ledger *backtestMemoryLedger, config BacktestConfig, strat
 		if mark <= 0 || fill <= 0 {
 			return &StrategyDiagnosticError{Code: DiagnosticManifestIncompatible, Strategy: config.StrategyID, Field: symbol, Details: "exit signal or next executable price unavailable"}
 		}
-		if err := runStage05Target(ledger, config, strategy, symbol, tradingcore.Sell, position.Size, mark, fill, signalAt, fillAt, i, 0, "rebalance_exit", regime, fills); err != nil {
+		if err := runStage05Target(ledger, config, strategy, symbol, tradingcore.Sell, position.Size, mark, fill, signalAt, fillAt, i, 0, "rebalance_exit", regime, fills, nil); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func runStage05Target(ledger *backtestMemoryLedger, config BacktestConfig, strategy tradingcore.Strategy, symbol string, side tradingcore.OrderSide, quantity, signalPrice, executionPrice float64, signalAt, fillAt time.Time, priority int, weight float64, reason, regime string, marks map[string]float64) error {
+func runStage05Target(ledger *backtestMemoryLedger, config BacktestConfig, strategy tradingcore.Strategy, symbol string, side tradingcore.OrderSide, quantity, signalPrice, executionPrice float64, signalAt, fillAt time.Time, priority int, weight float64, reason, regime string, marks map[string]float64, factor *FactorTrace) error {
 	instrument, err := backtestInstrument(config, symbol)
 	if err != nil {
 		return err
@@ -799,6 +1016,20 @@ func runStage05Target(ledger *backtestMemoryLedger, config BacktestConfig, strat
 		action = "sell"
 	}
 	settings := map[string]string{"target_action." + instrument.ID.String(): action, "target_quantity." + instrument.ID.String(): decimalString(quantity), "target_priority." + instrument.ID.String(): strconv.Itoa(priority), "target_weight." + instrument.ID.String(): decimalString(weight), "target_reason." + instrument.ID.String(): reason, "target_regime." + instrument.ID.String(): regime, "strategy_horizon": config.Timeframe}
+	if config.StrategyID == StrategyTrendMomentumCandidate {
+		encoded, _ := json.Marshal(config.StrategyParameters)
+		settings["intent_metadata.strategy_hypothesis"] = "persistent_relative_and_absolute_trend_in_supportive_benchmark_regime"
+		settings["intent_metadata.effective_parameters"] = string(encoded)
+		settings["intent_metadata.ablation"] = config.StrategyParameters["variant"]
+		settings["intent_metadata.factor_trace_schema"] = FactorTraceSchemaVersion
+		settings["intent_metadata.execution_intent"] = config.StrategyParameters["execution_intent"]
+		settings["intent_metadata.strategy_version"] = config.StrategyVersion
+		settings["intent_metadata.exit_reasons"] = reason
+		if factor != nil {
+			encodedFactor, _ := json.Marshal(factor)
+			settings["intent_metadata.factor_trace"] = string(encodedFactor)
+		}
+	}
 	settings["execution_reference_price."+instrument.ID.String()] = decimalString(executionPrice)
 	versions := tradingcore.VersionContext{Strategy: config.StrategyID + "@" + config.StrategyVersion, Settings: config.ConfigVersion, Policy: backtestPolicyVersion(config), Dataset: config.DatasetManifestID}
 	snapshot, err := tradingcore.NewDecisionContext(tradingcore.DecisionContextInput{MarketObservedAt: signalAt, SignalAt: signalAt, DecisionAt: signalAt, Quotes: map[tradingcore.InstrumentID]tradingcore.Quote{instrument.ID: quote}, Universe: universe, Portfolio: portfolio, Settings: settings, Versions: versions})
@@ -813,6 +1044,9 @@ func runStage05Target(ledger *backtestMemoryLedger, config BacktestConfig, strat
 	maxGrossValue := stage05EconomicFloat(portfolioValue * targetGross)
 	maxGross := mustAmount(maxGrossValue)
 	maxPositionValue := maxGrossValue
+	if fraction, parseErr := strconv.ParseFloat(config.StrategyParameters["position_cap"], 64); parseErr == nil {
+		maxPositionValue = math.Min(maxPositionValue, portfolioValue*fraction)
+	}
 	if config.MaxPositionValue > 0 && config.MaxPositionValue < maxPositionValue {
 		maxPositionValue = config.MaxPositionValue
 	}
@@ -822,10 +1056,17 @@ func runStage05Target(ledger *backtestMemoryLedger, config BacktestConfig, strat
 		return &StrategyDiagnosticError{Code: DiagnosticConstraintRequired, Strategy: config.StrategyID, Field: symbol, Details: err.Error()}
 	}
 	maxPositions := config.MaxPositions
+	if configured, parseErr := strconv.Atoi(config.StrategyParameters["max_positions"]); parseErr == nil {
+		maxPositions = configured
+	}
 	if maxPositions <= 0 {
 		maxPositions = 1
 	}
-	policy := tradingcore.RiskPolicy{Version: backtestPolicyVersion(config), MaxPositions: maxPositions, MaxGrossExposure: maxGross, MaxPositionValue: maxPosition, MaxTurnover: mustAmount(0), CashReserve: mustAmount(0), MaxConcurrentOrders: maxPositions, LotSize: mustQuantity(lot), ExecutionCosts: tradingcore.ExecutionCostPolicy{Version: config.ExecutionPolicy.CostVersion, FeeBPS: int64(config.FeeBps), AdverseSlippageBPS: int64(config.SlippageBps)}}
+	cashReserve := 0.0
+	if fraction, parseErr := strconv.ParseFloat(config.StrategyParameters["cash_reserve"], 64); parseErr == nil {
+		cashReserve = portfolioValue * fraction
+	}
+	policy := tradingcore.RiskPolicy{Version: backtestPolicyVersion(config), MaxPositions: maxPositions, MaxGrossExposure: maxGross, MaxPositionValue: maxPosition, MaxTurnover: mustAmount(0), CashReserve: mustAmount(stage05EconomicFloat(cashReserve)), MaxConcurrentOrders: maxPositions, LotSize: mustQuantity(lot), ExecutionCosts: tradingcore.ExecutionCostPolicy{Version: config.ExecutionPolicy.CostVersion, FeeBPS: int64(config.FeeBps), AdverseSlippageBPS: int64(config.SlippageBps)}}
 	broker := tradingcore.NewBacktestBroker(tradingcore.NewFixedClock(fillAt), tradingcore.NewSequenceIDGenerator("stage05-"+symbol+"-"+strconv.FormatInt(fillAt.UnixNano(), 10), uint64(len(ledger.events)+1)), tradingcore.CostModel{FeeBPS: int64(config.FeeBps), SlippageBPS: int64(config.SlippageBps), Version: config.ExecutionPolicy.CostVersion, ExecutionPrice: tradingcore.SomePrice(mustPrice(executionPrice)), PriceTick: tick, MinQuantity: minQuantity, MinNotional: minNotional})
 	runner := tradingcore.Orchestrator{Source: backtestDecisionSource{snapshot: snapshot, policy: policy}, Strategy: strategy, Risk: tradingcore.PortfolioRiskEngine{}, Broker: broker, Ledger: ledger, Observer: ledger}
 	result, err := runner.Run(context.Background())
@@ -833,6 +1074,21 @@ func runStage05Target(ledger *backtestMemoryLedger, config BacktestConfig, strat
 		return err
 	}
 	ledger.recordRun(result, signalAt, signalAt)
+	if config.StrategyID == StrategyTrendMomentumCandidate {
+		shadowStrategy, shadowErr := strategy.Decide(context.Background(), snapshot)
+		if shadowErr != nil {
+			return shadowErr
+		}
+		shadowRisk, shadowErr := (tradingcore.PortfolioRiskEngine{}).Evaluate(context.Background(), shadowStrategy.Intents(), portfolio, policy)
+		if shadowErr != nil {
+			return shadowErr
+		}
+		backtestSemantics, shadowSemantics := stage06Semantics(result.Risk.Approved()), stage06Semantics(shadowRisk.Approved())
+		if !reflect.DeepEqual(backtestSemantics, shadowSemantics) {
+			return fmt.Errorf("stage06 backtest/paper-shadow approval parity failed")
+		}
+		ledger.stage06PaperShadowApproved = append(ledger.stage06PaperShadowApproved, shadowSemantics...)
+	}
 	diagnostic := &StrategyExecutionDiagnostic{Symbol: symbol, Side: string(side), RequestedQuantity: decimalString(quantity), ApprovedQuantity: "0", FilledQuantity: "0"}
 	approved := 0.0
 	for _, intent := range result.Risk.Approved().Intents() {
@@ -852,7 +1108,9 @@ func runStage05Target(ledger *backtestMemoryLedger, config BacktestConfig, strat
 	if rejected := result.Broker.Rejected(); len(rejected) > 0 {
 		diagnostic.ProviderCode = string(rejected[0].Code)
 	}
-	if math.Abs(filled-quantity) > 1e-9 || len(result.Risk.Rejected()) > 0 || len(result.Broker.Rejected()) > 0 {
+	roundingTolerance := math.Max(1e-9, lot+1e-9)
+	materiallyUnderfilled := filled <= 0 || math.Abs(filled-quantity) > roundingTolerance
+	if materiallyUnderfilled || len(result.Risk.Rejected()) > 0 || len(result.Broker.Rejected()) > 0 {
 		return &StrategyDiagnosticError{Code: DiagnosticAllocationRejected, Strategy: config.StrategyID, Field: symbol, Details: "required target was rejected or materially underfilled", Execution: diagnostic}
 	}
 	return nil
@@ -1447,6 +1705,14 @@ func buildStage05Comparison(config BacktestConfig, request Stage05RunRequest, ca
 	sort.Strings(limitations)
 	reasons = append(reasons, "pending_stage07_validation")
 	artifact := ComparisonArtifact{SchemaVersion: ComparisonSchemaVersion, ManifestID: config.DatasetManifestID, Candidate: candidate.Descriptor.ID + "@" + candidate.Descriptor.Version, Assumptions: assumptions, Rows: rows, Governance: GovernanceGate{SchemaVersion: GovernanceSchemaVersion, OptimizationAllowed: allowed, PromotionAllowed: false, Reasons: reasons}, Results: results, Limitations: limitations}
+	if candidate.Descriptor.ID == StrategyTrendMomentumCandidate {
+		result := results[candidate.Descriptor.ID]
+		evidence := Stage06CandidateEvidence{SchemaVersion: "trend-momentum-candidate-evidence-v1", FactorTraces: boundedFactors(result.Factors, 1024), Regimes: boundedRegimes(result.Regimes, 512), ExitReasons: boundedExitReasons(result.ExitReasons, 1024), Diagnostics: boundedDiagnostics(result.Diagnostics, 1024), Sensitivity: append([]SensitivityRow(nil), result.Sensitivity...)}
+		if result.Parity != nil {
+			evidence.Parity = *result.Parity
+		}
+		artifact.CandidateEvidence = &evidence
+	}
 	artifact.ArtifactDigest, _ = comparisonDigest(artifact)
 	return artifact
 }
@@ -1464,6 +1730,9 @@ func comparisonDigest(value ComparisonArtifact) (string, error) {
 func MarshalComparisonArtifact(value ComparisonArtifact) ([]byte, error) {
 	if value.SchemaVersion != ComparisonSchemaVersion || value.Governance.SchemaVersion != GovernanceSchemaVersion || len(value.Rows) == 0 || len(value.Rows) > 16 {
 		return nil, fmt.Errorf("invalid or unbounded comparison artifact")
+	}
+	if value.CandidateEvidence != nil && (value.CandidateEvidence.SchemaVersion != "trend-momentum-candidate-evidence-v1" || len(value.CandidateEvidence.FactorTraces) > 1024 || len(value.CandidateEvidence.Regimes) > 512 || len(value.CandidateEvidence.ExitReasons) > 1024 || len(value.CandidateEvidence.Diagnostics) > 1024 || len(value.CandidateEvidence.Sensitivity) > 16 || len(value.CandidateEvidence.Parity.BacktestApproved) > 512 || len(value.CandidateEvidence.Parity.PaperShadowApproved) > 512 || len(value.CandidateEvidence.Parity.LiveDryRunRequests) > 512 || len(value.CandidateEvidence.Parity.LiveFenceCodes) > 512) {
+		return nil, fmt.Errorf("unbounded candidate evidence")
 	}
 	expected, err := comparisonDigest(value)
 	if err != nil || value.ArtifactDigest == "" || expected != value.ArtifactDigest {
@@ -1489,6 +1758,9 @@ func UnmarshalComparisonArtifact(data []byte) (ComparisonArtifact, error) {
 	}
 	if value.SchemaVersion != ComparisonSchemaVersion || value.Governance.SchemaVersion != GovernanceSchemaVersion || len(value.Rows) == 0 || len(value.Rows) > 16 {
 		return ComparisonArtifact{}, fmt.Errorf("unsupported or unbounded comparison artifact")
+	}
+	if value.CandidateEvidence != nil && (value.CandidateEvidence.SchemaVersion != "trend-momentum-candidate-evidence-v1" || len(value.CandidateEvidence.FactorTraces) > 1024 || len(value.CandidateEvidence.Regimes) > 512 || len(value.CandidateEvidence.ExitReasons) > 1024 || len(value.CandidateEvidence.Diagnostics) > 1024 || len(value.CandidateEvidence.Sensitivity) > 16 || len(value.CandidateEvidence.Parity.BacktestApproved) > 512 || len(value.CandidateEvidence.Parity.PaperShadowApproved) > 512 || len(value.CandidateEvidence.Parity.LiveDryRunRequests) > 512 || len(value.CandidateEvidence.Parity.LiveFenceCodes) > 512) {
+		return ComparisonArtifact{}, fmt.Errorf("unbounded candidate evidence")
 	}
 	expected, err := comparisonDigest(value)
 	if err != nil || expected != value.ArtifactDigest {

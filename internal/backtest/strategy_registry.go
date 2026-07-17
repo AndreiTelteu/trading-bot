@@ -16,12 +16,13 @@ import (
 const StrategyDescriptorSchemaVersion = "strategy-descriptor-v1"
 
 const (
-	StrategyCashID              = "cash"
-	StrategyBenchmarkHoldID     = "benchmark_buy_hold"
-	StrategyBenchmarkTrendID    = "benchmark_trend"
-	StrategyEqualWeightID       = "equal_weight_liquid_universe"
-	StrategyMomentumID          = "cross_sectional_momentum"
-	StrategyLegacyCompatibility = "legacy_indicator_voting"
+	StrategyCashID                 = "cash"
+	StrategyBenchmarkHoldID        = "benchmark_buy_hold"
+	StrategyBenchmarkTrendID       = "benchmark_trend"
+	StrategyEqualWeightID          = "equal_weight_liquid_universe"
+	StrategyMomentumID             = "cross_sectional_momentum"
+	StrategyLegacyCompatibility    = "legacy_indicator_voting"
+	StrategyTrendMomentumCandidate = "trend_momentum_candidate"
 )
 
 type StrategyDiagnosticCode string
@@ -39,6 +40,9 @@ const (
 	DiagnosticConstraintRequired    StrategyDiagnosticCode = "historical_constraints_required"
 	DiagnosticMetricEvidenceMissing StrategyDiagnosticCode = "metric_evidence_missing"
 	DiagnosticAllocationRejected    StrategyDiagnosticCode = "target_allocation_rejected"
+	DiagnosticExecutionFenced       StrategyDiagnosticCode = "research_execution_fenced"
+	DiagnosticStaleEvidence         StrategyDiagnosticCode = "stale_strategy_evidence"
+	DiagnosticTurnoverBudget        StrategyDiagnosticCode = "turnover_budget_exhausted"
 )
 
 type StrategyDiagnosticError struct {
@@ -84,21 +88,31 @@ func IsStrategyDiagnostic(err error, code StrategyDiagnosticCode) bool {
 type StrategyFactory func(map[string]string) (tradingcore.Strategy, error)
 
 type Stage05Plan struct {
-	Targets  []string
-	Rankings []RankingArtifact
-	Decide   bool
+	Targets           []string
+	Rankings          []RankingArtifact
+	Decide            bool
+	TargetWeights     map[string]float64
+	Regime            string
+	RegimeObservation *RegimeObservation
+	Factors           []FactorTrace
+	ExitReasons       map[string]ExitReasonTrace
+	Diagnostics       []StrategyTraceDiagnostic
+	RiskStopOnly      bool
 }
 
 type Stage05PlanningContext struct {
-	Selected      SelectedStrategy
-	Reference     []services.OHLCV
-	Series        map[string][]services.OHLCV
-	Config        BacktestConfig
-	Replays       []stage05Replay
-	At            time.Time
-	LastRebalance time.Time
-	LastTargets   []string
-	Fixture       bool
+	Selected        SelectedStrategy
+	Reference       []services.OHLCV
+	Series          map[string][]services.OHLCV
+	Config          BacktestConfig
+	Replays         []stage05Replay
+	At              time.Time
+	LastRebalance   time.Time
+	LastTargets     []string
+	Positions       map[string]float64
+	PositionEntries map[string]float64
+	Marks           map[string]float64
+	Fixture         bool
 }
 
 type Stage05Planner interface {
@@ -163,6 +177,14 @@ func validateStrategyDescriptor(descriptor StrategyDescriptor) error {
 	}
 	if descriptor.ID != StrategyCashID && len(descriptor.RequiredData) == 0 {
 		return fmt.Errorf("strategy required data declaration is empty")
+	}
+	if descriptor.ResearchOnly && (descriptor.FactorTraceSchema == "" || len(descriptor.ExecutionIntents) == 0) {
+		return fmt.Errorf("research strategy factor schema and execution intents are required")
+	}
+	for _, feature := range descriptor.Features {
+		if feature.Name == "" || feature.Timeframe == "" || feature.WarmupBars < 1 || feature.TraceField == "" {
+			return fmt.Errorf("strategy feature declarations must be explicit")
+		}
 	}
 	roles := map[string]bool{"decision": true, "execution": true, "benchmark": true}
 	frames := map[string]bool{"1m": true, "15m": true, "1h": true, "1d": true}
@@ -327,6 +349,21 @@ func validateStrategyParameters(descriptor StrategyDescriptor, values map[string
 			return nil, &StrategyDiagnosticError{Code: DiagnosticInvalidCombination, Strategy: descriptor.ID, Details: "lookback_bars and top_n must be positive"}
 		}
 	}
+	if descriptor.ID == StrategyTrendMomentumCandidate {
+		intent := result["execution_intent"]
+		if intent == "paper_capital" || intent == "live_submit" || intent == "promotion" {
+			return nil, &StrategyDiagnosticError{Code: DiagnosticExecutionFenced, Strategy: descriptor.ID, Field: "execution_intent", Details: intent + " is unavailable before Stage 07 validation and human promotion"}
+		}
+		if result["max_net"] != result["max_gross"] {
+			return nil, &StrategyDiagnosticError{Code: DiagnosticInvalidCombination, Strategy: descriptor.ID, Field: "max_net", Details: "long-only candidate requires max_net equal to max_gross"}
+		}
+		positionCap, _ := tradingcore.ParseDecimal(result["position_cap"])
+		gross, _ := tradingcore.ParseDecimal(result["max_gross"])
+		reserve, _ := tradingcore.ParseDecimal(result["cash_reserve"])
+		if positionCap.Float64() > gross.Float64() || gross.Float64()+reserve.Float64() > 1+1e-12 {
+			return nil, &StrategyDiagnosticError{Code: DiagnosticInvalidCombination, Strategy: descriptor.ID, Details: "position/gross/cash caps are inconsistent"}
+		}
+	}
 	return result, nil
 }
 
@@ -336,6 +373,9 @@ func invalidParameter(strategy, field, details string) error {
 
 func cloneStrategyDescriptor(value StrategyDescriptor) StrategyDescriptor {
 	value.RequiredData = append([]StrategyDataRequirement(nil), value.RequiredData...)
+	value.Features = append([]StrategyFeatureDeclaration(nil), value.Features...)
+	value.ExecutionIntents = append([]string(nil), value.ExecutionIntents...)
+	value.AblationVariants = append([]string(nil), value.AblationVariants...)
 	value.Parameters = append([]StrategyParameterSpec(nil), value.Parameters...)
 	for i := range value.Parameters {
 		value.Parameters[i].Enum = append([]string(nil), value.Parameters[i].Enum...)
@@ -366,9 +406,11 @@ var DefaultStrategyRegistry = newDefaultStrategyRegistry()
 func newDefaultStrategyRegistry() *StrategyRegistry {
 	registry := NewStrategyRegistry()
 	sharedRisk := StrategyRiskDeclaration{MaxGrossExposure: "1", MaxNetExposure: "1", LongOnly: true, UsesSharedRisk: true}
+	candidateRisk := StrategyRiskDeclaration{MaxGrossExposure: "0.75", MaxNetExposure: "0.75", LongOnly: true, UsesSharedRisk: true}
 	decision15m := []StrategyDataRequirement{{Role: "decision", Timeframe: "15m"}, {Role: "execution", Timeframe: "1m"}}
 	benchmark15m := []StrategyDataRequirement{{Role: "benchmark", Timeframe: "15m"}, {Role: "execution", Timeframe: "1m"}}
 	legacyData := append(append([]StrategyDataRequirement(nil), decision15m...), StrategyDataRequirement{Role: "benchmark", Timeframe: "15m"})
+	candidateData := append(append([]StrategyDataRequirement(nil), decision15m...), StrategyDataRequirement{Role: "benchmark", Timeframe: "15m"})
 	definitions := []StrategyDescriptor{
 		{SchemaVersion: StrategyDescriptorSchemaVersion, ID: StrategyCashID, Version: "1.0.0", Description: "Preserve settlement cash with auditable no-action decisions and no market exposure.", RequiredData: benchmark15m, DecisionCadence: "15m", RebalanceCadence: "never", WarmupBars: 0, Risk: sharedRisk, Baseline: true, Parameters: []StrategyParameterSpec{{Name: "final_policy", Type: "enum", Description: "Final position policy.", Default: "mark_to_market", Enum: []string{"mark_to_market", "liquidate"}}}},
 		{SchemaVersion: StrategyDescriptorSchemaVersion, ID: StrategyBenchmarkHoldID, Version: "1.0.0", Description: "Buy the independently sourced benchmark once after warmup and hold.", RequiredData: benchmark15m, BenchmarkRequired: true, DecisionCadence: "15m", RebalanceCadence: "once", WarmupBars: 1, Risk: sharedRisk, Baseline: true, Parameters: []StrategyParameterSpec{{Name: "warmup_bars", Type: "integer", Description: "Completed benchmark bars before entry.", Default: "1", Minimum: floatPointer(1)}, {Name: "target_gross", Type: "decimal", Description: "Long benchmark gross exposure fraction.", Default: "1", Minimum: floatPointer(0), Maximum: floatPointer(1)}, {Name: "final_policy", Type: "enum", Description: "Final valuation policy.", Default: "liquidate", Enum: []string{"mark_to_market", "liquidate"}}}},
@@ -376,14 +418,45 @@ func newDefaultStrategyRegistry() *StrategyRegistry {
 		{SchemaVersion: StrategyDescriptorSchemaVersion, ID: StrategyEqualWeightID, Version: "1.0.0", Description: "Equal-weight all eligible members in each complete persisted point-in-time liquid-universe snapshot.", RequiredData: decision15m, DecisionCadence: "15m", RebalanceCadence: "24h", WarmupBars: 1, Risk: sharedRisk, Baseline: true, Parameters: []StrategyParameterSpec{{Name: "rebalance", Type: "duration", Description: "Minimum interval between rebalances.", Default: "24h"}, {Name: "target_gross", Type: "decimal", Description: "Total long gross exposure fraction.", Default: "1", Minimum: floatPointer(0), Maximum: floatPointer(1)}, {Name: "final_policy", Type: "enum", Description: "Final valuation policy.", Default: "liquidate", Enum: []string{"mark_to_market", "liquidate"}}}},
 		{SchemaVersion: StrategyDescriptorSchemaVersion, ID: StrategyMomentumID, Version: "1.0.0", Description: "Rank eligible point-in-time members by one trailing close-to-close return; select positive top-N with symbol-ascending deterministic ties.", RequiredData: decision15m, DecisionCadence: "15m", RebalanceCadence: "24h", WarmupBars: 20, Risk: sharedRisk, Baseline: true, Parameters: []StrategyParameterSpec{{Name: "lookback_bars", Type: "integer", Description: "Completed-bar close return lookback.", Default: "20", Minimum: floatPointer(1)}, {Name: "top_n", Type: "integer", Description: "Maximum number of positive-momentum assets.", Default: "3", Minimum: floatPointer(1)}, {Name: "rebalance", Type: "duration", Description: "Minimum interval between ranks.", Default: "24h"}, {Name: "target_gross", Type: "decimal", Description: "Total long gross exposure fraction.", Default: "1", Minimum: floatPointer(0), Maximum: floatPointer(1)}, {Name: "final_policy", Type: "enum", Description: "Final valuation policy.", Default: "liquidate", Enum: []string{"mark_to_market", "liquidate"}}}},
 		{SchemaVersion: StrategyDescriptorSchemaVersion, ID: StrategyLegacyCompatibility, Version: "1.0.0", Description: "Legacy composite indicator voting retained only as compatibility evidence; it is not promotion evidence.", RequiredData: legacyData, BenchmarkRequired: true, DecisionCadence: "15m", RebalanceCadence: "15m", WarmupBars: 120, Risk: sharedRisk, Baseline: true, LegacyCompatibility: true},
+		{SchemaVersion: StrategyDescriptorSchemaVersion, ID: StrategyTrendMomentumCandidate, Version: "1.0.0", Description: "Research-only long-only hypothesis: own top relative-momentum eligible assets with positive absolute trend only in a supportive completed-data benchmark regime.", RequiredData: candidateData, BenchmarkRequired: true, DecisionCadence: "4h", RebalanceCadence: "24h", WarmupBars: 496, Risk: candidateRisk, FactorTraceSchema: "trend-momentum-factor-trace-v1", ResearchOnly: true, ExecutionIntents: []string{"research", "shadow", "backtest", "live_dry_run"}, AblationVariants: []string{"absolute_trend_only", "relative_momentum_only", "combined"}, Features: []StrategyFeatureDeclaration{{Name: "benchmark_regime_sma", Timeframe: "4h", WarmupBars: 30, TraceField: "benchmark_long_sma"}, {Name: "relative_momentum", Timeframe: "4h", WarmupBars: 31, TraceField: "lookback_returns"}, {Name: "asset_absolute_trend", Timeframe: "4h", WarmupBars: 20, TraceField: "absolute_trend"}, {Name: "realized_volatility", Timeframe: "4h", WarmupBars: 31, TraceField: "realized_volatility"}}, Parameters: []StrategyParameterSpec{
+			{Name: "variant", Type: "enum", Description: "Pre-registered ablation identity.", Default: "combined", Enum: []string{"absolute_trend_only", "relative_momentum_only", "combined"}},
+			{Name: "vol_normalization", Type: "enum", Description: "Pre-registered volatility normalization switch.", Default: "true", Enum: []string{"false", "true"}},
+			{Name: "lookback_bars", Type: "enum", Description: "Completed 4h momentum lookback.", Default: "30", Enum: []string{"20", "30", "60"}},
+			{Name: "trend_bars", Type: "enum", Description: "Completed 4h asset trend average lookback.", Default: "20", Enum: []string{"20", "30", "60"}},
+			{Name: "regime_bars", Type: "enum", Description: "Completed 4h benchmark regime average lookback.", Default: "30", Enum: []string{"20", "30", "60"}},
+			{Name: "rebalance", Type: "enum", Description: "Pre-registered rebalance cadence.", Default: "24h", Enum: []string{"24h", "48h"}},
+			{Name: "top_n", Type: "integer", Description: "Maximum concurrent ranked positions.", Default: "3", Minimum: floatPointer(1), Maximum: floatPointer(10)},
+			{Name: "max_positions", Type: "integer", Description: "Hard concurrent position cap.", Default: "3", Minimum: floatPointer(1), Maximum: floatPointer(10)},
+			{Name: "risk_on_gross", Type: "decimal", Description: "Risk-on gross and net target.", Default: "0.75", Minimum: floatPointer(0), Maximum: floatPointer(1)},
+			{Name: "neutral_gross", Type: "decimal", Description: "Neutral gross and net target.", Default: "0.25", Minimum: floatPointer(0), Maximum: floatPointer(1)},
+			{Name: "risk_off_gross", Type: "decimal", Description: "Risk-off gross and net target.", Default: "0", Minimum: floatPointer(0), Maximum: floatPointer(0)},
+			{Name: "regime_band", Type: "decimal", Description: "Symmetric neutral band around benchmark average.", Default: "0.01", Minimum: floatPointer(0), Maximum: floatPointer(0.05)},
+			{Name: "position_cap", Type: "decimal", Description: "Per-position fraction of executable equity.", Default: "0.25", Minimum: floatPointer(0.01), Maximum: floatPointer(0.5)},
+			{Name: "max_gross", Type: "decimal", Description: "Hard gross exposure fraction.", Default: "0.75", Minimum: floatPointer(0.1), Maximum: floatPointer(1)},
+			{Name: "max_net", Type: "decimal", Description: "Hard long-only net exposure fraction.", Default: "0.75", Minimum: floatPointer(0.1), Maximum: floatPointer(1)},
+			{Name: "cash_reserve", Type: "decimal", Description: "Minimum cash fraction.", Default: "0.25", Minimum: floatPointer(0), Maximum: floatPointer(0.9)},
+			{Name: "vol_floor", Type: "decimal", Description: "Realized-volatility sizing floor.", Default: "0.02", Minimum: floatPointer(0.005), Maximum: floatPointer(0.2)},
+			{Name: "turnover_budget", Type: "decimal", Description: "Per-rebalance one-way turnover fraction.", Default: "0.25", Minimum: floatPointer(0), Maximum: floatPointer(1)},
+			{Name: "skip_delta", Type: "decimal", Description: "Immaterial target-weight delta fraction.", Default: "0.005", Minimum: floatPointer(0), Maximum: floatPointer(0.05)},
+			{Name: "hard_stop", Type: "decimal", Description: "Causal close-based hard loss fraction; zero disables.", Default: "0.12", Minimum: floatPointer(0), Maximum: floatPointer(0.25)},
+			{Name: "include_shortlist", Type: "enum", Description: "Include explicit shortlist alongside active eligible members.", Default: "true", Enum: []string{"false", "true"}},
+			{Name: "execution_intent", Type: "enum", Description: "Research fence intent.", Default: "research", Enum: []string{"research", "shadow", "backtest", "live_dry_run", "paper_capital", "live_submit", "promotion"}},
+			{Name: "model_observation", Type: "decimal", Description: "Recorded shadow-only observation with no rule influence.", Default: "0", Minimum: floatPointer(-1), Maximum: floatPointer(1)},
+			{Name: "target_gross", Type: "decimal", Description: "Normalized comparison ceiling.", Default: "0.75", Minimum: floatPointer(0), Maximum: floatPointer(1)},
+			{Name: "final_policy", Type: "enum", Description: "Final valuation policy.", Default: "liquidate", Enum: []string{"mark_to_market", "liquidate"}},
+		}},
 	}
 	for _, descriptor := range definitions {
 		if descriptor.ID == StrategyEqualWeightID || descriptor.ID == StrategyMomentumID {
 			descriptor.Parameters = append(descriptor.Parameters, StrategyParameterSpec{Name: "include_shortlist", Type: "enum", Description: "Whether persisted shortlist members join active members in the tradable baseline universe.", Default: "true", Enum: []string{"false", "true"}})
 		}
+		planner := Stage05Planner(stage05BuiltinPlanner{})
+		if descriptor.ID == StrategyTrendMomentumCandidate {
+			planner = trendMomentumPlanner{}
+		}
 		if err := registry.RegisterExecutable(descriptor, func(map[string]string) (tradingcore.Strategy, error) {
 			return tradingcore.TargetAllocationStrategy{}, nil
-		}, stage05BuiltinPlanner{}); err != nil {
+		}, planner); err != nil {
 			panic(err)
 		}
 	}

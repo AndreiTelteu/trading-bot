@@ -285,22 +285,34 @@ type StrategyRiskDeclaration struct {
 	UsesSharedRisk   bool   `json:"uses_shared_risk"`
 }
 
+type StrategyFeatureDeclaration struct {
+	Name       string `json:"name"`
+	Timeframe  string `json:"timeframe"`
+	WarmupBars int    `json:"warmup_bars"`
+	TraceField string `json:"trace_field"`
+}
+
 // StrategyDescriptor is immutable registry metadata. ID plus Version is the
 // stable economic identity of a strategy declaration and parameter schema.
 type StrategyDescriptor struct {
-	SchemaVersion       string                    `json:"schema_version"`
-	ID                  string                    `json:"id"`
-	Version             string                    `json:"version"`
-	Description         string                    `json:"description"`
-	RequiredData        []StrategyDataRequirement `json:"required_data"`
-	BenchmarkRequired   bool                      `json:"benchmark_required"`
-	DecisionCadence     string                    `json:"decision_cadence"`
-	RebalanceCadence    string                    `json:"rebalance_cadence"`
-	WarmupBars          int                       `json:"warmup_bars"`
-	Risk                StrategyRiskDeclaration   `json:"risk"`
-	Parameters          []StrategyParameterSpec   `json:"parameters"`
-	Baseline            bool                      `json:"baseline"`
-	LegacyCompatibility bool                      `json:"legacy_compatibility,omitempty"`
+	SchemaVersion       string                       `json:"schema_version"`
+	ID                  string                       `json:"id"`
+	Version             string                       `json:"version"`
+	Description         string                       `json:"description"`
+	RequiredData        []StrategyDataRequirement    `json:"required_data"`
+	BenchmarkRequired   bool                         `json:"benchmark_required"`
+	DecisionCadence     string                       `json:"decision_cadence"`
+	RebalanceCadence    string                       `json:"rebalance_cadence"`
+	WarmupBars          int                          `json:"warmup_bars"`
+	Risk                StrategyRiskDeclaration      `json:"risk"`
+	Features            []StrategyFeatureDeclaration `json:"features,omitempty"`
+	FactorTraceSchema   string                       `json:"factor_trace_schema,omitempty"`
+	ResearchOnly        bool                         `json:"research_only,omitempty"`
+	ExecutionIntents    []string                     `json:"execution_intents,omitempty"`
+	AblationVariants    []string                     `json:"ablation_variants,omitempty"`
+	Parameters          []StrategyParameterSpec      `json:"parameters"`
+	Baseline            bool                         `json:"baseline"`
+	LegacyCompatibility bool                         `json:"legacy_compatibility,omitempty"`
 }
 
 type SelectedStrategy struct {
@@ -331,6 +343,11 @@ type RunManifest struct {
 	Coverage          CoverageReport    `json:"coverage"`
 	Limitations       []string          `json:"limitations,omitempty"`
 	Artifacts         ArtifactRefs      `json:"artifacts"`
+	ExecutionIntent   string            `json:"execution_intent,omitempty"`
+	PromotionAllowed  bool              `json:"promotion_allowed"`
+	FactorTraceSchema string            `json:"factor_trace_schema,omitempty"`
+	Hypothesis        string            `json:"hypothesis,omitempty"`
+	Ablation          string            `json:"ablation,omitempty"`
 }
 
 type DecisionArtifact struct {
@@ -345,13 +362,14 @@ type DecisionArtifact struct {
 	PolicyVersion string `json:"policy_version,omitempty"`
 }
 type OrderArtifact struct {
-	SignalAt   string `json:"signal_at"`
-	DecisionAt string `json:"decision_at"`
-	OrderAt    string `json:"order_at"`
-	Symbol     string `json:"symbol"`
-	Side       string `json:"side"`
-	Quantity   string `json:"quantity"`
-	Reason     string `json:"reason,omitempty"`
+	SignalAt   string            `json:"signal_at"`
+	DecisionAt string            `json:"decision_at"`
+	OrderAt    string            `json:"order_at"`
+	Symbol     string            `json:"symbol"`
+	Side       string            `json:"side"`
+	Quantity   string            `json:"quantity"`
+	Reason     string            `json:"reason,omitempty"`
+	Metadata   map[string]string `json:"metadata,omitempty"`
 }
 type FillArtifact struct {
 	SignalAt    string `json:"signal_at"`
