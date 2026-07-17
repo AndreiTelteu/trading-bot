@@ -6,12 +6,13 @@ import (
 )
 
 const (
-	ManifestSchemaVersion  = "validation-experiment-manifest-v1"
-	EvidenceSchemaVersion  = "validation-evidence-v1"
-	MLSchemaVersion        = "ml-evaluation-v1"
-	MaxFolds               = 64
-	MaxBootstrapIterations = 10000
-	MaxManifestBytes       = 1 << 20
+	ManifestSchemaVersion   = "validation-experiment-manifest-v2"
+	EvidenceSchemaVersion   = "validation-evidence-v2"
+	MLSchemaVersion         = "ml-evaluation-v2"
+	GovernancePolicyVersion = "stage07-governance-policy-v1"
+	MaxFolds                = 64
+	MaxBootstrapIterations  = 10000
+	MaxManifestBytes        = 1 << 20
 )
 
 type DiagnosticCode string
@@ -118,7 +119,10 @@ type ManifestSpec struct {
 	Candidate           VersionRef               `json:"candidate"`
 	Baseline            VersionRef               `json:"baseline"`
 	Model               *ModelAuthority          `json:"model,omitempty"`
+	MLRequirements      *MLRequirements          `json:"ml_requirements,omitempty"`
 	Policies            PolicyBundle             `json:"policies"`
+	GovernancePolicy    string                   `json:"governance_policy"`
+	AuthorityPolicy     AuthorityPolicyEnvelope  `json:"authority_policy"`
 	DatasetManifestID   string                   `json:"dataset_manifest_id"`
 	DatasetManifestHash string                   `json:"dataset_manifest_hash"`
 	UniversePolicy      string                   `json:"universe_policy"`
@@ -128,6 +132,7 @@ type ManifestSpec struct {
 	Seed                int64                    `json:"seed"`
 	ExecutionSemantics  map[string]string        `json:"execution_semantics"`
 	Folds               []Fold                   `json:"folds"`
+	FoldSourceJobIDs    []uint                   `json:"fold_source_job_ids"`
 	FeatureHorizon      time.Duration            `json:"feature_horizon"`
 	LabelHorizon        time.Duration            `json:"label_horizon"`
 	Purge               time.Duration            `json:"purge"`
@@ -143,6 +148,12 @@ type ManifestSpec struct {
 	Artifacts           ArtifactLinks            `json:"artifacts"`
 	Reproduce           ReproductionInvocation   `json:"reproduce"`
 	ResearchOverride    *ResearchOverride        `json:"research_override,omitempty"`
+}
+
+type AuthorityPolicyEnvelope struct {
+	SchemaVersion string            `json:"schema_version"`
+	Payload       map[string]string `json:"payload"`
+	Digest        string            `json:"digest"`
 }
 
 type ResearchOverride struct {

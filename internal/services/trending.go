@@ -877,18 +877,6 @@ func AnalyzeShortlist(selection *UniverseSelectionResult, settings map[string]st
 			}
 		}
 
-		sort.SliceStable(results, func(i, j int) bool {
-			leftRank := modelRankValue(results[i].ModelRank)
-			rightRank := modelRankValue(results[j].ModelRank)
-			if leftRank == rightRank {
-				if results[i].RankScore == results[j].RankScore {
-					return results[i].Symbol < results[j].Symbol
-				}
-				return results[i].RankScore > results[j].RankScore
-			}
-			return leftRank < rightRank
-		})
-
 		if idsBySymbol, err := persistPredictionLogs(observations, selection, governance); err != nil {
 			logActivity("error", "Failed to persist model prediction logs", err.Error())
 		} else {
@@ -899,9 +887,35 @@ func AnalyzeShortlist(selection *UniverseSelectionResult, settings map[string]st
 				}
 			}
 		}
+
+		// Research/shadow predictions are observations only. Preserve the exact
+		// rule-derived shortlist order unless the deployment has been independently
+		// verified for paper/live authority. Model ranking then operates on this
+		// execution copy; the observational annotations remain bounded separately.
+		if modelPolicy.UseForLiveEntries() {
+			results = governedModelExecutionCopy(results, modelPolicy)
+		}
 	}
 
 	return results, nil
+}
+
+func governedModelExecutionCopy(ruleDerived []AnalyzedCoin, policy ModelSelectionPolicy) []AnalyzedCoin {
+	result := append([]AnalyzedCoin(nil), ruleDerived...)
+	if policy.UseForLiveEntries() {
+		sort.SliceStable(result, func(i, j int) bool {
+			leftRank := modelRankValue(result[i].ModelRank)
+			rightRank := modelRankValue(result[j].ModelRank)
+			if leftRank == rightRank {
+				if result[i].RankScore == result[j].RankScore {
+					return result[i].Symbol < result[j].Symbol
+				}
+				return result[i].RankScore > result[j].RankScore
+			}
+			return leftRank < rightRank
+		})
+	}
+	return result
 }
 
 func ExecuteShortlistTrades(analyses []AnalyzedCoin, universe *UniverseSelectionResult, settings map[string]string) ([]AnalyzedCoin, int) {
@@ -914,6 +928,9 @@ type sharedShortlistRunner func([]AnalyzedCoin, *UniverseSelectionResult, map[st
 type legacyShortlistRunner func([]AnalyzedCoin, *UniverseSelectionResult, map[string]string) ([]AnalyzedCoin, int)
 
 func executeShortlistTradesRouted(analyses []AnalyzedCoin, universe *UniverseSelectionResult, settings map[string]string, shared sharedShortlistRunner, legacy legacyShortlistRunner) ([]AnalyzedCoin, int) {
+	if err := ResolveStrategyAuthority(settings); err != nil {
+		return markSharedEngineFailure(analyses, err), 0
+	}
 	engineMode := strings.ToLower(strings.TrimSpace(getSettingString(settings, "trading_engine_mode", "legacy")))
 	if err := validateTradingEngineMode(engineMode); err != nil {
 		return markSharedEngineFailure(analyses, err), 0

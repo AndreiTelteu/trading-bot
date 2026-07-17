@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 	"trading-go/internal/database"
 
@@ -16,6 +17,10 @@ const MaxEvidenceBytes = 2 << 20
 type Repository struct{ DB *gorm.DB }
 
 func (r Repository) CreateManifest(manifest ExperimentManifest, backtestJobID *uint, comparisonDigest *string) (ExperimentManifest, error) {
+	return r.CreateManifestAuthenticated(manifest, backtestJobID, comparisonDigest, "system", "")
+}
+
+func (r Repository) CreateManifestAuthenticated(manifest ExperimentManifest, backtestJobID *uint, comparisonDigest *string, creator, idempotencyKey string) (ExperimentManifest, error) {
 	if r.DB == nil {
 		return ExperimentManifest{}, fmt.Errorf("validation repository database is required")
 	}
@@ -26,12 +31,40 @@ func (r Repository) CreateManifest(manifest ExperimentManifest, backtestJobID *u
 	if err != nil {
 		return ExperimentManifest{}, err
 	}
-	row := database.ValidationExperiment{ID: manifest.ID, ContentID: manifest.ContentID, SchemaVersion: manifest.Spec.SchemaVersion, ContentJSON: string(content), ContentDigest: manifest.ContentDigest, CreatedAt: manifest.CreatedAt, BacktestJobID: backtestJobID, ComparisonDigest: comparisonDigest}
-	err = r.DB.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "id"}}, DoNothing: true}).Create(&row).Error
+	creator, idempotencyKey = strings.TrimSpace(creator), strings.TrimSpace(idempotencyKey)
+	if creator == "" {
+		return ExperimentManifest{}, &DiagnosticError{Code: DiagnosticInvalidManifest, Field: "creator"}
+	}
+	if idempotencyKey != "" && (len(idempotencyKey) < 8 || len(idempotencyKey) > 120) {
+		return ExperimentManifest{}, &DiagnosticError{Code: DiagnosticInvalidManifest, Field: "idempotency_key"}
+	}
+	var key *string
+	if idempotencyKey != "" {
+		key = &idempotencyKey
+	}
+	row := database.ValidationExperiment{ID: manifest.ID, ContentID: manifest.ContentID, SchemaVersion: manifest.Spec.SchemaVersion, ContentJSON: string(content), ContentDigest: manifest.ContentDigest, CreatedAt: manifest.CreatedAt, BacktestJobID: backtestJobID, ComparisonDigest: comparisonDigest, AuthorityPolicyDigest: manifest.Spec.AuthorityPolicy.Digest, CreatedBy: creator, IdempotencyKey: key}
+	err = r.DB.Transaction(func(tx *gorm.DB) error {
+		if key != nil {
+			if e := tx.Exec("SELECT pg_advisory_xact_lock(hashtextextended(?,0))", *key).Error; e != nil {
+				return e
+			}
+			var existing database.ValidationExperiment
+			if e := tx.Where("idempotency_key=?", *key).First(&existing).Error; e == nil {
+				if existing.ContentID != manifest.ContentID {
+					return &DiagnosticError{Code: DiagnosticManifestIntegrity, Field: "idempotency_key", Details: "key reused for different semantic content"}
+				}
+				row = existing
+				return nil
+			} else if !errors.Is(e, gorm.ErrRecordNotFound) {
+				return e
+			}
+		}
+		return tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "id"}}, DoNothing: true}).Create(&row).Error
+	})
 	if err != nil {
 		return ExperimentManifest{}, err
 	}
-	return r.LoadManifest(manifest.ID)
+	return r.LoadManifest(row.ID)
 }
 
 func (r Repository) LoadManifest(id string) (ExperimentManifest, error) {
@@ -49,6 +82,9 @@ func (r Repository) LoadManifest(id string) (ExperimentManifest, error) {
 	manifest := ExperimentManifest{ID: row.ID, ContentID: row.ContentID, ContentDigest: row.ContentDigest, CreatedAt: row.CreatedAt.UTC(), Spec: spec}
 	if err := manifest.Verify(); err != nil {
 		return ExperimentManifest{}, err
+	}
+	if row.AuthorityPolicyDigest != manifest.Spec.AuthorityPolicy.Digest {
+		return ExperimentManifest{}, &DiagnosticError{Code: DiagnosticManifestIntegrity, Details: "stored authority policy digest mismatch"}
 	}
 	return manifest, nil
 }
@@ -91,7 +127,16 @@ func (r Repository) PersistEvidence(manifestID string, result *WalkForwardResult
 			if fold.Fold != manifest.Spec.Folds[i] || fold.Frozen.FoldIndex != fold.Fold.Index {
 				return PersistedEvidence{}, &DiagnosticError{Code: DiagnosticManifestIntegrity, Details: "fold identity or frozen decision mismatch"}
 			}
-			if err := ValidateFoldMetrics(fold.Metrics, manifest.Spec.Samples); err != nil {
+			derived, deriveErr := DeriveFoldMetrics(fold.Primitives)
+			if deriveErr != nil {
+				return PersistedEvidence{}, deriveErr
+			}
+			storedMetrics, _ := json.Marshal(fold.Metrics)
+			derivedMetrics, _ := json.Marshal(derived)
+			if string(storedMetrics) != string(derivedMetrics) {
+				return PersistedEvidence{}, &DiagnosticError{Code: DiagnosticManifestIntegrity, Details: "fold metrics do not reproduce from immutable primitives"}
+			}
+			if err := ValidateFoldMetrics(derived, manifest.Spec.Samples); err != nil {
 				return PersistedEvidence{}, err
 			}
 		}

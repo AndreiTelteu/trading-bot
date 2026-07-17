@@ -3,6 +3,7 @@ package validation
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"sort"
 	"time"
 )
@@ -81,6 +82,7 @@ type FrozenDecision struct {
 	Parameters      map[string]string `json:"parameters"`
 	FitDigest       string            `json:"fit_digest"`
 	SelectionDigest string            `json:"selection_digest"`
+	ArtifactDigest  string            `json:"artifact_digest"`
 }
 
 func (f FrozenDecision) Digest() (string, error) {
@@ -113,17 +115,57 @@ type FoldMetrics struct {
 type FoldResult struct {
 	Fold        Fold           `json:"fold"`
 	Frozen      FrozenDecision `json:"frozen"`
+	Primitives  FoldPrimitives `json:"primitives"`
 	Metrics     FoldMetrics    `json:"metrics"`
 	WorstRegime string         `json:"worst_regime,omitempty"`
 	WorstSymbol string         `json:"worst_symbol,omitempty"`
 }
 
-// FoldRunner is intentionally generic: Stage 05 baselines, Stage 06 candidates,
-// and future model trainers can implement the same fit/freeze/test contract.
-// Test receives only the already frozen decision and untouched samples.
+const MaxFoldArtifactBytes = 4 << 20
+
+type FoldFit struct {
+	Choice     string            `json:"choice"`
+	Parameters map[string]string `json:"parameters"`
+	Artifact   []byte            `json:"artifact"`
+}
+
+type TradePrimitive struct {
+	ID       string    `json:"id"`
+	Symbol   string    `json:"symbol"`
+	Regime   string    `json:"regime"`
+	OpenedAt time.Time `json:"opened_at"`
+	ClosedAt time.Time `json:"closed_at"`
+	Notional float64   `json:"notional"`
+	GrossPnL float64   `json:"gross_pnl"`
+	Cost     float64   `json:"cost"`
+	NetPnL   float64   `json:"net_pnl"`
+}
+
+type CurvePrimitive struct {
+	At            time.Time `json:"at"`
+	Equity        float64   `json:"equity"`
+	Benchmark     float64   `json:"benchmark"`
+	GrossExposure float64   `json:"gross_exposure"`
+	NetExposure   float64   `json:"net_exposure"`
+}
+
+type FoldPrimitives struct {
+	StartingCapital      float64          `json:"starting_capital"`
+	ExpectedObservations int              `json:"expected_observations"`
+	ObservedObservations int              `json:"observed_observations"`
+	Trades               []TradePrimitive `json:"trades"`
+	Curve                []CurvePrimitive `json:"curve"`
+}
+
+// FoldRunner is one fresh, isolated fold instance. Fit returns complete immutable
+// artifact bytes; Test must use only those bytes and the untouched test samples.
 type FoldRunner interface {
-	FitAndSelect(fold Fold, train, validation []Sample, allowed map[string][]string) (FrozenDecision, error)
-	Test(fold Fold, frozen FrozenDecision, test []Sample) (FoldMetrics, error)
+	FitAndSelect(fold Fold, train, validation []Sample, allowed map[string][]string) (FoldFit, error)
+	Test(fold Fold, artifact []byte, test []Sample) (FoldPrimitives, error)
+}
+
+type FoldRunnerFactory interface {
+	NewFoldRunner(fold Fold) (FoldRunner, error)
 }
 
 type WalkForwardResult struct {
@@ -133,15 +175,21 @@ type WalkForwardResult struct {
 	Aggregate     Evaluation   `json:"aggregate"`
 }
 
-func RunWalkForward(manifest ExperimentManifest, samples []Sample, runner FoldRunner) (WalkForwardResult, error) {
+func RunWalkForward(manifest ExperimentManifest, samples []Sample, factory FoldRunnerFactory) (WalkForwardResult, error) {
 	if err := manifest.Verify(); err != nil {
 		return WalkForwardResult{}, err
 	}
-	if runner == nil {
-		return WalkForwardResult{}, &DiagnosticError{Code: DiagnosticInvalidManifest, Details: "fold runner is required"}
+	if factory == nil {
+		return WalkForwardResult{}, &DiagnosticError{Code: DiagnosticInvalidManifest, Details: "fold runner factory is required"}
+	}
+	if err := validateSamples(samples, manifest.Spec.FeatureHorizon, manifest.Spec.LabelHorizon); err != nil {
+		return WalkForwardResult{}, err
 	}
 	decisions := make([]FrozenDecision, 0, len(manifest.Spec.Folds))
 	splits := make([]Split, 0, len(manifest.Spec.Folds))
+	runners := make([]FoldRunner, 0, len(manifest.Spec.Folds))
+	runnerPointers := map[uintptr]struct{}{}
+	artifacts := make([][]byte, 0, len(manifest.Spec.Folds))
 	// First freeze every fold. No test slice is exposed during fit/selection.
 	for _, fold := range manifest.Spec.Folds {
 		split, err := SplitFold(samples, fold, manifest.Spec.Purge, manifest.Spec.Embargo)
@@ -151,18 +199,58 @@ func RunWalkForward(manifest ExperimentManifest, samples []Sample, runner FoldRu
 		if err := validateSplit(split, manifest.Spec.Samples); err != nil {
 			return WalkForwardResult{}, err
 		}
-		frozen, err := runner.FitAndSelect(fold, cloneSamples(split.Train), cloneSamples(split.Validation), cloneChoices(manifest.Spec.AllowedTuning))
+		runner, err := factory.NewFoldRunner(fold)
+		if err != nil || runner == nil {
+			return WalkForwardResult{}, &DiagnosticError{Code: DiagnosticInvalidManifest, Field: fmt.Sprintf("folds[%d].runner", fold.Index), Details: "fresh fold runner is required"}
+		}
+		value := reflect.ValueOf(runner)
+		if value.Kind() == reflect.Pointer {
+			pointer := value.Pointer()
+			if _, reused := runnerPointers[pointer]; reused {
+				return WalkForwardResult{}, &DiagnosticError{Code: DiagnosticTestLeakage, Field: "fold_runner", Details: "runner instance reused across folds"}
+			}
+			runnerPointers[pointer] = struct{}{}
+		}
+		fit, err := runner.FitAndSelect(fold, cloneSamples(split.Train), cloneSamples(split.Validation), cloneChoices(manifest.Spec.AllowedTuning))
 		if err != nil {
 			return WalkForwardResult{}, err
 		}
-		if frozen.FoldIndex != fold.Index || frozen.Choice == "" || frozen.FitDigest == "" || frozen.SelectionDigest == "" {
-			return WalkForwardResult{}, &DiagnosticError{Code: DiagnosticTestLeakage, Field: fmt.Sprintf("folds[%d].frozen", fold.Index), Details: "runner did not return a complete frozen decision"}
+		if err := validateFit(fit, manifest.Spec.AllowedTuning); err != nil {
+			return WalkForwardResult{}, err
 		}
-		decisions, splits = append(decisions, frozen), append(splits, split)
+		trainDigest, err := sampleDigest(split.Train)
+		if err != nil {
+			return WalkForwardResult{}, err
+		}
+		validationDigest, err := sampleDigest(split.Validation)
+		if err != nil {
+			return WalkForwardResult{}, err
+		}
+		artifactDigest := digest(fit.Artifact)
+		fitDigest, _ := canonicalDigest(struct {
+			Fold                    int `json:"fold"`
+			Train, Policy, Artifact string
+			Seed                    int64
+		}{fold.Index, trainDigest, manifest.Spec.AuthorityPolicy.Digest, artifactDigest, manifest.Spec.Seed})
+		selectionDigest, _ := canonicalDigest(struct {
+			Fold               int `json:"fold"`
+			Validation, Choice string
+			Parameters         map[string]string
+			Allowed            map[string][]string
+		}{fold.Index, validationDigest, fit.Choice, fit.Parameters, cloneChoices(manifest.Spec.AllowedTuning)})
+		frozen := FrozenDecision{FoldIndex: fold.Index, Choice: fit.Choice, Parameters: cloneStringMap(fit.Parameters), FitDigest: fitDigest, SelectionDigest: selectionDigest, ArtifactDigest: artifactDigest}
+		if frozen.Choice == "" || frozen.FitDigest == "" || frozen.SelectionDigest == "" {
+			return WalkForwardResult{}, &DiagnosticError{Code: DiagnosticTestLeakage, Field: fmt.Sprintf("folds[%d].frozen", fold.Index), Details: "trusted frozen decision is incomplete"}
+		}
+		decisions, splits, runners, artifacts = append(decisions, frozen), append(splits, split), append(runners, runner), append(artifacts, append([]byte(nil), fit.Artifact...))
 	}
 	results := make([]FoldResult, 0, len(decisions))
 	for i, frozen := range decisions {
-		metrics, err := runner.Test(manifest.Spec.Folds[i], frozen, cloneSamples(splits[i].Test))
+		primitive, err := runners[i].Test(manifest.Spec.Folds[i], append([]byte(nil), artifacts[i]...), cloneSamples(splits[i].Test))
+		if err != nil {
+			return WalkForwardResult{}, err
+		}
+		metrics, err := DeriveFoldMetrics(primitive)
 		if err != nil {
 			return WalkForwardResult{}, err
 		}
@@ -171,13 +259,90 @@ func RunWalkForward(manifest ExperimentManifest, samples []Sample, runner FoldRu
 		}
 		worstRegime := minimumFloatKey(metrics.RegimeContributions)
 		worstSymbol := minimumFloatKey(metrics.SymbolContributions)
-		results = append(results, FoldResult{Fold: manifest.Spec.Folds[i], Frozen: frozen, Metrics: metrics, WorstRegime: worstRegime, WorstSymbol: worstSymbol})
+		results = append(results, FoldResult{Fold: manifest.Spec.Folds[i], Frozen: frozen, Primitives: primitive, Metrics: metrics, WorstRegime: worstRegime, WorstSymbol: worstSymbol})
 	}
 	evaluation, err := Evaluate(results, manifest.Spec)
 	if err != nil {
 		return WalkForwardResult{}, err
 	}
 	return WalkForwardResult{SchemaVersion: EvidenceSchemaVersion, ExperimentID: manifest.ID, Folds: results, Aggregate: evaluation}, nil
+}
+
+func validateSamples(samples []Sample, featureHorizon, labelHorizon time.Duration) error {
+	seen := make(map[string]struct{}, len(samples))
+	for _, sample := range samples {
+		if _, ok := seen[sample.ID]; ok {
+			return &DiagnosticError{Code: DiagnosticInvalidManifest, Field: "sample.id", Details: "duplicate sample: " + sample.ID}
+		}
+		seen[sample.ID] = struct{}{}
+		if sample.ID == "" || sample.ObservedAt.IsZero() || sample.FeatureStart.IsZero() || sample.FeatureEnd.IsZero() || sample.LabelEnd.IsZero() {
+			return &DiagnosticError{Code: DiagnosticInvalidManifest, Field: "sample", Details: "complete sample timestamps are required"}
+		}
+		if sample.FeatureEnd.After(sample.ObservedAt) {
+			return &DiagnosticError{Code: DiagnosticTestLeakage, Field: "sample.feature_end", Details: sample.ID + " contains future features"}
+		}
+		if !sample.FeatureEnd.Equal(sample.ObservedAt) || !sample.FeatureStart.Equal(sample.ObservedAt.Add(-featureHorizon)) {
+			return &DiagnosticError{Code: DiagnosticInvalidManifest, Field: "sample.feature_horizon", Details: sample.ID}
+		}
+		if !sample.LabelEnd.Equal(sample.ObservedAt.Add(labelHorizon)) {
+			return &DiagnosticError{Code: DiagnosticInvalidManifest, Field: "sample.label_horizon", Details: sample.ID}
+		}
+		for key, value := range sample.Values {
+			if key == "" || !finite(value) {
+				return &DiagnosticError{Code: DiagnosticNonFinite, Field: "sample.values", Details: sample.ID}
+			}
+		}
+	}
+	return nil
+}
+
+func validateFit(fit FoldFit, allowed map[string][]string) error {
+	if fit.Choice == "" || len(fit.Artifact) == 0 || len(fit.Artifact) > MaxFoldArtifactBytes || len(fit.Parameters) == 0 {
+		return &DiagnosticError{Code: DiagnosticInvalidManifest, Field: "fold_fit", Details: "choice, bounded artifact, and parameters are required"}
+	}
+	if len(fit.Parameters) != len(allowed) {
+		return &DiagnosticError{Code: DiagnosticInvalidManifest, Field: "fold_fit.parameters", Details: "complete predeclared parameter set is required"}
+	}
+	choiceAllowed := false
+	for key, value := range fit.Parameters {
+		choices, ok := allowed[key]
+		if !ok {
+			return &DiagnosticError{Code: DiagnosticInvalidManifest, Field: "fold_fit.parameters", Details: "undeclared parameter: " + key}
+		}
+		found := false
+		for _, candidate := range choices {
+			if value == candidate {
+				found = true
+			}
+			if fit.Choice == candidate {
+				choiceAllowed = true
+			}
+		}
+		if !found {
+			return &DiagnosticError{Code: DiagnosticInvalidManifest, Field: "fold_fit.parameters", Details: "out-of-list value: " + key + "=" + value}
+		}
+	}
+	if !choiceAllowed {
+		return &DiagnosticError{Code: DiagnosticInvalidManifest, Field: "fold_fit.choice", Details: "choice was not predeclared"}
+	}
+	return nil
+}
+
+func sampleDigest(samples []Sample) (string, error)        { return canonicalDigest(cloneSamples(samples)) }
+func FoldResultsDigest(folds []FoldResult) (string, error) { return canonicalDigest(folds) }
+func canonicalDigest(value any) (string, error) {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return "", err
+	}
+	return digest(encoded), nil
+}
+func cloneStringMap(values map[string]string) map[string]string {
+	result := make(map[string]string, len(values))
+	for k, v := range values {
+		result[k] = v
+	}
+	return result
 }
 
 func validateSplit(split Split, requirements SampleRequirements) error {
@@ -198,7 +363,16 @@ func validateSplit(split Split, requirements SampleRequirements) error {
 func cloneSamples(values []Sample) []Sample {
 	result := append([]Sample(nil), values...)
 	for i := range result {
+		result[i].ObservedAt = result[i].ObservedAt.UTC()
+		result[i].FeatureStart = result[i].FeatureStart.UTC()
+		result[i].FeatureEnd = result[i].FeatureEnd.UTC()
+		result[i].LabelEnd = result[i].LabelEnd.UTC()
 		result[i].Values = cloneFloatMap(result[i].Values)
+		for key, value := range result[i].Values {
+			if value == 0 {
+				result[i].Values[key] = 0
+			}
+		}
 	}
 	return result
 }

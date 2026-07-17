@@ -218,21 +218,25 @@ type ActivityLog struct {
 }
 
 type BacktestJob struct {
-	ID                 uint       `json:"id" gorm:"primaryKey;autoIncrement"`
-	Status             string     `json:"status" gorm:"size:20;default:pending"`
-	Progress           float64    `json:"progress"`
-	Message            *string    `json:"message" gorm:"size:500"`
-	SummaryJSON        *string    `json:"summary_json" gorm:"type:text"`
-	SummaryCompactJSON *string    `json:"summary_compact_json" gorm:"type:text"`
-	Error              *string    `json:"error" gorm:"type:text"`
-	DatasetManifestID  *string    `json:"dataset_manifest_id,omitempty" gorm:"size:64;index"`
-	JobType            string     `json:"job_type" gorm:"size:40;not null;default:legacy_backtest;index"`
-	ArtifactDigest     *string    `json:"artifact_digest,omitempty" gorm:"size:64"`
-	DiagnosticJSON     *string    `json:"diagnostic_json,omitempty" gorm:"type:text"`
-	StartedAt          *time.Time `json:"started_at"`
-	FinishedAt         *time.Time `json:"finished_at"`
-	CreatedAt          time.Time  `json:"created_at" gorm:"index"`
-	UpdatedAt          time.Time  `json:"updated_at"`
+	ID                       uint       `json:"id" gorm:"primaryKey;autoIncrement"`
+	Status                   string     `json:"status" gorm:"size:20;default:pending"`
+	Progress                 float64    `json:"progress"`
+	Message                  *string    `json:"message" gorm:"size:500"`
+	SummaryJSON              *string    `json:"summary_json" gorm:"type:text"`
+	SummaryCompactJSON       *string    `json:"summary_compact_json" gorm:"type:text"`
+	Error                    *string    `json:"error" gorm:"type:text"`
+	DatasetManifestID        *string    `json:"dataset_manifest_id,omitempty" gorm:"size:64;index"`
+	JobType                  string     `json:"job_type" gorm:"size:40;not null;default:legacy_backtest;index"`
+	ArtifactDigest           *string    `json:"artifact_digest,omitempty" gorm:"size:64"`
+	DiagnosticJSON           *string    `json:"diagnostic_json,omitempty" gorm:"type:text"`
+	ValidationArtifactJSON   *string    `json:"-" gorm:"type:jsonb"`
+	ValidationArtifactDigest *string    `json:"validation_artifact_digest,omitempty" gorm:"size:64"`
+	RequestKey               *string    `json:"request_key,omitempty" gorm:"size:120;uniqueIndex"`
+	SemanticID               string     `json:"semantic_id,omitempty" gorm:"size:64;index"`
+	StartedAt                *time.Time `json:"started_at"`
+	FinishedAt               *time.Time `json:"finished_at"`
+	CreatedAt                time.Time  `json:"created_at" gorm:"index"`
+	UpdatedAt                time.Time  `json:"updated_at"`
 }
 
 type TrendAnalysisHistory struct {
@@ -634,14 +638,17 @@ type MonitoringSnapshot struct {
 // immutable creation instant so two independently recorded copies remain
 // distinguishable without making reproduction depend on wall-clock time.
 type ValidationExperiment struct {
-	ID               string    `json:"id" gorm:"primaryKey;size:64"`
-	ContentID        string    `json:"content_id" gorm:"size:64;not null;index"`
-	SchemaVersion    string    `json:"schema_version" gorm:"size:50;not null;index"`
-	ContentJSON      string    `json:"content" gorm:"column:content_json;type:jsonb;not null"`
-	ContentDigest    string    `json:"content_digest" gorm:"size:64;not null"`
-	CreatedAt        time.Time `json:"created_at" gorm:"not null;index"`
-	BacktestJobID    *uint     `json:"backtest_job_id,omitempty" gorm:"index"`
-	ComparisonDigest *string   `json:"comparison_digest,omitempty" gorm:"size:64;index"`
+	ID                    string    `json:"id" gorm:"primaryKey;size:64"`
+	ContentID             string    `json:"content_id" gorm:"size:64;not null;index"`
+	SchemaVersion         string    `json:"schema_version" gorm:"size:50;not null;index"`
+	ContentJSON           string    `json:"content" gorm:"column:content_json;type:jsonb;not null"`
+	ContentDigest         string    `json:"content_digest" gorm:"size:64;not null"`
+	CreatedAt             time.Time `json:"created_at" gorm:"not null;index"`
+	BacktestJobID         *uint     `json:"backtest_job_id,omitempty" gorm:"index"`
+	ComparisonDigest      *string   `json:"comparison_digest,omitempty" gorm:"size:64;index"`
+	AuthorityPolicyDigest string    `json:"authority_policy_digest" gorm:"size:64;not null;default:'0000000000000000000000000000000000000000000000000000000000000000';index"`
+	CreatedBy             string    `json:"created_by" gorm:"size:200;not null;default:'system'"`
+	IdempotencyKey        *string   `json:"idempotency_key,omitempty" gorm:"size:120;uniqueIndex"`
 }
 
 type ValidationFoldEvidence struct {
@@ -666,46 +673,87 @@ type ValidationEvidence struct {
 	CreatedAt      time.Time `json:"created_at" gorm:"not null;index"`
 }
 
+type ValidationMLEvidence struct {
+	ID             string    `json:"id" gorm:"primaryKey;size:64"`
+	ExperimentID   string    `json:"experiment_id" gorm:"size:64;not null;uniqueIndex"`
+	SchemaVersion  string    `json:"schema_version" gorm:"size:50;not null"`
+	EvidenceJSON   string    `json:"evidence" gorm:"column:evidence_json;type:jsonb;not null"`
+	EvidenceDigest string    `json:"evidence_digest" gorm:"size:64;not null"`
+	Passed         bool      `json:"passed" gorm:"not null"`
+	CreatedAt      time.Time `json:"created_at" gorm:"not null"`
+}
+
 type GovernanceApproval struct {
-	ID              string    `json:"id" gorm:"primaryKey;size:64"`
-	IdempotencyKey  string    `json:"idempotency_key" gorm:"size:120;not null;uniqueIndex"`
-	ExperimentID    string    `json:"experiment_id" gorm:"size:64;not null;index"`
-	EvidenceID      string    `json:"evidence_id" gorm:"size:64;not null;index"`
-	TargetState     string    `json:"target_state" gorm:"size:30;not null;index"`
-	ArtifactVersion string    `json:"artifact_version" gorm:"size:100;not null;index"`
-	PolicyVersion   string    `json:"policy_version" gorm:"size:100;not null"`
-	Approver        string    `json:"approver" gorm:"size:200;not null"`
-	Reason          string    `json:"reason" gorm:"size:1000;not null"`
-	ApprovedAt      time.Time `json:"approved_at" gorm:"not null;index"`
-	ContentDigest   string    `json:"content_digest" gorm:"size:64;not null"`
+	ID                    string    `json:"id" gorm:"primaryKey;size:64"`
+	IdempotencyKey        string    `json:"idempotency_key" gorm:"size:120;not null;uniqueIndex"`
+	ExperimentID          string    `json:"experiment_id" gorm:"size:64;not null;index"`
+	EvidenceID            string    `json:"evidence_id" gorm:"size:64;not null;index"`
+	TargetState           string    `json:"target_state" gorm:"size:30;not null;index"`
+	ArtifactVersion       string    `json:"artifact_version" gorm:"size:100;not null;index"`
+	PolicyVersion         string    `json:"policy_version" gorm:"size:100;not null"`
+	Approver              string    `json:"approver" gorm:"size:200;not null"`
+	Reason                string    `json:"reason" gorm:"size:1000;not null"`
+	ApprovedAt            time.Time `json:"approved_at" gorm:"not null;index"`
+	ContentDigest         string    `json:"content_digest" gorm:"size:64;not null"`
+	SourceState           string    `json:"source_state" gorm:"size:30;not null;default:research"`
+	SourceActivatedAt     time.Time `json:"source_activated_at" gorm:"not null;default:'1970-01-01 00:00:00+00'"`
+	AuthorityPolicyDigest string    `json:"authority_policy_digest" gorm:"size:64;not null;default:'0000000000000000000000000000000000000000000000000000000000000000'"`
+	EvidenceDigest        string    `json:"evidence_digest" gorm:"size:64;not null;default:'0000000000000000000000000000000000000000000000000000000000000000'"`
+	ExpiresAt             time.Time `json:"expires_at" gorm:"not null;default:'1970-01-01 00:00:00+00'"`
 }
 
 type GovernanceDeployment struct {
-	ContextKey      string    `json:"context_key" gorm:"primaryKey;size:120"`
-	ExperimentID    string    `json:"experiment_id" gorm:"size:64;not null;index"`
-	EvidenceID      string    `json:"evidence_id" gorm:"size:64;not null"`
-	State           string    `json:"state" gorm:"size:30;not null;index"`
-	ArtifactVersion string    `json:"artifact_version" gorm:"size:100;not null;index"`
-	PolicyVersion   string    `json:"policy_version" gorm:"size:100;not null"`
-	FallbackVersion string    `json:"fallback_version" gorm:"size:100"`
-	ActivatedAt     time.Time `json:"activated_at" gorm:"not null"`
-	UpdatedAt       time.Time `json:"updated_at" gorm:"not null"`
+	ContextKey            string    `json:"context_key" gorm:"primaryKey;size:120"`
+	ExperimentID          string    `json:"experiment_id" gorm:"size:64;not null;index"`
+	EvidenceID            string    `json:"evidence_id" gorm:"size:64;not null"`
+	State                 string    `json:"state" gorm:"size:30;not null;index"`
+	ArtifactVersion       string    `json:"artifact_version" gorm:"size:100;not null;index"`
+	PolicyVersion         string    `json:"policy_version" gorm:"size:100;not null"`
+	FallbackVersion       string    `json:"fallback_version" gorm:"size:100"`
+	ActivatedAt           time.Time `json:"activated_at" gorm:"not null"`
+	UpdatedAt             time.Time `json:"updated_at" gorm:"not null"`
+	AuthorityPolicyJSON   string    `json:"authority_policy" gorm:"column:authority_policy_json;type:jsonb;not null;default:'{}'"`
+	AuthorityPolicyDigest string    `json:"authority_policy_digest" gorm:"size:64;not null;default:'0000000000000000000000000000000000000000000000000000000000000000';index"`
+	TransitionID          string    `json:"transition_id" gorm:"size:64;not null;default:'0000000000000000000000000000000000000000000000000000000000000000';index"`
 }
 
 type GovernanceTransition struct {
-	ID              string    `json:"id" gorm:"primaryKey;size:64"`
-	IdempotencyKey  string    `json:"idempotency_key" gorm:"size:120;not null;uniqueIndex"`
-	ContextKey      string    `json:"context_key" gorm:"size:120;not null;index"`
-	ExperimentID    string    `json:"experiment_id" gorm:"size:64;not null;index"`
-	EvidenceID      string    `json:"evidence_id" gorm:"size:64;not null"`
-	ApprovalID      *string   `json:"approval_id,omitempty" gorm:"size:64;index"`
-	FromState       string    `json:"from_state" gorm:"size:30;not null;index"`
-	ToState         string    `json:"to_state" gorm:"size:30;not null;index"`
-	ArtifactVersion string    `json:"artifact_version" gorm:"size:100;not null"`
-	FallbackVersion string    `json:"fallback_version" gorm:"size:100"`
-	Reason          string    `json:"reason" gorm:"size:1000;not null"`
-	ContentDigest   string    `json:"content_digest" gorm:"size:64;not null"`
-	CreatedAt       time.Time `json:"created_at" gorm:"not null;index"`
+	ID                       string    `json:"id" gorm:"primaryKey;size:64"`
+	IdempotencyKey           string    `json:"idempotency_key" gorm:"size:120;not null;uniqueIndex"`
+	ContextKey               string    `json:"context_key" gorm:"size:120;not null;index"`
+	ExperimentID             string    `json:"experiment_id" gorm:"size:64;not null;index"`
+	EvidenceID               string    `json:"evidence_id" gorm:"size:64;not null"`
+	ApprovalID               *string   `json:"approval_id,omitempty" gorm:"size:64;index"`
+	FromState                string    `json:"from_state" gorm:"size:30;not null;index"`
+	ToState                  string    `json:"to_state" gorm:"size:30;not null;index"`
+	ArtifactVersion          string    `json:"artifact_version" gorm:"size:100;not null"`
+	FallbackVersion          string    `json:"fallback_version" gorm:"size:100"`
+	Reason                   string    `json:"reason" gorm:"size:1000;not null"`
+	ContentDigest            string    `json:"content_digest" gorm:"size:64;not null"`
+	CreatedAt                time.Time `json:"created_at" gorm:"not null;index"`
+	PolicyVersion            string    `json:"policy_version" gorm:"size:100;not null;default:legacy-unverified"`
+	AuthorityPolicyDigest    string    `json:"authority_policy_digest" gorm:"size:64;not null;default:'0000000000000000000000000000000000000000000000000000000000000000'"`
+	ApprovalDigest           string    `json:"approval_digest" gorm:"size:64"`
+	EvidenceDigest           string    `json:"evidence_digest" gorm:"size:64;not null;default:'0000000000000000000000000000000000000000000000000000000000000000'"`
+	MonitoringEvidenceID     *string   `json:"monitoring_evidence_id,omitempty" gorm:"size:64;index"`
+	MonitoringEvidenceDigest string    `json:"monitoring_evidence_digest" gorm:"size:64"`
+	Actor                    string    `json:"actor" gorm:"size:200;not null;default:'system'"`
+}
+
+type GovernanceMonitoringEvidence struct {
+	ID                     string    `json:"id" gorm:"primaryKey;size:64"`
+	ContextKey             string    `json:"context_key" gorm:"size:120;not null;index"`
+	ExperimentID           string    `json:"experiment_id" gorm:"size:64;not null;index"`
+	DeploymentTransitionID string    `json:"deployment_transition_id" gorm:"size:64;not null;index"`
+	AuthorityPolicyDigest  string    `json:"authority_policy_digest" gorm:"size:64;not null"`
+	ArtifactVersion        string    `json:"artifact_version" gorm:"size:100;not null"`
+	WindowStart            time.Time `json:"window_start" gorm:"not null"`
+	WindowEnd              time.Time `json:"window_end" gorm:"not null;index"`
+	ExpectedObservations   int       `json:"expected_observations" gorm:"not null"`
+	ObservedObservations   int       `json:"observed_observations" gorm:"not null"`
+	MetricsJSON            string    `json:"metrics" gorm:"column:metrics_json;type:jsonb;not null"`
+	ContentDigest          string    `json:"content_digest" gorm:"size:64;not null"`
+	CreatedAt              time.Time `json:"created_at" gorm:"not null"`
 }
 
 type PortfolioSnapshot struct {

@@ -152,7 +152,7 @@ func TestStage03ShapedSchemaUpgradesToPointInTimeWithoutDestructiveRewrite(t *te
 	if err := database.RunMigrations(db); err != nil {
 		t.Fatal(err)
 	}
-	for _, model := range []any{&database.Asset{}, &database.ExchangeSymbol{}, &database.HistoricalBar{}, &database.DatasetManifest{}, &database.IngestionCheckpoint{}} {
+	for _, model := range []any{&database.Asset{}, &database.ExchangeSymbol{}, &database.HistoricalBar{}, &database.DatasetManifest{}, &database.IngestionCheckpoint{}, &database.ValidationExperiment{}, &database.ValidationEvidence{}, &database.ValidationMLEvidence{}, &database.GovernanceMonitoringEvidence{}} {
 		if !db.Migrator().HasTable(model) {
 			t.Fatalf("missing upgraded table for %T", model)
 		}
@@ -163,6 +163,12 @@ func TestStage03ShapedSchemaUpgradesToPointInTimeWithoutDestructiveRewrite(t *te
 	}
 	assertTrigger(t, db, "ledger_events_immutable")
 	assertTrigger(t, db, "fills_immutable")
+	assertTrigger(t, db, "validation_experiments_immutable")
+	assertTrigger(t, db, "validation_ml_evidence_immutable")
+	assertTrigger(t, db, "governance_deployment_guard")
+	if err := database.RunMigrations(db); err != nil {
+		t.Fatalf("Stage 07 migration was not idempotent: %v", err)
+	}
 	var indexCount int64
 	if err := db.Raw(`SELECT count(*) FROM pg_indexes WHERE indexname='idx_fills_provider_identity'`).Scan(&indexCount).Error; err != nil || indexCount != 1 {
 		t.Fatalf("Stage 01 provider identity index changed: %d %v", indexCount, err)

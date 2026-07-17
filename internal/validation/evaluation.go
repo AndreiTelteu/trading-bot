@@ -76,6 +76,31 @@ func ValidateFoldMetrics(metrics FoldMetrics, requirements SampleRequirements) e
 	if len(metrics.RegimeContributions) < requirements.MinRegimes {
 		return &DiagnosticError{Code: DiagnosticInsufficientRegimes, Details: "regime contribution evidence is incomplete"}
 	}
+	regimeTrades := 0
+	for regime, count := range metrics.Regimes {
+		if regime == "" || count <= 0 {
+			return &DiagnosticError{Code: DiagnosticInsufficientRegimes, Details: "invalid regime cohort"}
+		}
+		if _, ok := metrics.RegimeContributions[regime]; !ok {
+			return &DiagnosticError{Code: DiagnosticInsufficientRegimes, Details: "regime contribution cohort mismatch"}
+		}
+		regimeTrades += count
+	}
+	if regimeTrades != metrics.Trades || len(metrics.Regimes) != len(metrics.RegimeContributions) {
+		return &DiagnosticError{Code: DiagnosticManifestIntegrity, Details: "regime counts do not reconcile to trades"}
+	}
+	if len(metrics.TradeContributions) != metrics.Trades || len(metrics.SymbolContributions) == 0 {
+		return &DiagnosticError{Code: DiagnosticManifestIntegrity, Details: "trade and symbol contributions must be complete"}
+	}
+	for label, values := range map[string]map[string]float64{"trade": metrics.TradeContributions, "symbol": metrics.SymbolContributions, "regime": metrics.RegimeContributions} {
+		total := 0.0
+		for _, value := range values {
+			total += value
+		}
+		if math.Abs(total-metrics.AfterCostReturn) > tolerance(math.Max(1, math.Abs(metrics.AfterCostReturn))) {
+			return &DiagnosticError{Code: DiagnosticManifestIntegrity, Details: label + " contributions do not reconcile to after-cost return"}
+		}
+	}
 	values := []float64{metrics.AfterCostExpectancy, metrics.AfterCostReturn, metrics.BenchmarkRelativeReturn, metrics.MaxDrawdown, metrics.Turnover, metrics.GrossExposure, metrics.NetExposure, metrics.Coverage}
 	for _, value := range values {
 		if !finite(value) {
@@ -103,42 +128,52 @@ func Evaluate(folds []FoldResult, spec ManifestSpec) (Evaluation, error) {
 	if spec.StatisticalUnit != "chronological_test_window" && spec.StatisticalUnit != "declared_block" {
 		return Evaluation{}, &DiagnosticError{Code: DiagnosticUnsupportedUnit}
 	}
-	metric := func(extract func(FoldMetrics) float64) (ConfidenceInterval, error) {
+	metric := func(extract func(FoldMetrics) float64, weight func(FoldResult) float64) (ConfidenceInterval, error) {
 		values := make([]float64, len(folds))
+		weights := make([]float64, len(folds))
 		for i := range folds {
 			values[i] = extract(folds[i].Metrics)
+			weights[i] = weight(folds[i])
+			if !finite(weights[i]) || weights[i] <= 0 {
+				weights[i] = 1
+			}
 		}
-		return bootstrap(values, spec.Seed, spec.BootstrapIterations)
+		return bootstrapWeighted(values, weights, spec.Seed, spec.BootstrapIterations)
 	}
-	expectancy, err := metric(func(v FoldMetrics) float64 { return v.AfterCostExpectancy })
+	capitalWeight := func(v FoldResult) float64 { return v.Primitives.StartingCapital }
+	observationWeight := func(v FoldResult) float64 { return float64(v.Metrics.Observations) }
+	tradeWeight := func(v FoldResult) float64 { return float64(v.Metrics.Trades) }
+	windowWeight := func(FoldResult) float64 { return 1 }
+	expectancy, err := metric(func(v FoldMetrics) float64 { return v.AfterCostExpectancy }, tradeWeight)
 	if err != nil {
 		return Evaluation{}, err
 	}
-	returns, err := metric(func(v FoldMetrics) float64 { return v.AfterCostReturn })
+	returns, err := metric(func(v FoldMetrics) float64 { return v.AfterCostReturn }, capitalWeight)
 	if err != nil {
 		return Evaluation{}, err
 	}
-	relative, err := metric(func(v FoldMetrics) float64 { return v.BenchmarkRelativeReturn })
+	relative, err := metric(func(v FoldMetrics) float64 { return v.BenchmarkRelativeReturn }, capitalWeight)
 	if err != nil {
 		return Evaluation{}, err
 	}
-	drawdown, err := metric(func(v FoldMetrics) float64 { return v.MaxDrawdown })
+	drawdown, err := metric(func(v FoldMetrics) float64 { return v.MaxDrawdown }, windowWeight)
 	if err != nil {
 		return Evaluation{}, err
 	}
-	turnover, err := metric(func(v FoldMetrics) float64 { return v.Turnover })
+	drawdown.Mean = chronologicalAggregateDrawdown(folds)
+	turnover, err := metric(func(v FoldMetrics) float64 { return v.Turnover }, capitalWeight)
 	if err != nil {
 		return Evaluation{}, err
 	}
-	gross, err := metric(func(v FoldMetrics) float64 { return v.GrossExposure })
+	gross, err := metric(func(v FoldMetrics) float64 { return v.GrossExposure }, observationWeight)
 	if err != nil {
 		return Evaluation{}, err
 	}
-	net, err := metric(func(v FoldMetrics) float64 { return v.NetExposure })
+	net, err := metric(func(v FoldMetrics) float64 { return v.NetExposure }, observationWeight)
 	if err != nil {
 		return Evaluation{}, err
 	}
-	coverage, err := metric(func(v FoldMetrics) float64 { return v.Coverage })
+	coverage, err := metric(func(v FoldMetrics) float64 { return v.Coverage }, observationWeight)
 	if err != nil {
 		return Evaluation{}, err
 	}
@@ -148,13 +183,14 @@ func Evaluate(folds []FoldResult, spec ManifestSpec) (Evaluation, error) {
 			worstWindow = i
 		}
 	}
-	regimeTotals, symbolTotals, tradeMax, totalAbs := map[string]float64{}, map[string]float64{}, 0.0, 0.0
+	regimeTotals, symbolTotals, symbolAbsTotals, tradeMax, totalAbs := map[string]float64{}, map[string]float64{}, map[string]float64{}, 0.0, 0.0
 	windowAbs := make([]float64, len(folds))
 	for i, fold := range folds {
 		windowAbs[i] = math.Abs(fold.Metrics.AfterCostReturn)
 		totalAbs += windowAbs[i]
 		for key, value := range fold.Metrics.SymbolContributions {
 			symbolTotals[key] += value
+			symbolAbsTotals[key] += math.Abs(value)
 		}
 		for key, value := range fold.Metrics.RegimeContributions {
 			regimeTotals[key] += value
@@ -169,7 +205,7 @@ func Evaluate(folds []FoldResult, spec ManifestSpec) (Evaluation, error) {
 	for _, fold := range folds {
 		tradeTotal += absMapSum(fold.Metrics.TradeContributions)
 	}
-	domination := Domination{TradeFraction: safeFraction(tradeMax, tradeTotal), SymbolFraction: largestAbsFraction(symbolTotals), WindowFraction: largestFraction(windowAbs)}
+	domination := Domination{TradeFraction: safeFraction(tradeMax, tradeTotal), SymbolFraction: largestAbsFraction(symbolAbsTotals), WindowFraction: largestFraction(windowAbs)}
 	domination.Dominated = domination.TradeFraction > .5 || domination.SymbolFraction > .6 || domination.WindowFraction > .6
 	if domination.Dominated {
 		return Evaluation{}, &DiagnosticError{Code: DiagnosticDominated, Details: fmt.Sprintf("trade=%.4f symbol=%.4f window=%.4f", domination.TradeFraction, domination.SymbolFraction, domination.WindowFraction)}
@@ -185,29 +221,81 @@ func Evaluate(folds []FoldResult, spec ManifestSpec) (Evaluation, error) {
 	return Evaluation{SchemaVersion: EvidenceSchemaVersion, StudyType: spec.StudyType, IndependentUnits: len(folds), Metrics: summary, WorstWindow: folds[worstWindow].Fold.Index, WorstRegime: minimumFloatKey(regimeTotals), WorstSymbol: minimumFloatKey(symbolTotals), Domination: domination, Gates: gates, Passed: passed}, nil
 }
 
+func chronologicalAggregateDrawdown(folds []FoldResult) float64 {
+	equity, peak, worst := 1.0, 1.0, 0.0
+	for _, fold := range folds {
+		if len(fold.Primitives.Curve) >= 2 {
+			for i := 1; i < len(fold.Primitives.Curve); i++ {
+				previous, current := fold.Primitives.Curve[i-1].Equity, fold.Primitives.Curve[i].Equity
+				if previous <= 0 || current <= 0 {
+					continue
+				}
+				equity *= current / previous
+				if equity > peak {
+					peak = equity
+				}
+				if value := (peak - equity) / peak; value > worst {
+					worst = value
+				}
+			}
+		} else {
+			equity *= 1 + fold.Metrics.AfterCostReturn
+			if equity > peak {
+				peak = equity
+			}
+			if value := (peak - equity) / peak; value > worst {
+				worst = value
+			}
+		}
+	}
+	return worst
+}
+
 func bootstrap(values []float64, seed int64, iterations int) (ConfidenceInterval, error) {
+	weights := make([]float64, len(values))
+	for i := range weights {
+		weights[i] = 1
+	}
+	return bootstrapWeighted(values, weights, seed, iterations)
+}
+
+func bootstrapWeighted(values, weights []float64, seed int64, iterations int) (ConfidenceInterval, error) {
 	if len(values) < 2 {
 		return ConfidenceInterval{Reason: "insufficient independent units"}, &DiagnosticError{Code: DiagnosticInsufficientWindows}
 	}
 	if iterations <= 0 || iterations > MaxBootstrapIterations {
 		return ConfidenceInterval{}, &DiagnosticError{Code: DiagnosticInvalidManifest, Field: "bootstrap_iterations"}
 	}
-	for _, v := range values {
-		if !finite(v) {
+	if len(weights) != len(values) {
+		return ConfidenceInterval{}, &DiagnosticError{Code: DiagnosticInvalidManifest, Field: "bootstrap_weights"}
+	}
+	for i, v := range values {
+		if !finite(v) || !finite(weights[i]) || weights[i] <= 0 {
 			return ConfidenceInterval{}, &DiagnosticError{Code: DiagnosticNonFinite}
 		}
 	}
 	rng := rand.New(rand.NewSource(seed))
 	distribution := make([]float64, iterations)
 	for i := range distribution {
-		sum := 0.0
+		sum, totalWeight := 0.0, 0.0
 		for range values {
-			sum += values[rng.Intn(len(values))]
+			index := rng.Intn(len(values))
+			sum += values[index] * weights[index]
+			totalWeight += weights[index]
 		}
-		distribution[i] = sum / float64(len(values))
+		distribution[i] = sum / totalWeight
 	}
 	sort.Float64s(distribution)
-	return ConfidenceInterval{Available: true, Mean: mean(values), Lower: percentile(distribution, .025), Upper: percentile(distribution, .975)}, nil
+	return ConfidenceInterval{Available: true, Mean: weightedMean(values, weights), Lower: percentile(distribution, .025), Upper: percentile(distribution, .975)}, nil
+}
+
+func weightedMean(values, weights []float64) float64 {
+	sum, total := 0.0, 0.0
+	for i := range values {
+		sum += values[i] * weights[i]
+		total += weights[i]
+	}
+	return sum / total
 }
 
 func evaluateThresholds(thresholds []Threshold, metrics MetricSummary) []GateResult {

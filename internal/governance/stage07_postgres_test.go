@@ -21,18 +21,19 @@ func TestStage07GovernanceProgressionApprovalRollbackAndConcurrency(t *testing.T
 	clock := &fixedClock{at: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)}
 	service := NewService(db)
 	service.Clock = clock
+	admin := NewTrustedPrincipal("admin@example.test", CapabilityResearch, CapabilityApprove, CapabilityTransition, CapabilityRollback)
 	manifest, evidence := persistPassingEvidence(t, db, clock.at, nil)
 	contextKey := "strategy:" + manifest.Spec.Candidate.ID + "@" + manifest.Spec.Candidate.Version
 	research := TransitionRequest{IdempotencyKey: "research", ContextKey: contextKey, ExperimentID: manifest.ID, EvidenceID: evidence.ID, TargetState: StateResearch, ArtifactVersion: manifest.Spec.Candidate.Version, PolicyVersion: manifest.Spec.Policies.Composite, FallbackVersion: "baseline-v1", Reason: "begin governed research"}
-	if _, err := service.Transition(research); err != nil {
+	if _, err := service.Transition(admin, research); err != nil {
 		t.Fatal(err)
 	}
-	if replay, err := service.Transition(research); err != nil || replay.IdempotencyKey != research.IdempotencyKey {
+	if replay, err := service.Transition(admin, research); err != nil || replay.IdempotencyKey != research.IdempotencyKey {
 		t.Fatalf("idempotent research replay=%+v err=%v", replay, err)
 	}
 	forgedReplay := research
 	forgedReplay.Reason = "different"
-	if _, err := service.Transition(forgedReplay); err == nil {
+	if _, err := service.Transition(admin, forgedReplay); err == nil {
 		t.Fatal("mismatched idempotency replay passed")
 	} else {
 		code(err, CodeIntegrity, t)
@@ -40,7 +41,7 @@ func TestStage07GovernanceProgressionApprovalRollbackAndConcurrency(t *testing.T
 	illegal := research
 	illegal.IdempotencyKey = "illegal-skip"
 	illegal.TargetState = StatePaper
-	if _, err := service.Transition(illegal); err == nil {
+	if _, err := service.Transition(admin, illegal); err == nil {
 		t.Fatal("research skipped directly to paper")
 	} else {
 		code(err, CodeIllegalTransition, t)
@@ -48,7 +49,7 @@ func TestStage07GovernanceProgressionApprovalRollbackAndConcurrency(t *testing.T
 	shadow := research
 	shadow.IdempotencyKey = "shadow-no-approval"
 	shadow.TargetState = StateShadow
-	_, err := service.Transition(shadow)
+	_, err := service.Transition(admin, shadow)
 	code(err, CodeApprovalRequired, t)
 	stale := database.GovernanceApproval{IdempotencyKey: "stale", ExperimentID: manifest.ID, EvidenceID: evidence.ID, TargetState: string(StateShadow), ArtifactVersion: manifest.Spec.Candidate.Version, PolicyVersion: manifest.Spec.Policies.Composite, Approver: "human", Reason: "stale", ApprovedAt: evidence.CreatedAt.Add(-time.Second)}
 	stale.ContentDigest = approvalDigest(stale)
@@ -58,28 +59,34 @@ func TestStage07GovernanceProgressionApprovalRollbackAndConcurrency(t *testing.T
 	}
 	shadow.ApprovalID = stale.ID
 	shadow.IdempotencyKey = "shadow-stale"
-	if _, err := service.Transition(shadow); err == nil {
+	if _, err := service.Transition(admin, shadow); err == nil {
 		t.Fatal("stale approval passed")
 	} else {
 		code(err, CodeApprovalMismatch, t)
 	}
-	approval, err := service.Approve(ApprovalRequest{IdempotencyKey: "approve-shadow", ExperimentID: manifest.ID, EvidenceID: evidence.ID, TargetState: StateShadow, ArtifactVersion: manifest.Spec.Candidate.Version, PolicyVersion: manifest.Spec.Policies.Composite, Approver: "human@example.test", Reason: "reviewed immutable evidence"})
+	approval, err := service.Approve(admin, ApprovalRequest{IdempotencyKey: "approve-shadow", ExperimentID: manifest.ID, EvidenceID: evidence.ID, TargetState: StateShadow, ArtifactVersion: manifest.Spec.Candidate.Version, PolicyVersion: manifest.Spec.Policies.Composite, Reason: "reviewed immutable evidence", ExpiresAt: clock.at.Add(time.Hour)})
 	if err != nil {
 		t.Fatal(err)
 	}
 	shadow.IdempotencyKey = "shadow"
 	shadow.ApprovalID = approval.ID
-	if _, err := service.Transition(shadow); err != nil {
+	if _, err := service.Transition(admin, shadow); err != nil {
 		t.Fatal(err)
 	}
 	// Two callers cannot both advance the locked deployment.
-	paperApproval, err := service.Approve(ApprovalRequest{IdempotencyKey: "approve-paper", ExperimentID: manifest.ID, EvidenceID: evidence.ID, TargetState: StatePaper, ArtifactVersion: manifest.Spec.Candidate.Version, PolicyVersion: manifest.Spec.Policies.Composite, Approver: "human@example.test", Reason: "paper approval"})
+	clock.at = clock.at.Add(2 * time.Hour)
+	elapsed, err := service.RecordMonitoringEvidence(admin, MonitoringEvidenceRequest{ContextKey: contextKey, ExperimentID: manifest.ID, WindowStart: clock.at.Add(-2 * time.Hour), WindowEnd: clock.at, ExpectedObservations: 10, ObservedObservations: 10, Metrics: map[string]float64{"max_drawdown": .05}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	paperApproval, err := service.Approve(admin, ApprovalRequest{IdempotencyKey: "approve-paper", ExperimentID: manifest.ID, EvidenceID: evidence.ID, TargetState: StatePaper, ArtifactVersion: manifest.Spec.Candidate.Version, PolicyVersion: manifest.Spec.Policies.Composite, Reason: "paper approval", ExpiresAt: clock.at.Add(time.Hour)})
 	if err != nil {
 		t.Fatal(err)
 	}
 	paper := shadow
 	paper.TargetState = StatePaper
 	paper.ApprovalID = paperApproval.ID
+	paper.ElapsedEvidenceID = elapsed.ID
 	errs := make(chan error, 2)
 	var wg sync.WaitGroup
 	for _, key := range []string{"paper-a", "paper-b"} {
@@ -88,7 +95,7 @@ func TestStage07GovernanceProgressionApprovalRollbackAndConcurrency(t *testing.T
 			defer wg.Done()
 			request := paper
 			request.IdempotencyKey = k
-			_, e := service.Transition(request)
+			_, e := service.Transition(admin, request)
 			errs <- e
 		}(key)
 	}
@@ -105,7 +112,12 @@ func TestStage07GovernanceProgressionApprovalRollbackAndConcurrency(t *testing.T
 	if success != 1 || failed != 1 {
 		t.Fatalf("concurrent promotions success=%d failed=%d", success, failed)
 	}
-	rollback, err := service.Rollback(RollbackRequest{IdempotencyKey: "rollback", ContextKey: contextKey, ExperimentID: manifest.ID, EvidenceID: evidence.ID, FallbackVersion: "baseline-v1", Reason: "drawdown threshold crossed", Observed: map[string]float64{"max_drawdown": .25}})
+	clock.at = clock.at.Add(time.Hour)
+	monitor, err := service.RecordMonitoringEvidence(admin, MonitoringEvidenceRequest{ContextKey: contextKey, ExperimentID: manifest.ID, WindowStart: clock.at.Add(-time.Hour), WindowEnd: clock.at, ExpectedObservations: 10, ObservedObservations: 10, Metrics: map[string]float64{"max_drawdown": .25}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rollback, err := service.Rollback(admin, RollbackRequest{IdempotencyKey: "rollback", ContextKey: contextKey, ExperimentID: manifest.ID, EvidenceID: evidence.ID, FallbackVersion: "baseline-v1", Reason: "drawdown threshold crossed", MonitoringEvidenceID: monitor.ID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,6 +131,12 @@ func TestStage07GovernanceProgressionApprovalRollbackAndConcurrency(t *testing.T
 	if deployment.ArtifactVersion != "baseline-v1" || deployment.State != string(StateRollback) {
 		t.Fatalf("deployment=%+v", deployment)
 	}
+	if err := db.Model(&database.GovernanceDeployment{}).Where("context_key=?", contextKey).Update("state", string(StateFullLive)).Error; err == nil {
+		t.Fatal("direct deployment update bypassed transition guard")
+	}
+	if err := db.Model(&database.GovernanceTransition{}).Where("id=?", rollback.ID).Update("reason", "tampered").Error; err == nil {
+		t.Fatal("immutable transition was mutated")
+	}
 	var history int64
 	if err := db.Model(&database.GovernanceTransition{}).Where("context_key=?", contextKey).Count(&history).Error; err != nil {
 		t.Fatal(err)
@@ -126,7 +144,7 @@ func TestStage07GovernanceProgressionApprovalRollbackAndConcurrency(t *testing.T
 	if history != 4 {
 		t.Fatalf("audit history=%d", history)
 	}
-	if _, err := service.Rollback(RollbackRequest{IdempotencyKey: "rollback-no-gate", ContextKey: contextKey, ExperimentID: manifest.ID, EvidenceID: evidence.ID, FallbackVersion: "baseline-v1", Reason: "not crossed", Observed: map[string]float64{"max_drawdown": .1}}); err == nil {
+	if _, err := service.Rollback(admin, RollbackRequest{IdempotencyKey: "rollback-no-gate", ContextKey: contextKey, ExperimentID: manifest.ID, EvidenceID: evidence.ID, FallbackVersion: "baseline-v1", Reason: "not crossed", MonitoringEvidenceID: monitor.ID}); err == nil {
 		t.Fatal("rollback without crossed threshold passed")
 	}
 }
@@ -134,42 +152,86 @@ func TestStage07GovernanceProgressionApprovalRollbackAndConcurrency(t *testing.T
 func TestBootstrapArtifactCannotEnterPaper(t *testing.T) {
 	db := testutil.SetupPostgresDB(t)
 	clock := &fixedClock{at: time.Date(2025, 2, 1, 0, 0, 0, 0, time.UTC)}
-	model := &validation.ModelAuthority{Version: "fixture-v1", Class: validation.ArtifactContractFixture, ModelDigest: "digest", FeatureSpec: "features-v1", Features: []validation.FeatureField{{Name: "x", Type: "float64"}}, LabelSpec: "label-v1", LabelHorizon: time.Hour, CodeRevision: "rev", DatasetManifest: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", TrainingManifest: "train-digest", PolicyVersion: "policy-v1", Seed: 7}
+	model := &validation.ModelAuthority{Version: "fixture-v1", Class: validation.ArtifactContractFixture, ModelDigest: "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", FeatureSpec: "features-v1", Features: []validation.FeatureField{{Name: "x", Type: "float64"}}, LabelSpec: "label-v1", LabelHorizon: time.Hour, CodeRevision: "rev", DatasetManifest: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", TrainingManifest: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", PolicyVersion: "policy-v1", Seed: 7}
 	manifest, evidence := persistPassingEvidence(t, db, clock.at, model)
 	service := NewService(db)
 	service.Clock = clock
+	admin := NewTrustedPrincipal("admin", CapabilityApprove, CapabilityTransition, CapabilityRollback)
 	contextKey := "model:fixture-v1"
 	research := TransitionRequest{IdempotencyKey: "r", ContextKey: contextKey, ExperimentID: manifest.ID, EvidenceID: evidence.ID, TargetState: StateResearch, ArtifactVersion: "fixture-v1", PolicyVersion: "policy-v1", FallbackVersion: "rule-v1", Reason: "research"}
-	if _, err := service.Transition(research); err != nil {
+	if _, err := service.Transition(admin, research); err != nil {
 		t.Fatal(err)
 	}
-	shadowApproval, _ := service.Approve(ApprovalRequest{IdempotencyKey: "as", ExperimentID: manifest.ID, EvidenceID: evidence.ID, TargetState: StateShadow, ArtifactVersion: "fixture-v1", PolicyVersion: "policy-v1", Approver: "human", Reason: "shadow"})
+	_, approvalErr := service.Approve(admin, ApprovalRequest{IdempotencyKey: "as", ExperimentID: manifest.ID, EvidenceID: evidence.ID, TargetState: StateShadow, ArtifactVersion: "fixture-v1", PolicyVersion: "policy-v1", Reason: "shadow", ExpiresAt: clock.at.Add(time.Hour)})
+	code(approvalErr, CodeEvidenceFailed, t)
 	shadow := research
 	shadow.IdempotencyKey = "s"
 	shadow.TargetState = StateShadow
-	shadow.ApprovalID = shadowApproval.ID
-	if _, err := service.Transition(shadow); err != nil {
-		t.Fatal(err)
-	}
-	paperApproval, _ := service.Approve(ApprovalRequest{IdempotencyKey: "ap", ExperimentID: manifest.ID, EvidenceID: evidence.ID, TargetState: StatePaper, ArtifactVersion: "fixture-v1", PolicyVersion: "policy-v1", Approver: "human", Reason: "paper"})
-	paper := shadow
-	paper.IdempotencyKey = "p"
-	paper.TargetState = StatePaper
-	paper.ApprovalID = paperApproval.ID
-	if _, err := service.Transition(paper); err == nil {
+	if _, err := service.Transition(admin, shadow); err == nil {
 		t.Fatal("fixture entered paper")
 	} else {
-		code(err, CodeArtifactQuarantined, t)
+		code(err, CodeEvidenceFailed, t)
+	}
+}
+
+func TestConcurrentFirstGovernanceContextCreatesExactlyOneInitialTransition(t *testing.T) {
+	db := testutil.SetupPostgresDB(t)
+	clock := &fixedClock{at: time.Date(2025, 3, 1, 0, 0, 0, 0, time.UTC)}
+	service := NewService(db)
+	service.Clock = clock
+	manifest, evidence := persistPassingEvidence(t, db, clock.at, nil)
+	principal := NewTrustedPrincipal("operator", CapabilityTransition)
+	base := TransitionRequest{ContextKey: "strategy:" + manifest.Spec.Candidate.ID + "@" + manifest.Spec.Candidate.Version, ExperimentID: manifest.ID, EvidenceID: evidence.ID, TargetState: StateResearch, ArtifactVersion: manifest.Spec.Candidate.Version, PolicyVersion: manifest.Spec.Policies.Composite, FallbackVersion: "baseline-v1", Reason: "initial"}
+	errorsChannel := make(chan error, 2)
+	var wait sync.WaitGroup
+	for _, key := range []string{"initial-a", "initial-b"} {
+		wait.Add(1)
+		go func(key string) {
+			defer wait.Done()
+			request := base
+			request.IdempotencyKey = key
+			_, err := service.Transition(principal, request)
+			errorsChannel <- err
+		}(key)
+	}
+	wait.Wait()
+	close(errorsChannel)
+	success := 0
+	for err := range errorsChannel {
+		if err == nil {
+			success++
+		}
+	}
+	if success != 1 {
+		t.Fatalf("initial transitions succeeded=%d", success)
+	}
+	var count int64
+	db.Model(&database.GovernanceTransition{}).Where("context_key=?", base.ContextKey).Count(&count)
+	if count != 1 {
+		t.Fatalf("initial audit rows=%d", count)
 	}
 }
 
 func persistPassingEvidence(t *testing.T, gormDB *gorm.DB, created time.Time, model *validation.ModelAuthority) (validation.ExperimentManifest, validation.PersistedEvidence) {
 	t.Helper()
 	base := created.Add(-1000 * time.Hour)
-	spec := validation.ManifestSpec{SchemaVersion: validation.ManifestSchemaVersion, StudyType: "confirmatory", CodeRevision: "rev", Candidate: validation.VersionRef{ID: "candidate", Version: "candidate-v1"}, Baseline: validation.VersionRef{ID: "baseline", Version: "baseline-v1"}, Model: model, Policies: validation.PolicyBundle{Composite: "policy-v1", Execution: "e", Universe: "u", ModelSelection: "m", EntrySelection: "i", PortfolioRisk: "r", Rollout: "o", Cost: "c"}, DatasetManifestID: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", DatasetManifestHash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", UniversePolicy: "u", Interval: validation.Interval{Start: base, End: base.Add(90 * time.Hour)}, DecisionClock: "4h", ExecutionClock: "next", Seed: 2, ExecutionSemantics: map[string]string{"fees": "1"}, FeatureHorizon: time.Hour, LabelHorizon: time.Hour, Purge: time.Hour, Embargo: time.Hour, AllowedTuning: map[string][]string{"x": {"1"}}, Metrics: []string{"after_cost_return"}, StatisticalUnit: "chronological_test_window", BootstrapIterations: 100, Samples: validation.SampleRequirements{MinFolds: 3, MinIndependentUnits: 3, MinObservationsPerFold: 2, MinTradesPerFold: 2, MinRegimes: 2}, PromotionThresholds: []validation.Threshold{{Metric: "after_cost_return", Op: ">", Value: -1}}, RollbackThresholds: []validation.Threshold{{Metric: "max_drawdown", Op: ">=", Value: .2}}, Artifacts: validation.ArtifactLinks{Metrics: "m", Trades: "t", Curves: "c", Cohorts: "h", Factors: "f", Coverage: "v", Comparison: "x"}, Reproduce: validation.ReproductionInvocation{Command: "validate", Args: []string{"run"}}}
+	modelVersion, featureSchema := "none", "none"
+	if model != nil {
+		modelVersion, featureSchema = model.Version, model.FeatureSpec
+	}
+	authority, err := validation.NewAuthorityPolicyEnvelope(map[string]string{"selection_top_k": "1", "selection_min_probability": ".6", "selection_min_ev": ".01", "fallback_mode": "baseline-v1", "strategy_parameters": "params", "risk_policy": "r", "turnover_policy": "t", "cash_policy": "cash", "universe_policy": "u", "execution_policy": "e", "cost_policy": "c", "model_version": modelVersion, "feature_schema": featureSchema, "rollout_state": "research"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := validation.ManifestSpec{SchemaVersion: validation.ManifestSchemaVersion, StudyType: "confirmatory", CodeRevision: "rev", Candidate: validation.VersionRef{ID: "candidate", Version: "candidate-v1", Digest: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}, Baseline: validation.VersionRef{ID: "baseline", Version: "baseline-v1", Digest: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}, Model: model, Policies: validation.PolicyBundle{Composite: "policy-v1", Execution: "e", Universe: "u", ModelSelection: "m", EntrySelection: "i", PortfolioRisk: "r", Rollout: "o", Cost: "c"}, GovernancePolicy: validation.GovernancePolicyVersion, AuthorityPolicy: authority, DatasetManifestID: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", DatasetManifestHash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", UniversePolicy: "u", Interval: validation.Interval{Start: base, End: base.Add(90 * time.Hour)}, DecisionClock: "4h", ExecutionClock: "next", Seed: 2, ExecutionSemantics: map[string]string{"fee_bps": "1", "slippage_bps": "1", "timing": "next", "liquidity": "bars"}, FeatureHorizon: time.Hour, LabelHorizon: time.Hour, Purge: time.Hour, Embargo: time.Hour, AllowedTuning: map[string][]string{"x": {"1"}}, Metrics: append([]string(nil), validation.RequiredConfirmatoryMetrics...), StatisticalUnit: "chronological_test_window", BootstrapIterations: 100, Samples: validation.SampleRequirements{MinFolds: 3, MinIndependentUnits: 3, MinObservationsPerFold: 10, MinTradesPerFold: 2, MinRegimes: 2}, PromotionThresholds: []validation.Threshold{{Metric: "after_cost_return", Op: ">", Value: -1}}, RollbackThresholds: []validation.Threshold{{Metric: "max_drawdown", Op: ">=", Value: .2}}, RequiredElapsed: map[string]time.Duration{"paper": time.Hour, "limited_live": time.Hour, "full_live": time.Hour}, Artifacts: validation.ArtifactLinks{Metrics: "m", Trades: "t", Curves: "c", Cohorts: "h", Factors: "f", Coverage: "v", Comparison: "x"}, Reproduce: validation.ReproductionInvocation{Command: "validate", Args: []string{"run"}}}
+	if model != nil {
+		requirements := validation.MLRequirements{MinLabels: 8, MinIndependentWindows: 2, Buckets: 2, MinBucketSupport: 4, ClipEpsilon: 1e-6, MinAUC: .6, MaxLogLoss: .8, MaxBrier: .25, MaxCalibrationError: .3}
+		spec.MLRequirements = &requirements
+	}
 	for i := 0; i < 3; i++ {
 		start := base.Add(time.Duration(i*30) * time.Hour)
 		spec.Folds = append(spec.Folds, validation.Fold{Index: i, Train: validation.Interval{Start: start, End: start.Add(10 * time.Hour)}, Validation: validation.Interval{Start: start.Add(10 * time.Hour), End: start.Add(15 * time.Hour)}, Test: validation.Interval{Start: start.Add(15 * time.Hour), End: start.Add(20 * time.Hour)}})
+		spec.FoldSourceJobIDs = append(spec.FoldSourceJobIDs, uint(i+1))
 	}
 	manifest, err := validation.NewManifest(spec, created)
 	if err != nil {
@@ -182,8 +244,13 @@ func persistPassingEvidence(t *testing.T, gormDB *gorm.DB, created time.Time, mo
 	}
 	folds := []validation.FoldResult{}
 	for _, fold := range manifest.Spec.Folds {
-		metrics := validation.FoldMetrics{Observations: 10, Trades: 4, BenchmarkPresent: true, CoverageComplete: true, Regimes: map[string]int{"on": 2, "off": 2}, RegimeContributions: map[string]float64{"on": .0075, "off": .0025}, AfterCostExpectancy: .002, AfterCostReturn: .01, BenchmarkRelativeReturn: .005, MaxDrawdown: .05, Turnover: .2, GrossExposure: .5, NetExposure: .5, Coverage: 1, TradeContributions: map[string]float64{"a": .0025, "b": .0025, "c": .0025, "d": .0025}, SymbolContributions: map[string]float64{"A": .005, "B": .005}}
-		folds = append(folds, validation.FoldResult{Fold: fold, Frozen: validation.FrozenDecision{FoldIndex: fold.Index, Choice: "1", Parameters: map[string]string{"x": "1"}, FitDigest: "fit", SelectionDigest: "select"}, Metrics: metrics})
+		at := fold.Test.Start.Add(time.Hour)
+		primitives := validation.FoldPrimitives{StartingCapital: 1000, ExpectedObservations: 10, ObservedObservations: 10, Trades: []validation.TradePrimitive{{ID: "a", Symbol: "A", Regime: "on", OpenedAt: at, ClosedAt: at.Add(time.Minute), Notional: 50, GrossPnL: 2.6, Cost: .1, NetPnL: 2.5}, {ID: "b", Symbol: "A", Regime: "off", OpenedAt: at.Add(2 * time.Minute), ClosedAt: at.Add(3 * time.Minute), Notional: 50, GrossPnL: 2.6, Cost: .1, NetPnL: 2.5}, {ID: "c", Symbol: "B", Regime: "on", OpenedAt: at.Add(4 * time.Minute), ClosedAt: at.Add(5 * time.Minute), Notional: 50, GrossPnL: 2.6, Cost: .1, NetPnL: 2.5}, {ID: "d", Symbol: "B", Regime: "off", OpenedAt: at.Add(6 * time.Minute), ClosedAt: at.Add(7 * time.Minute), Notional: 50, GrossPnL: 2.6, Cost: .1, NetPnL: 2.5}}, Curve: []validation.CurvePrimitive{{At: at, Equity: 1000, Benchmark: 1000, GrossExposure: .5, NetExposure: .5}, {At: at.Add(time.Hour), Equity: 1010, Benchmark: 1005, GrossExposure: .5, NetExposure: .5}}}
+		metrics, deriveErr := validation.DeriveFoldMetrics(primitives)
+		if deriveErr != nil {
+			t.Fatal(deriveErr)
+		}
+		folds = append(folds, validation.FoldResult{Fold: fold, Frozen: validation.FrozenDecision{FoldIndex: fold.Index, Choice: "1", Parameters: map[string]string{"x": "1"}, FitDigest: "fit", SelectionDigest: "select", ArtifactDigest: "artifact"}, Primitives: primitives, Metrics: metrics})
 	}
 	aggregate, err := validation.Evaluate(folds, manifest.Spec)
 	if err != nil {

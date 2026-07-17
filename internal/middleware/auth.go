@@ -17,12 +17,19 @@ const (
 )
 
 type AuthManager struct {
-	store    *session.Store
-	username string
-	password string
+	store            *session.Store
+	username         string
+	password         string
+	governanceAdmins map[string]struct{}
 }
 
 func NewAuthManager(cfg *config.Config) *AuthManager {
+	admins := map[string]struct{}{}
+	for _, user := range strings.Split(cfg.GovernanceAdminUsers, ",") {
+		if user = strings.TrimSpace(user); user != "" {
+			admins[user] = struct{}{}
+		}
+	}
 	return &AuthManager{
 		store: session.New(session.Config{
 			CookieHTTPOnly: true,
@@ -31,8 +38,9 @@ func NewAuthManager(cfg *config.Config) *AuthManager {
 			Expiration:     24 * time.Hour,
 			KeyLookup:      "cookie:" + cfg.SessionCookie,
 		}),
-		username: cfg.AuthUsername,
-		password: cfg.AuthPassword,
+		username:         cfg.AuthUsername,
+		password:         cfg.AuthPassword,
+		governanceAdmins: admins,
 	}
 }
 
@@ -76,7 +84,17 @@ func (a *AuthManager) RequireAuth(c *fiber.Ctx) error {
 		})
 	}
 	c.Locals("authenticated_actor", username)
+	if _, ok := a.governanceAdmins[username]; ok {
+		c.Locals("governance_capabilities", []string{"research", "approve", "transition", "rollback"})
+	} else {
+		c.Locals("governance_capabilities", []string{})
+	}
 	return c.Next()
+}
+
+func AuthenticatedCapabilities(c *fiber.Ctx) []string {
+	values, _ := c.Locals("governance_capabilities").([]string)
+	return append([]string(nil), values...)
 }
 
 func AuthenticatedActor(c *fiber.Ctx) (string, bool) {

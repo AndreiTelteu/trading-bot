@@ -32,8 +32,8 @@ func UpdateSettings(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "Invalid request body"})
 	}
 	for _, req := range requests {
-		if stage07GovernanceSetting(req.Key) {
-			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "Stage 07 governance settings are immutable through the generic settings API; use a validated, human-approved governance transition"})
+		if authorityAffectingSetting(req.Key) {
+			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "authority-affecting settings are immutable through the generic API; create a new research experiment"})
 		}
 	}
 
@@ -57,13 +57,27 @@ func UpdateSettings(c *fiber.Ctx) error {
 	return c.JSON(settings)
 }
 
-func stage07GovernanceSetting(key string) bool {
-	switch strings.ToLower(strings.TrimSpace(key)) {
-	case "active_model_version", "model_rollout_state", "model_fallback_mode", "model_rollback_target", "model_experiment_id", "rollout_policy_version":
+func authorityAffectingSetting(key string) bool {
+	key = strings.ToLower(strings.TrimSpace(key))
+	if key == "" {
 		return true
-	default:
+	}
+	for _, prefix := range []string{"active_", "selection_", "model_", "universe_", "risk_", "portfolio_", "entry_", "rebuy_", "pyramid", "max_position", "max_trade", "max_order", "auto_trade", "buy_only", "min_confidence", "paper_", "backtest_", "exchange_", "execution_", "stop_", "tp_", "trailing_", "time_stop", "position_", "strategy_", "indicator_", "regime_", "cash_", "turnover_", "fee_", "slippage_", "rollout_", "vol_", "atr_", "sell_", "allow_sell", "stream_exit"} {
+		if strings.HasPrefix(key, prefix) {
+			return true
+		}
+	}
+	if strings.HasPrefix(key, "ai_") {
 		return false
 	}
+	return governanceDeploymentExists()
+}
+func governanceDeploymentExists() bool {
+	if database.DB == nil {
+		return false
+	}
+	var count int64
+	return database.DB.Model(&database.GovernanceDeployment{}).Limit(1).Count(&count).Error == nil && count > 0
 }
 
 func GetGovernanceOverview(c *fiber.Ctx) error {
@@ -105,23 +119,5 @@ func UpdateIndicatorWeights(c *fiber.Ctx) error {
 	if err := c.BodyParser(&requests); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "Invalid request body"})
 	}
-
-	if err := database.DB.Transaction(func(tx *gorm.DB) error {
-		for _, req := range requests {
-			weight := database.IndicatorWeight{Indicator: req.Indicator, Weight: req.Weight}
-			if err := tx.Clauses(clause.OnConflict{
-				Columns:   []clause.Column{{Name: "indicator"}},
-				DoUpdates: clause.AssignmentColumns([]string{"weight"}),
-			}).Create(&weight).Error; err != nil {
-				return err
-			}
-		}
-		return nil
-	}); err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "Failed to update indicator weights"})
-	}
-
-	var weights []database.IndicatorWeight
-	database.DB.Find(&weights)
-	return c.JSON(weights)
+	return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "indicator weights are authority-affecting; create a new research experiment"})
 }

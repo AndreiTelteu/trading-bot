@@ -1,6 +1,7 @@
 package backtest
 
 import (
+	"crypto/sha256"
 	"encoding/csv"
 	"encoding/json"
 	"errors"
@@ -163,11 +164,22 @@ func executeAndPersistStage05ComparisonJob(jobID uint, config BacktestConfig, se
 	if err != nil {
 		return ComparisonArtifact{}, err
 	}
+	validationBytes, err := json.Marshal(struct {
+		SchemaVersion     string                           `json:"schema_version"`
+		ComparisonDigest  string                           `json:"comparison_digest"`
+		DatasetManifestID string                           `json:"dataset_manifest_id"`
+		Results           map[string]Stage05StrategyResult `json:"results"`
+	}{"stage07-source-artifact-v1", comparison.ArtifactDigest, comparison.ManifestID, comparison.Results})
+	if err != nil || len(validationBytes) > 16<<20 {
+		return ComparisonArtifact{}, fmt.Errorf("bounded Stage 07 source artifact unavailable")
+	}
+	validationSum := sha256.Sum256(validationBytes)
+	validationDigest := fmt.Sprintf("%x", validationSum)
 	message := "Stage 05 comparison completed; governance gate blocked"
 	if comparison.Governance.OptimizationAllowed {
 		message = "Stage 05 comparison completed; baseline-relative gate passed"
 	}
-	database.DB.Model(&database.BacktestJob{}).Where("id=?", jobID).Update("artifact_digest", comparison.ArtifactDigest)
+	database.DB.Model(&database.BacktestJob{}).Where("id=?", jobID).Updates(map[string]any{"artifact_digest": comparison.ArtifactDigest, "validation_artifact_json": string(validationBytes), "validation_artifact_digest": validationDigest})
 	updateBacktestJobWithSummary(jobID, "completed", 1, message, string(encoded), string(encoded))
 	return comparison, nil
 }

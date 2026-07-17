@@ -119,6 +119,22 @@ func GetAuthorizedModelSelectionPolicy(settings map[string]string) ModelSelectio
 	if deployment.ArtifactVersion != policy.ActiveModelVersion && deployment.State != ModelRolloutRollback {
 		return failClosed()
 	}
+	manifest, err := (validation.Repository{DB: database.DB}).LoadManifest(deployment.ExperimentID)
+	if err != nil {
+		return failClosed()
+	}
+	runtimeEnvelope, err := BuildRuntimeAuthorityPolicy(settings, deployment.State)
+	if err != nil || runtimeEnvelope.Digest != deployment.AuthorityPolicyDigest {
+		return failClosed()
+	}
+	var stored validation.AuthorityPolicyEnvelope
+	if json.Unmarshal([]byte(deployment.AuthorityPolicyJSON), &stored) != nil || stored.Verify() != nil || stored.Digest != deployment.AuthorityPolicyDigest {
+		return failClosed()
+	}
+	expected, err := manifest.Spec.AuthorityPolicy.WithRolloutState(deployment.State)
+	if err != nil || expected.Digest != stored.Digest {
+		return failClosed()
+	}
 	policy.RolloutState = deployment.State
 	policy.PolicyVersion = deployment.PolicyVersion
 	policy.ExperimentID = deployment.ExperimentID
@@ -126,6 +142,58 @@ func GetAuthorizedModelSelectionPolicy(settings map[string]string) ModelSelectio
 		policy.RollbackTarget = deployment.ArtifactVersion
 	}
 	return policy
+}
+
+// BuildRuntimeAuthorityPolicy freezes every setting consulted by selection,
+// strategy, risk, universe, execution, cost and rollout. It is recomputed on
+// every authority-bearing decision; caches may retain artifacts, never this
+// authorization result.
+func BuildRuntimeAuthorityPolicy(settings map[string]string, rolloutState string) (validation.AuthorityPolicyEnvelope, error) {
+	all := map[string]string{}
+	for key, value := range settings {
+		if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(key)), "ai_") {
+			all[key] = strings.TrimSpace(value)
+		}
+	}
+	for _, payload := range buildPolicyPayloads(settings) {
+		for key, value := range payload {
+			all[key] = strings.TrimSpace(value)
+		}
+	}
+	for _, key := range []string{"paper_fee_bps", "paper_slippage_bps", "backtest_fee_bps", "backtest_slippage_bps", "exchange_venue_id", "decision_timeframe", "execution_timeframe", "cash_reserve_percent", "max_turnover", "strategy_id", "strategy_version"} {
+		all[key] = strings.TrimSpace(settings[key])
+	}
+	weights := map[string]float64{}
+	if database.DB != nil {
+		var rows []database.IndicatorWeight
+		if database.DB.Order("indicator ASC").Find(&rows).Error == nil {
+			for _, row := range rows {
+				weights[row.Indicator] = row.Weight
+			}
+		}
+	}
+	settingsBytes, err := json.Marshal(struct {
+		Settings map[string]string  `json:"settings"`
+		Weights  map[string]float64 `json:"indicator_weights"`
+	}{all, weights})
+	if err != nil {
+		return validation.AuthorityPolicyEnvelope{}, err
+	}
+	settingsHash := sha256.Sum256(settingsBytes)
+	component := func(kind string) string {
+		bytes, _ := json.Marshal(buildPolicyPayloads(settings)[kind])
+		sum := sha256.Sum256(bytes)
+		return hex.EncodeToString(sum[:])
+	}
+	payload := map[string]string{
+		"selection_top_k": strings.TrimSpace(settings["selection_policy_top_k"]), "selection_min_probability": strings.TrimSpace(settings["selection_policy_min_prob"]), "selection_min_ev": strings.TrimSpace(settings["selection_policy_min_ev"]),
+		"fallback_mode": strings.TrimSpace(settings["model_fallback_mode"]), "strategy_parameters": hex.EncodeToString(settingsHash[:]),
+		"risk_policy": component(PolicyTypePortfolioRisk), "turnover_policy": strings.TrimSpace(settings["max_turnover"]), "cash_policy": strings.TrimSpace(settings["cash_reserve_percent"]),
+		"universe_policy": component(PolicyTypeUniverse), "execution_policy": component(PolicyTypeExecution),
+		"cost_policy":   strings.TrimSpace(settings["paper_fee_bps"]) + ":" + strings.TrimSpace(settings["paper_slippage_bps"]),
+		"model_version": strings.TrimSpace(settings["active_model_version"]), "feature_schema": strings.TrimSpace(settings["model_feature_schema"]), "rollout_state": strings.TrimSpace(rolloutState),
+	}
+	return validation.NewAuthorityPolicyEnvelope(payload)
 }
 
 func EnsurePolicyConfigs(settings map[string]string) (PolicyVersionSet, error) {

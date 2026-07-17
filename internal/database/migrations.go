@@ -45,9 +45,11 @@ func schemaModels() []interface{} {
 		&ValidationExperiment{},
 		&ValidationFoldEvidence{},
 		&ValidationEvidence{},
+		&ValidationMLEvidence{},
 		&GovernanceApproval{},
 		&GovernanceDeployment{},
 		&GovernanceTransition{},
+		&GovernanceMonitoringEvidence{},
 		&PortfolioSnapshot{},
 	}
 }
@@ -500,7 +502,9 @@ func RunMigrations(db *gorm.DB) error {
 				// before their historical backfills have run.
 				if err := tx.AutoMigrate(
 					&ValidationExperiment{}, &ValidationFoldEvidence{}, &ValidationEvidence{},
+					&ValidationMLEvidence{},
 					&GovernanceApproval{}, &GovernanceDeployment{}, &GovernanceTransition{},
+					&GovernanceMonitoringEvidence{},
 					&ModelArtifact{},
 				); err != nil {
 					return err
@@ -537,6 +541,62 @@ func RunMigrations(db *gorm.DB) error {
 			},
 			Rollback: func(tx *gorm.DB) error {
 				return fmt.Errorf("Stage 07 immutable validation and governance history is intentionally retained")
+			},
+		},
+		{
+			ID: "202607172300_stage07_feedback_integrity",
+			Migrate: func(tx *gorm.DB) error {
+				if err := tx.AutoMigrate(&BacktestJob{}, &ValidationExperiment{}, &ValidationMLEvidence{}, &GovernanceApproval{}, &GovernanceDeployment{}, &GovernanceTransition{}, &GovernanceMonitoringEvidence{}); err != nil {
+					return err
+				}
+				return tx.Exec(`
+					CREATE OR REPLACE FUNCTION guard_governance_deployment_write() RETURNS trigger AS $$
+					DECLARE transition_setting text;
+					BEGIN
+						transition_setting := current_setting('trading_bot.governance_transition_id', true);
+						IF transition_setting IS NULL OR transition_setting = '' OR transition_setting <> NEW.transition_id OR NOT EXISTS (SELECT 1 FROM governance_transitions t WHERE t.id=NEW.transition_id AND t.context_key=NEW.context_key AND t.to_state=NEW.state) THEN
+							RAISE EXCEPTION 'governance deployment write requires matching immutable transition';
+						END IF;
+						RETURN NEW;
+					END; $$ LANGUAGE plpgsql;
+					DROP TRIGGER IF EXISTS governance_deployment_guard ON governance_deployments;
+					CREATE TRIGGER governance_deployment_guard BEFORE INSERT OR UPDATE OR DELETE ON governance_deployments FOR EACH ROW EXECUTE FUNCTION guard_governance_deployment_write();
+					DROP TRIGGER IF EXISTS governance_monitoring_evidence_immutable ON governance_monitoring_evidences;
+					CREATE TRIGGER governance_monitoring_evidence_immutable BEFORE UPDATE OR DELETE ON governance_monitoring_evidences FOR EACH ROW EXECUTE FUNCTION reject_stage07_immutable_mutation();
+					ALTER TABLE validation_fold_evidences DROP CONSTRAINT IF EXISTS fk_validation_fold_experiment;
+					ALTER TABLE validation_fold_evidences ADD CONSTRAINT fk_validation_fold_experiment FOREIGN KEY (experiment_id) REFERENCES validation_experiments(id) ON DELETE RESTRICT;
+					ALTER TABLE validation_evidences DROP CONSTRAINT IF EXISTS fk_validation_evidence_experiment;
+					ALTER TABLE validation_evidences ADD CONSTRAINT fk_validation_evidence_experiment FOREIGN KEY (experiment_id) REFERENCES validation_experiments(id) ON DELETE RESTRICT;
+					ALTER TABLE governance_approvals DROP CONSTRAINT IF EXISTS fk_governance_approval_experiment;
+					ALTER TABLE governance_approvals ADD CONSTRAINT fk_governance_approval_experiment FOREIGN KEY (experiment_id) REFERENCES validation_experiments(id) ON DELETE RESTRICT;
+					ALTER TABLE governance_approvals DROP CONSTRAINT IF EXISTS fk_governance_approval_evidence;
+					ALTER TABLE governance_approvals ADD CONSTRAINT fk_governance_approval_evidence FOREIGN KEY (evidence_id) REFERENCES validation_evidences(id) ON DELETE RESTRICT;
+					ALTER TABLE governance_transitions DROP CONSTRAINT IF EXISTS fk_governance_transition_experiment;
+					ALTER TABLE governance_transitions ADD CONSTRAINT fk_governance_transition_experiment FOREIGN KEY (experiment_id) REFERENCES validation_experiments(id) ON DELETE RESTRICT;
+					ALTER TABLE governance_transitions DROP CONSTRAINT IF EXISTS fk_governance_transition_evidence;
+					ALTER TABLE governance_transitions ADD CONSTRAINT fk_governance_transition_evidence FOREIGN KEY (evidence_id) REFERENCES validation_evidences(id) ON DELETE RESTRICT;
+					ALTER TABLE governance_transitions DROP CONSTRAINT IF EXISTS fk_governance_transition_approval;
+					ALTER TABLE governance_transitions ADD CONSTRAINT fk_governance_transition_approval FOREIGN KEY (approval_id) REFERENCES governance_approvals(id) ON DELETE RESTRICT;
+					ALTER TABLE governance_deployments DROP CONSTRAINT IF EXISTS fk_governance_deployment_experiment;
+					ALTER TABLE governance_deployments ADD CONSTRAINT fk_governance_deployment_experiment FOREIGN KEY (experiment_id) REFERENCES validation_experiments(id) ON DELETE RESTRICT;
+					ALTER TABLE governance_deployments DROP CONSTRAINT IF EXISTS fk_governance_deployment_evidence;
+					ALTER TABLE governance_deployments ADD CONSTRAINT fk_governance_deployment_evidence FOREIGN KEY (evidence_id) REFERENCES validation_evidences(id) ON DELETE RESTRICT;
+					ALTER TABLE governance_deployments DROP CONSTRAINT IF EXISTS fk_governance_deployment_transition;
+					ALTER TABLE governance_deployments ADD CONSTRAINT fk_governance_deployment_transition FOREIGN KEY (transition_id) REFERENCES governance_transitions(id) ON DELETE RESTRICT NOT VALID;
+					ALTER TABLE governance_monitoring_evidences DROP CONSTRAINT IF EXISTS fk_monitoring_experiment;
+					ALTER TABLE governance_monitoring_evidences ADD CONSTRAINT fk_monitoring_experiment FOREIGN KEY (experiment_id) REFERENCES validation_experiments(id) ON DELETE RESTRICT;
+					ALTER TABLE governance_monitoring_evidences DROP CONSTRAINT IF EXISTS fk_monitoring_transition;
+					ALTER TABLE governance_monitoring_evidences ADD CONSTRAINT fk_monitoring_transition FOREIGN KEY (deployment_transition_id) REFERENCES governance_transitions(id) ON DELETE RESTRICT;
+					ALTER TABLE validation_ml_evidences DROP CONSTRAINT IF EXISTS fk_validation_ml_experiment;
+					ALTER TABLE validation_ml_evidences ADD CONSTRAINT fk_validation_ml_experiment FOREIGN KEY (experiment_id) REFERENCES validation_experiments(id) ON DELETE RESTRICT;
+					DROP TRIGGER IF EXISTS validation_ml_evidence_immutable ON validation_ml_evidences;
+					CREATE TRIGGER validation_ml_evidence_immutable BEFORE UPDATE OR DELETE ON validation_ml_evidences FOR EACH ROW EXECUTE FUNCTION reject_stage07_immutable_mutation();
+					ALTER TABLE governance_monitoring_evidences DROP CONSTRAINT IF EXISTS governance_monitoring_coverage_check;
+					ALTER TABLE governance_monitoring_evidences ADD CONSTRAINT governance_monitoring_coverage_check CHECK (expected_observations>0 AND observed_observations>=0 AND observed_observations<=expected_observations AND window_end>window_start AND length(content_digest)=64);
+				`).Error
+			},
+			Rollback: func(tx *gorm.DB) error {
+				return fmt.Errorf("Stage 07 feedback audit integrity is intentionally retained")
 			},
 		},
 	})

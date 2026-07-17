@@ -18,7 +18,6 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 )
 
 func GenerateProposals() (interface{}, error) {
@@ -1968,38 +1967,9 @@ func ApproveProposal(id uint) (interface{}, error) {
 	proposal.ResolvedAt = &now
 
 	if err := database.DB.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Save(&proposal).Error; err != nil {
-			return err
-		}
-
-		if !isAdjustmentProposalType(proposal.ProposalType) || proposal.ParameterKey == nil || proposal.NewValue == nil {
-			return nil
-		}
-
-		paramKey := strings.TrimSpace(*proposal.ParameterKey)
-		if strings.HasPrefix(paramKey, "weight:") {
-			indicator := strings.TrimSpace(strings.TrimPrefix(paramKey, "weight:"))
-			if indicator == "" {
-				return nil
-			}
-
-			weightValue, err := strconv.ParseFloat(strings.TrimSpace(*proposal.NewValue), 64)
-			if err != nil {
-				return err
-			}
-
-			weight := database.IndicatorWeight{Indicator: indicator, Weight: weightValue}
-			return tx.Clauses(clause.OnConflict{
-				Columns:   []clause.Column{{Name: "indicator"}},
-				DoUpdates: clause.AssignmentColumns([]string{"weight"}),
-			}).Create(&weight).Error
-		}
-
-		setting := database.Setting{Key: paramKey, Value: *proposal.NewValue, UpdatedAt: time.Now()}
-		return tx.Clauses(clause.OnConflict{
-			Columns:   []clause.Column{{Name: "key"}},
-			DoUpdates: clause.AssignmentColumns([]string{"value", "updated_at"}),
-		}).Create(&setting).Error
+		// Approval is an immutable research disposition only. Proposals never
+		// mutate authority-bearing settings, weights, rollout, or live state.
+		return tx.Save(&proposal).Error
 	}); err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, fiber.NewError(404, "Proposal not found")
@@ -2010,7 +1980,7 @@ func ApproveProposal(id uint) (interface{}, error) {
 	return fiber.Map{
 		"success":  true,
 		"proposal": proposal,
-		"message":  "Proposal approved and applied",
+		"message":  "Proposal disposition recorded; no runtime settings were changed",
 	}, nil
 }
 

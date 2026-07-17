@@ -46,8 +46,30 @@ func CanonicalManifestSpec(spec ManifestSpec) ([]byte, ManifestSpec, error) {
 	if spec.SchemaVersion == "" {
 		spec.SchemaVersion = ManifestSchemaVersion
 	}
-	if spec.SchemaVersion != ManifestSchemaVersion || strings.TrimSpace(spec.CodeRevision) == "" || strings.TrimSpace(spec.Candidate.ID) == "" || strings.TrimSpace(spec.Candidate.Version) == "" || strings.TrimSpace(spec.Baseline.ID) == "" || strings.TrimSpace(spec.Baseline.Version) == "" || strings.TrimSpace(spec.DatasetManifestID) == "" || spec.DatasetManifestID != spec.DatasetManifestHash || strings.TrimSpace(spec.Policies.Composite) == "" || !spec.Interval.Valid() {
+	if spec.SchemaVersion != ManifestSchemaVersion || strings.TrimSpace(spec.CodeRevision) == "" || strings.TrimSpace(spec.Candidate.ID) == "" || strings.TrimSpace(spec.Candidate.Version) == "" || !exactDigest(spec.Candidate.Digest) || strings.TrimSpace(spec.Baseline.ID) == "" || strings.TrimSpace(spec.Baseline.Version) == "" || !exactDigest(spec.Baseline.Digest) || !exactDigest(spec.DatasetManifestID) || spec.DatasetManifestID != spec.DatasetManifestHash || !completePolicies(spec.Policies) || !spec.Interval.Valid() {
 		return nil, ManifestSpec{}, &DiagnosticError{Code: DiagnosticInvalidManifest, Details: "schema, revision, candidate, baseline, exact dataset digest, policy bundle, and interval are required"}
+	}
+	if spec.GovernancePolicy != GovernancePolicyVersion {
+		return nil, ManifestSpec{}, &DiagnosticError{Code: DiagnosticInvalidManifest, Field: "governance_policy", Details: "non-weakenable governance policy version is required"}
+	}
+	if err := spec.AuthorityPolicy.Verify(); err != nil {
+		return nil, ManifestSpec{}, err
+	}
+	for _, key := range []string{"selection_top_k", "selection_min_probability", "selection_min_ev", "fallback_mode", "strategy_parameters", "risk_policy", "turnover_policy", "cash_policy", "universe_policy", "execution_policy", "cost_policy", "model_version", "feature_schema", "rollout_state"} {
+		if strings.TrimSpace(spec.AuthorityPolicy.Payload[key]) == "" {
+			return nil, ManifestSpec{}, &DiagnosticError{Code: DiagnosticInvalidManifest, Field: "authority_policy." + key, Details: "authority-affecting policy component is required"}
+		}
+	}
+	if strings.TrimSpace(spec.UniversePolicy) == "" || strings.TrimSpace(spec.DecisionClock) == "" || strings.TrimSpace(spec.ExecutionClock) == "" {
+		return nil, ManifestSpec{}, &DiagnosticError{Code: DiagnosticInvalidManifest, Details: "universe and UTC decision/execution clocks are required"}
+	}
+	for _, key := range []string{"fee_bps", "slippage_bps", "timing", "liquidity"} {
+		if strings.TrimSpace(spec.ExecutionSemantics[key]) == "" {
+			return nil, ManifestSpec{}, &DiagnosticError{Code: DiagnosticInvalidManifest, Field: "execution_semantics." + key, Details: "complete cost/fill semantics required"}
+		}
+	}
+	if spec.Artifacts.Metrics == "" || spec.Artifacts.Trades == "" || spec.Artifacts.Curves == "" || spec.Artifacts.Cohorts == "" || spec.Artifacts.Factors == "" || spec.Artifacts.Coverage == "" || spec.Artifacts.Comparison == "" || spec.Reproduce.Command == "" || len(spec.Reproduce.Args) == 0 {
+		return nil, ManifestSpec{}, &DiagnosticError{Code: DiagnosticInvalidManifest, Details: "complete bounded artifact links and reproduction arguments required"}
 	}
 	if spec.StudyType != "exploratory" && spec.StudyType != "confirmatory" {
 		return nil, ManifestSpec{}, &DiagnosticError{Code: DiagnosticInvalidManifest, Field: "study_type", Details: "must be exploratory or confirmatory"}
@@ -67,8 +89,56 @@ func CanonicalManifestSpec(spec ManifestSpec) ([]byte, ManifestSpec, error) {
 	if len(spec.Metrics) == 0 || len(spec.PromotionThresholds) == 0 || len(spec.RollbackThresholds) == 0 || spec.Reproduce.Command == "" {
 		return nil, ManifestSpec{}, &DiagnosticError{Code: DiagnosticInvalidManifest, Details: "metrics, gates, rollback thresholds, and reproduction invocation must be predeclared"}
 	}
+	metrics, uniqueErr := sortedUnique(spec.Metrics)
+	if uniqueErr != nil {
+		return nil, ManifestSpec{}, &DiagnosticError{Code: DiagnosticInvalidManifest, Field: "metrics", Details: uniqueErr.Error()}
+	}
+	spec.Metrics = metrics
+	declared := map[string]bool{}
+	for _, metric := range spec.Metrics {
+		declared[metric] = true
+	}
+	if spec.StudyType == "confirmatory" {
+		for _, required := range RequiredConfirmatoryMetrics {
+			if !declared[required] {
+				return nil, ManifestSpec{}, &DiagnosticError{Code: DiagnosticInvalidManifest, Field: "metrics", Details: "missing required confirmatory metric " + required}
+			}
+		}
+		if spec.Samples.MinFolds < 3 || spec.Samples.MinIndependentUnits < 3 || spec.Samples.MinObservationsPerFold < 10 || spec.Samples.MinTradesPerFold < 1 || spec.Samples.MinRegimes < 2 {
+			return nil, ManifestSpec{}, &DiagnosticError{Code: DiagnosticInvalidManifest, Field: "sample_requirements", Details: "client requirements weaken governance minima"}
+		}
+		for _, target := range []string{"paper", "limited_live", "full_live"} {
+			if spec.RequiredElapsed[target] <= 0 {
+				return nil, ManifestSpec{}, &DiagnosticError{Code: DiagnosticInvalidManifest, Field: "required_elapsed." + target, Details: "target-specific elapsed evidence must be predeclared"}
+			}
+		}
+	}
+	seenThreshold := map[string]bool{}
+	for i := range spec.PromotionThresholds {
+		if spec.PromotionThresholds[i].Value == 0 {
+			spec.PromotionThresholds[i].Value = 0
+		}
+	}
+	for i := range spec.RollbackThresholds {
+		if spec.RollbackThresholds[i].Value == 0 {
+			spec.RollbackThresholds[i].Value = 0
+		}
+	}
+	for _, threshold := range append(append([]Threshold(nil), spec.PromotionThresholds...), spec.RollbackThresholds...) {
+		if !declared[threshold.Metric] {
+			return nil, ManifestSpec{}, &DiagnosticError{Code: DiagnosticInvalidManifest, Field: "thresholds", Details: "threshold metric is not declared: " + threshold.Metric}
+		}
+		key := fmt.Sprintf("%s|%s|%g", threshold.Metric, threshold.Op, threshold.Value)
+		if seenThreshold[key] {
+			return nil, ManifestSpec{}, &DiagnosticError{Code: DiagnosticInvalidManifest, Field: "thresholds", Details: "duplicate gate"}
+		}
+		seenThreshold[key] = true
+	}
 	if len(spec.Metrics) > 128 || len(spec.PromotionThresholds) > 128 || len(spec.RollbackThresholds) > 128 || len(spec.AllowedTuning) > 64 || len(spec.Reproduce.Args) > 64 || len(spec.ExecutionSemantics) > 128 || len(spec.RequiredElapsed) > 16 {
 		return nil, ManifestSpec{}, &DiagnosticError{Code: DiagnosticInvalidManifest, Details: "manifest collection exceeds bounded limits"}
+	}
+	if len(spec.AllowedTuning) == 0 {
+		return nil, ManifestSpec{}, &DiagnosticError{Code: DiagnosticInvalidManifest, Field: "allowed_tuning", Details: "complete tuning search space is required"}
 	}
 	for key, choices := range spec.AllowedTuning {
 		if strings.TrimSpace(key) == "" || len(choices) == 0 || len(choices) > 64 {
@@ -78,10 +148,35 @@ func CanonicalManifestSpec(spec ManifestSpec) ([]byte, ManifestSpec, error) {
 	if err := ValidateFolds(spec.Folds, spec.Interval, spec.Samples.MinFolds); err != nil {
 		return nil, ManifestSpec{}, err
 	}
+	if spec.StudyType == "confirmatory" {
+		if len(spec.FoldSourceJobIDs) != len(spec.Folds) {
+			return nil, ManifestSpec{}, &DiagnosticError{Code: DiagnosticInvalidManifest, Field: "fold_source_job_ids", Details: "one trusted Stage 05/06 source job is required per fold"}
+		}
+		seenJobs := map[uint]bool{}
+		for _, id := range spec.FoldSourceJobIDs {
+			if id == 0 || seenJobs[id] {
+				return nil, ManifestSpec{}, &DiagnosticError{Code: DiagnosticInvalidManifest, Field: "fold_source_job_ids", Details: "source jobs must be nonzero and unique"}
+			}
+			seenJobs[id] = true
+		}
+	}
 	if spec.Model != nil {
 		if err := ValidateModelAuthority(*spec.Model, spec); err != nil {
 			return nil, ManifestSpec{}, err
 		}
+		if spec.MLRequirements == nil {
+			return nil, ManifestSpec{}, &DiagnosticError{Code: DiagnosticInvalidManifest, Field: "ml_requirements", Details: "predeclared non-weakenable ML gates are required"}
+		}
+		normalizedML, mlErr := NormalizeMLRequirements(*spec.MLRequirements)
+		if mlErr != nil {
+			return nil, ManifestSpec{}, mlErr
+		}
+		spec.MLRequirements = &normalizedML
+		if spec.AuthorityPolicy.Payload["model_version"] != spec.Model.Version || spec.AuthorityPolicy.Payload["feature_schema"] != spec.Model.FeatureSpec {
+			return nil, ManifestSpec{}, &DiagnosticError{Code: DiagnosticInvalidManifest, Field: "authority_policy", Details: "model/version schema authority mismatch"}
+		}
+	} else if spec.MLRequirements != nil {
+		return nil, ManifestSpec{}, &DiagnosticError{Code: DiagnosticInvalidManifest, Field: "ml_requirements", Details: "ML gates require a model manifest"}
 	}
 	if spec.ResearchOverride != nil {
 		override := spec.ResearchOverride
@@ -98,6 +193,11 @@ func CanonicalManifestSpec(spec ManifestSpec) ([]byte, ManifestSpec, error) {
 	}
 	sort.Strings(spec.Metrics)
 	for key := range spec.AllowedTuning {
+		unique, err := sortedUnique(spec.AllowedTuning[key])
+		if err != nil {
+			return nil, ManifestSpec{}, &DiagnosticError{Code: DiagnosticInvalidManifest, Field: "allowed_tuning." + key, Details: err.Error()}
+		}
+		spec.AllowedTuning[key] = unique
 		sort.Strings(spec.AllowedTuning[key])
 	}
 	sort.Slice(spec.PromotionThresholds, func(i, j int) bool { return thresholdLess(spec.PromotionThresholds[i], spec.PromotionThresholds[j]) })
@@ -115,6 +215,21 @@ func CanonicalManifestSpec(spec ManifestSpec) ([]byte, ManifestSpec, error) {
 		return nil, ManifestSpec{}, &DiagnosticError{Code: DiagnosticInvalidManifest, Details: "manifest exceeds 1 MiB canonical limit"}
 	}
 	return encoded, spec, nil
+}
+
+func exactDigest(value string) bool {
+	if len(value) != 64 {
+		return false
+	}
+	for _, r := range value {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')) {
+			return false
+		}
+	}
+	return true
+}
+func completePolicies(p PolicyBundle) bool {
+	return p.Composite != "" && p.Execution != "" && p.Universe != "" && p.ModelSelection != "" && p.EntrySelection != "" && p.PortfolioRisk != "" && p.Rollout != "" && p.Cost != ""
 }
 
 func ValidateFolds(folds []Fold, interval Interval, minimum int) error {
@@ -138,7 +253,7 @@ func ValidateFolds(folds []Fold, interval Interval, minimum int) error {
 }
 
 func ValidateModelAuthority(model ModelAuthority, spec ManifestSpec) error {
-	if model.Version == "" || model.ModelDigest == "" || model.FeatureSpec == "" || len(model.Features) == 0 || model.LabelSpec == "" || model.LabelHorizon <= 0 || model.CodeRevision == "" || model.DatasetManifest == "" || model.TrainingManifest == "" || model.PolicyVersion == "" {
+	if model.Version == "" || !exactDigest(model.ModelDigest) || model.FeatureSpec == "" || len(model.Features) == 0 || model.LabelSpec == "" || model.LabelHorizon <= 0 || model.CodeRevision == "" || !exactDigest(model.DatasetManifest) || !exactDigest(model.TrainingManifest) || model.PolicyVersion == "" {
 		return &DiagnosticError{Code: DiagnosticInvalidManifest, Field: "model", Details: "complete model training provenance and ordered feature schema are required"}
 	}
 	if model.CodeRevision != spec.CodeRevision || model.DatasetManifest != spec.DatasetManifestID || model.PolicyVersion != spec.Policies.Composite || model.LabelHorizon != spec.LabelHorizon {

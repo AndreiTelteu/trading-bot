@@ -186,6 +186,7 @@ func setupRoutes(app *fiber.App, cfg *config.Config, authManager *middleware.Aut
 
 	validationAPI := api.Group("/validation")
 	validationAPI.Post("/experiments", handlers.CreateValidationExperiment)
+	validationAPI.Post("/experiments/:id/run", handlers.RunValidationExperiment)
 	validationAPI.Get("/experiments/:id", handlers.GetValidationExperiment)
 	validationAPI.Post("/approvals", handlers.ApproveGovernanceTransition)
 	validationAPI.Post("/transitions", handlers.ApplyGovernanceTransition)

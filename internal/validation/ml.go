@@ -7,16 +7,19 @@ import (
 )
 
 type MLOutcome struct {
-	ID               string   `json:"id"`
-	Window           int      `json:"window"`
-	Symbol           string   `json:"symbol"`
-	Probability      float64  `json:"probability"`
-	Positive         bool     `json:"positive"`
-	AfterCostReturn  float64  `json:"after_cost_return"`
-	CandidateSet     []string `json:"candidate_set"`
-	GrossExposure    float64  `json:"gross_exposure"`
-	BaselineSet      []string `json:"baseline_set"`
-	BaselineExposure float64  `json:"baseline_exposure"`
+	ID                       string             `json:"id"`
+	Window                   int                `json:"window"`
+	Symbol                   string             `json:"symbol"`
+	Probability              float64            `json:"probability"`
+	Positive                 bool               `json:"positive"`
+	AfterCostReturn          float64            `json:"after_cost_return"`
+	CandidateSet             []string           `json:"candidate_set"`
+	GrossExposure            float64            `json:"gross_exposure"`
+	BaselineSet              []string           `json:"baseline_set"`
+	BaselineExposure         float64            `json:"baseline_exposure"`
+	BaselineReturn           float64            `json:"baseline_after_cost_return"`
+	CandidateExposureByAsset map[string]float64 `json:"candidate_exposure_by_asset"`
+	BaselineExposureByAsset  map[string]float64 `json:"baseline_exposure_by_asset"`
 }
 
 type CalibrationBucket struct {
@@ -39,30 +42,67 @@ type MLEvaluation struct {
 	RankMonotonic                bool                `json:"rank_monotonic"`
 	AfterCostExpectancy          float64             `json:"after_cost_expectancy"`
 	EqualComparison              bool                `json:"equal_candidate_exposure_comparison"`
+	BaselineAfterCostExpectancy  float64             `json:"baseline_after_cost_expectancy"`
+	CandidateMinusBaseline       float64             `json:"candidate_minus_baseline"`
 	Gates                        map[string]bool     `json:"gates"`
 	Passed                       bool                `json:"passed"`
 }
 
 type MLRequirements struct {
-	MinLabels           int     `json:"min_labels"`
-	Buckets             int     `json:"buckets"`
-	MinBucketSupport    int     `json:"min_bucket_support"`
-	ClipEpsilon         float64 `json:"clip_epsilon"`
-	MinAUC              float64 `json:"min_auc"`
-	MaxLogLoss          float64 `json:"max_log_loss"`
-	MaxCalibrationError float64 `json:"max_calibration_error"`
+	MinLabels             int     `json:"min_labels"`
+	MinIndependentWindows int     `json:"min_independent_windows"`
+	Buckets               int     `json:"buckets"`
+	MinBucketSupport      int     `json:"min_bucket_support"`
+	ClipEpsilon           float64 `json:"clip_epsilon"`
+	MinAUC                float64 `json:"min_auc"`
+	MaxLogLoss            float64 `json:"max_log_loss"`
+	MaxBrier              float64 `json:"max_brier"`
+	MaxCalibrationError   float64 `json:"max_calibration_error"`
 }
 
 func EvaluateML(outcomes []MLOutcome, requirements MLRequirements) (MLEvaluation, error) {
+	var err error
+	requirements, err = NormalizeMLRequirements(requirements)
+	if err != nil {
+		return MLEvaluation{}, err
+	}
 	if requirements.MinLabels < 2 || len(outcomes) < requirements.MinLabels {
 		return MLEvaluation{}, &DiagnosticError{Code: DiagnosticInsufficientObservations, Details: fmt.Sprintf("labels=%d minimum=%d", len(outcomes), requirements.MinLabels)}
 	}
-	if requirements.Buckets < 2 || requirements.Buckets > 20 || requirements.MinBucketSupport < 1 || requirements.ClipEpsilon <= 0 || requirements.ClipEpsilon >= .1 {
-		return MLEvaluation{}, &DiagnosticError{Code: DiagnosticInvalidManifest, Field: "ml_requirements"}
+	return evaluateMLNormalized(outcomes, requirements)
+}
+
+func NormalizeMLRequirements(requirements MLRequirements) (MLRequirements, error) {
+	if requirements.MinAUC == 0 {
+		requirements.MinAUC = .55
 	}
+	if requirements.MaxLogLoss == 0 {
+		requirements.MaxLogLoss = .8
+	}
+	if requirements.MaxBrier == 0 {
+		requirements.MaxBrier = .25
+	}
+	if requirements.MaxCalibrationError == 0 {
+		requirements.MaxCalibrationError = .3
+	}
+	if requirements.MinIndependentWindows < 2 || requirements.Buckets < 2 || requirements.Buckets > 20 || requirements.MinBucketSupport < 1 || requirements.ClipEpsilon <= 0 || requirements.ClipEpsilon >= .1 || !finite(requirements.MinAUC) || !finite(requirements.MaxLogLoss) || !finite(requirements.MaxBrier) || !finite(requirements.MaxCalibrationError) || requirements.MinAUC < .55 || requirements.MaxLogLoss > .8 || requirements.MaxBrier > .25 || requirements.MaxCalibrationError > .3 {
+		return requirements, &DiagnosticError{Code: DiagnosticInvalidManifest, Field: "ml_requirements"}
+	}
+	return requirements, nil
+}
+
+func evaluateMLNormalized(outcomes []MLOutcome, requirements MLRequirements) (MLEvaluation, error) {
 	positives, negatives := 0, 0
+	ids, windows := map[string]struct{}{}, map[int]struct{}{}
 	for _, o := range outcomes {
-		if !finite(o.Probability) || o.Probability < 0 || o.Probability > 1 || !finite(o.AfterCostReturn) || !finite(o.GrossExposure) || !finite(o.BaselineExposure) {
+		if o.ID == "" || o.Symbol == "" {
+			return MLEvaluation{}, &DiagnosticError{Code: DiagnosticInvalidManifest, Field: "ml_outcome", Details: "outcome identity and symbol are required"}
+		}
+		if _, duplicate := ids[o.ID]; duplicate {
+			return MLEvaluation{}, &DiagnosticError{Code: DiagnosticInvalidManifest, Field: "ml_outcome.id", Details: "duplicate outcome: " + o.ID}
+		}
+		ids[o.ID], windows[o.Window] = struct{}{}, struct{}{}
+		if !finite(o.Probability) || o.Probability < 0 || o.Probability > 1 || !finite(o.AfterCostReturn) || !finite(o.BaselineReturn) || !finite(o.GrossExposure) || !finite(o.BaselineExposure) {
 			return MLEvaluation{}, &DiagnosticError{Code: DiagnosticInvalidProbability, Details: o.ID}
 		}
 		if o.Positive {
@@ -70,15 +110,18 @@ func EvaluateML(outcomes []MLOutcome, requirements MLRequirements) (MLEvaluation
 		} else {
 			negatives++
 		}
-		if !sameSet(o.CandidateSet, o.BaselineSet) || math.Abs(o.GrossExposure-o.BaselineExposure) > 1e-12 {
+		if !uniqueSet(o.CandidateSet) || !uniqueSet(o.BaselineSet) || !sameSet(o.CandidateSet, o.BaselineSet) || math.Abs(o.GrossExposure-o.BaselineExposure) > 1e-12 || !equalExposure(o.CandidateExposureByAsset, o.BaselineExposureByAsset) || !exposureReconciles(o.CandidateExposureByAsset, o.GrossExposure) || !exposureReconciles(o.BaselineExposureByAsset, o.BaselineExposure) {
 			return MLEvaluation{}, &DiagnosticError{Code: DiagnosticBaselineMismatch, Details: o.ID}
 		}
+	}
+	if len(windows) < requirements.MinIndependentWindows {
+		return MLEvaluation{}, &DiagnosticError{Code: DiagnosticInsufficientWindows, Details: fmt.Sprintf("windows=%d minimum=%d", len(windows), requirements.MinIndependentWindows)}
 	}
 	if positives == 0 || negatives == 0 {
 		return MLEvaluation{}, &DiagnosticError{Code: DiagnosticOneClass}
 	}
 	auc := rocAUC(outcomes, positives, negatives)
-	brier, logLoss, returns, probs := 0.0, 0.0, make([]float64, len(outcomes)), make([]float64, len(outcomes))
+	brier, logLoss, returns, baselineReturns, probs := 0.0, 0.0, make([]float64, len(outcomes)), make([]float64, len(outcomes)), make([]float64, len(outcomes))
 	for i, o := range outcomes {
 		y := 0.0
 		if o.Positive {
@@ -88,7 +131,7 @@ func EvaluateML(outcomes []MLOutcome, requirements MLRequirements) (MLEvaluation
 		brier += d * d
 		p := math.Max(requirements.ClipEpsilon, math.Min(1-requirements.ClipEpsilon, o.Probability))
 		logLoss -= y*math.Log(p) + (1-y)*math.Log(1-p)
-		returns[i], probs[i] = o.AfterCostReturn, o.Probability
+		returns[i], baselineReturns[i], probs[i] = o.AfterCostReturn, o.BaselineReturn, o.Probability
 	}
 	brier /= float64(len(outcomes))
 	logLoss /= float64(len(outcomes))
@@ -107,15 +150,20 @@ func EvaluateML(outcomes []MLOutcome, requirements MLRequirements) (MLEvaluation
 			maxError = e
 		}
 	}
-	expectancy := mean(returns)
-	gates := map[string]bool{"discrimination": auc >= requirements.MinAUC, "log_loss": logLoss <= requirements.MaxLogLoss, "calibration": maxError <= requirements.MaxCalibrationError, "rank_monotonic": monotonic, "after_cost_expectancy": expectancy > 0, "equal_candidate_exposure": true}
+	correlation, ok := pearson(probs, returns)
+	if !ok {
+		return MLEvaluation{}, &DiagnosticError{Code: DiagnosticInsufficientObservations, Field: "probability_return_correlation", Details: "degenerate probability or return variance"}
+	}
+	expectancy, baselineExpectancy := mean(returns), mean(baselineReturns)
+	delta := expectancy - baselineExpectancy
+	gates := map[string]bool{"discrimination": auc >= requirements.MinAUC, "brier": brier <= requirements.MaxBrier, "log_loss": logLoss <= requirements.MaxLogLoss, "calibration": maxError <= requirements.MaxCalibrationError, "rank_monotonic": monotonic, "after_cost_expectancy": expectancy > 0, "equal_candidate_exposure": true, "beats_baseline": delta > 0}
 	passed := true
 	for _, ok := range gates {
 		if !ok {
 			passed = false
 		}
 	}
-	return MLEvaluation{SchemaVersion: MLSchemaVersion, ClipEpsilon: requirements.ClipEpsilon, ROC_AUC: auc, Brier: brier, LogLoss: logLoss, ProbabilityReturnCorrelation: pearson(probs, returns), Calibration: buckets, RankMonotonic: monotonic, AfterCostExpectancy: expectancy, EqualComparison: true, Gates: gates, Passed: passed}, nil
+	return MLEvaluation{SchemaVersion: MLSchemaVersion, ClipEpsilon: requirements.ClipEpsilon, ROC_AUC: auc, Brier: brier, LogLoss: logLoss, ProbabilityReturnCorrelation: correlation, Calibration: buckets, RankMonotonic: monotonic, AfterCostExpectancy: expectancy, EqualComparison: true, BaselineAfterCostExpectancy: baselineExpectancy, CandidateMinusBaseline: delta, Gates: gates, Passed: passed}, nil
 }
 
 func rocAUC(values []MLOutcome, positives, negatives int) float64 {
@@ -166,6 +214,7 @@ func calibration(values []MLOutcome, count int) []CalibrationBucket {
 	filtered := make([]CalibrationBucket, 0, count)
 	for i, b := range result {
 		if b.Support == 0 {
+			filtered = append(filtered, b)
 			continue
 		}
 		b.MeanProbability /= float64(b.Support)
@@ -176,7 +225,7 @@ func calibration(values []MLOutcome, count int) []CalibrationBucket {
 	return filtered
 }
 
-func pearson(a, b []float64) float64 {
+func pearson(a, b []float64) (float64, bool) {
 	ma, mb := mean(a), mean(b)
 	num, da, db := 0.0, 0.0, 0.0
 	for i := range a {
@@ -186,9 +235,44 @@ func pearson(a, b []float64) float64 {
 		db += y * y
 	}
 	if da == 0 || db == 0 {
-		return 0
+		return 0, false
 	}
-	return num / math.Sqrt(da*db)
+	return num / math.Sqrt(da*db), true
+}
+func uniqueSet(values []string) bool {
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		if value == "" {
+			return false
+		}
+		if _, ok := seen[value]; ok {
+			return false
+		}
+		seen[value] = struct{}{}
+	}
+	return len(values) > 0
+}
+func equalExposure(a, b map[string]float64) bool {
+	if len(a) == 0 || len(a) != len(b) {
+		return false
+	}
+	for key, av := range a {
+		bv, ok := b[key]
+		if !ok || !finite(av) || !finite(bv) || math.Abs(av-bv) > 1e-12 {
+			return false
+		}
+	}
+	return true
+}
+func exposureReconciles(values map[string]float64, gross float64) bool {
+	total := 0.0
+	for _, value := range values {
+		if !finite(value) {
+			return false
+		}
+		total += math.Abs(value)
+	}
+	return math.Abs(total-gross) <= 1e-12
 }
 func sameSet(a, b []string) bool {
 	if len(a) != len(b) {

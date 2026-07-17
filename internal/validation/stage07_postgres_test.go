@@ -96,7 +96,12 @@ func passingResult(t *testing.T, manifest ExperimentManifest) WalkForwardResult 
 	t.Helper()
 	folds := make([]FoldResult, 0, len(manifest.Spec.Folds))
 	for _, fold := range manifest.Spec.Folds {
-		folds = append(folds, FoldResult{Fold: fold, Frozen: FrozenDecision{FoldIndex: fold.Index, Choice: "20", Parameters: map[string]string{"lookback": "20"}, FitDigest: "fit", SelectionDigest: "select"}, Metrics: healthyMetrics(.01)})
+		primitives := healthyPrimitives(fold, .01)
+		metrics, err := DeriveFoldMetrics(primitives)
+		if err != nil {
+			t.Fatal(err)
+		}
+		folds = append(folds, FoldResult{Fold: fold, Frozen: FrozenDecision{FoldIndex: fold.Index, Choice: "20", Parameters: map[string]string{"lookback": "20"}, FitDigest: "fit", SelectionDigest: "select"}, Primitives: primitives, Metrics: metrics})
 	}
 	aggregate, err := Evaluate(folds, manifest.Spec)
 	if err != nil {
