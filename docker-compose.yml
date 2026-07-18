@@ -7,7 +7,9 @@ services:
     environment:
       POSTGRES_DB: trading_bot
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets:
+      - postgres_password
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d trading_bot"]
       interval: 5s
@@ -16,13 +18,33 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
+  bootstrap:
+    build: .
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./:/app
+    command: ["-c", "go run ./cmd/bootstrap"]
+    environment:
+      MIGRATION_DATABASE_URL_FILE: /run/secrets/migration_database_url
+      BOOTSTRAP_RUNTIME_PASSWORD_FILE: /run/secrets/runtime_database_password
+      BOOTSTRAP_LEDGER_PASSWORD_FILE: /run/secrets/ledger_database_password
+      BOOTSTRAP_PARITY_PASSWORD_FILE: /run/secrets/parity_database_password
+    secrets:
+      - migration_database_url
+      - runtime_database_password
+      - ledger_database_password
+      - parity_database_password
+
   app:
     build: .
     container_name: trading-backend
     restart: unless-stopped
     depends_on:
-      postgres:
-        condition: service_healthy
+      bootstrap:
+        condition: service_completed_successfully
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.trading-backend.rule=Host(`trading.local`)"
@@ -33,7 +55,9 @@ services:
       - ./:/app
     environment:
       PORT: 5001
-      DATABASE_URL: postgres://postgres:postgres@postgres:5432/trading_bot?sslmode=disable
+      DATABASE_URL_FILE: /run/secrets/runtime_database_url
+      LEDGER_DATABASE_URL_FILE: /run/secrets/ledger_database_url
+      PARITY_DATABASE_URL_FILE: /run/secrets/parity_database_url
       AUTH_USERNAME: ${AUTH_USERNAME:?AUTH_USERNAME must be set}
       AUTH_PASSWORD: ${AUTH_PASSWORD:?AUTH_PASSWORD must be set}
       GOVERNANCE_ADMIN_USERS: ${GOVERNANCE_ADMIN_USERS:-}
@@ -45,6 +69,10 @@ services:
       STAGE08_CANDIDATE_STRATEGY: ${STAGE08_CANDIDATE_STRATEGY:-off}
       STAGE08_DUAL_RUN: ${STAGE08_DUAL_RUN:-off}
       STAGE08_STAGE07_CONTEXT: ${STAGE08_STAGE07_CONTEXT:-}
+    secrets:
+      - runtime_database_url
+      - ledger_database_url
+      - parity_database_url
     ports:
       - 5001:5001
     networks:
@@ -77,3 +105,21 @@ volumes:
 networks:
   pub:
     external: true
+
+secrets:
+  postgres_password:
+    file: ${POSTGRES_PASSWORD_FILE:?set POSTGRES_PASSWORD_FILE to a local secret file}
+  migration_database_url:
+    file: ${MIGRATION_DATABASE_URL_FILE:?set MIGRATION_DATABASE_URL_FILE to a local secret file}
+  runtime_database_password:
+    file: ${RUNTIME_DATABASE_PASSWORD_FILE:?set RUNTIME_DATABASE_PASSWORD_FILE to a local secret file}
+  ledger_database_password:
+    file: ${LEDGER_DATABASE_PASSWORD_FILE:?set LEDGER_DATABASE_PASSWORD_FILE to a local secret file}
+  parity_database_password:
+    file: ${PARITY_DATABASE_PASSWORD_FILE:?set PARITY_DATABASE_PASSWORD_FILE to a local secret file}
+  runtime_database_url:
+    file: ${RUNTIME_DATABASE_URL_FILE:?set RUNTIME_DATABASE_URL_FILE to a local secret file}
+  ledger_database_url:
+    file: ${LEDGER_DATABASE_URL_FILE:?set LEDGER_DATABASE_URL_FILE to a local secret file}
+  parity_database_url:
+    file: ${PARITY_DATABASE_URL_FILE:?set PARITY_DATABASE_URL_FILE to a local secret file}

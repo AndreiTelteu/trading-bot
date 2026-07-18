@@ -47,7 +47,16 @@ type Service struct {
 	AfterWrite func(stage string) error // deterministic rollback seam used by transaction tests
 }
 
-func New(db *gorm.DB) *Service { return &Service{DB: db, Now: time.Now} }
+func New(db *gorm.DB) *Service {
+	// Ledger writes must retain the top-level transaction ID because deferred
+	// database guards couple projections and immutable evidence by xmin. When a
+	// caller already owns a transaction, reuse it instead of introducing a
+	// savepoint subtransaction with a different xmin.
+	if db == nil {
+		return &Service{Now: time.Now}
+	}
+	return &Service{DB: db.Session(&gorm.Session{DisableNestedTransaction: true}), Now: time.Now}
+}
 
 func (s *Service) CheckReady(ctx context.Context, account string) error {
 	if err := requirePrimaryAccount(account); err != nil {
@@ -302,6 +311,7 @@ func applyPosition(tx *gorm.DB, command FillCommand, gross accounting.Decimal) (
 	}
 	now := command.OccurredAt
 	if command.Side == "buy" {
+		openingCycle := errors.Is(err, gorm.ErrRecordNotFound) || position.Status != "open"
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			position = database.Position{AccountID: command.AccountID, Symbol: command.Symbol, Status: "open", OpenedAt: now}
 		} else if position.Status != "open" {
@@ -329,6 +339,9 @@ func applyPosition(tx *gorm.DB, command FillCommand, gross accounting.Decimal) (
 		position.ExecutionMode, position.EntrySource = command.ExecutionMode, command.EntrySource
 		position.DecisionTimeframe = command.DecisionTimeframe
 		position.ModelVersion, position.PolicyVersion = command.ModelVersion, command.PolicyVersion
+		if openingCycle {
+			position.StrategyVersion = nonempty(command.StrategyVersion, nonempty(command.ModelVersion, "manual-execution"))
+		}
 		position.UniverseMode, position.RolloutState = command.UniverseMode, command.RolloutState
 		position.ExperimentID, position.PredictionLogID = command.ExperimentID, command.PredictionLogID
 		position.DecisionContextJSON = command.DecisionContextJSON
@@ -541,7 +554,11 @@ func lockAccount(tx *gorm.DB, account string) error {
 }
 
 func allowLedgerProjectionWrites(tx *gorm.DB) error {
-	return tx.Exec("SET LOCAL trading_bot.ledger_write = 'on'").Error
+	// The writer role is deliberately not granted to the runtime role. The
+	// ledger service must run on the separately configured writer pool (or an
+	// administrative migration/test connection). Unlike a custom GUC, callers
+	// cannot mint this authority with SET CONFIG.
+	return tx.Exec("SET LOCAL ROLE trading_bot_ledger_writer").Error
 }
 
 func hashPayload(value interface{}) (string, string, error) {

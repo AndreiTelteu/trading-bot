@@ -65,7 +65,11 @@ func TestRuntimePendingOrderReconstructionUsesTrueRemainingQuantity(t *testing.T
 	if err := db.Create(&database.Order{AccountID: "primary", OrderType: "buy", Symbol: "BTC", Status: string(tradingcore.BrokerPartiallyFilled), ExecutionMode: "paper", RequestedQuantityExact: &requested, ExecutedQuantityExact: &executed, RemainingQuantityExact: &remaining, AmountCryptoExact: &zero, AmountUsdtExact: &zero, FeeExact: &zero, ExecutedAt: time.Now().UTC()}).Error; err != nil {
 		t.Fatal(err)
 	}
-	snapshot, _, err := buildRuntimeDecisionContext(nil, nil, map[string]string{"exchange_venue_id": "test-venue", "regime_gate_enabled": "false"}, tradingcore.ExecutionPaper, time.Now().UTC())
+	identity, _, err := buildDeploymentStrategy(map[string]string{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, _, err := buildRuntimeDecisionContext(nil, nil, map[string]string{"exchange_venue_id": "test-venue", "regime_gate_enabled": "false"}, tradingcore.ExecutionPaper, time.Now().UTC(), identity)
 	if err != nil {
 		t.Fatal(err)
 	}

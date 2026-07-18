@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"time"
 	"trading-go/internal/accounting"
 	"trading-go/internal/cutover"
@@ -17,11 +18,23 @@ const primaryLedgerAccount = "primary"
 // seedLedgerBoundary distinguishes a genuinely new default wallet from an
 // upgrade. Only the former receives an automatic opening-capital event.
 func seedLedgerBoundary(tx *gorm.DB, wallet Wallet, walletCreated bool) error {
-	if err := tx.Exec("SET LOCAL trading_bot.ledger_write = 'on'").Error; err != nil {
+	if err := tx.Exec("SET LOCAL ROLE trading_bot_ledger_writer").Error; err != nil {
 		return err
 	}
 	var existing LedgerMigrationState
 	if err := tx.First(&existing, "account_id = ?", primaryLedgerAccount).Error; err == nil {
+		if walletCreated {
+			return fmt.Errorf("ledger seed state is inconsistent: account %s is %s but its wallet projection was missing", primaryLedgerAccount, existing.Status)
+		}
+		if existing.Status == "ready" {
+			if wallet.BalanceExact == nil || existing.OpeningEventID == nil || *existing.OpeningEventID == "" {
+				return fmt.Errorf("ledger seed state is inconsistent: ready account %s lacks wallet or opening-event projection identity", primaryLedgerAccount)
+			}
+			var opening LedgerEvent
+			if err := tx.First(&opening, "id = ? AND account_id = ?", *existing.OpeningEventID, primaryLedgerAccount).Error; err != nil {
+				return fmt.Errorf("ledger seed state is inconsistent: ready account %s opening event is missing: %w", primaryLedgerAccount, err)
+			}
+		}
 		return nil
 	}
 	now := time.Now().UTC()

@@ -54,7 +54,7 @@ func UpdateWallet(c *fiber.Ctx) error {
 	if !ok {
 		return c.Status(401).JSON(fiber.Map{"error": "authenticated operator identity required"})
 	}
-	result, err := ledgerpkg.New(database.DB).ApplyAdjustment(c.UserContext(), ledgerpkg.AdjustmentCommand{IdempotencyKey: req.IdempotencyKey, Type: req.Type, Amount: amount, Currency: wallet.Currency, Actor: actor, Reason: req.Reason})
+	result, err := ledgerpkg.New(database.LedgerWriter()).ApplyAdjustment(c.UserContext(), ledgerpkg.AdjustmentCommand{IdempotencyKey: req.IdempotencyKey, Type: req.Type, Amount: amount, Currency: wallet.Currency, Actor: actor, Reason: req.Reason})
 	if err != nil {
 		return writeLedgerError(c, err)
 	}
@@ -72,6 +72,10 @@ func UpdateWallet(c *fiber.Ctx) error {
 
 func GetPortfolioSnapshots(c *fiber.Ctx) error {
 	var snapshots []database.PortfolioSnapshot
+	limit, err := pageLimit(c, 1000, 5000)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+	}
 
 	period := strings.ToLower(strings.TrimSpace(c.Query("period", "4h")))
 	var duration time.Duration
@@ -93,9 +97,26 @@ func GetPortfolioSnapshots(c *fiber.Ctx) error {
 	}
 
 	since := time.Now().Add(-duration)
-	if err := database.DB.Where("timestamp >= ?", since).Order("timestamp desc").Limit(5000).Find(&snapshots).Error; err != nil {
+	query := database.DB.Where("timestamp >= ?", since).Order("timestamp DESC,id DESC")
+	if raw := c.Query("cursor"); raw != "" {
+		var cursor timeIDCursor
+		if err := decodeCursor(raw, &cursor); err != nil || cursor.Boundary.IsZero() || cursor.Time.Before(cursor.Boundary) || cursor.ID == 0 {
+			return c.Status(400).JSON(fiber.Map{"error": "invalid cursor"})
+		}
+		since = cursor.Boundary.UTC()
+		query = database.DB.Where("timestamp >= ?", since).Order("timestamp DESC,id DESC")
+		query = query.Where("timestamp < ? OR (timestamp = ? AND id < ?)", cursor.Time.UTC(), cursor.Time.UTC(), cursor.ID)
+	}
+	if err := query.Limit(limit + 1).Find(&snapshots).Error; err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "Failed to fetch snapshots"})
 	}
+	next := ""
+	if len(snapshots) > limit {
+		snapshots = snapshots[:limit]
+		last := snapshots[len(snapshots)-1]
+		next = encodeCursor(timeIDCursor{Time: last.Timestamp.UTC(), ID: last.ID, Boundary: since.UTC()})
+	}
+	advertiseNext(c, next)
 	for left, right := 0, len(snapshots)-1; left < right; left, right = left+1, right-1 {
 		snapshots[left], snapshots[right] = snapshots[right], snapshots[left]
 	}

@@ -2,6 +2,7 @@ package backtest
 
 import (
 	"encoding/json"
+	"fmt"
 	"sort"
 	"time"
 	"trading-go/internal/database"
@@ -61,23 +62,41 @@ type BacktestJobResponse struct {
 }
 
 func ListBacktestJobResponses() ([]BacktestJobResponse, error) {
+	responses, _, err := ListBacktestJobResponsePage(time.Time{}, 0, 200)
+	return responses, err
+}
+
+func ListBacktestJobResponsePage(cursorAt time.Time, cursorID uint, limit int) ([]BacktestJobResponse, *database.BacktestJob, error) {
+	if limit < 1 || limit > 1000 {
+		return nil, nil, fmt.Errorf("backtest page limit out of range")
+	}
+	query := database.DB.Select(backtestJobResponseColumns()).Order("created_at DESC,id DESC")
+	if !cursorAt.IsZero() {
+		query = query.Where("created_at < ? OR (created_at = ? AND id < ?)", cursorAt.UTC(), cursorAt.UTC(), cursorID)
+	}
 	var jobs []database.BacktestJob
-	if err := database.DB.Select(backtestJobResponseColumns()).Order("created_at DESC").Limit(200).Find(&jobs).Error; err != nil {
-		return nil, err
+	if err := query.Limit(limit + 1).Find(&jobs).Error; err != nil {
+		return nil, nil, err
+	}
+	var next *database.BacktestJob
+	if len(jobs) > limit {
+		jobs = jobs[:limit]
+		copy := jobs[len(jobs)-1]
+		next = &copy
 	}
 
 	responses := make([]BacktestJobResponse, 0, len(jobs))
 	for i := range jobs {
 		response, err := BuildBacktestJobResponse(&jobs[i])
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if response != nil {
 			responses = append(responses, *response)
 		}
 	}
 
-	return responses, nil
+	return responses, next, nil
 }
 
 func GetBacktestJobResponse(id uint) (*BacktestJobResponse, error) {
@@ -90,7 +109,7 @@ func GetBacktestJobResponse(id uint) (*BacktestJobResponse, error) {
 
 func GetLatestBacktestJobResponse() (*BacktestJobResponse, error) {
 	var job database.BacktestJob
-	if err := database.DB.Select(backtestJobResponseColumns()).Order("created_at DESC").First(&job).Error; err != nil {
+	if err := database.DB.Select(backtestJobResponseColumns()).Order("created_at DESC,id DESC").First(&job).Error; err != nil {
 		return nil, err
 	}
 	return BuildBacktestJobResponse(&job)

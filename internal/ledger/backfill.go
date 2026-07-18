@@ -15,10 +15,13 @@ import (
 const BackfillApproval = "APPROVE_LEDGER_OPENING_BALANCE"
 
 type BackfillOptions struct {
-	Apply      bool   `json:"apply"`
-	Approval   string `json:"approval"`
-	ApprovedBy string `json:"approved_by"`
-	AccountID  string `json:"account_id"`
+	Apply          bool   `json:"apply"`
+	Approval       string `json:"approval"`
+	ApprovedBy     string `json:"approved_by"`
+	AccountID      string `json:"account_id"`
+	PlanID         string `json:"-"`
+	ReportDigest   string `json:"-"`
+	ApprovalDigest string `json:"-"`
 }
 
 type BackfillReport struct {
@@ -119,7 +122,13 @@ func (s *Service) Backfill(ctx context.Context, options BackfillOptions) (Backfi
 			return err
 		}
 		eventID := stableID("event-opening", batchID)
-		metadata, _ := json.Marshal(map[string]interface{}{"legacy_cutover": true, "unresolved": report.Unresolved})
+		metadata, _ := json.Marshal(map[string]interface{}{
+			"legacy_cutover":   true,
+			"unresolved":       report.Unresolved,
+			"backfill_plan_id": options.PlanID,
+			"report_digest":    options.ReportDigest,
+			"approval_digest":  options.ApprovalDigest,
+		})
 		stage08Context := "{}"
 		if flags, active := cutover.Active(); active {
 			stage08Context = flags.ObservationContext("administrative_backfill", map[string]string{"ledger_contract": "stage01"})

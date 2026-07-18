@@ -46,12 +46,16 @@ func cloneStringMap(values map[string]string) map[string]string {
 }
 
 func executeShortlistTradesShared(analyses []AnalyzedCoin, universe *UniverseSelectionResult, settings map[string]string, mode tradingcore.ExecutionMode) ([]AnalyzedCoin, int, error) {
+	identity, strategy, err := buildDeploymentStrategy(settings)
+	if err != nil {
+		return analyses, 0, err
+	}
 	now := time.Now().UTC()
 	captureMode := mode
 	if mode == tradingcore.ExecutionShadow {
 		captureMode = tradingcore.ExecutionPaper
 	}
-	snapshot, policy, err := buildRuntimeDecisionContext(analyses, universe, settings, captureMode, now)
+	snapshot, policy, err := buildRuntimeDecisionContext(analyses, universe, settings, captureMode, now, identity)
 	if err != nil {
 		return analyses, 0, err
 	}
@@ -59,14 +63,18 @@ func executeShortlistTradesShared(analyses []AnalyzedCoin, universe *UniverseSel
 		// The candidate receives only the immutable snapshot and policy. It has no
 		// broker, ledger, repository, broadcaster, settings store, or service
 		// handle, so an approved intent is an inert observed outcome.
-		return observeSharedCandidate(context.Background(), analyses, snapshot, policy)
+		return observeSharedCandidate(context.Background(), analyses, snapshot, policy, strategy)
 	}
 	feeBPS := int64(getSettingInt(settings, "paper_fee_bps", 10))
 	slippageBPS := int64(getSettingInt(settings, "paper_slippage_bps", 5))
 	broker := tradingcore.Broker(tradingcore.NewPaperBroker(tradingcore.NewFixedClock(now), tradingcore.RandomIDGenerator{Prefix: "paper-fill"}, tradingcore.CostModel{FeeBPS: feeBPS, SlippageBPS: slippageBPS, Version: "paper-cost-v1"}))
-	ledger := tradingcore.FillLedger(ledgerpkg.NewContractAdapter(database.DB))
+	ledger := tradingcore.FillLedger(ledgerpkg.NewContractAdapter(database.LedgerWriter()))
+	if mode == tradingcore.ExecutionLiveDryRun {
+		broker = tradingcore.LiveBroker{}
+		ledger = discardOutcomeLedger{}
+	}
 	observer := &runtimeDecisionObserver{}
-	runner := tradingcore.Orchestrator{Source: runtimeDecisionSource{snapshot, policy}, Strategy: tradingcore.LegacyRuleStrategy{}, Risk: tradingcore.PortfolioRiskEngine{}, Broker: broker, Ledger: ledger, Observer: observer}
+	runner := tradingcore.Orchestrator{Source: runtimeDecisionSource{snapshot, policy}, Strategy: strategy, Risk: tradingcore.PortfolioRiskEngine{}, Broker: broker, Ledger: ledger, Observer: observer}
 	result, err := runner.Run(context.Background())
 	if err != nil {
 		operations.RecordBrokerConflict("shared-engine", err)
@@ -114,7 +122,7 @@ func executeShortlistTradesShared(analyses []AnalyzedCoin, universe *UniverseSel
 		autoTrade := getSettingBool(settings, "auto_trade_enabled", false)
 		stage08Context := "{}"
 		if flags, active := cutover.Active(); active {
-			stage08Context = flags.ObservationContext(string(mode), map[string]string{"engine": "shared-engine-v1", "strategy": tradingcore.LegacyStrategyVersion, "policy": analyses[i].PolicyVersion, "model": analyses[i].ModelVersion, "universe": analyses[i].UniverseMode})
+			stage08Context = flags.ObservationContext(string(mode), map[string]string{"engine": "shared-engine-v1", "strategy": identity.String(), "strategy_id": identity.ID, "strategy_version": identity.Version, "strategy_digest": identity.Digest, "strategy_code_identity": identity.CodeIdentity, "policy": analyses[i].PolicyVersion, "model": analyses[i].ModelVersion, "universe": analyses[i].UniverseMode})
 		}
 		history := database.TrendAnalysisHistory{Symbol: analyses[i].Symbol, Timeframe: "15m", ModelVersion: analyses[i].ModelVersion, PolicyVersion: analyses[i].PolicyVersion, UniverseMode: analyses[i].UniverseMode, RolloutState: analyses[i].RolloutState, ExperimentID: stringPtr(analyses[i].ExperimentID), PredictionLogID: analyses[i].PredictionLogID, CurrentPrice: &analyses[i].Price, Change24h: &analyses[i].Change24h, FinalSignal: &analyses[i].Signal, FinalRating: &analyses[i].Rating, AutoTrade: &autoTrade, Decision: &decision, DecisionReason: &reason, DecisionContextJSON: string(result.Trace), Stage08ContextJSON: stage08Context, AnalyzedAt: now}
 		if err := database.DB.Create(&history).Error; err != nil {
@@ -128,8 +136,8 @@ func executeShortlistTradesShared(analyses []AnalyzedCoin, universe *UniverseSel
 	return analyses, opened, nil
 }
 
-func observeSharedCandidate(ctx context.Context, analyses []AnalyzedCoin, snapshot tradingcore.DecisionContext, policy tradingcore.RiskPolicy) ([]AnalyzedCoin, int, error) {
-	strategy, err := (tradingcore.LegacyRuleStrategy{}).Decide(ctx, snapshot)
+func observeSharedCandidate(ctx context.Context, analyses []AnalyzedCoin, snapshot tradingcore.DecisionContext, policy tradingcore.RiskPolicy, implementation tradingcore.Strategy) ([]AnalyzedCoin, int, error) {
+	strategy, err := implementation.Decide(ctx, snapshot)
 	if err != nil {
 		return analyses, 0, err
 	}
@@ -178,7 +186,7 @@ func observeSharedCandidate(ctx context.Context, analyses []AnalyzedCoin, snapsh
 	return analyses, 0, nil
 }
 
-func buildRuntimeDecisionContext(analyses []AnalyzedCoin, universe *UniverseSelectionResult, settings map[string]string, mode tradingcore.ExecutionMode, now time.Time) (tradingcore.DecisionContext, tradingcore.RiskPolicy, error) {
+func buildRuntimeDecisionContext(analyses []AnalyzedCoin, universe *UniverseSelectionResult, settings map[string]string, mode tradingcore.ExecutionMode, now time.Time, identity executedStrategyIdentity) (tradingcore.DecisionContext, tradingcore.RiskPolicy, error) {
 	var wallet database.Wallet
 	if err := database.DB.First(&wallet).Error; err != nil {
 		return tradingcore.DecisionContext{}, tradingcore.RiskPolicy{}, err
@@ -370,7 +378,7 @@ func buildRuntimeDecisionContext(analyses []AnalyzedCoin, universe *UniverseSele
 	if err != nil {
 		return tradingcore.DecisionContext{}, tradingcore.RiskPolicy{}, err
 	}
-	versions := tradingcore.VersionContext{Engine: "shared-engine-v1", Strategy: tradingcore.LegacyStrategyVersion, Settings: "database-settings", Policy: policyVersion, Model: getSettingString(settings, "active_model_version", ""), Dataset: getSettingString(settings, "backtest_dataset_manifest_id", ""), Universe: getSettingString(settings, "universe_policy_version", "runtime-universe")}
+	versions := tradingcore.VersionContext{Engine: "shared-engine-v1", Strategy: identity.String(), Settings: "database-settings", Policy: policyVersion, Model: getSettingString(settings, "active_model_version", ""), Dataset: getSettingString(settings, "backtest_dataset_manifest_id", ""), Universe: getSettingString(settings, "universe_policy_version", "runtime-universe")}
 	if activeFlags {
 		versions.FlagSchema = flags.SchemaVersion
 	}

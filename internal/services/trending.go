@@ -951,12 +951,22 @@ func executeShortlistTradesRouted(analyses []AnalyzedCoin, universe *UniverseSel
 			engineMode = "shadow_compare"
 		case "paper":
 			engineMode = "shared"
+		case "limited_live":
+			results, _, err := shared(analyses, universe, settings, tradingcore.ExecutionLiveDryRun)
+			if err != nil {
+				return markSharedEngineFailure(analyses, err), 0
+			}
+			return results, 0
 		default:
 			return markSharedEngineFailure(analyses, fmt.Errorf("Stage 08 live execution remains fenced; exact governed broker activation is required")), 0
 		}
 	}
 	if err := validateTradingEngineMode(engineMode); err != nil {
 		return markSharedEngineFailure(analyses, err), 0
+	}
+	strategyID := strings.TrimSpace(settings["strategy_id"])
+	if strategyID != "" && strategyID != BaselineStrategyID && engineMode == "legacy" {
+		return markSharedEngineFailure(analyses, fmt.Errorf("experimental strategy requires the shared orchestrator")), 0
 	}
 	if engineMode == "shared" {
 		results, opened, err := shared(analyses, universe, settings, tradingcore.ExecutionPaper)
@@ -1019,7 +1029,7 @@ func persistDualRunParity(input, legacyResults, shadowResults []AnalyzedCoin) {
 		return
 	}
 	_, flagID, _ := flags.Canonical()
-	service := operations.New(database.DB, flags)
+	service := operations.New(database.ParityWriter(), flags)
 	var state database.CutoverState
 	if err := database.DB.First(&state, 1).Error; err != nil {
 		return
@@ -1049,14 +1059,12 @@ func persistDualRunParity(input, legacyResults, shadowResults []AnalyzedCoin) {
 		shadowBySymbol[v.Symbol] = v
 	}
 	comparisons := make([]cutover.Comparison, 0, len(input))
+	contexts := make([]cutover.DecisionContext, 0, len(input))
 	datasetVersion, universeVersion := "", ""
 	windowStart := time.Now().UTC()
 	for _, source := range input {
 		left, lok := legacyBySymbol[source.Symbol]
 		right, rok := shadowBySymbol[source.Symbol]
-		if !lok || !rok {
-			continue
-		}
 		rightAction, rightReason := right.Decision, right.DecisionReason
 		if right.ShadowDecision != "" {
 			rightAction, rightReason = right.ShadowDecision, right.ShadowReason
@@ -1065,8 +1073,25 @@ func persistDualRunParity(input, legacyResults, shadowResults []AnalyzedCoin) {
 		if decisionAt.IsZero() {
 			decisionAt = time.Now().UTC()
 		}
-		datasetVersion, universeVersion = source.DatasetManifestID, source.UniverseMode
+		if datasetVersion == "" {
+			datasetVersion, universeVersion = source.DatasetManifestID, source.UniverseMode
+		} else if datasetVersion != source.DatasetManifestID || universeVersion != source.UniverseMode {
+			operations.RecordGovernanceBypass(fmt.Errorf("dual-run parity inputs mix dataset or universe bindings"))
+			return
+		}
 		contextValue := cutover.DecisionContext{SymbolID: strings.ToUpper(source.Symbol), VenueSymbol: strings.ToUpper(source.Symbol), DecisionAt: decisionAt, MarketAt: decisionAt, FlagSchemaVersion: flags.SchemaVersion, EngineVersion: "legacy-vs-shared-v1", StrategyVersion: tradingcore.LegacyStrategyVersion, PolicyVersion: source.PolicyVersion, ModelVersion: source.ModelVersion, DatasetVersion: source.DatasetManifestID, UniverseVersion: source.UniverseMode, Inputs: map[string]string{"signal": source.Signal, "rating": fmt.Sprint(source.Rating), "price": fmt.Sprint(source.Price)}}
+		contexts = append(contexts, contextValue)
+		if decisionAt.Before(windowStart) {
+			windowStart = decisionAt
+		}
+		if !lok {
+			left = source
+			left.Decision, left.DecisionReason = "observation_failed", "legacy_result_missing"
+		}
+		if !rok {
+			right = source
+			rightAction, rightReason = "observation_failed", "shadow_result_missing"
+		}
 		leftOutcome := parityOutcome(left, left.Decision, left.DecisionReason, "legacy", contextValue, decisionAt)
 		rightOutcome := parityOutcome(right, rightAction, rightReason, "shared-engine-v1", contextValue, decisionAt)
 		comparison, err := cutover.RunParity(context.Background(), contextValue, parityFixedAdapter{leftOutcome}, parityFixedAdapter{rightOutcome}, comparisonPolicy)
@@ -1077,15 +1102,11 @@ func persistDualRunParity(input, legacyResults, shadowResults []AnalyzedCoin) {
 	if len(comparisons) == 0 {
 		return
 	}
-	ids := make([]string, len(comparisons))
-	for i := range comparisons {
-		ids[i] = comparisons[i].ContextID
-	}
 	windowEnd := time.Now().UTC()
 	if !windowEnd.After(windowStart) {
 		windowEnd = windowStart.Add(time.Microsecond)
 	}
-	population, _, err := service.BeginParityPopulation(context.Background(), "legacy:shared", declared.ID, flagID, ids, windowStart, windowEnd, datasetVersion, universeVersion)
+	population, _, err := service.BeginParityPopulation(context.Background(), "legacy:shared", declared.ID, flagID, contexts, windowStart, windowEnd, datasetVersion, universeVersion)
 	if err != nil {
 		operations.RecordGovernanceBypass(fmt.Errorf("declare parity population: %w", err))
 		return
@@ -1450,7 +1471,8 @@ func executeBuyFromTrendingWithContext(symbol string, decisionContext TradeDecis
 	}
 	now := time.Now().UTC()
 	key := fmt.Sprintf("auto-trend-%s-%d", cleanSymbol, now.UnixNano())
-	_, err = ledgerpkg.New(database.DB).ApplyFill(context.Background(), ledgerpkg.FillCommand{IdempotencyKey: key, Symbol: cleanSymbol, Side: "buy", Quantity: quantityExact, RequestedPrice: requestedExact, FillPrice: fillExact, Fee: feeExact, FeeType: ledgerpkg.EventTradingFee, Currency: wallet.Currency, ExecutionMode: ExecutionModePaper, OccurredAt: now, Actor: "auto_trend", Reason: "qualified auto-trend entry", EntrySource: EntrySourceAutoTrend, DecisionTimeframe: DecisionTimeframeDefault, ModelVersion: decisionContext.ModelVersion, PolicyVersion: decisionContext.PolicyVersion, UniverseMode: decisionContext.UniverseMode, RolloutState: decisionContext.RolloutState, ExperimentID: stringPtr(decisionContext.ExperimentID), PredictionLogID: decisionContext.PredictionLogID, DecisionContextJSON: defaultDecisionContextJSON(decisionContext), StopPrice: stopPrice, TakeProfitPrice: takeProfitPrice, TrailingStopPrice: trailingStopPrice, LastAtrValue: lastAtrValue, MaxBarsHeld: maxBarsHeld, Metadata: map[string]interface{}{"fee_bps": feeBPS, "slippage_bps": slippageBPS, "sizing_amount_usdt": amountUsdt}})
+	openingStrategy := BaselineStrategyID + "@" + BaselineStrategyVersion + "#" + BaselineStrategyDigest
+	_, err = ledgerpkg.New(database.LedgerWriter()).ApplyFill(context.Background(), ledgerpkg.FillCommand{IdempotencyKey: key, Symbol: cleanSymbol, Side: "buy", Quantity: quantityExact, RequestedPrice: requestedExact, FillPrice: fillExact, Fee: feeExact, FeeType: ledgerpkg.EventTradingFee, Currency: wallet.Currency, ExecutionMode: ExecutionModePaper, OccurredAt: now, Actor: "auto_trend", Reason: "qualified auto-trend entry", EntrySource: EntrySourceAutoTrend, DecisionTimeframe: DecisionTimeframeDefault, StrategyVersion: openingStrategy, ModelVersion: decisionContext.ModelVersion, PolicyVersion: decisionContext.PolicyVersion, UniverseMode: decisionContext.UniverseMode, RolloutState: decisionContext.RolloutState, ExperimentID: stringPtr(decisionContext.ExperimentID), PredictionLogID: decisionContext.PredictionLogID, DecisionContextJSON: defaultDecisionContextJSON(decisionContext), StopPrice: stopPrice, TakeProfitPrice: takeProfitPrice, TrailingStopPrice: trailingStopPrice, LastAtrValue: lastAtrValue, MaxBarsHeld: maxBarsHeld, Metadata: map[string]interface{}{"fee_bps": feeBPS, "slippage_bps": slippageBPS, "sizing_amount_usdt": amountUsdt}})
 	if err != nil {
 		return false, err
 	}

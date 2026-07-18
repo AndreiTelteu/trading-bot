@@ -1,12 +1,32 @@
 package database_test
 
 import (
+	"errors"
 	"gorm.io/gorm"
 	"strings"
 	"testing"
+	"time"
 	"trading-go/internal/database"
 	"trading-go/internal/testutil"
 )
+
+func TestSeedRejectsReadyLedgerStateWhenWalletProjectionWasMissing(t *testing.T) {
+	db := testutil.SetupPostgresDB(t)
+	now := time.Now().UTC()
+	openingID := "opening_missing_projection"
+	state := database.LedgerMigrationState{AccountID: "primary", Status: "ready", OpeningEventID: &openingID, UnresolvedJSON: "[]", CreatedAt: now, UpdatedAt: now}
+	if err := db.Create(&state).Error; err != nil {
+		t.Fatal(err)
+	}
+	err := database.SeedDataWithDefaults(400, "USDT")
+	if err == nil || !strings.Contains(err.Error(), "wallet projection was missing") {
+		t.Fatalf("expected stale ready-state rejection, got %v", err)
+	}
+	var wallet database.Wallet
+	if lookup := db.First(&wallet, 1).Error; !errors.Is(lookup, gorm.ErrRecordNotFound) {
+		t.Fatalf("wallet creation was not rolled back: %+v err=%v", wallet, lookup)
+	}
+}
 
 func TestFreshLedgerMigrationAndSeedCreatesOpeningCapital(t *testing.T) {
 	db := testutil.OpenPostgresDB(t)
@@ -15,6 +35,7 @@ func TestFreshLedgerMigrationAndSeedCreatesOpeningCapital(t *testing.T) {
 		t.Fatal(err)
 	}
 	database.DB = db
+	database.ConfigureWriterPoolsForTest(db, db)
 	if err := database.SeedDataWithDefaults(123.45, "EUR"); err != nil {
 		t.Fatal(err)
 	}
@@ -73,6 +94,7 @@ func TestGenuinePreLedgerPopulatedSchemaUpgradeDoesNotFabricateHistory(t *testin
 		t.Fatal(err)
 	}
 	database.DB = db
+	database.ConfigureWriterPoolsForTest(db, db)
 	if err := database.SeedData(); err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +132,7 @@ func TestGenuinePreLedgerPopulatedSchemaUpgradeDoesNotFabricateHistory(t *testin
 	assertTrigger(t, db, "positions_economic_guard")
 }
 
-func TestStage03ShapedSchemaUpgradesToPointInTimeWithoutDestructiveRewrite(t *testing.T) {
+func TestStage03ShapedSchemaFailsPreciselyBeforeInstallingProjectionGuard(t *testing.T) {
 	db := testutil.OpenPostgresDB(t)
 	t.Cleanup(func() {
 		testutil.ResetPublicSchema(t, db)
@@ -149,37 +171,12 @@ func TestStage03ShapedSchemaUpgradesToPointInTimeWithoutDestructiveRewrite(t *te
 			t.Fatal(err)
 		}
 	}
-	if err := database.RunMigrations(db); err != nil {
-		t.Fatal(err)
+	if err := database.RunMigrations(db); err == nil || !strings.Contains(err.Error(), "cannot install positions economic guard: shaped schema is missing required columns") || !strings.Contains(err.Error(), "amount_exact") {
+		t.Fatalf("expected precise shaped-schema failure, got %v", err)
 	}
-	for _, model := range []any{&database.Asset{}, &database.ExchangeSymbol{}, &database.HistoricalBar{}, &database.DatasetManifest{}, &database.IngestionCheckpoint{}, &database.ValidationExperiment{}, &database.ValidationEvidence{}, &database.ValidationMLEvidence{}, &database.GovernanceMonitoringEvidence{}} {
-		if !db.Migrator().HasTable(model) {
-			t.Fatalf("missing upgraded table for %T", model)
-		}
-	}
-	var legacy database.UniverseMember
-	if err := db.First(&legacy, "symbol=?", "LEGACYUSDT").Error; err != nil || legacy.UniverseSnapshotID != 7 {
-		t.Fatalf("legacy snapshot member was not preserved: %+v %v", legacy, err)
-	}
-	assertTrigger(t, db, "ledger_events_immutable")
-	assertTrigger(t, db, "fills_immutable")
-	assertTrigger(t, db, "validation_experiments_immutable")
-	assertTrigger(t, db, "validation_ml_evidence_immutable")
-	assertTrigger(t, db, "governance_deployment_guard")
-	if err := database.RunMigrations(db); err != nil {
-		t.Fatalf("Stage 07 migration was not idempotent: %v", err)
-	}
-	var indexCount int64
-	if err := db.Raw(`SELECT count(*) FROM pg_indexes WHERE indexname='idx_fills_provider_identity'`).Scan(&indexCount).Error; err != nil || indexCount != 1 {
-		t.Fatalf("Stage 01 provider identity index changed: %d %v", indexCount, err)
-	}
-	var fkCount int64
-	if err := db.Raw(`SELECT count(*) FROM pg_constraint WHERE conname IN ('stage03_fixture_fill_batch_fk','stage03_fixture_event_batch_fk')`).Scan(&fkCount).Error; err != nil || fkCount != 2 {
-		t.Fatalf("Stage 01 FKs changed: %d %v", fkCount, err)
-	}
-	var payload string
-	if err := db.Raw(`SELECT payload FROM ledger_events WHERE id=12`).Scan(&payload).Error; err != nil || payload != "stage01-preserved" {
-		t.Fatalf("immutable ledger row changed: %q %v", payload, err)
+	var guardCount int64
+	if err := db.Raw(`SELECT count(*) FROM pg_trigger WHERE tgname='positions_economic_guard' AND NOT tgisinternal`).Scan(&guardCount).Error; err != nil || guardCount != 0 {
+		t.Fatalf("invalid projection guard was installed: count=%d err=%v", guardCount, err)
 	}
 }
 

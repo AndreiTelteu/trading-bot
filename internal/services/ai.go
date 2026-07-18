@@ -2014,12 +2014,30 @@ func DenyProposal(id uint) (interface{}, error) {
 }
 
 func GetAllProposals() ([]database.AIProposal, error) {
+	proposals, _, err := GetProposalPage(time.Time{}, 0, 200)
+	return proposals, err
+}
+
+func GetProposalPage(cursorAt time.Time, cursorID uint, limit int) ([]database.AIProposal, *database.AIProposal, error) {
+	if limit < 1 || limit > 1000 {
+		return nil, nil, fmt.Errorf("proposal page limit out of range")
+	}
+	query := database.DB.Order("created_at DESC,id DESC")
+	if !cursorAt.IsZero() {
+		query = query.Where("created_at < ? OR (created_at = ? AND id < ?)", cursorAt.UTC(), cursorAt.UTC(), cursorID)
+	}
 	var proposals []database.AIProposal
-	if err := database.DB.Order("created_at DESC").Limit(200).Find(&proposals).Error; err != nil {
-		return nil, err
+	if err := query.Limit(limit + 1).Find(&proposals).Error; err != nil {
+		return nil, nil, err
+	}
+	var next *database.AIProposal
+	if len(proposals) > limit {
+		proposals = proposals[:limit]
+		copy := proposals[len(proposals)-1]
+		next = &copy
 	}
 	if proposals == nil {
 		proposals = []database.AIProposal{}
 	}
-	return proposals, nil
+	return proposals, next, nil
 }

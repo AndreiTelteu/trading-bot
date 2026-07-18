@@ -62,7 +62,7 @@ func (c *ExecutionCoordinator) RequestClose(req CloseRequest) (*CloseResult, err
 	if req.TriggeredAt.IsZero() {
 		req.TriggeredAt = time.Now()
 	}
-	if err := ledgerpkg.New(database.DB).CheckReady(context.Background(), ""); err != nil {
+	if err := ledgerpkg.New(database.LedgerWriter()).CheckReady(context.Background(), ""); err != nil {
 		return nil, err
 	}
 
@@ -244,7 +244,7 @@ func (c *ExecutionCoordinator) completeClose(position database.Position, order d
 		fillExact, fee, feeType = costedFill, costedFee, ledgerpkg.EventTradingFee
 		metadata = map[string]interface{}{"fee_bps": feeBPS, "slippage_bps": slippageBPS, "broker_status": status}
 	}
-	fillResult, err := ledgerpkg.New(database.DB).ApplyFill(context.Background(), ledgerpkg.FillCommand{IdempotencyKey: key, AccountID: position.AccountID, Symbol: position.Symbol, Side: "sell", Quantity: quantityExact, RequestedPrice: requestedExact, FillPrice: fillExact, Fee: fee, FeeType: feeType, Currency: settlement.Currency, ExecutionMode: mode, ProviderFillID: providerID, ProviderOrderID: providerID, OrderStatus: status, ExistingOrderID: order.ID, OccurredAt: req.TriggeredAt, Actor: nonemptySource(req.Source), Reason: req.Reason, StrategyVersion: position.ModelVersion, PolicyVersion: position.PolicyVersion, Metadata: metadata})
+	fillResult, err := ledgerpkg.New(database.LedgerWriter()).ApplyFill(context.Background(), ledgerpkg.FillCommand{IdempotencyKey: key, AccountID: position.AccountID, Symbol: position.Symbol, Side: "sell", Quantity: quantityExact, RequestedPrice: requestedExact, FillPrice: fillExact, Fee: fee, FeeType: feeType, Currency: settlement.Currency, ExecutionMode: mode, ProviderFillID: providerID, ProviderOrderID: providerID, OrderStatus: status, ExistingOrderID: order.ID, OccurredAt: req.TriggeredAt, Actor: nonemptySource(req.Source), Reason: req.Reason, StrategyVersion: position.StrategyVersion, PolicyVersion: position.PolicyVersion, Metadata: metadata})
 	if err != nil {
 		return nil, err
 	}

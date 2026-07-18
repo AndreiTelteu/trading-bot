@@ -33,6 +33,7 @@ func (StructuredLogDispatcher) Dispatch(_ context.Context, incident database.Ope
 
 type Service struct {
 	DB       *gorm.DB
+	LedgerDB *gorm.DB
 	Flags    cutover.Flags
 	Alerts   AlertDispatcher
 	Now      func() time.Time
@@ -40,7 +41,7 @@ type Service struct {
 }
 
 func New(db *gorm.DB, flags cutover.Flags) Service {
-	return Service{DB: db, Flags: flags, Alerts: StructuredLogDispatcher{}, Now: func() time.Time { return time.Now().UTC().Truncate(time.Microsecond) }}
+	return Service{DB: db, LedgerDB: database.LedgerWriter(), Flags: flags, Alerts: StructuredLogDispatcher{}, Now: func() time.Time { return time.Now().UTC().Truncate(time.Microsecond) }}
 }
 func (s Service) now() time.Time {
 	if s.Now == nil {
@@ -55,6 +56,26 @@ func hash(v any) (string, []byte, error) {
 	}
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:]), b, nil
+}
+
+const bootstrapTransitionID = "0000000000000000000000000000000000000000000000000000000000000000"
+const bootstrapTransitionKey = "stage08-bootstrap-sentinel-v1"
+const bootstrapTransitionPrincipal = "system:stage08-bootstrap"
+const bootstrapTransitionReason = "deterministic initial legacy authority bootstrap"
+
+func bootstrapTransition(snapshot database.Stage08FlagSnapshot, envelope, digest string, at time.Time) database.CutoverTransition {
+	return database.CutoverTransition{ID: bootstrapTransitionID, IdempotencyKey: bootstrapTransitionKey, FromStage: "schema_legacy", ToStage: "schema_legacy", FromAuthority: "legacy", ToAuthority: "legacy", FlagSnapshotID: snapshot.ID, FlagSnapshotDigest: snapshot.ContentDigest, SourceStateVersion: 0, SourceEnvelopeJSON: envelope, SourceEnvelopeDigest: digest, TargetEnvelopeJSON: envelope, TargetEnvelopeDigest: digest, RequestDigest: bootstrapTransitionID, Principal: bootstrapTransitionPrincipal, Reason: bootstrapTransitionReason, PrerequisitesJSON: "[]", ContentDigest: bootstrapTransitionID, CreatedAt: at}
+}
+
+func validateBootstrapTransition(db *gorm.DB, state database.CutoverState, snapshot database.Stage08FlagSnapshot) error {
+	var transition database.CutoverTransition
+	if err := db.First(&transition, "id=?", bootstrapTransitionID).Error; err != nil {
+		return fmt.Errorf("deterministic bootstrap transition missing: %w", err)
+	}
+	if transition.ID != bootstrapTransitionID || transition.ContentDigest != bootstrapTransitionID || transition.IdempotencyKey != bootstrapTransitionKey || transition.FromStage != "schema_legacy" || transition.ToStage != "schema_legacy" || transition.FromAuthority != "legacy" || transition.ToAuthority != "legacy" || transition.FlagSnapshotID != snapshot.ID || transition.FlagSnapshotDigest != snapshot.ContentDigest || transition.SourceStateVersion != 0 || !canonicalJSONEqual(transition.SourceEnvelopeJSON, state.AuthorityJSON) || transition.SourceEnvelopeDigest != state.AuthorityDigest || !canonicalJSONEqual(transition.TargetEnvelopeJSON, state.AuthorityJSON) || transition.TargetEnvelopeDigest != state.AuthorityDigest || transition.RequestDigest != bootstrapTransitionID || transition.Principal != bootstrapTransitionPrincipal || transition.Reason != bootstrapTransitionReason || transition.PrerequisitesJSON != "[]" || transition.RollbackOf != nil {
+		return fmt.Errorf("deterministic bootstrap transition is inconsistent or tampered")
+	}
+	return nil
 }
 
 func (s Service) Initialize(ctx context.Context) (database.Stage08FlagSnapshot, error) {
@@ -82,7 +103,12 @@ func (s Service) Initialize(ctx context.Context) (database.Stage08FlagSnapshot, 
 				return err
 			}
 			envelopeJSON, envelopeDigest := authorityEnvelope("schema_legacy", "legacy", row.ID, row.ContentDigest, "", "")
-			state = database.CutoverState{ID: 1, Stage: "schema_legacy", Authority: "legacy", FlagSnapshotID: row.ID, FlagDigest: row.ContentDigest, AuthorityJSON: envelopeJSON, AuthorityDigest: envelopeDigest, TransitionID: strings.Repeat("0", 64), Version: 1, UpdatedAt: s.now()}
+			at := s.now()
+			sentinel := bootstrapTransition(row, envelopeJSON, envelopeDigest, at)
+			if err := tx.Create(&sentinel).Error; err != nil {
+				return err
+			}
+			state = database.CutoverState{ID: 1, Stage: "schema_legacy", Authority: "legacy", FlagSnapshotID: row.ID, FlagDigest: row.ContentDigest, AuthorityJSON: envelopeJSON, AuthorityDigest: envelopeDigest, TransitionID: bootstrapTransitionID, Version: 1, UpdatedAt: at}
 			return tx.Create(&state).Error
 		}); err != nil {
 			return row, err
@@ -121,6 +147,11 @@ func (s Service) Initialize(ctx context.Context) (database.Stage08FlagSnapshot, 
 		expectedJSON, expectedDigest := authorityEnvelope(state.Stage, state.Authority, persisted.ID, persisted.ContentDigest, stageContextFor(state.Stage, verified), "")
 		if state.AuthorityDigest != expectedDigest || canonicalJSONEqual(state.AuthorityJSON, expectedJSON) == false {
 			return row, fmt.Errorf("cutover authority envelope integrity mismatch")
+		}
+		if state.TransitionID == bootstrapTransitionID {
+			if err := validateBootstrapTransition(s.DB.WithContext(ctx), state, persisted); err != nil {
+				return row, err
+			}
 		}
 	}
 	var engineSetting database.Setting
@@ -199,6 +230,69 @@ func (s Service) Initialize(ctx context.Context) (database.Stage08FlagSnapshot, 
 		return row, err
 	}
 	return row, nil
+}
+
+// InitializeFromPersistedAuthority initializes the in-process cutover view from
+// the authority recorded in the database. It is deliberately for isolated
+// restore verification and backup-evidence recording only: unlike Initialize,
+// it never reads, compares, writes, or bootstraps local flag configuration.
+func (s Service) InitializeFromPersistedAuthority(ctx context.Context) (database.Stage08FlagSnapshot, error) {
+	state, row, flags, err := s.loadPersistedAuthority(ctx)
+	if err != nil {
+		return database.Stage08FlagSnapshot{}, err
+	}
+	if err := cutover.ActivateVerified(flags, row.ID, state.Authority); err != nil {
+		return database.Stage08FlagSnapshot{}, err
+	}
+	return row, nil
+}
+
+// loadPersistedAuthority is intentionally side-effect free. In particular it
+// must remain safe for the restricted record-backup runtime pool.
+func (s Service) loadPersistedAuthority(ctx context.Context) (database.CutoverState, database.Stage08FlagSnapshot, cutover.Flags, error) {
+	var state database.CutoverState
+	if err := s.DB.WithContext(ctx).First(&state, 1).Error; err != nil {
+		return state, database.Stage08FlagSnapshot{}, cutover.Flags{}, fmt.Errorf("persisted cutover state required: %w", err)
+	}
+	if state.ID != 1 || stageIndex(state.Stage) < 0 || state.FlagSnapshotID == "" || state.FlagDigest == "" || state.AuthorityDigest == "" || state.AuthorityJSON == "" || state.AuthorityJSON == "{}" || state.TransitionID == "" || state.Authority != authorityForStage(state.Stage) {
+		return state, database.Stage08FlagSnapshot{}, cutover.Flags{}, fmt.Errorf("persisted cutover authority state is incomplete or inconsistent")
+	}
+	var row database.Stage08FlagSnapshot
+	if err := s.DB.WithContext(ctx).First(&row, "id=?", state.FlagSnapshotID).Error; err != nil {
+		return state, row, cutover.Flags{}, fmt.Errorf("persisted cutover flag snapshot missing: %w", err)
+	}
+	flags, err := verifyFlagSnapshot(row)
+	if err != nil {
+		return state, row, cutover.Flags{}, fmt.Errorf("persisted cutover flag snapshot is corrupt: %w", err)
+	}
+	if row.ID != state.FlagSnapshotID || row.ContentDigest != state.FlagDigest {
+		return state, row, cutover.Flags{}, fmt.Errorf("persisted cutover flag snapshot is unbound")
+	}
+	if err := validateFlagsForStage(flags, state.Stage); err != nil {
+		return state, row, cutover.Flags{}, fmt.Errorf("persisted cutover flags are inconsistent with stage: %w", err)
+	}
+	expectedJSON, expectedDigest := authorityEnvelope(state.Stage, state.Authority, row.ID, row.ContentDigest, stageContextFor(state.Stage, flags), "")
+	if state.AuthorityDigest != expectedDigest || !canonicalJSONEqual(state.AuthorityJSON, expectedJSON) {
+		return state, row, cutover.Flags{}, fmt.Errorf("persisted cutover authority envelope integrity mismatch")
+	}
+	legacyTransition := bootstrapTransitionID
+	if state.TransitionID == legacyTransition {
+		if state.Stage != "schema_legacy" || state.Authority != "legacy" || row.ID != mustFlagDigest(cutover.SafeFlags()) || state.Version < 1 {
+			return state, row, cutover.Flags{}, fmt.Errorf("persisted legacy cutover authority is ambiguous or tampered")
+		}
+		if err := validateBootstrapTransition(s.DB.WithContext(ctx), state, row); err != nil {
+			return state, row, cutover.Flags{}, err
+		}
+		return state, row, flags, nil
+	}
+	var transition database.CutoverTransition
+	if err := s.DB.WithContext(ctx).First(&transition, "id=?", state.TransitionID).Error; err != nil {
+		return state, row, cutover.Flags{}, fmt.Errorf("persisted cutover transition missing: %w", err)
+	}
+	if transition.ID != state.TransitionID || transition.ContentDigest != transition.ID || transition.ToStage != state.Stage || transition.ToAuthority != state.Authority || transition.FlagSnapshotID != row.ID || transition.FlagSnapshotDigest != row.ContentDigest || transition.TargetEnvelopeDigest != state.AuthorityDigest || !canonicalJSONEqual(transition.TargetEnvelopeJSON, state.AuthorityJSON) {
+		return state, row, cutover.Flags{}, fmt.Errorf("persisted cutover state does not match immutable transition authority")
+	}
+	return state, row, flags, nil
 }
 func (s Service) DeclareFlagSnapshot(ctx context.Context, flags cutover.Flags, principal string) (database.Stage08FlagSnapshot, error) {
 	var row database.Stage08FlagSnapshot
@@ -505,6 +599,9 @@ func postgresTime(value time.Time) time.Time {
 }
 
 func verifyParityPopulation(db *gorm.DB, row database.ParityPopulation) error {
+	if row.DatasetVersion == "" || row.UniverseVersion == "" || !postgresTime(row.WindowEnd).After(postgresTime(row.WindowStart)) {
+		return fmt.Errorf("parity population bindings are invalid")
+	}
 	var ids []string
 	if err := json.Unmarshal([]byte(row.ContextDigestsJSON), &ids); err != nil || len(ids) == 0 || int64(len(ids)) != row.ExpectedContexts {
 		return fmt.Errorf("parity population context set is invalid")
@@ -517,6 +614,11 @@ func verifyParityPopulation(db *gorm.DB, row database.ParityPopulation) error {
 		}
 	}
 	canonicalJSON, _ := json.Marshal(canonicalIDs)
+	storedIDs, storedErr := canonicalJSONText(row.ContextDigestsJSON)
+	wantedIDs, _ := canonicalJSONText(string(canonicalJSON))
+	if storedErr != nil || storedIDs != wantedIDs {
+		return fmt.Errorf("parity population context set is not canonical")
+	}
 	var policy database.ParityAcceptancePolicy
 	if err := db.First(&policy, "id=?", row.PolicyID).Error; err != nil || verifyParityPolicy(policy) != nil || policy.ContentDigest != row.PolicyDigest {
 		return fmt.Errorf("parity population policy binding mismatch")
@@ -540,12 +642,24 @@ func verifyParityPopulation(db *gorm.DB, row database.ParityPopulation) error {
 	return nil
 }
 
-func (s Service) BeginParityPopulation(ctx context.Context, pairKey, policyID, flagID string, contextIDs []string, windowStart, windowEnd time.Time, datasetVersion, universeVersion string) (database.ParityPopulation, cutover.ComparisonPolicy, error) {
+func (s Service) BeginParityPopulation(ctx context.Context, pairKey, policyID, flagID string, contexts []cutover.DecisionContext, windowStart, windowEnd time.Time, datasetVersion, universeVersion string) (database.ParityPopulation, cutover.ComparisonPolicy, error) {
 	var out database.ParityPopulation
-	if pairKey == "" || policyID == "" || flagID == "" || len(contextIDs) == 0 || len(contextIDs) > 10000 || !windowEnd.After(windowStart) {
+	windowStart, windowEnd = postgresTime(windowStart), postgresTime(windowEnd)
+	if pairKey == "" || policyID == "" || flagID == "" || datasetVersion == "" || universeVersion == "" || len(contexts) == 0 || len(contexts) > 10000 || !windowEnd.After(windowStart) {
 		return out, cutover.ComparisonPolicy{}, fmt.Errorf("bounded non-empty parity population and window required")
 	}
-	ids := append([]string(nil), contextIDs...)
+	ids := make([]string, 0, len(contexts))
+	for _, captured := range contexts {
+		decisionAt := postgresTime(captured.DecisionAt)
+		if captured.DatasetVersion != datasetVersion || captured.UniverseVersion != universeVersion || decisionAt.Before(windowStart) || decisionAt.After(windowEnd) {
+			return out, cutover.ComparisonPolicy{}, fmt.Errorf("parity contexts must share exact dataset, universe, and window bindings")
+		}
+		id, err := cutover.CanonicalContextID(captured)
+		if err != nil || (captured.ContextID != "" && captured.ContextID != id) {
+			return out, cutover.ComparisonPolicy{}, fmt.Errorf("invalid server-derived context identity")
+		}
+		ids = append(ids, id)
+	}
 	sort.Strings(ids)
 	for i, id := range ids {
 		if len(id) != 64 || (i > 0 && id == ids[i-1]) {
@@ -578,9 +692,9 @@ func (s Service) BeginParityPopulation(ctx context.Context, pairKey, policyID, f
 		Schema, Pair, Policy, PolicyDigest, Flag, FlagDigest, Attempt, Dataset, Universe string
 		Start, End                                                                       time.Time
 		IDs                                                                              json.RawMessage
-	}{"stage08-parity-population-v1", pairKey, p.ID, p.ContentDigest, flagID, snapshot.ContentDigest, state.TransitionID, datasetVersion, universeVersion, postgresTime(windowStart), postgresTime(windowEnd), idsJSON}
+	}{"stage08-parity-population-v1", pairKey, p.ID, p.ContentDigest, flagID, snapshot.ContentDigest, state.TransitionID, datasetVersion, universeVersion, windowStart, windowEnd, idsJSON}
 	id, _, _ := hash(canonical)
-	out = database.ParityPopulation{ID: id, PairKey: pairKey, PolicyID: p.ID, PolicyDigest: p.ContentDigest, FlagSnapshotID: flagID, FlagSnapshotDigest: snapshot.ContentDigest, CutoverAttemptID: state.TransitionID, WindowStart: postgresTime(windowStart), WindowEnd: postgresTime(windowEnd), ExpectedContexts: int64(len(ids)), ContextDigestsJSON: string(idsJSON), DatasetVersion: datasetVersion, UniverseVersion: universeVersion, ContentDigest: id, CreatedAt: s.now()}
+	out = database.ParityPopulation{ID: id, PairKey: pairKey, PolicyID: p.ID, PolicyDigest: p.ContentDigest, FlagSnapshotID: flagID, FlagSnapshotDigest: snapshot.ContentDigest, CutoverAttemptID: state.TransitionID, WindowStart: windowStart, WindowEnd: windowEnd, ExpectedContexts: int64(len(ids)), ContextDigestsJSON: string(idsJSON), DatasetVersion: datasetVersion, UniverseVersion: universeVersion, ContentDigest: id, CreatedAt: s.now()}
 	if err := s.DB.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&out).Error; err != nil {
 		return out, cutover.ComparisonPolicy{}, err
 	}
@@ -611,6 +725,15 @@ func (s Service) PersistParityBound(ctx context.Context, binding ParityBinding, 
 	if err := cutover.VerifyComparisonWithPolicy(c, boundPolicy); err != nil {
 		return database.ParityObservation{}, err
 	}
+	at = postgresTime(at)
+	if at.Before(population.WindowStart) || at.After(population.WindowEnd) {
+		return database.ParityObservation{}, fmt.Errorf("observation timestamp is outside immutable population window")
+	}
+	for _, outcome := range []cutover.DecisionOutcome{c.Legacy, c.Candidate} {
+		if outcome.DatasetVersion != population.DatasetVersion || outcome.UniverseVersion != population.UniverseVersion {
+			return database.ParityObservation{}, fmt.Errorf("observation dataset or universe binding mismatch")
+		}
+	}
 	var allowed []string
 	if err := json.Unmarshal([]byte(population.ContextDigestsJSON), &allowed); err != nil {
 		return database.ParityObservation{}, err
@@ -623,16 +746,33 @@ func (s Service) PersistParityBound(ctx context.Context, binding ParityBinding, 
 	codes, _ := json.Marshal(c.DivergenceCodes)
 	reasons, _ := json.Marshal(c.ExpectedReasons)
 	sample, _ := json.Marshal(struct{ Legacy, Candidate cutover.DecisionOutcome }{c.Legacy, c.Candidate})
-	boundID, _, _ := hash(struct{ Population, Comparison string }{population.ID, c.ContentDigest})
-	row := database.ParityObservation{ID: boundID, ContextID: c.ContextID, PairKey: pairKey, SchemaVersion: cutover.ParitySchemaVersion, FlagSnapshotID: flagID, FlagSnapshotDigest: population.FlagSnapshotDigest, PolicyID: population.PolicyID, PolicyDigest: population.PolicyDigest, PopulationID: population.ID, CutoverAttemptID: population.CutoverAttemptID, LegacyDigest: c.LegacyDigest, CandidateDigest: c.CandidateDigest, Classification: c.Classification, DivergenceCodesJSON: string(codes), ExpectedPolicyReasons: string(reasons), CompactSampleJSON: string(sample), ContentDigest: boundID, ObservedAt: at.UTC()}
+	comparisonJSON, _ := json.Marshal(c)
+	boundID, _, _ := hash(struct {
+		Population, Comparison string
+		Observed               time.Time
+	}{population.ID, c.ContentDigest, at})
+	row := database.ParityObservation{ID: boundID, ContextID: c.ContextID, PairKey: pairKey, SchemaVersion: cutover.ParitySchemaVersion, FlagSnapshotID: flagID, FlagSnapshotDigest: population.FlagSnapshotDigest, PolicyID: population.PolicyID, PolicyDigest: population.PolicyDigest, PopulationID: population.ID, CutoverAttemptID: population.CutoverAttemptID, LegacyDigest: c.LegacyDigest, CandidateDigest: c.CandidateDigest, ComparisonDigest: c.ContentDigest, ComparisonJSON: string(comparisonJSON), Classification: c.Classification, DivergenceCodesJSON: string(codes), ExpectedPolicyReasons: string(reasons), CompactSampleJSON: string(sample), ContentDigest: boundID, ObservedAt: at}
 	if len(row.CompactSampleJSON) > 32<<10 {
 		return row, fmt.Errorf("parity compact sample exceeds 32KiB")
 	}
 	err := s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Exec("SET LOCAL ROLE trading_bot_parity_writer").Error; err != nil {
+			return fmt.Errorf("assume parity writer role: %w", err)
+		}
+		// Observations are immutable, so the parity role intentionally has no
+		// UPDATE privilege. PostgreSQL requires that privilege for SELECT FOR
+		// UPDATE, even when no update follows. Serialize writers for this bounded
+		// immutable population with an advisory transaction lock instead.
+		if err := tx.Exec("SELECT pg_advisory_xact_lock(hashtext(?))", "parity:"+population.ID).Error; err != nil {
+			return fmt.Errorf("lock parity population: %w", err)
+		}
 		var existing database.ParityObservation
-		query := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&existing, "context_id=? AND pair_key=?", row.ContextID, row.PairKey)
+		query := tx.First(&existing, "population_id=? AND context_id=? AND pair_key=?", row.PopulationID, row.ContextID, row.PairKey)
 		if query.Error == nil {
-			if existing.ContentDigest != row.ContentDigest {
+			if _, err := verifyParityObservation(existing, population, boundPolicy); err != nil {
+				return fmt.Errorf("existing parity observation failed verification: %w", err)
+			}
+			if existing.ContentDigest != row.ContentDigest || existing.ComparisonDigest != row.ComparisonDigest {
 				return fmt.Errorf("parity idempotency payload conflict")
 			}
 			row = existing
@@ -642,11 +782,11 @@ func (s Service) PersistParityBound(ctx context.Context, binding ParityBinding, 
 			return query.Error
 		}
 		var count int64
-		if err := tx.Model(&database.ParityObservation{}).Where("pair_key=?", pairKey).Count(&count).Error; err != nil {
+		if err := tx.Model(&database.ParityObservation{}).Where("population_id=?", population.ID).Count(&count).Error; err != nil {
 			return err
 		}
 		if count >= 10000 {
-			return fmt.Errorf("parity retention cap reached for pair %s", pairKey)
+			return fmt.Errorf("parity retention cap reached for population %s", population.ID)
 		}
 		if err := tx.Create(&row).Error; err != nil {
 			return err
@@ -706,6 +846,13 @@ func (s Service) EvaluateParity(populationID string) (ParityAggregate, error) {
 	if err := verifyParityPopulation(s.DB, population); err != nil {
 		return ParityAggregate{}, err
 	}
+	var state database.CutoverState
+	if err := s.DB.First(&state, 1).Error; err != nil {
+		return ParityAggregate{}, err
+	}
+	if population.CutoverAttemptID != state.TransitionID {
+		return ParityAggregate{}, fmt.Errorf("parity population is not bound to the current cutover attempt")
+	}
 	var p database.ParityAcceptancePolicy
 	if err := s.DB.First(&p, "id=?", population.PolicyID).Error; err != nil {
 		return ParityAggregate{}, err
@@ -713,13 +860,25 @@ func (s Service) EvaluateParity(populationID string) (ParityAggregate, error) {
 	if err := verifyParityPolicy(p); err != nil {
 		return ParityAggregate{}, err
 	}
+	var expected []cutover.ExpectedReason
+	if err := json.Unmarshal([]byte(p.ExpectedReasonsJSON), &expected); err != nil {
+		return ParityAggregate{}, fmt.Errorf("parity policy expected reasons corrupt: %w", err)
+	}
+	boundPolicy := cutover.ComparisonPolicy{QuantityToleranceBPS: p.QuantityToleranceBPS, NotionalToleranceBPS: p.NotionalToleranceBPS, Expected: expected}
 	var rows []database.ParityObservation
-	if err := s.DB.Where("population_id=? AND policy_id=? AND flag_snapshot_id=? AND cutover_attempt_id=?", population.ID, population.PolicyID, population.FlagSnapshotID, population.CutoverAttemptID).Order("context_id").Limit(10000).Find(&rows).Error; err != nil {
+	if err := s.DB.Where("population_id=? AND policy_id=? AND flag_snapshot_id=? AND cutover_attempt_id=?", population.ID, population.PolicyID, population.FlagSnapshotID, population.CutoverAttemptID).Order("context_id").Limit(10001).Find(&rows).Error; err != nil {
 		return ParityAggregate{}, err
+	}
+	if int64(len(rows)) > population.ExpectedContexts {
+		return ParityAggregate{}, fmt.Errorf("parity observations exceed immutable population")
 	}
 	a := ParityAggregate{Total: int64(len(rows))}
 	for _, r := range rows {
-		switch r.Classification {
+		comparison, err := verifyParityObservation(r, population, boundPolicy)
+		if err != nil {
+			return ParityAggregate{}, err
+		}
+		switch comparison.Classification {
 		case "match":
 			a.Matches++
 		case "expected":
@@ -727,17 +886,18 @@ func (s Service) EvaluateParity(populationID string) (ParityAggregate, error) {
 		case "unexplained":
 			a.Unexplained++
 		}
-		if r.Classification == "unexplained" {
-			if strings.Contains(r.DivergenceCodesJSON, "action") {
+		if comparison.Classification == "unexplained" {
+			codes := strings.Join(comparison.DivergenceCodes, ",")
+			if strings.Contains(codes, "action") {
 				a.Action++
 			}
-			if strings.Contains(r.DivergenceCodesJSON, "quantity") || strings.Contains(r.DivergenceCodesJSON, "notional") {
+			if strings.Contains(codes, "quantity") || strings.Contains(codes, "notional") {
 				a.Quantity++
 			}
-			if strings.Contains(r.DivergenceCodesJSON, "reason") {
+			if strings.Contains(codes, "reason") {
 				a.Reason++
 			}
-			if strings.Contains(r.DivergenceCodesJSON, "version") {
+			if strings.Contains(codes, "version") {
 				a.Version++
 			}
 		}
@@ -764,6 +924,69 @@ func (s Service) EvaluateParity(populationID string) (ParityAggregate, error) {
 		a.Accepted = true
 	}
 	return a, nil
+}
+
+func verifyParityObservation(row database.ParityObservation, population database.ParityPopulation, policy cutover.ComparisonPolicy) (cutover.Comparison, error) {
+	var comparison cutover.Comparison
+	if err := json.Unmarshal([]byte(row.ComparisonJSON), &comparison); err != nil {
+		return comparison, fmt.Errorf("parity comparison content is corrupt")
+	}
+	storedComparison, comparisonErr := canonicalJSONText(row.ComparisonJSON)
+	wantedComparisonBytes, _ := json.Marshal(comparison)
+	wantedComparison, _ := canonicalJSONText(string(wantedComparisonBytes))
+	if comparisonErr != nil || storedComparison != wantedComparison {
+		return comparison, fmt.Errorf("parity comparison content is not canonical")
+	}
+	if err := cutover.VerifyComparisonWithPolicy(comparison, policy); err != nil {
+		return comparison, err
+	}
+	var allowed []string
+	if err := json.Unmarshal([]byte(population.ContextDigestsJSON), &allowed); err != nil {
+		return comparison, fmt.Errorf("parity population context set is corrupt")
+	}
+	index := sort.SearchStrings(allowed, comparison.ContextID)
+	if index >= len(allowed) || allowed[index] != comparison.ContextID {
+		return comparison, fmt.Errorf("parity observation context is outside immutable population")
+	}
+	codes, _ := json.Marshal(comparison.DivergenceCodes)
+	reasons, _ := json.Marshal(comparison.ExpectedReasons)
+	sample, _ := json.Marshal(struct{ Legacy, Candidate cutover.DecisionOutcome }{comparison.Legacy, comparison.Candidate})
+	storedCodes, codesErr := canonicalJSONText(row.DivergenceCodesJSON)
+	wantedCodes, _ := canonicalJSONText(string(codes))
+	storedReasons, reasonsErr := canonicalJSONText(row.ExpectedPolicyReasons)
+	wantedReasons, _ := canonicalJSONText(string(reasons))
+	storedSample, sampleErr := canonicalJSONText(row.CompactSampleJSON)
+	wantedSample, _ := canonicalJSONText(string(sample))
+	id, _, _ := hash(struct {
+		Population, Comparison string
+		Observed               time.Time
+	}{population.ID, comparison.ContentDigest, postgresTime(row.ObservedAt)})
+	if row.ID != id || row.ContentDigest != id || row.ComparisonDigest != comparison.ContentDigest || row.ContextID != comparison.ContextID ||
+		row.PairKey != population.PairKey || row.PopulationID != population.ID || row.PolicyID != population.PolicyID || row.PolicyDigest != population.PolicyDigest ||
+		row.FlagSnapshotID != population.FlagSnapshotID || row.FlagSnapshotDigest != population.FlagSnapshotDigest || row.CutoverAttemptID != population.CutoverAttemptID ||
+		row.SchemaVersion != cutover.ParitySchemaVersion || row.LegacyDigest != comparison.LegacyDigest || row.CandidateDigest != comparison.CandidateDigest ||
+		row.Classification != comparison.Classification || codesErr != nil || reasonsErr != nil || sampleErr != nil || storedCodes != wantedCodes || storedReasons != wantedReasons || storedSample != wantedSample ||
+		row.ObservedAt.Before(population.WindowStart) || row.ObservedAt.After(population.WindowEnd) {
+		return comparison, fmt.Errorf("parity observation binding or content digest mismatch")
+	}
+	for _, outcome := range []cutover.DecisionOutcome{comparison.Legacy, comparison.Candidate} {
+		if outcome.DatasetVersion != population.DatasetVersion || outcome.UniverseVersion != population.UniverseVersion {
+			return comparison, fmt.Errorf("parity observation dataset or universe binding mismatch")
+		}
+		if outcome.DecisionAt.Before(population.WindowStart) || outcome.DecisionAt.After(population.WindowEnd) || outcome.SignalAt.After(outcome.DecisionAt) {
+			return comparison, fmt.Errorf("parity observation outcome timestamp binding mismatch")
+		}
+	}
+	return comparison, nil
+}
+
+func canonicalJSONText(raw string) (string, error) {
+	var value any
+	if err := json.Unmarshal([]byte(raw), &value); err != nil {
+		return "", err
+	}
+	canonical, err := json.Marshal(value)
+	return string(canonical), err
 }
 
 var stages = []string{"schema_legacy", "ledger_compare", "shared_shadow", "parity_accepted", "new_paper", "paper_observation", "research_validation", "limited_live", "legacy_removal_eligible"}
@@ -799,6 +1022,7 @@ type PrerequisiteEvidenceRequest struct {
 
 func (s Service) DeclarePrerequisiteEvidence(ctx context.Context, r PrerequisiteEvidenceRequest, principal string) (database.CutoverPrerequisiteEvidence, error) {
 	var out database.CutoverPrerequisiteEvidence
+	r.WindowStart, r.WindowEnd = postgresTime(r.WindowStart), postgresTime(r.WindowEnd)
 	if principal == "" || r.EvidenceType == "" || stageIndex(r.TargetStage) < 0 || r.FlagSnapshotID == "" || !r.WindowEnd.After(r.WindowStart) || r.WindowEnd.After(s.now()) {
 		return out, fmt.Errorf("trusted principal, known target, snapshot, and completed evidence window required")
 	}
@@ -822,9 +1046,9 @@ func (s Service) DeclarePrerequisiteEvidence(ctx context.Context, r Prerequisite
 			Schema, Type, Source, Target, Context, Flag, FlagDigest, Policy, Dataset, Universe, Deployment, Principal string
 			Start, End                                                                                                time.Time
 			Payload                                                                                                   json.RawMessage
-		}{"stage08-prerequisite-evidence-v1", r.EvidenceType, state.Stage, r.TargetStage, r.ContextKey, r.FlagSnapshotID, snap.ContentDigest, r.ParityPolicyID, r.DatasetVersion, r.UniverseVersion, r.Stage07DeploymentID, principal, r.WindowStart.UTC(), r.WindowEnd.UTC(), payload}
+		}{"stage08-prerequisite-evidence-v1", r.EvidenceType, state.Stage, r.TargetStage, r.ContextKey, r.FlagSnapshotID, snap.ContentDigest, r.ParityPolicyID, r.DatasetVersion, r.UniverseVersion, r.Stage07DeploymentID, principal, r.WindowStart, r.WindowEnd, payload}
 		id, _, _ := hash(canonical)
-		out = database.CutoverPrerequisiteEvidence{ID: id, EvidenceType: r.EvidenceType, SourceStage: state.Stage, TargetStage: r.TargetStage, ContextKey: r.ContextKey, FlagSnapshotID: r.FlagSnapshotID, ParityPolicyID: r.ParityPolicyID, DatasetVersion: r.DatasetVersion, UniverseVersion: r.UniverseVersion, Stage07DeploymentID: r.Stage07DeploymentID, WindowStart: r.WindowStart.UTC(), WindowEnd: r.WindowEnd.UTC(), PayloadJSON: string(payload), ContentDigest: id, CreatedBy: principal, CreatedAt: s.now()}
+		out = database.CutoverPrerequisiteEvidence{ID: id, EvidenceType: r.EvidenceType, SourceStage: state.Stage, TargetStage: r.TargetStage, ContextKey: r.ContextKey, FlagSnapshotID: r.FlagSnapshotID, ParityPolicyID: r.ParityPolicyID, DatasetVersion: r.DatasetVersion, UniverseVersion: r.UniverseVersion, Stage07DeploymentID: r.Stage07DeploymentID, WindowStart: r.WindowStart, WindowEnd: r.WindowEnd, PayloadJSON: string(payload), ContentDigest: id, CreatedBy: principal, CreatedAt: s.now()}
 		return tx.Create(&out).Error
 	})
 	return out, err
@@ -839,7 +1063,7 @@ func verifyPrerequisiteEvidenceIntegrity(db *gorm.DB, row database.CutoverPrereq
 		Schema, Type, Source, Target, Context, Flag, FlagDigest, Policy, Dataset, Universe, Deployment, Principal string
 		Start, End                                                                                                time.Time
 		Payload                                                                                                   json.RawMessage
-	}{"stage08-prerequisite-evidence-v1", row.EvidenceType, row.SourceStage, row.TargetStage, row.ContextKey, row.FlagSnapshotID, "", row.ParityPolicyID, row.DatasetVersion, row.UniverseVersion, row.Stage07DeploymentID, row.CreatedBy, row.WindowStart.UTC(), row.WindowEnd.UTC(), canonicalPayload}
+	}{"stage08-prerequisite-evidence-v1", row.EvidenceType, row.SourceStage, row.TargetStage, row.ContextKey, row.FlagSnapshotID, "", row.ParityPolicyID, row.DatasetVersion, row.UniverseVersion, row.Stage07DeploymentID, row.CreatedBy, postgresTime(row.WindowStart), postgresTime(row.WindowEnd), canonicalPayload}
 	var snapshot database.Stage08FlagSnapshot
 	if db == nil {
 		return fmt.Errorf("database unavailable")
@@ -1120,6 +1344,13 @@ func (s Service) verifyPrerequisite(ctx context.Context, tx *gorm.DB, key string
 		}
 		if population.PolicyID != r.ParityPolicyID || population.FlagSnapshotID != r.FlagSnapshotID {
 			return fmt.Errorf("parity population binding mismatch")
+		}
+		var state database.CutoverState
+		if err := tx.First(&state, 1).Error; err != nil {
+			return err
+		}
+		if population.CutoverAttemptID != state.TransitionID {
+			return fmt.Errorf("parity population is not bound to the current cutover attempt")
 		}
 		aggregate, err := check.EvaluateParity(r.ParityPopulationID)
 		if err != nil {

@@ -19,10 +19,10 @@ func ResolveStrategyAuthority(settings map[string]string) error {
 	id := strings.TrimSpace(settings["strategy_id"])
 	version := strings.TrimSpace(settings["strategy_version"])
 	if id == "" {
-		id = "stage05_rule_baseline"
-		version = "1.0.0"
+		id = BaselineStrategyID
+		version = BaselineStrategyVersion
 	}
-	if id == "stage05_rule_baseline" && version == "1.0.0" {
+	if id == BaselineStrategyID && version == BaselineStrategyVersion {
 		policy := strings.TrimSpace(settings["baseline_fallback_policy_version"])
 		if policy == "" || policy == Stage05FallbackPolicyVersion {
 			return nil
@@ -49,8 +49,11 @@ func ResolveStrategyAuthority(settings map[string]string) error {
 		return fmt.Errorf("experimental strategy state %s cannot authorize orders", deployment.State)
 	}
 	manifest, err := (validation.Repository{DB: database.DB}).LoadManifest(deployment.ExperimentID)
-	if err != nil || manifest.Spec.Candidate.ID != id || manifest.Spec.Candidate.Version != version {
+	if err != nil || deployment.ArtifactVersion != version || manifest.Spec.Candidate.ID != id || manifest.Spec.Candidate.Version != version {
 		return fmt.Errorf("experimental strategy manifest mismatch")
+	}
+	if configured := strings.TrimSpace(settings["strategy_digest"]); configured != "" && configured != manifest.Spec.Candidate.Digest {
+		return fmt.Errorf("experimental strategy digest mismatch")
 	}
 	runtime, err := BuildRuntimeAuthorityPolicy(settings, deployment.State)
 	if err != nil || runtime.Digest != deployment.AuthorityPolicyDigest {

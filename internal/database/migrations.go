@@ -2,6 +2,9 @@ package database
 
 import (
 	"fmt"
+	"sort"
+	"strings"
+
 	"github.com/go-gormigrate/gormigrate/v2"
 	"gorm.io/gorm"
 )
@@ -63,6 +66,30 @@ func migrateSchema(db *gorm.DB) error {
 
 func Stage04RollbackError() error {
 	return fmt.Errorf("Stage 04 point-in-time market history is intentionally irreversible; export and manually remove immutable history/manifests, dependent foreign keys, exclusion constraints, and triggers before deleting migration history")
+}
+
+func requireProjectionGuardColumns(tx *gorm.DB, table string, columns []string) error {
+	if !tx.Migrator().HasTable(table) {
+		return nil
+	}
+	missing := make([]string, 0)
+	for _, column := range columns {
+		if !tx.Migrator().HasColumn(table, column) {
+			missing = append(missing, column)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	sort.Strings(missing)
+	return fmt.Errorf("cannot install %s economic guard: shaped schema is missing required columns [%s]", table, strings.Join(missing, ", "))
+}
+
+func validateProjectionGuardShape(tx *gorm.DB) error {
+	if err := requireProjectionGuardColumns(tx, "positions", []string{"account_id", "amount", "amount_exact", "avg_price", "closed_at", "close_reason", "cost_basis_exact", "fees_exact", "opened_at", "realized_pn_l_exact", "status", "symbol"}); err != nil {
+		return err
+	}
+	return requireProjectionGuardColumns(tx, "wallets", []string{"account_id", "balance", "balance_exact", "currency"})
 }
 
 func RunMigrations(db *gorm.DB) error {
@@ -692,6 +719,9 @@ func RunMigrations(db *gorm.DB) error {
 		{
 			ID: "202607181900_final_audit_projection_lifecycle_guards",
 			Migrate: func(tx *gorm.DB) error {
+				if err := validateProjectionGuardShape(tx); err != nil {
+					return err
+				}
 				if err := tx.Exec(`
 					CREATE OR REPLACE FUNCTION guard_position_economics() RETURNS trigger AS $$
 					BEGIN
@@ -738,6 +768,856 @@ func RunMigrations(db *gorm.DB) error {
 			Rollback: func(tx *gorm.DB) error {
 				return fmt.Errorf("final audit economic projection guards are intentionally retained")
 			},
+		},
+		{
+			ID: "202607182300_final_audit_authority_and_evidence",
+			Migrate: func(tx *gorm.DB) error {
+				if !tx.Migrator().HasTable("wallets") || !tx.Migrator().HasTable("positions") {
+					return fmt.Errorf("unsupported database shape: runtime requires both wallets and positions tables")
+				}
+				if err := validateProjectionGuardShape(tx); err != nil {
+					return err
+				}
+				for table, columns := range map[string][]string{
+					"fills":         {"strategy_version"},
+					"ledger_events": {"strategy_version"},
+					"orders":        {"model_version"},
+					"positions":     {"model_version", "strategy_version"},
+				} {
+					if err := requireProjectionGuardColumns(tx, table, columns); err != nil {
+						return err
+					}
+				}
+				if err := tx.AutoMigrate(&ParityObservation{}); err != nil {
+					return err
+				}
+				return tx.Exec(`
+					DO $$ BEGIN
+					 IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='trading_bot_ledger_owner') THEN CREATE ROLE trading_bot_ledger_owner NOLOGIN NOINHERIT; END IF;
+					 IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='trading_bot_runtime') THEN CREATE ROLE trading_bot_runtime NOLOGIN NOINHERIT; END IF;
+					 IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='trading_bot_ledger_writer') THEN CREATE ROLE trading_bot_ledger_writer NOLOGIN NOINHERIT; END IF;
+					 IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='trading_bot_parity_writer') THEN CREATE ROLE trading_bot_parity_writer NOLOGIN NOINHERIT; END IF;
+					END $$;
+					ALTER ROLE trading_bot_ledger_writer NOINHERIT;
+					REVOKE trading_bot_parity_writer FROM trading_bot_ledger_writer;
+					ALTER TABLE fills ALTER COLUMN strategy_version TYPE text;
+					ALTER TABLE ledger_events ALTER COLUMN strategy_version TYPE text;
+					ALTER TABLE orders ALTER COLUMN model_version TYPE text;
+					ALTER TABLE positions ALTER COLUMN model_version TYPE text;
+					ALTER TABLE positions ALTER COLUMN strategy_version TYPE text;
+					DROP INDEX IF EXISTS idx_parity_context_pair;
+					CREATE UNIQUE INDEX IF NOT EXISTS idx_parity_population_context_pair ON parity_observations(population_id,context_id,pair_key);
+
+					CREATE OR REPLACE FUNCTION guard_position_economics() RETURNS trigger AS $$
+					BEGIN
+					 IF current_user <> 'trading_bot_ledger_writer' THEN
+					   IF TG_OP IN ('INSERT','DELETE') THEN RAISE EXCEPTION 'position lifecycle requires ledger writer role'; END IF;
+					   IF (to_jsonb(OLD) - ARRAY['current_price','last_mark_price','last_mark_at','pnl','pnl_percent','updated_at','trailing_stop_price','stop_price','take_profit_price','exit_pending','last_atr_value','max_bars_held'])
+					      IS DISTINCT FROM
+					      (to_jsonb(NEW) - ARRAY['current_price','last_mark_price','last_mark_at','pnl','pnl_percent','updated_at','trailing_stop_price','stop_price','take_profit_price','exit_pending','last_atr_value','max_bars_held'])
+					   THEN RAISE EXCEPTION 'position economic, provenance, identity, and lifecycle fields require ledger writer role'; END IF;
+					 END IF;
+					 IF TG_OP='DELETE' THEN RETURN OLD; END IF; RETURN NEW;
+					END; $$ LANGUAGE plpgsql;
+					CREATE OR REPLACE FUNCTION guard_wallet_economics() RETURNS trigger AS $$
+					BEGIN
+					 IF current_user <> 'trading_bot_ledger_writer' THEN
+					   IF TG_OP IN ('INSERT','DELETE') OR (to_jsonb(OLD)-ARRAY['updated_at']) IS DISTINCT FROM (to_jsonb(NEW)-ARRAY['updated_at'])
+					   THEN RAISE EXCEPTION 'wallet economics and identity require ledger writer role'; END IF;
+					 END IF;
+					 IF TG_OP='DELETE' THEN RETURN OLD; END IF; RETURN NEW;
+					END; $$ LANGUAGE plpgsql;
+					CREATE OR REPLACE FUNCTION require_current_ledger_projection() RETURNS trigger AS $$
+					DECLARE current_xid xid := pg_current_xact_id()::text::xid;
+					DECLARE event_delta numeric;
+					BEGIN
+					 IF TG_TABLE_NAME='wallets' THEN
+					   IF TG_OP='UPDATE' AND (to_jsonb(OLD)-ARRAY['updated_at'])=(to_jsonb(NEW)-ARRAY['updated_at']) THEN RETURN NEW; END IF;
+					   IF TG_OP='INSERT' AND NEW.balance_exact IS NULL THEN RETURN NEW; END IF;
+					   SELECT COALESCE(sum(cash_delta),0) INTO event_delta FROM ledger_events
+					    WHERE xmin=current_xid AND account_id=NEW.account_id AND currency=NEW.currency;
+					   IF NOT EXISTS (SELECT 1 FROM ledger_events WHERE xmin=current_xid AND account_id=NEW.account_id AND currency=NEW.currency)
+					      OR COALESCE(NEW.balance_exact,0)-COALESCE(CASE WHEN TG_OP='UPDATE' THEN OLD.balance_exact END,0) <> event_delta
+					   THEN RAISE EXCEPTION 'wallet projection change must equal immutable ledger events written by the same transaction'; END IF;
+					 ELSE
+					   IF TG_OP='UPDATE' AND
+					      (to_jsonb(OLD)-ARRAY['current_price','last_mark_price','last_mark_at','pnl','pnl_percent','updated_at','trailing_stop_price','stop_price','take_profit_price','exit_pending','last_atr_value','max_bars_held']) =
+					      (to_jsonb(NEW)-ARRAY['current_price','last_mark_price','last_mark_at','pnl','pnl_percent','updated_at','trailing_stop_price','stop_price','take_profit_price','exit_pending','last_atr_value','max_bars_held']) THEN RETURN NEW; END IF;
+					   IF TG_OP='UPDATE' AND OLD.amount_exact IS NULL AND COALESCE(NEW.amount_exact,0)=0 AND OLD.status<>'open' THEN RETURN NEW; END IF;
+					   SELECT COALESCE(sum(asset_delta),0) INTO event_delta FROM ledger_events
+					    WHERE xmin=current_xid AND account_id=NEW.account_id AND symbol=NEW.symbol AND position_id=NEW.id;
+					   IF NOT EXISTS (SELECT 1 FROM ledger_events WHERE xmin=current_xid AND account_id=NEW.account_id AND symbol=NEW.symbol AND position_id=NEW.id)
+					      OR COALESCE(NEW.amount_exact,0)-COALESCE(CASE WHEN TG_OP='UPDATE' THEN OLD.amount_exact END,0) <> event_delta
+					   THEN RAISE EXCEPTION 'position projection change must equal immutable ledger events written by the same transaction'; END IF;
+					 END IF;
+					 RETURN NEW;
+					END; $$ LANGUAGE plpgsql;
+					CREATE OR REPLACE FUNCTION require_current_projection_for_ledger() RETURNS trigger AS $$
+					DECLARE current_xid xid := pg_current_xact_id()::text::xid;
+					BEGIN
+					 IF TG_TABLE_NAME='ledger_batches' THEN
+					   IF NOT EXISTS (SELECT 1 FROM ledger_events WHERE xmin=current_xid AND ledger_batch_id=NEW.id)
+					   THEN RAISE EXCEPTION 'ledger batch must contain immutable events written by the same transaction'; END IF;
+					 ELSIF TG_TABLE_NAME='fills' THEN
+					   IF NOT EXISTS (SELECT 1 FROM ledger_events WHERE xmin=current_xid AND fill_id=NEW.id AND ledger_batch_id=NEW.ledger_batch_id)
+					   THEN RAISE EXCEPTION 'fill must be coupled to immutable ledger events written by the same transaction'; END IF;
+					 ELSE
+					   IF NEW.cash_delta=0 AND NEW.asset_delta=0 AND NEW.fill_id IS NULL
+					   THEN RAISE EXCEPTION 'ledger event must carry an economic delta or reference a coupled fill'; END IF;
+					   IF NEW.cash_delta<>0 AND NOT EXISTS (SELECT 1 FROM wallets WHERE xmin=current_xid AND account_id=NEW.account_id AND currency=NEW.currency)
+					   THEN RAISE EXCEPTION 'cash ledger event must be coupled to a wallet projection written by the same transaction'; END IF;
+					   IF NEW.asset_delta<>0 AND NOT EXISTS (SELECT 1 FROM positions WHERE xmin=current_xid AND id=NEW.position_id AND account_id=NEW.account_id AND symbol=NEW.symbol)
+					   THEN RAISE EXCEPTION 'asset ledger event must be coupled to a position projection written by the same transaction'; END IF;
+					 END IF;
+					 RETURN NEW;
+					END; $$ LANGUAGE plpgsql;
+					CREATE OR REPLACE FUNCTION require_current_operation_for_provenance() RETURNS trigger AS $$
+					DECLARE current_xid xid := pg_current_xact_id()::text::xid;
+					BEGIN
+					 IF current_user<>'trading_bot_ledger_writer' THEN RETURN NEW; END IF;
+					 IF TG_TABLE_NAME='orders' THEN
+					   IF NOT EXISTS (SELECT 1 FROM fills WHERE xmin=current_xid AND order_id=NEW.id)
+					      AND NOT EXISTS (SELECT 1 FROM broker_outcome_ingestions WHERE xmin=current_xid AND account_id=NEW.account_id)
+					   THEN RAISE EXCEPTION 'ledger-writer order provenance must be coupled to a fill or broker outcome in the same transaction'; END IF;
+					 ELSE
+					   IF NOT EXISTS (SELECT 1 FROM ledger_events WHERE xmin=current_xid AND account_id=NEW.account_id)
+					   THEN RAISE EXCEPTION 'ledger migration state must be coupled to immutable ledger evidence in the same transaction'; END IF;
+					 END IF;
+					 RETURN NEW;
+					END; $$ LANGUAGE plpgsql;
+					ALTER FUNCTION guard_position_economics() OWNER TO trading_bot_ledger_owner;
+					ALTER FUNCTION guard_wallet_economics() OWNER TO trading_bot_ledger_owner;
+					ALTER FUNCTION require_current_ledger_projection() OWNER TO trading_bot_ledger_owner;
+					ALTER FUNCTION require_current_projection_for_ledger() OWNER TO trading_bot_ledger_owner;
+					ALTER FUNCTION require_current_operation_for_provenance() OWNER TO trading_bot_ledger_owner;
+					REVOKE ALL ON FUNCTION guard_position_economics() FROM PUBLIC;
+					REVOKE ALL ON FUNCTION guard_wallet_economics() FROM PUBLIC;
+					REVOKE ALL ON FUNCTION require_current_ledger_projection() FROM PUBLIC;
+					REVOKE ALL ON FUNCTION require_current_projection_for_ledger() FROM PUBLIC;
+					REVOKE ALL ON FUNCTION require_current_operation_for_provenance() FROM PUBLIC;
+					DROP TRIGGER IF EXISTS positions_economic_guard ON positions;
+					CREATE TRIGGER positions_economic_guard BEFORE INSERT OR UPDATE OR DELETE ON positions FOR EACH ROW EXECUTE FUNCTION guard_position_economics();
+					DROP TRIGGER IF EXISTS wallets_economic_guard ON wallets;
+					CREATE TRIGGER wallets_economic_guard BEFORE INSERT OR UPDATE OR DELETE ON wallets FOR EACH ROW EXECUTE FUNCTION guard_wallet_economics();
+					DROP TRIGGER IF EXISTS wallets_ledger_coupling ON wallets;
+					CREATE CONSTRAINT TRIGGER wallets_ledger_coupling AFTER INSERT OR UPDATE ON wallets DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION require_current_ledger_projection();
+					DROP TRIGGER IF EXISTS positions_ledger_coupling ON positions;
+					CREATE CONSTRAINT TRIGGER positions_ledger_coupling AFTER INSERT OR UPDATE ON positions DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION require_current_ledger_projection();
+					DROP TRIGGER IF EXISTS ledger_batches_projection_coupling ON ledger_batches;
+					CREATE CONSTRAINT TRIGGER ledger_batches_projection_coupling AFTER INSERT ON ledger_batches DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION require_current_projection_for_ledger();
+					DROP TRIGGER IF EXISTS fills_projection_coupling ON fills;
+					CREATE CONSTRAINT TRIGGER fills_projection_coupling AFTER INSERT ON fills DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION require_current_projection_for_ledger();
+					DROP TRIGGER IF EXISTS ledger_events_projection_coupling ON ledger_events;
+					CREATE CONSTRAINT TRIGGER ledger_events_projection_coupling AFTER INSERT ON ledger_events DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION require_current_projection_for_ledger();
+					DROP TRIGGER IF EXISTS orders_provenance_coupling ON orders;
+					CREATE CONSTRAINT TRIGGER orders_provenance_coupling AFTER INSERT OR UPDATE ON orders DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION require_current_operation_for_provenance();
+					DROP TRIGGER IF EXISTS ledger_migration_states_provenance_coupling ON ledger_migration_states;
+					CREATE CONSTRAINT TRIGGER ledger_migration_states_provenance_coupling AFTER INSERT OR UPDATE ON ledger_migration_states DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION require_current_operation_for_provenance();
+
+					REVOKE INSERT, UPDATE, DELETE ON wallets, positions, ledger_batches, fills, ledger_events, parity_observations FROM PUBLIC, trading_bot_runtime;
+					GRANT SELECT ON wallets, positions, orders, ledger_batches, fills, ledger_events, parity_observations TO trading_bot_runtime;
+					GRANT UPDATE (current_price,last_mark_price,last_mark_at,pnl,pnl_percent,exit_pending) ON positions TO trading_bot_runtime;
+					REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM trading_bot_ledger_writer;
+					REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public FROM trading_bot_ledger_writer;
+					REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA public FROM trading_bot_ledger_writer;
+					GRANT SELECT ON wallets,positions,orders,ledger_batches,fills,ledger_events,ledger_migration_states,broker_outcome_ingestions TO trading_bot_ledger_writer;
+					GRANT INSERT,UPDATE ON wallets,positions,orders,ledger_migration_states TO trading_bot_ledger_writer;
+					GRANT INSERT ON ledger_batches,fills,ledger_events,broker_outcome_ingestions TO trading_bot_ledger_writer;
+					GRANT USAGE ON SCHEMA public TO trading_bot_runtime, trading_bot_ledger_writer;
+					GRANT USAGE ON SCHEMA public TO trading_bot_parity_writer;
+					GRANT SELECT ON parity_observations, parity_populations, parity_acceptance_policies, stage08_flag_snapshots, cutover_states TO trading_bot_parity_writer;
+					GRANT INSERT, UPDATE ON parity_observations TO trading_bot_parity_writer;
+					GRANT SELECT, INSERT, UPDATE ON parity_aggregates TO trading_bot_parity_writer;
+					GRANT USAGE,SELECT ON SEQUENCE wallets_id_seq,positions_id_seq,orders_id_seq TO trading_bot_ledger_writer;
+				`).Error
+			},
+			Rollback: func(tx *gorm.DB) error {
+				return fmt.Errorf("final audit database authority boundary is intentionally retained")
+			},
+		},
+		{
+			ID: "202607182330_runtime_principal_grants",
+			Migrate: func(tx *gorm.DB) error {
+				if !tx.Migrator().HasTable("wallets") || !tx.Migrator().HasTable("positions") {
+					return fmt.Errorf("unsupported database shape: runtime requires both wallets and positions tables")
+				}
+				return tx.Exec(`
+					GRANT USAGE ON SCHEMA public TO trading_bot_runtime;
+					GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO trading_bot_runtime;
+					GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO trading_bot_runtime;
+
+					REVOKE INSERT, UPDATE, DELETE ON schema_migrations, ledger_migration_states, wallets, positions, ledger_batches, fills, ledger_events, parity_observations, parity_aggregates, parity_acceptance_policies, parity_populations FROM trading_bot_runtime;
+					GRANT SELECT ON wallets, positions, orders, ledger_batches, fills, ledger_events, parity_observations TO trading_bot_runtime;
+					GRANT UPDATE (current_price,last_mark_price,last_mark_at,pnl,pnl_percent,exit_pending) ON positions TO trading_bot_runtime;
+				`).Error
+			},
+			Rollback: func(tx *gorm.DB) error {
+				return fmt.Errorf("runtime principal grants are intentionally retained")
+			},
+		},
+		{
+			ID: "202607190100_secure_ledger_operational_paths",
+			Migrate: func(tx *gorm.DB) error {
+				if !tx.Migrator().HasTable("wallets") || !tx.Migrator().HasTable("positions") || !tx.Migrator().HasTable("ledger_events") {
+					return fmt.Errorf("unsupported database shape: secure ledger remediation requires ledger and projection tables")
+				}
+				// Forward-repair legacy shaped schemas before installing column-level grants
+				// and trigger whitelists used by the runtime path.
+				if err := tx.AutoMigrate(&Position{}, &Wallet{}, &LedgerMigrationState{}); err != nil {
+					return err
+				}
+				return tx.Exec(`
+					DO $$ BEGIN
+					 IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='trading_bot_operations_owner') THEN CREATE ROLE trading_bot_operations_owner NOLOGIN NOINHERIT; END IF;
+					 IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='trading_bot_migration_admin') THEN CREATE ROLE trading_bot_migration_admin NOLOGIN NOINHERIT; END IF;
+					END $$;
+					INSERT INTO ledger_migration_states(account_id,status,unresolved_json,created_at,updated_at)
+					SELECT 'primary','pending_approval','["legacy wallet balance has no immutable capital provenance"]',now(),now()
+					WHERE EXISTS(SELECT 1 FROM wallets)
+					  AND NOT EXISTS(SELECT 1 FROM ledger_migration_states WHERE account_id='primary')
+					  AND NOT EXISTS(SELECT 1 FROM ledger_events);
+					ALTER ROLE trading_bot_ledger_writer NOINHERIT;
+					DO $memberships$ DECLARE inherited record; BEGIN
+					 FOR inherited IN
+					   SELECT parent.rolname FROM pg_catalog.pg_auth_members membership
+					   JOIN pg_catalog.pg_roles parent ON parent.oid=membership.roleid
+					   WHERE membership.member=(SELECT oid FROM pg_catalog.pg_roles WHERE rolname='trading_bot_ledger_writer')
+					 LOOP EXECUTE format('REVOKE %I FROM trading_bot_ledger_writer', inherited.rolname); END LOOP;
+					END $memberships$;
+
+					CREATE OR REPLACE FUNCTION guard_position_economics() RETURNS trigger AS $$
+					BEGIN
+					 IF current_user='trading_bot_migration_admin' THEN
+					   IF TG_OP<>'INSERT' OR NEW.amount_exact IS NOT NULL OR NEW.cost_basis_exact IS NOT NULL
+					      OR NOT EXISTS (SELECT 1 FROM ledger_migration_states WHERE account_id=NEW.account_id AND status IN ('pending_approval','pending_resolution'))
+					   THEN RAISE EXCEPTION 'migration admin may only stage explicitly unresolved non-exact legacy positions'; END IF;
+					   RETURN NEW;
+					 END IF;
+					 IF current_user <> 'trading_bot_ledger_writer' THEN
+					   IF TG_OP IN ('INSERT','DELETE') THEN RAISE EXCEPTION 'position lifecycle requires ledger writer role'; END IF;
+					   IF (to_jsonb(OLD) - ARRAY['current_price','last_mark_price','last_mark_at','pnl','pnl_percent','updated_at','trailing_stop_price','stop_price','take_profit_price','exit_pending','last_atr_value','max_bars_held'])
+					      IS DISTINCT FROM
+					      (to_jsonb(NEW) - ARRAY['current_price','last_mark_price','last_mark_at','pnl','pnl_percent','updated_at','trailing_stop_price','stop_price','take_profit_price','exit_pending','last_atr_value','max_bars_held'])
+					   THEN RAISE EXCEPTION 'position economic, provenance, identity, and lifecycle fields require ledger writer role'; END IF;
+					 END IF;
+					 IF TG_OP='DELETE' THEN RETURN OLD; END IF; RETURN NEW;
+					END; $$ LANGUAGE plpgsql;
+					CREATE OR REPLACE FUNCTION guard_wallet_economics() RETURNS trigger AS $$
+					BEGIN
+					 IF current_user='trading_bot_migration_admin' THEN
+					   IF TG_OP<>'INSERT' OR NEW.balance_exact IS NOT NULL
+					      OR NOT EXISTS (SELECT 1 FROM ledger_migration_states WHERE account_id=NEW.account_id AND status IN ('pending_approval','pending_resolution'))
+					   THEN RAISE EXCEPTION 'migration admin may only stage explicitly unresolved non-exact legacy wallets'; END IF;
+					   RETURN NEW;
+					 END IF;
+					 IF current_user <> 'trading_bot_ledger_writer' THEN
+					   IF TG_OP IN ('INSERT','DELETE') OR (to_jsonb(OLD)-ARRAY['updated_at']) IS DISTINCT FROM (to_jsonb(NEW)-ARRAY['updated_at'])
+					   THEN RAISE EXCEPTION 'wallet economics and identity require ledger writer role'; END IF;
+					 END IF;
+					 IF TG_OP='DELETE' THEN RETURN OLD; END IF; RETURN NEW;
+					END; $$ LANGUAGE plpgsql;
+					CREATE OR REPLACE FUNCTION require_current_ledger_projection() RETURNS trigger AS $$
+					DECLARE current_xid xid := pg_current_xact_id()::text::xid;
+					DECLARE event_delta numeric;
+					BEGIN
+					 IF TG_TABLE_NAME='wallets' THEN
+					   IF TG_OP='UPDATE' AND (to_jsonb(OLD)-ARRAY['updated_at'])=(to_jsonb(NEW)-ARRAY['updated_at']) THEN RETURN NEW; END IF;
+					   IF TG_OP='INSERT' AND NEW.balance_exact IS NULL THEN RETURN NEW; END IF;
+					   SELECT COALESCE(sum(cash_delta),0) INTO event_delta FROM ledger_events WHERE xmin=current_xid AND account_id=NEW.account_id AND currency=NEW.currency;
+					   IF NOT EXISTS (SELECT 1 FROM ledger_events WHERE xmin=current_xid AND account_id=NEW.account_id AND currency=NEW.currency)
+					      OR COALESCE(NEW.balance_exact,0)-COALESCE(CASE WHEN TG_OP='UPDATE' THEN OLD.balance_exact END,0) <> event_delta
+					   THEN RAISE EXCEPTION 'wallet projection change must equal immutable ledger events written by the same transaction'; END IF;
+					 ELSE
+					   IF current_user='trading_bot_migration_admin' AND TG_OP='INSERT' AND NEW.amount_exact IS NULL AND NEW.cost_basis_exact IS NULL
+					      AND EXISTS (SELECT 1 FROM ledger_migration_states WHERE xmin=current_xid AND account_id=NEW.account_id AND status IN ('pending_approval','pending_resolution'))
+					   THEN RETURN NEW; END IF;
+					   IF TG_OP='UPDATE' AND
+					      (to_jsonb(OLD)-ARRAY['current_price','last_mark_price','last_mark_at','pnl','pnl_percent','updated_at','trailing_stop_price','stop_price','take_profit_price','exit_pending','last_atr_value','max_bars_held']) =
+					      (to_jsonb(NEW)-ARRAY['current_price','last_mark_price','last_mark_at','pnl','pnl_percent','updated_at','trailing_stop_price','stop_price','take_profit_price','exit_pending','last_atr_value','max_bars_held']) THEN RETURN NEW; END IF;
+					   IF TG_OP='UPDATE' AND OLD.amount_exact IS NULL AND COALESCE(NEW.amount_exact,0)=0 AND OLD.status<>'open' THEN RETURN NEW; END IF;
+					   SELECT COALESCE(sum(asset_delta),0) INTO event_delta FROM ledger_events WHERE xmin=current_xid AND account_id=NEW.account_id AND symbol=NEW.symbol AND position_id=NEW.id;
+					   IF NOT EXISTS (SELECT 1 FROM ledger_events WHERE xmin=current_xid AND account_id=NEW.account_id AND symbol=NEW.symbol AND position_id=NEW.id)
+					      OR COALESCE(NEW.amount_exact,0)-COALESCE(CASE WHEN TG_OP='UPDATE' THEN OLD.amount_exact END,0) <> event_delta
+					   THEN RAISE EXCEPTION 'position projection change must equal immutable ledger events written by the same transaction'; END IF;
+					 END IF;
+					 RETURN NEW;
+					END; $$ LANGUAGE plpgsql;
+					CREATE OR REPLACE FUNCTION require_current_operation_for_provenance() RETURNS trigger AS $$
+					DECLARE current_xid xid := pg_current_xact_id()::text::xid;
+					BEGIN
+					 IF current_user='trading_bot_migration_admin' THEN
+					   IF TG_TABLE_NAME='orders' OR NEW.status NOT IN ('pending_approval','pending_resolution') OR NEW.unresolved_json IS NULL OR NEW.unresolved_json = '[]'::jsonb
+					   THEN RAISE EXCEPTION 'migration admin ledger state must remain explicitly unresolved'; END IF;
+					   RETURN NEW;
+					 END IF;
+					 IF current_user<>'trading_bot_ledger_writer' THEN RETURN NEW; END IF;
+					 IF TG_TABLE_NAME='orders' THEN
+					   IF NOT EXISTS (SELECT 1 FROM fills WHERE xmin=current_xid AND order_id=NEW.id)
+					      AND NOT EXISTS (SELECT 1 FROM broker_outcome_ingestions WHERE xmin=current_xid AND account_id=NEW.account_id)
+					   THEN RAISE EXCEPTION 'ledger-writer order provenance must be coupled to a fill or broker outcome in the same transaction'; END IF;
+					 ELSE
+					   IF NOT EXISTS (SELECT 1 FROM ledger_events WHERE xmin=current_xid AND account_id=NEW.account_id)
+					   THEN RAISE EXCEPTION 'ledger migration state must be coupled to immutable ledger evidence in the same transaction'; END IF;
+					 END IF;
+					 RETURN NEW;
+					END; $$ LANGUAGE plpgsql;
+					CREATE OR REPLACE FUNCTION finalize_applied_backfill_plan(plan_id text, approval text, applied timestamptz) RETURNS void AS $$
+					DECLARE changed bigint;
+					DECLARE current_xid xid := pg_current_xact_id()::text::xid;
+					BEGIN
+					 UPDATE backfill_plans plan SET status='applied',applied_at=applied
+					 WHERE plan.id=plan_id AND plan.status='approved' AND plan.approval_digest=approval
+					   AND EXISTS (SELECT 1 FROM ledger_migration_states state WHERE state.xmin=current_xid AND state.account_id=plan.account_id)
+					   AND EXISTS (SELECT 1 FROM ledger_events event WHERE event.xmin=current_xid AND event.account_id=plan.account_id);
+					 GET DIAGNOSTICS changed = ROW_COUNT;
+					 IF changed<>1 THEN RAISE EXCEPTION 'valid approved backfill plan required'; END IF;
+					END; $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,public;
+					ALTER FUNCTION guard_position_economics() OWNER TO trading_bot_ledger_owner;
+					ALTER FUNCTION guard_wallet_economics() OWNER TO trading_bot_ledger_owner;
+					ALTER FUNCTION require_current_ledger_projection() OWNER TO trading_bot_ledger_owner;
+					ALTER FUNCTION require_current_operation_for_provenance() OWNER TO trading_bot_ledger_owner;
+					ALTER FUNCTION finalize_applied_backfill_plan(text,text,timestamptz) OWNER TO trading_bot_operations_owner;
+					REVOKE ALL ON FUNCTION finalize_applied_backfill_plan(text,text,timestamptz) FROM PUBLIC;
+					GRANT SELECT ON backfill_plans TO trading_bot_operations_owner;
+					GRANT SELECT ON ledger_migration_states,ledger_events TO trading_bot_operations_owner;
+					GRANT UPDATE(status,applied_at) ON backfill_plans TO trading_bot_operations_owner;
+					GRANT USAGE ON SCHEMA public TO trading_bot_operations_owner;
+					GRANT EXECUTE ON FUNCTION finalize_applied_backfill_plan(text,text,timestamptz) TO trading_bot_ledger_writer;
+					GRANT SELECT ON backfill_plans TO trading_bot_ledger_writer;
+					GRANT UPDATE (current_price,last_mark_price,last_mark_at,pnl,pnl_percent,trailing_stop_price,stop_price,take_profit_price,exit_pending,last_atr_value,max_bars_held) ON positions TO trading_bot_runtime;
+					GRANT USAGE ON SCHEMA public TO trading_bot_migration_admin;
+					GRANT SELECT ON ledger_migration_states TO trading_bot_migration_admin;
+					GRANT SELECT ON positions,wallets TO trading_bot_migration_admin;
+					GRANT INSERT,UPDATE(status,unresolved_json,updated_at) ON ledger_migration_states TO trading_bot_migration_admin;
+					GRANT INSERT ON positions,wallets TO trading_bot_migration_admin;
+					GRANT USAGE,SELECT ON SEQUENCE wallets_id_seq,positions_id_seq TO trading_bot_migration_admin;
+				`).Error
+			},
+			Rollback: func(tx *gorm.DB) error {
+				return fmt.Errorf("secure ledger operational paths are intentionally retained")
+			},
+		},
+		{
+			ID: "202607190101_fix_jsonb_provenance_guard",
+			Migrate: func(tx *gorm.DB) error {
+				return tx.Exec(`
+					CREATE OR REPLACE FUNCTION require_current_operation_for_provenance() RETURNS trigger AS $$
+					DECLARE current_xid xid := pg_current_xact_id()::text::xid;
+					BEGIN
+					 IF current_user='trading_bot_migration_admin' THEN
+					   IF TG_TABLE_NAME='orders' OR NEW.status NOT IN ('pending_approval','pending_resolution') OR NEW.unresolved_json IS NULL OR NEW.unresolved_json = '[]'::jsonb
+					   THEN RAISE EXCEPTION 'migration admin ledger state must remain explicitly unresolved'; END IF;
+					   RETURN NEW;
+					 END IF;
+					 IF current_user<>'trading_bot_ledger_writer' THEN RETURN NEW; END IF;
+					 IF TG_TABLE_NAME='orders' THEN
+					   IF NOT EXISTS (SELECT 1 FROM fills WHERE xmin=current_xid AND order_id=NEW.id) AND NOT EXISTS (SELECT 1 FROM broker_outcome_ingestions WHERE xmin=current_xid AND account_id=NEW.account_id)
+					   THEN RAISE EXCEPTION 'ledger-writer order provenance must be coupled to a fill or broker outcome in the same transaction'; END IF;
+					 ELSE
+					   IF NOT EXISTS (SELECT 1 FROM ledger_events WHERE xmin=current_xid AND account_id=NEW.account_id)
+					   THEN RAISE EXCEPTION 'ledger migration state must be coupled to immutable ledger evidence in the same transaction'; END IF;
+					 END IF;
+					 RETURN NEW;
+					END; $$ LANGUAGE plpgsql;
+				`).Error
+			},
+			Rollback: func(tx *gorm.DB) error { return fmt.Errorf("jsonb provenance guard fix is retained") },
+		},
+		{
+			ID: "202607190102_fix_subtransaction_coupling_and_parity_grants",
+			Migrate: func(tx *gorm.DB) error {
+				return tx.Exec(`
+					CREATE OR REPLACE FUNCTION require_current_ledger_projection() RETURNS trigger AS $$
+					DECLARE event_delta numeric;
+					DECLARE projected_value numeric;
+					DECLARE event_total numeric;
+					BEGIN
+					 IF TG_TABLE_NAME='wallets' THEN
+					   IF TG_OP='UPDATE' AND (to_jsonb(OLD)-ARRAY['updated_at'])=(to_jsonb(NEW)-ARRAY['updated_at']) THEN RETURN NEW; END IF;
+					   IF TG_OP='INSERT' AND NEW.balance_exact IS NULL THEN RETURN NEW; END IF;
+					   SELECT balance_exact INTO projected_value FROM wallets WHERE id=NEW.id;
+					   SELECT COALESCE(sum(cash_delta),0) INTO event_total FROM ledger_events
+					    WHERE account_id=NEW.account_id AND currency=NEW.currency;
+					   IF NOT EXISTS (SELECT 1 FROM ledger_events WHERE pg_xact_status(xmin::text::xid8)='in progress' AND account_id=NEW.account_id AND currency=NEW.currency)
+					      OR COALESCE(projected_value,0) <> event_total
+					   THEN RAISE EXCEPTION 'wallet projection change must equal immutable ledger events written by the same transaction'; END IF;
+					 ELSE
+					   IF current_user='trading_bot_migration_admin' AND TG_OP='INSERT' AND NEW.amount_exact IS NULL AND NEW.cost_basis_exact IS NULL
+					      AND EXISTS (SELECT 1 FROM ledger_migration_states WHERE pg_xact_status(xmin::text::xid8)='in progress' AND account_id=NEW.account_id AND status IN ('pending_approval','pending_resolution'))
+					   THEN RETURN NEW; END IF;
+					   IF TG_OP='UPDATE' AND
+					      (to_jsonb(OLD)-ARRAY['current_price','last_mark_price','last_mark_at','pnl','pnl_percent','updated_at','trailing_stop_price','stop_price','take_profit_price','exit_pending','last_atr_value','max_bars_held']) =
+					      (to_jsonb(NEW)-ARRAY['current_price','last_mark_price','last_mark_at','pnl','pnl_percent','updated_at','trailing_stop_price','stop_price','take_profit_price','exit_pending','last_atr_value','max_bars_held']) THEN RETURN NEW; END IF;
+					   IF TG_OP='UPDATE' AND OLD.amount_exact IS NULL AND COALESCE(NEW.amount_exact,0)=0 AND OLD.status<>'open' THEN RETURN NEW; END IF;
+					   SELECT amount_exact INTO projected_value FROM positions WHERE id=NEW.id;
+					   SELECT COALESCE(sum(asset_delta),0) INTO event_total FROM ledger_events
+					    WHERE account_id=NEW.account_id AND symbol=NEW.symbol AND position_id=NEW.id;
+					   IF NOT EXISTS (SELECT 1 FROM ledger_events WHERE pg_xact_status(xmin::text::xid8)='in progress' AND account_id=NEW.account_id AND symbol=NEW.symbol AND position_id=NEW.id)
+					      OR COALESCE(projected_value,0) <> event_total
+					   THEN RAISE EXCEPTION 'position projection change must equal immutable ledger events written by the same transaction'; END IF;
+					 END IF;
+					 RETURN NEW;
+					END; $$ LANGUAGE plpgsql;
+
+					CREATE OR REPLACE FUNCTION require_current_projection_for_ledger() RETURNS trigger AS $$
+					BEGIN
+					 IF TG_TABLE_NAME='ledger_batches' THEN
+					   IF NOT EXISTS (SELECT 1 FROM ledger_events WHERE pg_xact_status(xmin::text::xid8)='in progress' AND ledger_batch_id=NEW.id)
+					   THEN RAISE EXCEPTION 'ledger batch must contain immutable events written by the same transaction'; END IF;
+					 ELSIF TG_TABLE_NAME='fills' THEN
+					   IF NOT EXISTS (SELECT 1 FROM ledger_events WHERE pg_xact_status(xmin::text::xid8)='in progress' AND fill_id=NEW.id AND ledger_batch_id=NEW.ledger_batch_id)
+					   THEN RAISE EXCEPTION 'fill must be coupled to immutable ledger events written by the same transaction'; END IF;
+					 ELSE
+					   IF NEW.cash_delta=0 AND NEW.asset_delta=0 AND NEW.fill_id IS NULL
+					   THEN RAISE EXCEPTION 'ledger event must carry an economic delta or reference a coupled fill'; END IF;
+					   IF NEW.cash_delta<>0 AND NOT EXISTS (SELECT 1 FROM wallets WHERE pg_xact_status(xmin::text::xid8)='in progress' AND account_id=NEW.account_id AND currency=NEW.currency)
+					   THEN RAISE EXCEPTION 'cash ledger event must be coupled to a wallet projection written by the same transaction'; END IF;
+					   IF NEW.asset_delta<>0 AND NOT EXISTS (SELECT 1 FROM positions WHERE pg_xact_status(xmin::text::xid8)='in progress' AND id=NEW.position_id AND account_id=NEW.account_id AND symbol=NEW.symbol)
+					   THEN RAISE EXCEPTION 'asset ledger event must be coupled to a position projection written by the same transaction'; END IF;
+					 END IF;
+					 RETURN NEW;
+					END; $$ LANGUAGE plpgsql;
+
+					CREATE OR REPLACE FUNCTION require_current_operation_for_provenance() RETURNS trigger AS $$
+					BEGIN
+					 IF current_user='trading_bot_migration_admin' THEN
+					   IF TG_TABLE_NAME='orders' OR NEW.status NOT IN ('pending_approval','pending_resolution') OR NEW.unresolved_json IS NULL OR NEW.unresolved_json = '[]'::jsonb
+					   THEN RAISE EXCEPTION 'migration admin ledger state must remain explicitly unresolved'; END IF;
+					   RETURN NEW;
+					 END IF;
+					 IF current_user<>'trading_bot_ledger_writer' THEN RETURN NEW; END IF;
+					 IF TG_TABLE_NAME='orders' THEN
+					   IF NOT EXISTS (SELECT 1 FROM fills WHERE pg_xact_status(xmin::text::xid8)='in progress' AND order_id=NEW.id)
+					      AND NOT EXISTS (SELECT 1 FROM broker_outcome_ingestions WHERE pg_xact_status(xmin::text::xid8)='in progress' AND account_id=NEW.account_id)
+					   THEN RAISE EXCEPTION 'ledger-writer order provenance must be coupled to a fill or broker outcome in the same transaction'; END IF;
+					 ELSE
+					   IF NOT EXISTS (SELECT 1 FROM ledger_events WHERE pg_xact_status(xmin::text::xid8)='in progress' AND account_id=NEW.account_id)
+					   THEN RAISE EXCEPTION 'ledger migration state must be coupled to immutable ledger evidence in the same transaction'; END IF;
+					 END IF;
+					 RETURN NEW;
+					END; $$ LANGUAGE plpgsql;
+
+					CREATE OR REPLACE FUNCTION finalize_applied_backfill_plan(plan_id text, approval text, applied timestamptz) RETURNS void AS $$
+					DECLARE changed bigint;
+					BEGIN
+					 UPDATE backfill_plans plan SET status='applied',applied_at=applied
+					 WHERE plan.id=plan_id AND plan.status='approved' AND plan.approval_digest=approval
+					   AND EXISTS (
+					     SELECT 1 FROM ledger_migration_states state
+					     JOIN ledger_events event ON event.id=state.opening_event_id AND event.account_id=state.account_id
+					     JOIN ledger_batches batch ON batch.id=event.ledger_batch_id AND batch.account_id=event.account_id
+					     WHERE state.account_id=plan.account_id
+					       AND pg_xact_status(state.xmin::text::xid8)='in progress'
+					       AND pg_xact_status(event.xmin::text::xid8)='in progress'
+					       AND pg_xact_status(batch.xmin::text::xid8)='in progress'
+					       AND event.event_type='capital_deposit'
+					       AND event.actor=plan.approved_by
+					       AND event.metadata_json->>'backfill_plan_id'=plan.id
+					       AND event.metadata_json->>'report_digest'=plan.report_digest
+					       AND event.metadata_json->>'approval_digest'=plan.approval_digest
+					   );
+					 GET DIAGNOSTICS changed = ROW_COUNT;
+					 IF changed<>1 THEN RAISE EXCEPTION 'valid approved backfill plan required'; END IF;
+					END; $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,public;
+
+					ALTER FUNCTION require_current_ledger_projection() OWNER TO trading_bot_ledger_owner;
+					ALTER FUNCTION require_current_projection_for_ledger() OWNER TO trading_bot_ledger_owner;
+					ALTER FUNCTION require_current_operation_for_provenance() OWNER TO trading_bot_ledger_owner;
+					ALTER FUNCTION finalize_applied_backfill_plan(text,text,timestamptz) OWNER TO trading_bot_operations_owner;
+					REVOKE ALL ON FUNCTION finalize_applied_backfill_plan(text,text,timestamptz) FROM PUBLIC;
+
+					REVOKE ALL PRIVILEGES ON wallets,positions,orders,ledger_batches,fills,ledger_events,ledger_migration_states,backfill_plans,broker_outcome_ingestions FROM trading_bot_parity_writer;
+					GRANT USAGE ON SCHEMA public TO trading_bot_parity_writer;
+					GRANT SELECT ON parity_observations,parity_populations,parity_acceptance_policies,stage08_flag_snapshots,cutover_states TO trading_bot_parity_writer;
+					GRANT INSERT,UPDATE ON parity_observations TO trading_bot_parity_writer;
+					GRANT SELECT,INSERT,UPDATE ON parity_aggregates TO trading_bot_parity_writer;
+				`).Error
+			},
+			Rollback: func(tx *gorm.DB) error {
+				return fmt.Errorf("subtransaction-safe ledger coupling and least-privilege parity grants are intentionally retained")
+			},
+		},
+		{
+			ID: "202607190103_fix_nested_transaction_coupling_and_backfill_owner_grant",
+			Migrate: func(tx *gorm.DB) error {
+				return tx.Exec(`
+					CREATE OR REPLACE FUNCTION require_current_ledger_projection() RETURNS trigger AS $$
+					DECLARE projected_value numeric;
+					DECLARE event_total numeric;
+					BEGIN
+					 IF TG_TABLE_NAME='wallets' THEN
+					   IF TG_OP='UPDATE' AND (to_jsonb(OLD)-ARRAY['updated_at'])=(to_jsonb(NEW)-ARRAY['updated_at']) THEN RETURN NEW; END IF;
+					   IF TG_OP='INSERT' AND NEW.balance_exact IS NULL THEN RETURN NEW; END IF;
+					   SELECT balance_exact INTO projected_value FROM wallets WHERE id=NEW.id;
+					   SELECT COALESCE(sum(cash_delta),0) INTO event_total FROM ledger_events
+					    WHERE account_id=NEW.account_id AND currency=NEW.currency;
+					   IF NOT EXISTS (SELECT 1 FROM ledger_events WHERE xmin=pg_current_xact_id()::text::xid AND account_id=NEW.account_id AND currency=NEW.currency)
+					      OR COALESCE(projected_value,0) <> event_total
+					   THEN RAISE EXCEPTION 'wallet projection change must equal immutable ledger events written by the same transaction'; END IF;
+					 ELSE
+					   IF current_user='trading_bot_migration_admin' AND TG_OP='INSERT' AND NEW.amount_exact IS NULL AND NEW.cost_basis_exact IS NULL
+					      AND EXISTS (SELECT 1 FROM ledger_migration_states WHERE xmin=pg_current_xact_id()::text::xid AND account_id=NEW.account_id AND status IN ('pending_approval','pending_resolution'))
+					   THEN RETURN NEW; END IF;
+					   IF TG_OP='UPDATE' AND
+					      (to_jsonb(OLD)-ARRAY['current_price','last_mark_price','last_mark_at','pnl','pnl_percent','updated_at','trailing_stop_price','stop_price','take_profit_price','exit_pending','last_atr_value','max_bars_held']) =
+					      (to_jsonb(NEW)-ARRAY['current_price','last_mark_price','last_mark_at','pnl','pnl_percent','updated_at','trailing_stop_price','stop_price','take_profit_price','exit_pending','last_atr_value','max_bars_held']) THEN RETURN NEW; END IF;
+					   IF TG_OP='UPDATE' AND OLD.amount_exact IS NULL AND COALESCE(NEW.amount_exact,0)=0 AND OLD.status<>'open' THEN RETURN NEW; END IF;
+					   SELECT amount_exact INTO projected_value FROM positions WHERE id=NEW.id;
+					   SELECT COALESCE(sum(asset_delta),0) INTO event_total FROM ledger_events
+					    WHERE account_id=NEW.account_id AND symbol=NEW.symbol AND position_id=NEW.id;
+					   IF NOT EXISTS (SELECT 1 FROM ledger_events WHERE xmin=pg_current_xact_id()::text::xid AND account_id=NEW.account_id AND symbol=NEW.symbol AND position_id=NEW.id)
+					      OR COALESCE(projected_value,0) <> event_total
+					   THEN RAISE EXCEPTION 'position projection change must equal immutable ledger events written by the same transaction'; END IF;
+					 END IF;
+					 RETURN NEW;
+					END; $$ LANGUAGE plpgsql;
+
+					CREATE OR REPLACE FUNCTION require_current_projection_for_ledger() RETURNS trigger AS $$
+					BEGIN
+					 IF TG_TABLE_NAME='ledger_batches' THEN
+					   IF NOT EXISTS (SELECT 1 FROM ledger_events WHERE xmin=pg_current_xact_id()::text::xid AND ledger_batch_id=NEW.id)
+					   THEN RAISE EXCEPTION 'ledger batch must contain immutable events written by the same transaction'; END IF;
+					 ELSIF TG_TABLE_NAME='fills' THEN
+					   IF NOT EXISTS (SELECT 1 FROM ledger_events WHERE xmin=pg_current_xact_id()::text::xid AND fill_id=NEW.id AND ledger_batch_id=NEW.ledger_batch_id)
+					   THEN RAISE EXCEPTION 'fill must be coupled to immutable ledger events written by the same transaction'; END IF;
+					 ELSE
+					   IF NEW.cash_delta=0 AND NEW.asset_delta=0 AND NEW.fill_id IS NULL
+					   THEN RAISE EXCEPTION 'ledger event must carry an economic delta or reference a coupled fill'; END IF;
+					   IF NEW.cash_delta<>0 AND NOT EXISTS (SELECT 1 FROM wallets WHERE xmin=pg_current_xact_id()::text::xid AND account_id=NEW.account_id AND currency=NEW.currency)
+					   THEN RAISE EXCEPTION 'cash ledger event must be coupled to a wallet projection written by the same transaction'; END IF;
+					   IF NEW.asset_delta<>0 AND NOT EXISTS (SELECT 1 FROM positions WHERE xmin=pg_current_xact_id()::text::xid AND id=NEW.position_id AND account_id=NEW.account_id AND symbol=NEW.symbol)
+					   THEN RAISE EXCEPTION 'asset ledger event must be coupled to a position projection written by the same transaction'; END IF;
+					 END IF;
+					 RETURN NEW;
+					END; $$ LANGUAGE plpgsql;
+
+					CREATE OR REPLACE FUNCTION require_current_operation_for_provenance() RETURNS trigger AS $$
+					BEGIN
+					 IF current_user='trading_bot_migration_admin' THEN
+					   IF TG_TABLE_NAME='orders' OR NEW.status NOT IN ('pending_approval','pending_resolution') OR NEW.unresolved_json IS NULL OR NEW.unresolved_json = '[]'::jsonb
+					   THEN RAISE EXCEPTION 'migration admin ledger state must remain explicitly unresolved'; END IF;
+					   RETURN NEW;
+					 END IF;
+					 IF current_user<>'trading_bot_ledger_writer' THEN RETURN NEW; END IF;
+					 IF TG_TABLE_NAME='orders' THEN
+					   IF NOT EXISTS (SELECT 1 FROM fills WHERE xmin=pg_current_xact_id()::text::xid AND order_id=NEW.id)
+					      AND NOT EXISTS (SELECT 1 FROM broker_outcome_ingestions WHERE xmin=pg_current_xact_id()::text::xid AND account_id=NEW.account_id)
+					   THEN RAISE EXCEPTION 'ledger-writer order provenance must be coupled to a fill or broker outcome in the same transaction'; END IF;
+					 ELSE
+					   IF NOT EXISTS (SELECT 1 FROM ledger_events WHERE xmin=pg_current_xact_id()::text::xid AND account_id=NEW.account_id)
+					   THEN RAISE EXCEPTION 'ledger migration state must be coupled to immutable ledger evidence in the same transaction'; END IF;
+					 END IF;
+					 RETURN NEW;
+					END; $$ LANGUAGE plpgsql;
+
+					CREATE OR REPLACE FUNCTION finalize_applied_backfill_plan(plan_id text, approval text, applied timestamptz) RETURNS void AS $$
+					DECLARE changed bigint;
+					BEGIN
+					 UPDATE backfill_plans plan SET status='applied',applied_at=applied
+					 WHERE plan.id=plan_id AND plan.status='approved' AND plan.approval_digest=approval
+					   AND EXISTS (
+					     SELECT 1 FROM ledger_migration_states state
+					     JOIN ledger_events event ON event.id=state.opening_event_id AND event.account_id=state.account_id
+					     JOIN ledger_batches batch ON batch.id=event.ledger_batch_id AND batch.account_id=event.account_id
+					     WHERE state.account_id=plan.account_id
+					       AND state.xmin=pg_current_xact_id()::text::xid
+					       AND event.xmin=pg_current_xact_id()::text::xid
+					       AND batch.xmin=pg_current_xact_id()::text::xid
+					       AND event.event_type='capital_deposit'
+					       AND event.actor=plan.approved_by
+					       AND event.metadata_json->>'backfill_plan_id'=plan.id
+					       AND event.metadata_json->>'report_digest'=plan.report_digest
+					       AND event.metadata_json->>'approval_digest'=plan.approval_digest
+					   );
+					 GET DIAGNOSTICS changed = ROW_COUNT;
+					 IF changed<>1 THEN RAISE EXCEPTION 'valid approved backfill plan required'; END IF;
+					END; $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,public;
+
+					ALTER FUNCTION require_current_ledger_projection() OWNER TO trading_bot_ledger_owner;
+					ALTER FUNCTION require_current_projection_for_ledger() OWNER TO trading_bot_ledger_owner;
+					ALTER FUNCTION require_current_operation_for_provenance() OWNER TO trading_bot_ledger_owner;
+					ALTER FUNCTION finalize_applied_backfill_plan(text,text,timestamptz) OWNER TO trading_bot_operations_owner;
+					REVOKE ALL ON FUNCTION finalize_applied_backfill_plan(text,text,timestamptz) FROM PUBLIC;
+					GRANT SELECT ON ledger_batches TO trading_bot_operations_owner;
+					GRANT EXECUTE ON FUNCTION finalize_applied_backfill_plan(text,text,timestamptz) TO trading_bot_ledger_writer;
+				`).Error
+			},
+			Rollback: func(tx *gorm.DB) error {
+				return fmt.Errorf("nested transaction ledger coupling and backfill owner grants are intentionally retained")
+			},
+		},
+		{
+			ID: "202607190104_final_review_parity_and_position_coupling",
+			Migrate: func(tx *gorm.DB) error {
+				return tx.Exec(`
+					CREATE OR REPLACE FUNCTION require_current_ledger_projection() RETURNS trigger AS $$
+					DECLARE projected_amount numeric;
+					DECLARE projected_basis numeric;
+					DECLARE projected_fees numeric;
+					DECLARE projected_realized numeric;
+					DECLARE event_amount numeric;
+					DECLARE event_basis numeric;
+					DECLARE event_fees numeric;
+					DECLARE event_realized numeric;
+					BEGIN
+					 IF TG_TABLE_NAME='wallets' THEN
+					   IF TG_OP='UPDATE' AND (to_jsonb(OLD)-ARRAY['updated_at'])=(to_jsonb(NEW)-ARRAY['updated_at']) THEN RETURN NEW; END IF;
+					   IF TG_OP='INSERT' AND NEW.balance_exact IS NULL THEN RETURN NEW; END IF;
+					   SELECT balance_exact INTO projected_amount FROM wallets WHERE id=NEW.id;
+					   SELECT COALESCE(sum(cash_delta),0) INTO event_amount FROM ledger_events
+					    WHERE account_id=NEW.account_id AND currency=NEW.currency;
+					   IF NOT EXISTS (SELECT 1 FROM ledger_events WHERE xmin=pg_current_xact_id()::text::xid AND account_id=NEW.account_id AND currency=NEW.currency)
+					      OR COALESCE(projected_amount,0) <> event_amount
+					   THEN RAISE EXCEPTION 'wallet projection change must equal immutable ledger events written by the same transaction'; END IF;
+					 ELSE
+					   IF current_user='trading_bot_migration_admin' AND TG_OP='INSERT' AND NEW.amount_exact IS NULL AND NEW.cost_basis_exact IS NULL
+					      AND EXISTS (SELECT 1 FROM ledger_migration_states WHERE xmin=pg_current_xact_id()::text::xid AND account_id=NEW.account_id AND status IN ('pending_approval','pending_resolution'))
+					   THEN RETURN NEW; END IF;
+					   IF TG_OP='UPDATE' AND
+					      (to_jsonb(OLD)-ARRAY['current_price','last_mark_price','last_mark_at','pnl','pnl_percent','updated_at','trailing_stop_price','stop_price','take_profit_price','exit_pending','last_atr_value','max_bars_held']) =
+					      (to_jsonb(NEW)-ARRAY['current_price','last_mark_price','last_mark_at','pnl','pnl_percent','updated_at','trailing_stop_price','stop_price','take_profit_price','exit_pending','last_atr_value','max_bars_held']) THEN RETURN NEW; END IF;
+					   IF TG_OP='UPDATE' AND OLD.amount_exact IS NULL AND COALESCE(NEW.amount_exact,0)=0 AND OLD.status<>'open' THEN RETURN NEW; END IF;
+					   SELECT amount_exact,cost_basis_exact,fees_exact,realized_pn_l_exact
+					     INTO projected_amount,projected_basis,projected_fees,projected_realized
+					     FROM positions WHERE id=NEW.id;
+					   SELECT COALESCE(sum(asset_delta),0),COALESCE(sum(cost_basis_delta),0),COALESCE(sum(fee_delta),0),COALESCE(sum(realized_pn_l),0)
+					     INTO event_amount,event_basis,event_fees,event_realized
+					     FROM ledger_events WHERE account_id=NEW.account_id AND symbol=NEW.symbol AND position_id=NEW.id;
+					   IF NOT EXISTS (SELECT 1 FROM ledger_events WHERE xmin=pg_current_xact_id()::text::xid AND account_id=NEW.account_id AND symbol=NEW.symbol AND position_id=NEW.id)
+					      OR COALESCE(projected_amount,0) <> event_amount
+					      OR COALESCE(projected_basis,0) <> event_basis
+					      OR COALESCE(projected_fees,0) <> event_fees
+					      OR COALESCE(projected_realized,0) <> event_realized
+					   THEN RAISE EXCEPTION 'position economic projection must equal immutable ledger events written by the same transaction'; END IF;
+					 END IF;
+					 RETURN NEW;
+					END; $$ LANGUAGE plpgsql;
+					ALTER FUNCTION require_current_ledger_projection() OWNER TO trading_bot_ledger_owner;
+
+					REVOKE UPDATE ON positions FROM trading_bot_ledger_writer;
+					GRANT UPDATE (
+					 symbol,account_id,amount,amount_exact,cost_basis_exact,realized_pn_l_exact,fees_exact,avg_price,entry_price,current_price,
+					 execution_mode,entry_source,exit_pending,last_mark_price,last_mark_at,client_position_id,decision_timeframe,model_version,
+					 strategy_version,policy_version,universe_mode,rollout_state,experiment_id,prediction_log_id,decision_context_json,stop_price,
+					 take_profit_price,trailing_stop_price,last_atr_value,max_bars_held,pnl,pnl_percent,status,opened_at,closed_at,close_reason
+					) ON positions TO trading_bot_ledger_writer;
+
+					REVOKE UPDATE ON parity_observations FROM trading_bot_parity_writer;
+					REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public FROM trading_bot_parity_writer;
+					GRANT INSERT ON parity_populations TO trading_bot_parity_writer;
+				`).Error
+			},
+			Rollback: func(tx *gorm.DB) error {
+				return fmt.Errorf("final reviewer parity authority and complete economic projection coupling are intentionally retained")
+			},
+		},
+		{
+			ID: "202607190105_runtime_backup_verification_evidence_grant",
+			Migrate: func(tx *gorm.DB) error {
+				return tx.Exec(`
+					REVOKE ALL PRIVILEGES ON backup_verifications FROM trading_bot_runtime;
+					GRANT INSERT ON backup_verifications TO trading_bot_runtime;
+					GRANT SELECT ON cutover_states TO trading_bot_runtime;
+				`).Error
+			},
+			Rollback: func(tx *gorm.DB) error {
+				return fmt.Errorf("runtime backup verification evidence grant is intentionally retained")
+			},
+		},
+		{
+			ID: "202607190106_runtime_backup_persisted_authority_read_grant",
+			Migrate: func(tx *gorm.DB) error {
+				// The constrained evidence writer verifies the restored authority
+				// envelope before inserting evidence. These are immutable metadata
+				// reads only; it retains no state or transition write privileges.
+				return tx.Exec(`
+					GRANT SELECT ON stage08_flag_snapshots, cutover_transitions TO trading_bot_runtime;
+				`).Error
+			},
+			Rollback: func(tx *gorm.DB) error {
+				return fmt.Errorf("runtime persisted authority read grant is intentionally retained")
+			},
+		},
+		{
+			ID: "202607190107_secure_backup_verification_evidence_boundary",
+			Migrate: func(tx *gorm.DB) error {
+				if !tx.Migrator().HasTable("backup_verifications") || !tx.Migrator().HasTable("stage08_flag_snapshots") || !tx.Migrator().HasTable("cutover_transitions") || !tx.Migrator().HasTable("cutover_states") {
+					return fmt.Errorf("unsupported database shape: backup evidence boundary requires stage08 authority tables")
+				}
+				return tx.Exec(`
+					CREATE EXTENSION IF NOT EXISTS pgcrypto;
+					DO $shape$ DECLARE bad_flags bigint; bad_transitions bigint; BEGIN
+					 SELECT count(*) INTO bad_flags FROM backup_verifications b LEFT JOIN stage08_flag_snapshots s ON s.id=b.flag_snapshot_id WHERE s.id IS NULL;
+					 IF bad_flags > 0 THEN RAISE EXCEPTION 'cannot install backup_verifications_flag_snapshot_fk: % preexisting rows reference missing stage08_flag_snapshots', bad_flags; END IF;
+					 SELECT count(*) INTO bad_transitions FROM backup_verifications b LEFT JOIN cutover_transitions c ON c.id=b.cutover_transition_id WHERE c.id IS NULL;
+					 IF bad_transitions > 0 THEN RAISE EXCEPTION 'cannot install backup_verifications_cutover_transition_fk: % preexisting rows reference missing cutover_transitions', bad_transitions; END IF;
+					 IF EXISTS (SELECT 1 FROM backup_verifications WHERE status <> 'verified' OR source_fingerprint !~ '^[a-f0-9]{64}$' OR target_fingerprint <> source_fingerprint OR canonical_digest <> source_fingerprint OR dump_checksum !~ '^[a-f0-9]{64}$' OR manifest_checksum !~ '^[a-f0-9]{64}$') THEN
+					   RAISE EXCEPTION 'cannot install backup evidence boundary: preexisting rows do not satisfy verified canonical digest shape';
+					 END IF;
+				END $shape$;
+				DO $fk$ BEGIN
+					IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='backup_verifications_flag_snapshot_fk') THEN ALTER TABLE backup_verifications ADD CONSTRAINT backup_verifications_flag_snapshot_fk FOREIGN KEY(flag_snapshot_id) REFERENCES stage08_flag_snapshots(id) ON UPDATE RESTRICT ON DELETE RESTRICT; END IF;
+					IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='backup_verifications_cutover_transition_fk') THEN ALTER TABLE backup_verifications ADD CONSTRAINT backup_verifications_cutover_transition_fk FOREIGN KEY(cutover_transition_id) REFERENCES cutover_transitions(id) ON UPDATE RESTRICT ON DELETE RESTRICT; END IF;
+				END $fk$;
+				CREATE OR REPLACE FUNCTION public.record_verified_backup_evidence(
+					p_source_before text, p_source_after text, p_target_fingerprint text, p_dump_checksum text,
+					p_manifest_checksum text, p_target_identity_token text, p_tool_versions jsonb, p_verified_at timestamptz,
+					p_principal text, p_flag_snapshot_id text, p_cutover_transition_id text
+				) RETURNS TABLE(id text, source_fingerprint text, dump_checksum text, fixture_metadata_json jsonb,
+					target_fingerprint text, canonical_digest text, status text, verified_at timestamptz, manifest_checksum text,
+					tool_versions_json jsonb, flag_snapshot_id text, cutover_transition_id text)
+				LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public AS $fn$
+				DECLARE v_state public.cutover_states%ROWTYPE; v_snapshot public.stage08_flag_snapshots%ROWTYPE; v_transition public.cutover_transitions%ROWTYPE; v_id text; v_fixture jsonb;
+				BEGIN
+					IF p_source_before !~ '^[a-f0-9]{64}$' OR p_source_after !~ '^[a-f0-9]{64}$' OR p_target_fingerprint !~ '^[a-f0-9]{64}$' OR p_dump_checksum !~ '^[a-f0-9]{64}$' OR p_manifest_checksum !~ '^[a-f0-9]{64}$' THEN RAISE EXCEPTION 'backup evidence digests must be lowercase 64-character hexadecimal'; END IF;
+					IF p_target_identity_token !~ '^[a-f0-9]{32,128}$' THEN RAISE EXCEPTION 'backup evidence target identity token violates manifest contract'; END IF;
+					IF p_principal IS NULL OR length(p_principal)=0 OR length(p_principal)>200 OR p_verified_at IS NULL OR date_trunc('second',p_verified_at)<>p_verified_at THEN RAISE EXCEPTION 'backup evidence principal or timestamp is malformed'; END IF;
+					IF jsonb_typeof(p_tool_versions)<>'object' OR (SELECT count(*) FROM jsonb_object_keys(p_tool_versions))>50 OR EXISTS (SELECT 1 FROM jsonb_each_text(p_tool_versions) v(k,val) WHERE k !~ '^[A-Za-z0-9._/-]{1,80}$' OR length(val)=0 OR length(val)>200) THEN RAISE EXCEPTION 'backup evidence tool metadata is malformed'; END IF;
+					IF p_source_before<>p_source_after OR p_source_before<>p_target_fingerprint THEN RAISE EXCEPTION 'backup evidence fingerprints must be identical'; END IF;
+					IF p_manifest_checksum<>encode(digest(convert_to(p_source_before||'|'||p_dump_checksum||'|'||p_target_identity_token||'|'||to_char(p_verified_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS"Z"'),'UTF8'),'sha256'),'hex') THEN RAISE EXCEPTION 'backup verification manifest checksum mismatch'; END IF;
+					SELECT * INTO v_state FROM public.cutover_states AS cs WHERE cs.id=1; IF NOT FOUND THEN RAISE EXCEPTION 'persisted cutover state required'; END IF;
+					IF p_flag_snapshot_id<>v_state.flag_snapshot_id OR p_cutover_transition_id<>v_state.transition_id THEN RAISE EXCEPTION 'backup evidence authority bindings do not equal current cutover state'; END IF;
+					SELECT * INTO v_snapshot FROM public.stage08_flag_snapshots AS ss WHERE ss.id=p_flag_snapshot_id; IF NOT FOUND OR v_snapshot.id<>v_snapshot.content_digest OR v_snapshot.content_digest<>v_state.flag_digest OR v_snapshot.content_json IS NULL OR v_snapshot.schema_version<>'stage08-flags-v1' THEN RAISE EXCEPTION 'current cutover flag snapshot integrity is invalid'; END IF;
+					IF v_state.authority_json IS NULL OR v_state.authority_json='{}'::jsonb OR v_state.authority_digest !~ '^[a-f0-9]{64}$' OR v_state.authority_json->>'FlagID'<>v_snapshot.id OR v_state.authority_json->>'FlagDigest'<>v_snapshot.content_digest OR v_state.authority_json->>'Stage'<>v_state.stage OR v_state.authority_json->>'Authority'<>v_state.authority THEN RAISE EXCEPTION 'current cutover authority envelope is invalid'; END IF;
+					IF p_cutover_transition_id=repeat('0',64) THEN
+						IF v_state.stage<>'schema_legacy' OR v_state.authority<>'legacy' OR v_snapshot.id<>encode(digest(convert_to('{"Schema":"stage08-flags-v1","LedgerAuthority":"legacy","SharedEngine":"off","NewBacktest":"off","PointInTimeUniverse":"off","CandidateStrategy":"off","DualRun":"off","Stage07Context":""}','UTF8'),'sha256'),'hex') OR v_state.version<1 THEN RAISE EXCEPTION 'persisted legacy cutover authority is ambiguous or tampered'; END IF;
+					ELSE
+						SELECT * INTO v_transition FROM public.cutover_transitions AS ct WHERE ct.id=p_cutover_transition_id; IF NOT FOUND OR v_transition.content_digest<>v_transition.id OR v_transition.flag_snapshot_id<>v_snapshot.id OR v_transition.flag_snapshot_digest<>v_snapshot.content_digest OR v_transition.to_stage<>v_state.stage OR v_transition.to_authority<>v_state.authority OR v_transition.target_envelope_digest<>v_state.authority_digest OR v_transition.target_envelope_json IS DISTINCT FROM v_state.authority_json THEN RAISE EXCEPTION 'current cutover transition is not bound to current authority envelope'; END IF;
+					END IF;
+					v_fixture := jsonb_build_object('recorded_by',p_principal,'target_identity_token',p_target_identity_token);
+					v_id := encode(digest(convert_to(p_source_before||'|'||p_dump_checksum||'|'||p_target_identity_token||'|'||to_char(p_verified_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS"Z"')||'|'||p_principal||'|'||v_snapshot.id||'|'||v_transition.id,'UTF8'),'sha256'),'hex');
+					RETURN QUERY INSERT INTO public.backup_verifications AS inserted(id,source_fingerprint,dump_checksum,fixture_metadata_json,target_fingerprint,canonical_digest,status,verified_at,manifest_checksum,tool_versions_json,flag_snapshot_id,cutover_transition_id)
+					VALUES(v_id,p_source_before,p_dump_checksum,v_fixture,p_target_fingerprint,p_source_before,'verified',p_verified_at,p_manifest_checksum,p_tool_versions,v_snapshot.id,v_transition.id)
+					ON CONFLICT DO NOTHING RETURNING inserted.id,inserted.source_fingerprint,inserted.dump_checksum,inserted.fixture_metadata_json,inserted.target_fingerprint,inserted.canonical_digest,inserted.status,inserted.verified_at,inserted.manifest_checksum,inserted.tool_versions_json,inserted.flag_snapshot_id,inserted.cutover_transition_id;
+					IF NOT FOUND THEN RETURN QUERY SELECT b.id,b.source_fingerprint,b.dump_checksum,b.fixture_metadata_json,b.target_fingerprint,b.canonical_digest,b.status,b.verified_at,b.manifest_checksum,b.tool_versions_json,b.flag_snapshot_id,b.cutover_transition_id FROM public.backup_verifications b WHERE b.id=v_id; END IF;
+				END $fn$;
+				ALTER FUNCTION public.record_verified_backup_evidence(text,text,text,text,text,text,jsonb,timestamptz,text,text,text) OWNER TO trading_bot_operations_owner;
+				REVOKE ALL ON FUNCTION public.record_verified_backup_evidence(text,text,text,text,text,text,jsonb,timestamptz,text,text,text) FROM PUBLIC;
+				GRANT EXECUTE ON FUNCTION public.record_verified_backup_evidence(text,text,text,text,text,text,jsonb,timestamptz,text,text,text) TO trading_bot_runtime;
+				GRANT USAGE ON SCHEMA public TO trading_bot_operations_owner;
+				GRANT SELECT ON cutover_states,stage08_flag_snapshots,cutover_transitions TO trading_bot_operations_owner;
+				GRANT INSERT,SELECT ON backup_verifications TO trading_bot_operations_owner;
+				REVOKE ALL PRIVILEGES ON backup_verifications FROM PUBLIC, trading_bot_runtime, trading_bot_ledger_writer, trading_bot_parity_writer;
+			`).Error
+			},
+			Rollback: func(tx *gorm.DB) error {
+				return fmt.Errorf("secure backup verification evidence boundary is intentionally retained")
+			},
+		},
+		{
+			// Corrects the function body on databases which recorded the original
+			// boundary migration before its output-column qualification fix.
+			ID: "202607190108_qualify_backup_evidence_function_columns",
+			Migrate: func(tx *gorm.DB) error {
+				return tx.Exec(`
+				CREATE OR REPLACE FUNCTION public.record_verified_backup_evidence(
+					p_source_before text, p_source_after text, p_target_fingerprint text, p_dump_checksum text,
+					p_manifest_checksum text, p_target_identity_token text, p_tool_versions jsonb, p_verified_at timestamptz,
+					p_principal text, p_flag_snapshot_id text, p_cutover_transition_id text
+				) RETURNS TABLE(id text, source_fingerprint text, dump_checksum text, fixture_metadata_json jsonb,
+					target_fingerprint text, canonical_digest text, status text, verified_at timestamptz, manifest_checksum text,
+					tool_versions_json jsonb, flag_snapshot_id text, cutover_transition_id text)
+				LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public AS $fn$
+				DECLARE v_state public.cutover_states%ROWTYPE; v_snapshot public.stage08_flag_snapshots%ROWTYPE; v_transition public.cutover_transitions%ROWTYPE; v_id text; v_fixture jsonb;
+				BEGIN
+					IF p_source_before !~ '^[a-f0-9]{64}$' OR p_source_after !~ '^[a-f0-9]{64}$' OR p_target_fingerprint !~ '^[a-f0-9]{64}$' OR p_dump_checksum !~ '^[a-f0-9]{64}$' OR p_manifest_checksum !~ '^[a-f0-9]{64}$' THEN RAISE EXCEPTION 'backup evidence digests must be lowercase 64-character hexadecimal'; END IF;
+					IF p_target_identity_token !~ '^[a-f0-9]{32,128}$' THEN RAISE EXCEPTION 'backup evidence target identity token violates manifest contract'; END IF;
+					IF p_principal IS NULL OR length(p_principal)=0 OR length(p_principal)>200 OR p_verified_at IS NULL OR date_trunc('second',p_verified_at)<>p_verified_at THEN RAISE EXCEPTION 'backup evidence principal or timestamp is malformed'; END IF;
+					IF jsonb_typeof(p_tool_versions)<>'object' OR (SELECT count(*) FROM jsonb_object_keys(p_tool_versions))>50 OR EXISTS (SELECT 1 FROM jsonb_each_text(p_tool_versions) v(k,val) WHERE k !~ '^[A-Za-z0-9._/-]{1,80}$' OR length(val)=0 OR length(val)>200) THEN RAISE EXCEPTION 'backup evidence tool metadata is malformed'; END IF;
+					IF p_source_before<>p_source_after OR p_source_before<>p_target_fingerprint THEN RAISE EXCEPTION 'backup evidence fingerprints must be identical'; END IF;
+					IF p_manifest_checksum<>encode(digest(convert_to(p_source_before||'|'||p_dump_checksum||'|'||p_target_identity_token||'|'||to_char(p_verified_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS"Z"'),'UTF8'),'sha256'),'hex') THEN RAISE EXCEPTION 'backup verification manifest checksum mismatch'; END IF;
+					SELECT * INTO v_state FROM public.cutover_states AS cs WHERE cs.id=1; IF NOT FOUND THEN RAISE EXCEPTION 'persisted cutover state required'; END IF;
+					IF p_flag_snapshot_id<>v_state.flag_snapshot_id OR p_cutover_transition_id<>v_state.transition_id THEN RAISE EXCEPTION 'backup evidence authority bindings do not equal current cutover state'; END IF;
+					SELECT * INTO v_snapshot FROM public.stage08_flag_snapshots AS ss WHERE ss.id=p_flag_snapshot_id; IF NOT FOUND OR v_snapshot.id<>v_snapshot.content_digest OR v_snapshot.content_digest<>v_state.flag_digest OR v_snapshot.content_json IS NULL OR v_snapshot.schema_version<>'stage08-flags-v1' THEN RAISE EXCEPTION 'current cutover flag snapshot integrity is invalid'; END IF;
+					IF v_state.authority_json IS NULL OR v_state.authority_json='{}'::jsonb OR v_state.authority_digest !~ '^[a-f0-9]{64}$' OR v_state.authority_json->>'FlagID'<>v_snapshot.id OR v_state.authority_json->>'FlagDigest'<>v_snapshot.content_digest OR v_state.authority_json->>'Stage'<>v_state.stage OR v_state.authority_json->>'Authority'<>v_state.authority THEN RAISE EXCEPTION 'current cutover authority envelope is invalid'; END IF;
+					SELECT * INTO v_transition FROM public.cutover_transitions AS ct WHERE ct.id=p_cutover_transition_id; IF NOT FOUND OR v_transition.content_digest<>v_transition.id OR v_transition.flag_snapshot_id<>v_snapshot.id OR v_transition.flag_snapshot_digest<>v_snapshot.content_digest OR v_transition.to_stage<>v_state.stage OR v_transition.to_authority<>v_state.authority OR v_transition.target_envelope_digest<>v_state.authority_digest OR v_transition.target_envelope_json IS DISTINCT FROM v_state.authority_json THEN RAISE EXCEPTION 'current cutover transition is not bound to current authority envelope'; END IF;
+					v_fixture := jsonb_build_object('recorded_by',p_principal,'target_identity_token',p_target_identity_token);
+					v_id := encode(digest(convert_to(p_source_before||'|'||p_dump_checksum||'|'||p_target_identity_token||'|'||to_char(p_verified_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS"Z"')||'|'||p_principal||'|'||v_snapshot.id||'|'||v_transition.id,'UTF8'),'sha256'),'hex');
+					RETURN QUERY INSERT INTO public.backup_verifications AS inserted(id,source_fingerprint,dump_checksum,fixture_metadata_json,target_fingerprint,canonical_digest,status,verified_at,manifest_checksum,tool_versions_json,flag_snapshot_id,cutover_transition_id)
+					VALUES(v_id,p_source_before,p_dump_checksum,v_fixture,p_target_fingerprint,p_source_before,'verified',p_verified_at,p_manifest_checksum,p_tool_versions,v_snapshot.id,v_transition.id)
+					ON CONFLICT DO NOTHING RETURNING inserted.id::text,inserted.source_fingerprint::text,inserted.dump_checksum::text,inserted.fixture_metadata_json,inserted.target_fingerprint::text,inserted.canonical_digest::text,inserted.status::text,inserted.verified_at,inserted.manifest_checksum::text,inserted.tool_versions_json,inserted.flag_snapshot_id::text,inserted.cutover_transition_id::text;
+					IF NOT FOUND THEN RETURN QUERY SELECT b.id::text,b.source_fingerprint::text,b.dump_checksum::text,b.fixture_metadata_json,b.target_fingerprint::text,b.canonical_digest::text,b.status::text,b.verified_at,b.manifest_checksum::text,b.tool_versions_json,b.flag_snapshot_id::text,b.cutover_transition_id::text FROM public.backup_verifications AS b WHERE b.id=v_id; END IF;
+				END $fn$;
+				ALTER FUNCTION public.record_verified_backup_evidence(text,text,text,text,text,text,jsonb,timestamptz,text,text,text) OWNER TO trading_bot_operations_owner;
+				`).Error
+			},
+			Rollback: func(tx *gorm.DB) error {
+				return fmt.Errorf("qualified backup evidence function is intentionally retained")
+			},
+		},
+		{
+			ID: "202607190109_backup_evidence_result_types_and_legacy_transition",
+			Migrate: func(tx *gorm.DB) error {
+				return tx.Exec(`
+				CREATE OR REPLACE FUNCTION public.record_verified_backup_evidence(p_source_before text,p_source_after text,p_target_fingerprint text,p_dump_checksum text,p_manifest_checksum text,p_target_identity_token text,p_tool_versions jsonb,p_verified_at timestamptz,p_principal text,p_flag_snapshot_id text,p_cutover_transition_id text)
+				RETURNS TABLE(id text,source_fingerprint text,dump_checksum text,fixture_metadata_json jsonb,target_fingerprint text,canonical_digest text,status text,verified_at timestamptz,manifest_checksum text,tool_versions_json jsonb,flag_snapshot_id text,cutover_transition_id text)
+				LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public AS $fn$
+				DECLARE v_state public.cutover_states%ROWTYPE; v_snapshot public.stage08_flag_snapshots%ROWTYPE; v_transition public.cutover_transitions%ROWTYPE; v_id text; v_fixture jsonb;
+				BEGIN
+					IF p_source_before !~ '^[a-f0-9]{64}$' OR p_source_after !~ '^[a-f0-9]{64}$' OR p_target_fingerprint !~ '^[a-f0-9]{64}$' OR p_dump_checksum !~ '^[a-f0-9]{64}$' OR p_manifest_checksum !~ '^[a-f0-9]{64}$' THEN RAISE EXCEPTION 'backup evidence digests must be lowercase 64-character hexadecimal'; END IF;
+					IF p_target_identity_token !~ '^[a-f0-9]{32,128}$' THEN RAISE EXCEPTION 'backup evidence target identity token violates manifest contract'; END IF;
+					IF p_principal IS NULL OR length(p_principal)=0 OR length(p_principal)>200 OR p_verified_at IS NULL OR date_trunc('second',p_verified_at)<>p_verified_at THEN RAISE EXCEPTION 'backup evidence principal or timestamp is malformed'; END IF;
+					IF jsonb_typeof(p_tool_versions)<>'object' OR (SELECT count(*) FROM jsonb_object_keys(p_tool_versions))>50 OR EXISTS (SELECT 1 FROM jsonb_each_text(p_tool_versions) v(k,val) WHERE k !~ '^[A-Za-z0-9._/-]{1,80}$' OR length(val)=0 OR length(val)>200) THEN RAISE EXCEPTION 'backup evidence tool metadata is malformed'; END IF;
+					IF p_source_before<>p_source_after OR p_source_before<>p_target_fingerprint THEN RAISE EXCEPTION 'backup evidence fingerprints must be identical'; END IF;
+					IF p_manifest_checksum<>encode(digest(convert_to(p_source_before||'|'||p_dump_checksum||'|'||p_target_identity_token||'|'||to_char(p_verified_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS"Z"'),'UTF8'),'sha256'),'hex') THEN RAISE EXCEPTION 'backup verification manifest checksum mismatch'; END IF;
+					SELECT * INTO v_state FROM public.cutover_states AS cs WHERE cs.id=1; IF NOT FOUND THEN RAISE EXCEPTION 'persisted cutover state required'; END IF;
+					IF p_flag_snapshot_id<>v_state.flag_snapshot_id OR p_cutover_transition_id<>v_state.transition_id THEN RAISE EXCEPTION 'backup evidence authority bindings do not equal current cutover state'; END IF;
+					SELECT * INTO v_snapshot FROM public.stage08_flag_snapshots AS ss WHERE ss.id=p_flag_snapshot_id; IF NOT FOUND OR v_snapshot.id<>v_snapshot.content_digest OR v_snapshot.content_digest<>v_state.flag_digest OR v_snapshot.content_json IS NULL OR v_snapshot.schema_version<>'stage08-flags-v1' THEN RAISE EXCEPTION 'current cutover flag snapshot integrity is invalid'; END IF;
+					IF v_state.authority_json IS NULL OR v_state.authority_json='{}'::jsonb OR v_state.authority_digest !~ '^[a-f0-9]{64}$' OR v_state.authority_json->>'FlagID'<>v_snapshot.id OR v_state.authority_json->>'FlagDigest'<>v_snapshot.content_digest OR v_state.authority_json->>'Stage'<>v_state.stage OR v_state.authority_json->>'Authority'<>v_state.authority THEN RAISE EXCEPTION 'current cutover authority envelope is invalid'; END IF;
+					IF p_cutover_transition_id=repeat('0',64) THEN
+						IF v_state.stage<>'schema_legacy' OR v_state.authority<>'legacy' OR v_snapshot.id<>encode(digest(convert_to('{"schema_version":"stage08-flags-v1","ledger_authority":"legacy","shared_engine":"off","new_backtest":"off","point_in_time_universe":"off","candidate_strategy":"off","dual_run":"off"}','UTF8'),'sha256'),'hex') OR v_state.version<1 THEN RAISE EXCEPTION 'persisted legacy cutover authority is ambiguous or tampered'; END IF;
+					ELSE
+						SELECT * INTO v_transition FROM public.cutover_transitions AS ct WHERE ct.id=p_cutover_transition_id; IF NOT FOUND OR v_transition.content_digest<>v_transition.id OR v_transition.flag_snapshot_id<>v_snapshot.id OR v_transition.flag_snapshot_digest<>v_snapshot.content_digest OR v_transition.to_stage<>v_state.stage OR v_transition.to_authority<>v_state.authority OR v_transition.target_envelope_digest<>v_state.authority_digest OR v_transition.target_envelope_json IS DISTINCT FROM v_state.authority_json THEN RAISE EXCEPTION 'current cutover transition is not bound to current authority envelope'; END IF;
+					END IF;
+					v_fixture:=jsonb_build_object('recorded_by',p_principal,'target_identity_token',p_target_identity_token);
+					v_id:=encode(digest(convert_to(p_source_before||'|'||p_dump_checksum||'|'||p_target_identity_token||'|'||to_char(p_verified_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS"Z"')||'|'||p_principal||'|'||v_snapshot.id||'|'||p_cutover_transition_id,'UTF8'),'sha256'),'hex');
+					RETURN QUERY INSERT INTO public.backup_verifications AS inserted(id,source_fingerprint,dump_checksum,fixture_metadata_json,target_fingerprint,canonical_digest,status,verified_at,manifest_checksum,tool_versions_json,flag_snapshot_id,cutover_transition_id) VALUES(v_id,p_source_before,p_dump_checksum,v_fixture,p_target_fingerprint,p_source_before,'verified',p_verified_at,p_manifest_checksum,p_tool_versions,v_snapshot.id,p_cutover_transition_id) ON CONFLICT DO NOTHING RETURNING inserted.id::text,inserted.source_fingerprint::text,inserted.dump_checksum::text,inserted.fixture_metadata_json,inserted.target_fingerprint::text,inserted.canonical_digest::text,inserted.status::text,inserted.verified_at,inserted.manifest_checksum::text,inserted.tool_versions_json,inserted.flag_snapshot_id::text,inserted.cutover_transition_id::text;
+					IF NOT FOUND THEN RETURN QUERY SELECT b.id::text,b.source_fingerprint::text,b.dump_checksum::text,b.fixture_metadata_json,b.target_fingerprint::text,b.canonical_digest::text,b.status::text,b.verified_at,b.manifest_checksum::text,b.tool_versions_json,b.flag_snapshot_id::text,b.cutover_transition_id::text FROM public.backup_verifications AS b WHERE b.id=v_id; END IF;
+				END $fn$;
+				ALTER FUNCTION public.record_verified_backup_evidence(text,text,text,text,text,text,jsonb,timestamptz,text,text,text) OWNER TO trading_bot_operations_owner;
+				REVOKE ALL ON FUNCTION public.record_verified_backup_evidence(text,text,text,text,text,text,jsonb,timestamptz,text,text,text) FROM PUBLIC;
+				GRANT EXECUTE ON FUNCTION public.record_verified_backup_evidence(text,text,text,text,text,text,jsonb,timestamptz,text,text,text) TO trading_bot_runtime;
+				`).Error
+			},
+			Rollback: func(tx *gorm.DB) error { return fmt.Errorf("typed backup evidence function is intentionally retained") },
+		},
+		{
+			ID: "202607190110_bootstrap_transition_sentinel",
+			Migrate: func(tx *gorm.DB) error {
+				// Current-development corrective path: a pre-sentinel deterministic
+				// bootstrap is upgraded only when every bound authority field is exact.
+				return tx.Exec(`
+				DO $sentinel$ DECLARE s record; f record; e jsonb; d text; BEGIN
+				 SELECT * INTO s FROM public.cutover_states WHERE id=1;
+				 IF FOUND AND s.transition_id=repeat('0',64) THEN
+				   SELECT * INTO f FROM public.stage08_flag_snapshots WHERE id=s.flag_snapshot_id;
+				   e:=jsonb_build_object('Schema','stage08-authority-envelope-v1','Stage','schema_legacy','Authority','legacy','FlagID',s.flag_snapshot_id,'FlagDigest',s.flag_digest,'Stage07Context','','Stage07Deployment','');
+				   IF s.stage<>'schema_legacy' OR s.authority<>'legacy' OR s.flag_snapshot_id<>s.flag_digest OR f.id IS NULL OR f.id<>f.content_digest OR s.authority_json IS DISTINCT FROM e OR s.version<1 THEN RAISE EXCEPTION 'cannot install bootstrap transition sentinel: legacy state is not canonical'; END IF;
+				   INSERT INTO public.cutover_transitions(id,idempotency_key,from_stage,to_stage,from_authority,to_authority,flag_snapshot_id,flag_snapshot_digest,source_state_version,source_envelope_json,source_envelope_digest,target_envelope_json,target_envelope_digest,request_digest,principal,reason,prerequisites_json,content_digest,created_at)
+				   VALUES(repeat('0',64),'stage08-bootstrap-sentinel-v1','schema_legacy','schema_legacy','legacy','legacy',s.flag_snapshot_id,s.flag_digest,0,s.authority_json,s.authority_digest,s.authority_json,s.authority_digest,repeat('0',64),'system:stage08-bootstrap','deterministic initial legacy authority bootstrap','[]',repeat('0',64),s.updated_at)
+				   ON CONFLICT (id) DO NOTHING;
+				 END IF;
+				END $sentinel$;
+				CREATE OR REPLACE FUNCTION public.record_verified_backup_evidence(p_source_before text,p_source_after text,p_target_fingerprint text,p_dump_checksum text,p_manifest_checksum text,p_target_identity_token text,p_tool_versions jsonb,p_verified_at timestamptz,p_principal text,p_flag_snapshot_id text,p_cutover_transition_id text)
+				RETURNS TABLE(id text,source_fingerprint text,dump_checksum text,fixture_metadata_json jsonb,target_fingerprint text,canonical_digest text,status text,verified_at timestamptz,manifest_checksum text,tool_versions_json jsonb,flag_snapshot_id text,cutover_transition_id text) LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,public AS $fn$
+				DECLARE s public.cutover_states%ROWTYPE; f public.stage08_flag_snapshots%ROWTYPE; tr public.cutover_transitions%ROWTYPE; v_id text; fixture jsonb;
+				BEGIN
+				 IF p_source_before !~ '^[a-f0-9]{64}$' OR p_source_after<>p_source_before OR p_target_fingerprint<>p_source_before OR p_dump_checksum !~ '^[a-f0-9]{64}$' OR p_manifest_checksum !~ '^[a-f0-9]{64}$' OR p_target_identity_token !~ '^[a-f0-9]{32,128}$' OR p_principal IS NULL OR length(p_principal)=0 OR length(p_principal)>200 OR p_verified_at IS NULL OR date_trunc('second',p_verified_at)<>p_verified_at THEN RAISE EXCEPTION 'backup evidence manifest is malformed'; END IF;
+				 IF jsonb_typeof(p_tool_versions)<>'object' OR (SELECT count(*) FROM jsonb_object_keys(p_tool_versions))>50 OR EXISTS(SELECT 1 FROM jsonb_each_text(p_tool_versions) v(k,val) WHERE k !~ '^[A-Za-z0-9._/-]{1,80}$' OR length(val)=0 OR length(val)>200) THEN RAISE EXCEPTION 'backup evidence tool metadata is malformed'; END IF;
+				 IF p_manifest_checksum<>encode(digest(convert_to(p_source_before||'|'||p_dump_checksum||'|'||p_target_identity_token||'|'||to_char(p_verified_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS"Z"'),'UTF8'),'sha256'),'hex') THEN RAISE EXCEPTION 'backup verification manifest checksum mismatch'; END IF;
+				 SELECT * INTO s FROM public.cutover_states AS cs WHERE cs.id=1; IF NOT FOUND OR p_flag_snapshot_id<>s.flag_snapshot_id OR p_cutover_transition_id<>s.transition_id THEN RAISE EXCEPTION 'backup evidence authority bindings do not equal current cutover state'; END IF;
+				 SELECT * INTO f FROM public.stage08_flag_snapshots AS ss WHERE ss.id=p_flag_snapshot_id; IF NOT FOUND OR f.id<>f.content_digest OR f.content_digest<>s.flag_digest OR f.schema_version<>'stage08-flags-v1' OR s.authority_json->>'FlagID'<>f.id OR s.authority_json->>'FlagDigest'<>f.content_digest OR s.authority_json->>'Stage'<>s.stage OR s.authority_json->>'Authority'<>s.authority THEN RAISE EXCEPTION 'current cutover authority envelope is invalid'; END IF;
+				 SELECT * INTO tr FROM public.cutover_transitions AS ct WHERE ct.id=p_cutover_transition_id; IF NOT FOUND OR tr.content_digest<>tr.id OR tr.flag_snapshot_id<>f.id OR tr.flag_snapshot_digest<>f.content_digest OR tr.to_stage<>s.stage OR tr.to_authority<>s.authority OR tr.target_envelope_digest<>s.authority_digest OR tr.target_envelope_json IS DISTINCT FROM s.authority_json THEN RAISE EXCEPTION 'current cutover transition is not bound to current authority envelope'; END IF;
+				 IF p_cutover_transition_id=repeat('0',64) AND (s.stage<>'schema_legacy' OR s.authority<>'legacy' OR f.id<>encode(digest(convert_to('{"schema_version":"stage08-flags-v1","ledger_authority":"legacy","shared_engine":"off","new_backtest":"off","point_in_time_universe":"off","candidate_strategy":"off","dual_run":"off"}','UTF8'),'sha256'),'hex') OR s.version<1 OR tr.idempotency_key<>'stage08-bootstrap-sentinel-v1' OR tr.from_stage<>'schema_legacy' OR tr.from_authority<>'legacy' OR tr.source_state_version<>0 OR tr.source_envelope_json IS DISTINCT FROM s.authority_json OR tr.source_envelope_digest<>s.authority_digest OR tr.request_digest<>repeat('0',64) OR tr.principal<>'system:stage08-bootstrap' OR tr.reason<>'deterministic initial legacy authority bootstrap' OR tr.prerequisites_json<>'[]'::jsonb OR tr.rollback_of IS NOT NULL) THEN RAISE EXCEPTION 'persisted bootstrap transition sentinel is invalid'; END IF;
+				 fixture:=jsonb_build_object('recorded_by',p_principal,'target_identity_token',p_target_identity_token); v_id:=encode(digest(convert_to(p_source_before||'|'||p_dump_checksum||'|'||p_target_identity_token||'|'||to_char(p_verified_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS"Z"')||'|'||p_principal||'|'||f.id||'|'||tr.id,'UTF8'),'sha256'),'hex');
+				 RETURN QUERY INSERT INTO public.backup_verifications AS b(id,source_fingerprint,dump_checksum,fixture_metadata_json,target_fingerprint,canonical_digest,status,verified_at,manifest_checksum,tool_versions_json,flag_snapshot_id,cutover_transition_id) VALUES(v_id,p_source_before,p_dump_checksum,fixture,p_target_fingerprint,p_source_before,'verified',p_verified_at,p_manifest_checksum,p_tool_versions,f.id,tr.id) ON CONFLICT DO NOTHING RETURNING b.id::text,b.source_fingerprint::text,b.dump_checksum::text,b.fixture_metadata_json,b.target_fingerprint::text,b.canonical_digest::text,b.status::text,b.verified_at,b.manifest_checksum::text,b.tool_versions_json,b.flag_snapshot_id::text,b.cutover_transition_id::text;
+				 IF NOT FOUND THEN RETURN QUERY SELECT b.id::text,b.source_fingerprint::text,b.dump_checksum::text,b.fixture_metadata_json,b.target_fingerprint::text,b.canonical_digest::text,b.status::text,b.verified_at,b.manifest_checksum::text,b.tool_versions_json,b.flag_snapshot_id::text,b.cutover_transition_id::text FROM public.backup_verifications b WHERE b.id=v_id; END IF;
+				END $fn$;
+				ALTER FUNCTION public.record_verified_backup_evidence(text,text,text,text,text,text,jsonb,timestamptz,text,text,text) OWNER TO trading_bot_operations_owner;
+				REVOKE ALL ON FUNCTION public.record_verified_backup_evidence(text,text,text,text,text,text,jsonb,timestamptz,text,text,text) FROM PUBLIC; GRANT EXECUTE ON FUNCTION public.record_verified_backup_evidence(text,text,text,text,text,text,jsonb,timestamptz,text,text,text) TO trading_bot_runtime;
+				`).Error
+			},
+			Rollback: func(tx *gorm.DB) error { return fmt.Errorf("bootstrap transition sentinel is intentionally retained") },
 		},
 	})
 

@@ -9,6 +9,9 @@ import (
 func TestLoad(t *testing.T) {
 	os.Setenv("PORT", "8080")
 	os.Setenv("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/trading_bot?sslmode=disable")
+	os.Setenv("MIGRATION_DATABASE_URL", "postgres://migration-admin@localhost/trading_bot")
+	os.Setenv("LEDGER_DATABASE_URL", "postgres://ledger-login@localhost/trading_bot")
+	os.Setenv("PARITY_DATABASE_URL", "postgres://parity-login@localhost/trading_bot")
 	os.Setenv("POSTGRES_HOST", "db")
 	os.Setenv("POSTGRES_PORT", "5433")
 	os.Setenv("POSTGRES_DB", "bot")
@@ -32,6 +35,15 @@ func TestLoad(t *testing.T) {
 	}
 	if cfg.DatabaseURL != "postgres://postgres:postgres@localhost:5432/trading_bot?sslmode=disable" {
 		t.Errorf("Load() DatabaseURL = %v, want postgres://postgres:postgres@localhost:5432/trading_bot?sslmode=disable", cfg.DatabaseURL)
+	}
+	if cfg.MigrationDatabaseURL != "postgres://migration-admin@localhost/trading_bot" {
+		t.Errorf("Load() MigrationDatabaseURL = %v", cfg.MigrationDatabaseURL)
+	}
+	if cfg.LedgerDatabaseURL != "postgres://ledger-login@localhost/trading_bot" {
+		t.Errorf("Load() LedgerDatabaseURL = %v", cfg.LedgerDatabaseURL)
+	}
+	if cfg.ParityDatabaseURL != "postgres://parity-login@localhost/trading_bot" {
+		t.Errorf("Load() ParityDatabaseURL = %v", cfg.ParityDatabaseURL)
 	}
 	if cfg.PostgresHost != "db" || cfg.PostgresPort != "5433" || cfg.PostgresDB != "bot" || cfg.PostgresUser != "botuser" || cfg.PostgresPassword != "secret" || cfg.PostgresSSLMode != "require" {
 		t.Errorf("Load() postgres fields not loaded correctly: %+v", cfg)
@@ -63,6 +75,9 @@ func TestLoad(t *testing.T) {
 
 	os.Unsetenv("PORT")
 	os.Unsetenv("DATABASE_URL")
+	os.Unsetenv("MIGRATION_DATABASE_URL")
+	os.Unsetenv("LEDGER_DATABASE_URL")
+	os.Unsetenv("PARITY_DATABASE_URL")
 	os.Unsetenv("POSTGRES_HOST")
 	os.Unsetenv("POSTGRES_PORT")
 	os.Unsetenv("POSTGRES_DB")
@@ -83,6 +98,9 @@ func TestLoad(t *testing.T) {
 func TestLoadDefaults(t *testing.T) {
 	os.Unsetenv("PORT")
 	os.Unsetenv("DATABASE_URL")
+	os.Unsetenv("MIGRATION_DATABASE_URL")
+	os.Unsetenv("LEDGER_DATABASE_URL")
+	os.Unsetenv("PARITY_DATABASE_URL")
 	os.Unsetenv("POSTGRES_HOST")
 	os.Unsetenv("POSTGRES_PORT")
 	os.Unsetenv("POSTGRES_DB")
@@ -107,7 +125,10 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.DatabaseURL != "" {
 		t.Errorf("Load() default DatabaseURL = %v, want empty string", cfg.DatabaseURL)
 	}
-	if cfg.PostgresHost != "localhost" || cfg.PostgresPort != "5432" || cfg.PostgresDB != "trading_bot" || cfg.PostgresUser != "postgres" || cfg.PostgresPassword != "postgres" || cfg.PostgresSSLMode != "disable" {
+	if cfg.MigrationDatabaseURL != "" || cfg.LedgerDatabaseURL != "" || cfg.ParityDatabaseURL != "" {
+		t.Errorf("Load() default privileged URLs must be empty: migration=%q ledger=%q parity=%q", cfg.MigrationDatabaseURL, cfg.LedgerDatabaseURL, cfg.ParityDatabaseURL)
+	}
+	if cfg.PostgresHost != "localhost" || cfg.PostgresPort != "5432" || cfg.PostgresDB != "trading_bot" || cfg.PostgresUser != "postgres" || cfg.PostgresPassword != "" || cfg.PostgresSSLMode != "disable" {
 		t.Errorf("Load() default postgres fields not set correctly: %+v", cfg)
 	}
 	if cfg.DBMaxOpenConns != 25 || cfg.DBMaxIdleConns != 5 {
@@ -124,6 +145,16 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if cfg.AuthPassword != "" {
 		t.Errorf("Load() default AuthPassword = %v, want empty string", cfg.AuthPassword)
+	}
+}
+
+func TestLoadValidatedFromPersistedStage08AuthorityIgnoresLocalFlags(t *testing.T) {
+	t.Setenv("STAGE08_SHARED_ENGINE", "not-a-real-mode")
+	if _, err := LoadValidated(); err == nil {
+		t.Fatal("normal startup accepted malformed local Stage 08 flags")
+	}
+	if _, err := LoadValidatedFromPersistedStage08Authority(); err != nil {
+		t.Fatalf("persisted-authority command configuration rejected local Stage 08 flags: %v", err)
 	}
 }
 

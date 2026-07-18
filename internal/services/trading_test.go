@@ -1,17 +1,19 @@
 package services
 
 import (
+	"context"
 	"encoding/json"
-	"github.com/gofiber/fiber/v2"
 	"math"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
+	"trading-go/internal/accounting"
 	"trading-go/internal/database"
+	ledgerpkg "trading-go/internal/ledger"
 	"trading-go/internal/testutil"
 
-	"gorm.io/gorm"
+	"github.com/gofiber/fiber/v2"
 )
 
 func TestResolveCloseReasonPrecedence(t *testing.T) {
@@ -54,27 +56,24 @@ func TestUpdatePositionsPricesAtrTrailingStopRatchet(t *testing.T) {
 	database.DB.Create(&database.Setting{Key: "atr_trailing_period", Value: "14"})
 	database.DB.Create(&database.Setting{Key: "take_profit_percent", Value: "200"})
 
-	entry := 100.0
 	trailingOne := 120.0
 	trailingTwo := 140.0
 	lastATR := 20.0
 	now := time.Now()
 
-	testutil.WithLedgerProjectionWrites(t, database.DB, func(tx *gorm.DB) error {
-		if err := tx.Create(&database.Wallet{Balance: 1000.0, Currency: "USDT"}).Error; err != nil {
-			return err
+	if err := database.SeedDataWithDefaults(1000, "USDT"); err != nil {
+		t.Fatal(err)
+	}
+	fixtureLedger := ledgerpkg.New(database.LedgerWriter())
+	for _, fixture := range []struct {
+		symbol   string
+		trailing *float64
+	}{{"BTC", &trailingOne}, {"ETH", &trailingTwo}} {
+		_, err := fixtureLedger.ApplyFill(context.Background(), ledgerpkg.FillCommand{IdempotencyKey: "price-fixture-" + fixture.symbol, Symbol: fixture.symbol, Side: "buy", Quantity: accounting.MustParse("1"), RequestedPrice: accounting.MustParse("100"), FillPrice: accounting.MustParse("100"), Fee: accounting.Zero(), FeeType: ledgerpkg.EventTradingFee, Currency: "USDT", ExecutionMode: ExecutionModePaper, Actor: "test", Reason: "authoritative price fixture", OccurredAt: now, EntrySource: EntrySourcePaperTest, LastAtrValue: &lastATR, TrailingStopPrice: fixture.trailing})
+		if err != nil {
+			t.Fatal(err)
 		}
-		if err := tx.Create(&database.Position{
-			Symbol: "BTC", Amount: 1.0, AvgPrice: 100.0, EntryPrice: &entry,
-			LastAtrValue: &lastATR, TrailingStopPrice: &trailingOne, Status: "open", OpenedAt: now,
-		}).Error; err != nil {
-			return err
-		}
-		return tx.Create(&database.Position{
-			Symbol: "ETH", Amount: 1.0, AvgPrice: 100.0, EntryPrice: &entry,
-			LastAtrValue: &lastATR, TrailingStopPrice: &trailingTwo, Status: "open", OpenedAt: now,
-		}).Error
-	})
+	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -156,9 +155,9 @@ func TestUpdatePositionsPricesCreatesSnapshotWithoutOpenPositions(t *testing.T) 
 	db := testutil.SetupPostgresDB(t)
 	database.DB = db
 
-	testutil.WithLedgerProjectionWrites(t, database.DB, func(tx *gorm.DB) error {
-		return tx.Create(&database.Wallet{Balance: 1234.5, Currency: "USDT"}).Error
-	})
+	if err := database.SeedDataWithDefaults(1234.5, "USDT"); err != nil {
+		t.Fatal(err)
+	}
 
 	result, err := UpdatePositionsPrices()
 	if err != nil {

@@ -50,7 +50,8 @@ func TestPositionMonitorDuplicateTicksClosePositionOnce(t *testing.T) {
 
 	current := 10.0
 	stop := 9.0
-	opened, err := ledgerpkg.New(database.DB).ApplyFill(context.Background(), ledgerpkg.FillCommand{IdempotencyKey: "monitor-open", Symbol: "TEST", Side: "buy", Quantity: accounting.MustParse("2"), RequestedPrice: accounting.MustParse("10"), FillPrice: accounting.MustParse("10"), Fee: accounting.Zero(), FeeType: ledgerpkg.EventTradingFee, Currency: "USDT", ExecutionMode: ExecutionModePaper, Actor: "test", Reason: "monitor fixture", OccurredAt: time.Now().Add(-30 * time.Minute), EntrySource: EntrySourcePaperTest, StopPrice: &stop})
+	const openingStrategy = "opening-strategy@1#artifact"
+	opened, err := ledgerpkg.New(database.DB).ApplyFill(context.Background(), ledgerpkg.FillCommand{IdempotencyKey: "monitor-open", Symbol: "TEST", Side: "buy", Quantity: accounting.MustParse("2"), RequestedPrice: accounting.MustParse("10"), FillPrice: accounting.MustParse("10"), Fee: accounting.Zero(), FeeType: ledgerpkg.EventTradingFee, Currency: "USDT", ExecutionMode: ExecutionModePaper, Actor: "test", Reason: "monitor fixture", OccurredAt: time.Now().Add(-30 * time.Minute), EntrySource: EntrySourcePaperTest, StopPrice: &stop, StrategyVersion: openingStrategy, ModelVersion: "different-model"})
 	if err != nil {
 		t.Fatalf("open ledger position: %v", err)
 	}
@@ -117,5 +118,12 @@ func TestPositionMonitorDuplicateTicksClosePositionOnce(t *testing.T) {
 	}
 	if orders[0].Status != OrderStatusFilled {
 		t.Fatalf("expected filled sell order, got %s", orders[0].Status)
+	}
+	var closingFill database.Fill
+	if err := database.DB.Where("position_id=? AND side='sell'", position.ID).First(&closingFill).Error; err != nil {
+		t.Fatal(err)
+	}
+	if closingFill.StrategyVersion != openingStrategy {
+		t.Fatalf("close fill strategy=%q want opening identity %q", closingFill.StrategyVersion, openingStrategy)
 	}
 }

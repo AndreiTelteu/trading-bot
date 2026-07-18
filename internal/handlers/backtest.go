@@ -9,10 +9,25 @@ import (
 )
 
 func ListBacktestJobs(c *fiber.Ctx) error {
-	jobs, err := backtest.ListBacktestJobResponses()
+	limit, err := pageLimit(c, 200, 1000)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+	}
+	var cursor timeIDCursor
+	if raw := c.Query("cursor"); raw != "" {
+		if err := decodeCursor(raw, &cursor); err != nil || cursor.Time.IsZero() || cursor.ID == 0 {
+			return c.Status(400).JSON(fiber.Map{"error": "invalid cursor"})
+		}
+	}
+	jobs, next, err := backtest.ListBacktestJobResponsePage(cursor.Time, cursor.ID, limit)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "Failed to fetch backtest jobs"})
 	}
+	nextCursor := ""
+	if next != nil {
+		nextCursor = encodeCursor(timeIDCursor{Time: next.CreatedAt.UTC(), ID: next.ID})
+	}
+	advertiseNext(c, nextCursor)
 	return c.JSON(jobs)
 }
 

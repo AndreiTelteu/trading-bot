@@ -49,6 +49,7 @@ func SetupPostgresDB(t *testing.T) *gorm.DB {
 	}
 
 	database.DB = db
+	database.ConfigureWriterPoolsForTest(db, db)
 	return db
 }
 
@@ -62,6 +63,7 @@ func OpenPostgresDB(t *testing.T) *gorm.DB {
 	if err != nil {
 		t.Fatalf("Failed to connect to PostgreSQL test database: %v", err)
 	}
+	database.ConfigureWriterPoolsForTest(db, db)
 	return db
 }
 
@@ -72,18 +74,40 @@ func ResetPublicSchema(t *testing.T, db *gorm.DB) {
 	}
 }
 
-// WithLedgerProjectionWrites is for arranging legacy/projection fixtures in
-// tests that specifically exercise migration or read behavior. Production
-// economic writes must use the ledger service.
+// WithLedgerProjectionWrites stages an explicitly unresolved legacy fixture.
+// It uses the non-login migration role, marks the ledger state unresolved in
+// the same transaction, and cannot create exact economic projections. Tests
+// needing authoritative economics must call the ledger service instead.
 func WithLedgerProjectionWrites(t *testing.T, db *gorm.DB, arrange func(*gorm.DB) error) {
 	t.Helper()
 	if err := db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Exec("SET LOCAL trading_bot.ledger_write='on'").Error; err != nil {
+		if err := tx.Exec("SET LOCAL ROLE trading_bot_migration_admin").Error; err != nil {
+			return err
+		}
+		if err := tx.Exec(`INSERT INTO ledger_migration_states(account_id,status,unresolved_json,created_at,updated_at)
+			VALUES('primary','pending_resolution',?::jsonb,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)
+			ON CONFLICT(account_id) DO UPDATE SET status=EXCLUDED.status,unresolved_json=EXCLUDED.unresolved_json,updated_at=EXCLUDED.updated_at`, `["test-arranged unresolved legacy projection"]`).Error; err != nil {
 			return err
 		}
 		return arrange(tx)
 	}); err != nil {
 		t.Fatalf("arrange ledger projection fixture: %v", err)
+	}
+}
+
+// WithCorruptedLedgerStorage is restricted to tests that prove reconciliation
+// detects storage corruption. It requires the PostgreSQL test superuser and
+// bypasses triggers only for the scoped transaction; application fixtures must
+// use the ledger or migration helpers above.
+func WithCorruptedLedgerStorage(t *testing.T, db *gorm.DB, corrupt func(*gorm.DB) error) {
+	t.Helper()
+	if err := db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Exec("SET LOCAL session_replication_role='replica'").Error; err != nil {
+			return err
+		}
+		return corrupt(tx)
+	}); err != nil {
+		t.Fatalf("arrange corrupted ledger storage fixture: %v", err)
 	}
 }
 

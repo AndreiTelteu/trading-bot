@@ -70,8 +70,17 @@ func (s Service) ApproveBackfill(ctx context.Context, planID, observedDigest, pr
 
 func (s Service) ApplyBackfill(ctx context.Context, planID, approvalDigest string) (database.BackfillPlan, error) {
 	var plan database.BackfillPlan
-	err := s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&plan, "id=?", planID).Error; err != nil {
+	if s.LedgerDB == nil {
+		return plan, fmt.Errorf("isolated ledger writer is unavailable")
+	}
+	err := s.LedgerDB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// The ledger principal can read the approved immutable envelope, but it
+		// cannot update operational tables directly. The final status transition
+		// is performed by the narrowly validated SECURITY DEFINER function below.
+		if err := tx.Exec("SET LOCAL ROLE trading_bot_ledger_writer").Error; err != nil {
+			return fmt.Errorf("assume ledger writer role for approved backfill: %w", err)
+		}
+		if err := tx.First(&plan, "id=?", planID).Error; err != nil {
 			return err
 		}
 		if plan.Status == "applied" {
@@ -91,13 +100,17 @@ func (s Service) ApplyBackfill(ctx context.Context, planID, approvalDigest strin
 		if currentDigest != plan.ReportDigest {
 			return fmt.Errorf("approved backfill plan became stale")
 		}
-		if _, err := ledger.New(tx).Backfill(ctx, ledger.BackfillOptions{Apply: true, Approval: ledger.BackfillApproval, ApprovedBy: *plan.ApprovedBy, AccountID: plan.AccountID}); err != nil {
+		if _, err := ledger.New(tx).Backfill(ctx, ledger.BackfillOptions{
+			Apply: true, Approval: ledger.BackfillApproval, ApprovedBy: *plan.ApprovedBy, AccountID: plan.AccountID,
+			PlanID: plan.ID, ReportDigest: plan.ReportDigest, ApprovalDigest: approvalDigest,
+		}); err != nil {
 			return err
 		}
 		now := s.now()
-		plan.Status = "applied"
-		plan.AppliedAt = &now
-		return tx.Save(&plan).Error
+		if err := tx.Exec("SELECT finalize_applied_backfill_plan(?,?,?)", plan.ID, approvalDigest, now).Error; err != nil {
+			return err
+		}
+		return tx.First(&plan, "id=?", planID).Error
 	})
 	return plan, err
 }

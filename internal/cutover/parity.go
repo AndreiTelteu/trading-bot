@@ -64,13 +64,19 @@ func RunParity(ctx context.Context, captured DecisionContext, legacy, candidate 
 	if legacy == nil || candidate == nil {
 		return Comparison{}, fmt.Errorf("both parity adapters are required")
 	}
-	canonical, err := canonicalJSON(captured)
+	captured.DecisionAt = postgresTime(captured.DecisionAt)
+	captured.MarketAt = postgresTime(captured.MarketAt)
+	contextDigest, err := CanonicalContextID(captured)
 	if err != nil {
 		return Comparison{}, err
 	}
-	contextDigest := digest(canonical)
-	if captured.ContextID == "" {
-		captured.ContextID = contextDigest
+	if captured.ContextID != "" && captured.ContextID != contextDigest {
+		return Comparison{}, fmt.Errorf("parity context identity does not match canonical captured input")
+	}
+	captured.ContextID = contextDigest
+	canonical, err := canonicalJSON(captured)
+	if err != nil {
+		return Comparison{}, err
 	}
 	clone := func() (DecisionContext, error) {
 		var out DecisionContext
@@ -99,6 +105,8 @@ func RunParity(ctx context.Context, captured DecisionContext, legacy, candidate 
 	if attempts != 0 {
 		return Comparison{}, fmt.Errorf("shadow adapter attempted %d forbidden broker submissions", attempts)
 	}
+	left.SignalAt, left.DecisionAt = postgresTime(left.SignalAt), postgresTime(left.DecisionAt)
+	right.SignalAt, right.DecisionAt = postgresTime(right.SignalAt), postgresTime(right.DecisionAt)
 	leftJSON, _ := canonicalJSON(left)
 	rightJSON, _ := canonicalJSON(right)
 	result := Comparison{ContextID: captured.ContextID, LegacyDigest: digest(leftJSON), CandidateDigest: digest(rightJSON), Legacy: left, Candidate: right}
@@ -127,6 +135,24 @@ func RunParity(ctx context.Context, captured DecisionContext, legacy, candidate 
 	}{result.ContextID, left, right, result.DivergenceCodes, result.ExpectedReasons, result.Classification})
 	result.ContentDigest = digest(content)
 	return result, nil
+}
+
+// CanonicalContextID derives the decision identity from the captured causal
+// input. ContextID is deliberately excluded so callers cannot nominate an
+// arbitrary digest and have it treated as server-derived evidence.
+func CanonicalContextID(value DecisionContext) (string, error) {
+	value.ContextID = ""
+	value.DecisionAt = postgresTime(value.DecisionAt)
+	value.MarketAt = postgresTime(value.MarketAt)
+	canonical, err := canonicalJSON(value)
+	if err != nil {
+		return "", err
+	}
+	return digest(canonical), nil
+}
+
+func postgresTime(value time.Time) time.Time {
+	return time.UnixMicro(value.UTC().UnixMicro()).UTC()
 }
 
 // VerifyComparison proves that persisted parity evidence was derived from its

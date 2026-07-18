@@ -59,18 +59,22 @@ func main() {
 	if *action != "coverage" && cfg.Stage08Flags.PointInTime == "off" {
 		fatal(fmt.Errorf("Stage 04 mutation/build requires STAGE08_POINT_IN_TIME_UNIVERSE=research or authoritative"))
 	}
-	if err := database.OpenAndMigrate(cfg); err != nil {
+	requirements := marketdataPoolRequirements(*action, *dryRun)
+	if err := database.OpenCommandPools(cfg, requirements); err != nil {
 		fatal(err)
 	}
 	stage08 := operations.New(database.DB, cfg.Stage08Flags)
+	stage08.ReadOnly = !marketdataActionWrites(*action, *dryRun)
 	if _, err := stage08.Initialize(context.Background()); err != nil {
 		fatal(err)
 	}
-	if err := database.SeedDataWithDefaults(cfg.DefaultBalance, cfg.DefaultCurrency); err != nil {
-		fatal(err)
-	}
-	if _, err := stage08.Initialize(context.Background()); err != nil {
-		fatal(err)
+	if marketdataActionWrites(*action, *dryRun) {
+		if err := database.SeedDataWithDefaults(cfg.DefaultBalance, cfg.DefaultCurrency); err != nil {
+			fatal(err)
+		}
+		if _, err := stage08.Initialize(context.Background()); err != nil {
+			fatal(err)
+		}
 	}
 	services.InitTradingService(cfg.BinanceAPIKey, cfg.BinanceSecret)
 	start := parseTime(*startText)
@@ -118,6 +122,19 @@ func main() {
 	default:
 		fatal(fmt.Errorf("unknown action %q", *action))
 	}
+}
+
+func marketdataActionWrites(action string, dryRun bool) bool {
+	return action != "coverage" && !(action == "ingest" && dryRun)
+}
+
+func marketdataPoolRequirements(action string, dryRun bool) database.CommandPoolRequirements {
+	if !marketdataActionWrites(action, dryRun) {
+		return database.CommandPoolRequirements{ValidateRuntime: true}
+	}
+	// Metadata and dataset writes use runtime authority, but fresh-install
+	// seeding also writes the immutable opening ledger boundary.
+	return database.CommandPoolRequirements{Migrate: true, ValidateRuntime: true, LedgerWriter: true}
 }
 func parseTime(v string) time.Time {
 	if v == "" {

@@ -21,7 +21,7 @@ func main() {
 	if loadErr != nil {
 		log.Fatalf("Invalid startup configuration: %v", loadErr)
 	}
-	if err := database.OpenAndMigrate(cfg); err != nil {
+	if err := database.OpenCommandPools(cfg, backtestPoolRequirements()); err != nil {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
 	stage08 := operations.New(database.DB, cfg.Stage08Flags)
@@ -109,4 +109,9 @@ func main() {
 	}
 
 	fmt.Println(string(payload))
+}
+
+func backtestPoolRequirements() database.CommandPoolRequirements {
+	// The CLI preserves fresh-install seeding, which is an economic write.
+	return database.CommandPoolRequirements{Migrate: true, ValidateRuntime: true, LedgerWriter: true}
 }

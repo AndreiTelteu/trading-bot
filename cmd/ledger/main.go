@@ -33,7 +33,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	if err := database.OpenAndMigrate(cfg); err != nil {
+	if err := database.OpenCommandPools(cfg, ledgerPoolRequirements(*action)); err != nil {
 		log.Fatal(err)
 	}
 	stage08 := operations.New(database.DB, cfg.Stage08Flags)
@@ -114,6 +114,11 @@ func main() {
 	if exitCode != 0 {
 		os.Exit(exitCode)
 	}
+}
+
+func ledgerPoolRequirements(_ string) database.CommandPoolRequirements {
+	// All ledger actions seed the opening economic boundary before execution.
+	return database.CommandPoolRequirements{Migrate: true, ValidateRuntime: true, LedgerWriter: true}
 }
 
 func reconciliationExitCode(balanced bool) int {

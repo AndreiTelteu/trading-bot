@@ -125,14 +125,7 @@ func TestExecuteBuyFromTrendingRejectsUnreconciledClosedLegacyPosition(t *testin
 		ClosedAt:     &closedAt,
 		CloseReason:  &closeReason,
 	}
-	if err := database.DB.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Exec("SET LOCAL trading_bot.ledger_write = 'on'").Error; err != nil {
-			return err
-		}
-		return tx.Create(&existing).Error
-	}); err != nil {
-		t.Fatalf("Failed to seed closed position: %v", err)
-	}
+	testutil.WithLedgerProjectionWrites(t, database.DB, func(tx *gorm.DB) error { return tx.Create(&existing).Error })
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -161,8 +154,8 @@ func TestExecuteBuyFromTrendingRejectsUnreconciledClosedLegacyPosition(t *testin
 	}
 
 	success, err := executeBuyFromTrending("ZECUSDT")
-	if success || !errors.Is(err, ledgerpkg.ErrProjectionUnavailable) {
-		t.Fatalf("success=%v error=%v, want explicit legacy projection conflict", success, err)
+	if success || !errors.Is(err, ledgerpkg.ErrUnreconciledLegacyState) {
+		t.Fatalf("success=%v error=%v, want explicit unresolved migration fence", success, err)
 	}
 
 	var positions []database.Position

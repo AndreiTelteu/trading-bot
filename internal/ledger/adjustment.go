@@ -214,7 +214,8 @@ func (s *Service) ReverseCashEvent(ctx context.Context, command ReversalCommand)
 			ID: stableID("event-reversal", command.IdempotencyKey), LedgerBatchID: command.IdempotencyKey,
 			Sequence: 1, IdempotencyKey: command.IdempotencyKey + ":reversal", EventType: EventReversal,
 			AccountID: original.AccountID, VenueID: original.VenueID, Currency: original.Currency, Symbol: original.Symbol,
-			CashDelta: original.CashDelta.Neg(), AssetDelta: original.AssetDelta.Neg(), ExecutionMode: "administrative",
+			PositionID: original.PositionID,
+			CashDelta:  original.CashDelta.Neg(), AssetDelta: original.AssetDelta.Neg(), ExecutionMode: "administrative",
 			Actor: command.Actor, Reason: command.Reason, ReversesEventID: &original.ID,
 			RealizedPnL: original.RealizedPnL.Neg(), CostBasisDelta: original.CostBasisDelta.Neg(), FeeDelta: original.FeeDelta.Neg(), MetadataJSON: "{}", OccurredAt: command.OccurredAt, RecordedAt: recordedAt,
 		}

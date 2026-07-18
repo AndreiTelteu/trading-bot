@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 	"trading-go/internal/cutover"
 
@@ -16,6 +17,9 @@ var Log zerolog.Logger
 type Config struct {
 	ServerPort           string
 	DatabaseURL          string
+	MigrationDatabaseURL string
+	LedgerDatabaseURL    string
+	ParityDatabaseURL    string
 	PostgresHost         string
 	PostgresPort         string
 	PostgresDB           string
@@ -42,15 +46,21 @@ type Config struct {
 }
 
 func Load() *Config {
-	cfg, _ := load(false)
+	cfg, _ := load(false, false)
 	return cfg
 }
 
 // LoadValidated rejects malformed environment and Stage 08 authority before
 // database connections, workers, listeners, or external clients are started.
-func LoadValidated() (*Config, error) { return load(true) }
+func LoadValidated() (*Config, error) { return load(true, true) }
 
-func load(strict bool) (*Config, error) {
+// LoadValidatedFromPersistedStage08Authority retains all connection and
+// process validation while deliberately ignoring local Stage 08 flag values.
+// It is only for offline verification commands that load their authority from
+// an already-restored database.
+func LoadValidatedFromPersistedStage08Authority() (*Config, error) { return load(true, false) }
+
+func load(strict, validateStage08 bool) (*Config, error) {
 	godotenv.Load()
 
 	Log = zerolog.New(os.Stdout).
@@ -60,20 +70,39 @@ func load(strict bool) (*Config, error) {
 		Logger()
 
 	flags, flagErr := cutover.Parse(envValues([]string{"STAGE08_FLAG_SCHEMA_VERSION", "STAGE08_LEDGER_AUTHORITY", "STAGE08_SHARED_ENGINE", "STAGE08_NEW_BACKTEST", "STAGE08_POINT_IN_TIME_UNIVERSE", "STAGE08_CANDIDATE_STRATEGY", "STAGE08_DUAL_RUN", "STAGE08_STAGE07_CONTEXT"}))
-	if strict && flagErr != nil {
+	if strict && validateStage08 && flagErr != nil {
 		return nil, flagErr
 	}
 	if flagErr != nil {
 		flags = cutover.SafeFlags()
 	}
+	databaseURL, err := urlFromEnvOrFile("DATABASE_URL")
+	if strict && err != nil {
+		return nil, err
+	}
+	migrationURL, migrationErr := urlFromEnvOrFile("MIGRATION_DATABASE_URL")
+	if strict && migrationErr != nil {
+		return nil, migrationErr
+	}
+	ledgerURL, ledgerErr := urlFromEnvOrFile("LEDGER_DATABASE_URL")
+	if strict && ledgerErr != nil {
+		return nil, ledgerErr
+	}
+	parityURL, parityErr := urlFromEnvOrFile("PARITY_DATABASE_URL")
+	if strict && parityErr != nil {
+		return nil, parityErr
+	}
 	cfg := &Config{
 		ServerPort:           getEnv("PORT", "5001"),
-		DatabaseURL:          getEnv("DATABASE_URL", ""),
+		DatabaseURL:          databaseURL,
+		MigrationDatabaseURL: migrationURL,
+		LedgerDatabaseURL:    ledgerURL,
+		ParityDatabaseURL:    parityURL,
 		PostgresHost:         getEnv("POSTGRES_HOST", "localhost"),
 		PostgresPort:         getEnv("POSTGRES_PORT", "5432"),
 		PostgresDB:           getEnv("POSTGRES_DB", "trading_bot"),
 		PostgresUser:         getEnv("POSTGRES_USER", "postgres"),
-		PostgresPassword:     getEnv("POSTGRES_PASSWORD", "postgres"),
+		PostgresPassword:     getEnv("POSTGRES_PASSWORD", ""),
 		PostgresSSLMode:      getEnv("POSTGRES_SSLMODE", "disable"),
 		DBMaxOpenConns:       getEnvInt("DB_MAX_OPEN_CONNS", 25),
 		DBMaxIdleConns:       getEnvInt("DB_MAX_IDLE_CONNS", 5),
@@ -124,6 +153,25 @@ func load(strict bool) (*Config, error) {
 		}
 	}
 	return cfg, nil
+}
+
+func urlFromEnvOrFile(key string) (string, error) {
+	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+		return value, nil
+	}
+	path := strings.TrimSpace(os.Getenv(key + "_FILE"))
+	if path == "" {
+		return "", nil
+	}
+	payload, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read %s_FILE: %w", key, err)
+	}
+	value := strings.TrimSpace(string(payload))
+	if value == "" {
+		return "", fmt.Errorf("%s_FILE is empty", key)
+	}
+	return value, nil
 }
 
 func envValues(keys []string) map[string]string {

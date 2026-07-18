@@ -65,7 +65,7 @@ func TestShadowBrokerSubmissionFailsRun(t *testing.T) {
 
 func TestVerifyComparisonRejectsCallerForgedDigest(t *testing.T) {
 	at := time.Unix(10, 0).UTC()
-	ctx := DecisionContext{ContextID: strings.Repeat("a", 64), SymbolID: "asset", VenueSymbol: "AAAUSDT", DecisionAt: at, MarketAt: at}
+	ctx := DecisionContext{SymbolID: "asset", VenueSymbol: "AAAUSDT", DecisionAt: at, MarketAt: at}
 	outcome := DecisionOutcome{Action: "skip", SymbolID: "asset", VenueSymbol: "AAAUSDT", Quantity: "0", Notional: "0", SignalAt: at, DecisionAt: at}
 	fixed := adapterFunc(func(context.Context, NonCapitalMode, DecisionContext, SubmitDenyBroker) (DecisionOutcome, error) {
 		return outcome, nil
@@ -80,9 +80,21 @@ func TestVerifyComparisonRejectsCallerForgedDigest(t *testing.T) {
 	}
 }
 
+func TestRunParityRejectsCallerNominatedContextDigest(t *testing.T) {
+	at := time.Unix(15, 1234).UTC()
+	ctx := DecisionContext{ContextID: strings.Repeat("a", 64), SymbolID: "asset", VenueSymbol: "AAAUSDT", DecisionAt: at, MarketAt: at}
+	outcome := DecisionOutcome{Action: "skip", SignalAt: at, DecisionAt: at}
+	fixed := adapterFunc(func(context.Context, NonCapitalMode, DecisionContext, SubmitDenyBroker) (DecisionOutcome, error) {
+		return outcome, nil
+	})
+	if _, err := RunParity(context.Background(), ctx, fixed, fixed, ComparisonPolicy{}); err == nil {
+		t.Fatal("caller-nominated context digest accepted")
+	}
+}
+
 func TestVerifyComparisonWithPolicyRejectsRelabeledEvidence(t *testing.T) {
 	at := time.Unix(20, 0).UTC()
-	ctx := DecisionContext{ContextID: strings.Repeat("b", 64), SymbolID: "asset", VenueSymbol: "AAAUSDT", DecisionAt: at, MarketAt: at}
+	ctx := DecisionContext{SymbolID: "asset", VenueSymbol: "AAAUSDT", DecisionAt: at, MarketAt: at}
 	legacyOutcome := DecisionOutcome{Action: "buy", SymbolID: "asset", VenueSymbol: "AAAUSDT", Side: "buy", Quantity: "1", Notional: "10", SignalAt: at, DecisionAt: at}
 	candidateOutcome := legacyOutcome
 	candidateOutcome.Quantity = "2"

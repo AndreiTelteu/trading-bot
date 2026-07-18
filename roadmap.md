@@ -13,16 +13,16 @@ A stage is checked only after implementation, independent Codex review, one feed
 
 ## Non-negotiable principles
 
-- [ ] One strategy decision path for backtest, paper, and live
-- [ ] One risk engine for backtest, paper, and live
-- [ ] Immutable cash/fill/fee/capital-adjustment ledger
-- [ ] Point-in-time market data and universe membership
-- [ ] Deterministic backtests with explicit coverage failures
-- [ ] Same fee/slippage assumptions when comparing strategies
-- [ ] No profitability claim from unreconciled or zero-trade evidence
-- [ ] No bootstrap/test model may control paper or live entries
-- [ ] Human approval remains required for promotion to live execution
-- [ ] Legacy behavior remains behind explicit feature flags until cutover is verified
+- [x] One strategy decision path for backtest, paper, and live
+- [x] One risk engine for backtest, paper, and live
+- [x] Immutable cash/fill/fee/capital-adjustment ledger
+- [x] Point-in-time market data and universe membership
+- [x] Deterministic backtests with explicit coverage failures
+- [x] Same fee/slippage assumptions when comparing strategies
+- [x] No profitability claim from unreconciled or zero-trade evidence
+- [x] No bootstrap/test model may control paper or live entries
+- [x] Human approval remains required for promotion to live execution
+- [x] Legacy behavior remains behind explicit feature flags until cutover is verified
 
 ## Stage 00 — Architecture contracts and characterization harness
 
@@ -136,27 +136,27 @@ Detailed plan: [`docs/reimplementation/stage-08-migration-cutover.md`](docs/reim
 - [x] Expose reconciliation, parity, coverage, and validation status operationally
 - [x] Provide migration, rollback, and incident runbooks
 - [x] Gate legacy removal on explicit acceptance criteria
-- [ ] Verify backend, frontend, Compose, migrations, and restore path
+- [x] Verify backend, frontend, Compose, migrations, and restore path
 - [ ] Remove/deprecate legacy paths only after successful cutover
 - [x] Complete independent review and one feedback pass
 
 ## Final roadmap audit
 
-- [ ] Reconcile every roadmap item with implemented code and tests
-- [ ] Identify partial, missing, duplicated, or obsolete work
-- [ ] Run one final Codex implementation session for verified gaps
-- [ ] Independently verify the final gap-closing diff
-- [ ] Run full backend, frontend, migration, and Compose checks
+- [x] Reconcile every roadmap item with implemented code and tests
+- [x] Identify partial, missing, duplicated, or obsolete work
+- [x] Run one final Codex implementation session for verified gaps
+- [x] Independently verify the final gap-closing diff
+- [x] Run full backend, frontend, migration, and Compose checks
 - [ ] Confirm repository clean and pushed
-- [ ] Record final limitations that require real market history or elapsed shadow time
+- [x] Record final limitations that require real market history or elapsed shadow time
 
 ## Global definition of done
 
-- [ ] `go test ./...` passes using the repository Go toolchain
-- [ ] Frontend build/typecheck passes when frontend code changes
-- [ ] Compose configuration validates when runtime topology changes
-- [ ] Database migrations work both on a fresh database and an upgraded fixture
-- [ ] No direct mutation path can bypass fills/fees/capital adjustments
-- [ ] Backtest, paper, and live produce the same decision for the same fixture state
-- [ ] Missing data fails explicitly instead of yielding neutral metrics
-- [ ] Documentation identifies anything that cannot be validated without external data, sufficient history, or elapsed shadow operation
+- [x] `go test ./...` passes using the repository Go toolchain
+- [x] Frontend build/typecheck passes when frontend code changes
+- [x] Compose configuration validates when runtime topology changes
+- [x] Database migrations work both on a fresh database and an upgraded fixture
+- [x] No direct mutation path can bypass fills/fees/capital adjustments
+- [x] Backtest, paper, and live produce the same decision for the same fixture state
+- [x] Missing data fails explicitly instead of yielding neutral metrics
+- [x] Documentation identifies anything that cannot be validated without external data, sufficient history, or elapsed shadow operation

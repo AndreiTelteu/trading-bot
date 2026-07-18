@@ -131,6 +131,21 @@ func TestMultiplePartialFillsAccumulateOneOrderProjection(t *testing.T) {
 	}
 }
 
+func TestLedgerCouplingAcceptsServiceWritesInsideOuterTransaction(t *testing.T) {
+	service := readyService(t)
+	err := service.DB.Transaction(func(tx *gorm.DB) error {
+		_, err := ledgerpkg.New(tx).ApplyFill(context.Background(), fill("nested-ledger-write", "buy", "NEST", "1", "10", "0"))
+		return err
+	})
+	if err != nil {
+		t.Fatalf("atomic ledger service write in nested transaction failed: %v", err)
+	}
+	var events int64
+	if err := service.DB.Model(&database.LedgerEvent{}).Where("ledger_batch_id=?", "nested-ledger-write").Count(&events).Error; err != nil || events != 1 {
+		t.Fatalf("nested ledger evidence count=%d err=%v", events, err)
+	}
+}
+
 func TestFailureAfterEachEconomicWriteRollsBackEverything(t *testing.T) {
 	for _, stage := range []string{"projection", "order", "fill", "ledger"} {
 		t.Run(stage, func(t *testing.T) {
@@ -254,17 +269,12 @@ func TestCashReversalBalancesOriginalWithoutMutation(t *testing.T) {
 func TestBackfillDefaultsToDryRunAndLeavesLegacyHistoryUnresolved(t *testing.T) {
 	db := testutil.SetupPostgresDB(t)
 	database.DB = db
-	if err := db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Exec("SET LOCAL trading_bot.ledger_write='on'").Error; err != nil {
-			return err
-		}
+	testutil.WithLedgerProjectionWrites(t, db, func(tx *gorm.DB) error {
 		if err := tx.Create(&database.Wallet{ID: 1, Balance: 123, Currency: "USDT"}).Error; err != nil {
 			return err
 		}
 		return tx.Create(&database.Position{Symbol: "LEGACY", Amount: 2, AvgPrice: 10, Status: "open", OpenedAt: time.Now()}).Error
-	}); err != nil {
-		t.Fatal(err)
-	}
+	})
 	type snapshot struct{ Wallets, Positions, Orders, Batches, Fills, Events, States int64 }
 	take := func() snapshot {
 		var s snapshot
@@ -298,14 +308,9 @@ func TestBackfillDefaultsToDryRunAndLeavesLegacyHistoryUnresolved(t *testing.T) 
 func TestBackfillRequiresApprovalAndAppliesOnlyOpeningCash(t *testing.T) {
 	db := testutil.SetupPostgresDB(t)
 	database.DB = db
-	if err := db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Exec("SET LOCAL trading_bot.ledger_write='on'").Error; err != nil {
-			return err
-		}
+	testutil.WithLedgerProjectionWrites(t, db, func(tx *gorm.DB) error {
 		return tx.Create(&database.Wallet{ID: 1, Balance: 321, Currency: "USDT"}).Error
-	}); err != nil {
-		t.Fatal(err)
-	}
+	})
 	service := ledgerpkg.New(db)
 	if _, err := service.Backfill(context.Background(), ledgerpkg.BackfillOptions{Apply: true, ApprovedBy: "operator"}); err == nil {
 		t.Fatal("expected approval phrase rejection")
@@ -339,25 +344,15 @@ func TestReconciliationReportsKnownProjectionAndOrphanFixture(t *testing.T) {
 	wrong := accounting.MustParse("399")
 	wallet.BalanceExact = &wrong
 	wallet.Balance = 399
-	if err := database.DB.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Exec("SET LOCAL trading_bot.ledger_write='on'").Error; err != nil {
-			return err
-		}
+	testutil.WithCorruptedLedgerStorage(t, database.DB, func(tx *gorm.DB) error {
 		return tx.Save(&wallet).Error
-	}); err != nil {
-		t.Fatal(err)
-	}
+	})
 	wrongBasis := accounting.MustParse("99")
 	wrongFee := accounting.MustParse("9")
 	wrongPnL := accounting.MustParse("7")
-	if err := database.DB.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Exec("SET LOCAL trading_bot.ledger_write='on'").Error; err != nil {
-			return err
-		}
+	testutil.WithCorruptedLedgerStorage(t, database.DB, func(tx *gorm.DB) error {
 		return tx.Model(&database.Position{}).Where("id = ?", opened.Position.ID).Updates(map[string]interface{}{"cost_basis_exact": wrongBasis, "fees_exact": wrongFee, "realized_pn_l_exact": wrongPnL}).Error
-	}); err != nil {
-		t.Fatal(err)
-	}
+	})
 	orphan := database.Order{OrderType: "buy", Symbol: "ORPHAN", AmountCrypto: 1, AmountUsdt: 10, Price: 10, Status: "filled", ExecutionMode: "paper", ExecutedAt: time.Now()}
 	if err := database.DB.Create(&orphan).Error; err != nil {
 		t.Fatal(err)
@@ -454,17 +449,12 @@ func TestFutureEventAccountCurrencyAndProviderIdentityValidation(t *testing.T) {
 func TestAssetCorrectionAndCompensatingReversalResolveLegacyExposure(t *testing.T) {
 	db := testutil.SetupPostgresDB(t)
 	database.DB = db
-	if err := db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Exec("SET LOCAL trading_bot.ledger_write='on'").Error; err != nil {
-			return err
-		}
+	testutil.WithLedgerProjectionWrites(t, db, func(tx *gorm.DB) error {
 		if err := tx.Create(&database.Wallet{ID: 1, AccountID: "primary", Balance: 100, Currency: "USDT"}).Error; err != nil {
 			return err
 		}
 		return tx.Create(&database.Position{AccountID: "primary", Symbol: "LEG", Amount: 2, AvgPrice: 10, Status: "open", OpenedAt: time.Now()}).Error
-	}); err != nil {
-		t.Fatal(err)
-	}
+	})
 	service := ledgerpkg.New(db)
 	if _, err := service.Backfill(context.Background(), ledgerpkg.BackfillOptions{Apply: true, Approval: ledgerpkg.BackfillApproval, ApprovedBy: "operator"}); err != nil {
 		t.Fatal(err)
@@ -513,10 +503,7 @@ func TestBatchImmutabilityForeignKeysAndTimeConstraint(t *testing.T) {
 		t.Fatal("order with fill was deletable")
 	}
 	now := time.Now().UTC()
-	if err := database.DB.Create(&database.LedgerBatch{ID: "bad-links", AccountID: "primary", PayloadHash: "fixture", CreatedAt: now}).Error; err != nil {
-		t.Fatal(err)
-	}
-	badFill := database.Fill{ID: "bad-fill", LedgerBatchID: "bad-links", AccountID: "primary", OrderID: result.Order.ID, VenueID: "internal", PositionID: result.Position.ID, Symbol: "OTHER", Side: "buy", Quantity: accounting.MustParse("1"), RequestedPrice: accounting.MustParse("1"), FillPrice: accounting.MustParse("1"), GrossAmount: accounting.MustParse("1"), FeeAmount: accounting.Zero(), FeeType: ledgerpkg.EventTradingFee, FeeCurrency: "USDT", ExecutionMode: "paper", OccurredAt: now, CreatedAt: now}
+	badFill := database.Fill{ID: "bad-fill", LedgerBatchID: batch.ID, AccountID: "primary", OrderID: result.Order.ID, VenueID: "internal", PositionID: result.Position.ID, Symbol: "OTHER", Side: "buy", Quantity: accounting.MustParse("1"), RequestedPrice: accounting.MustParse("1"), FillPrice: accounting.MustParse("1"), GrossAmount: accounting.MustParse("1"), FeeAmount: accounting.Zero(), FeeType: ledgerpkg.EventTradingFee, FeeCurrency: "USDT", ExecutionMode: "paper", OccurredAt: now, CreatedAt: now}
 	if err := database.DB.Create(&badFill).Error; err == nil {
 		t.Fatal("database accepted inconsistent fill/order/position links")
 	}

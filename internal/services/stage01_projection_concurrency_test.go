@@ -3,7 +3,6 @@ package services
 import (
 	"context"
 	"errors"
-	"gorm.io/gorm"
 	"sync"
 	"testing"
 	"time"
@@ -107,16 +106,8 @@ func TestExchangeCloseIsFencedBeforeExecutorCall(t *testing.T) {
 		t.Fatal(err)
 	}
 	service := ledgerpkg.New(database.DB)
-	opened, err := service.ApplyFill(context.Background(), ledgerpkg.FillCommand{IdempotencyKey: "exchange-position", Symbol: "LIVE", Side: "buy", Quantity: accounting.MustParse("1"), RequestedPrice: accounting.MustParse("10"), FillPrice: accounting.MustParse("10"), Fee: accounting.Zero(), FeeType: ledgerpkg.EventTradingFee, Currency: "USDT", ExecutionMode: "paper", Actor: "test", Reason: "fixture"})
+	opened, err := service.ApplyFill(context.Background(), ledgerpkg.FillCommand{IdempotencyKey: "exchange-position", Symbol: "LIVE", Side: "buy", Quantity: accounting.MustParse("1"), RequestedPrice: accounting.MustParse("10"), FillPrice: accounting.MustParse("10"), Fee: accounting.Zero(), FeeType: ledgerpkg.EventExchangeFee, Currency: "USDT", ExecutionMode: ExecutionModeExchange, VenueID: "test-venue", ProviderOrderID: "provider-order-1", ProviderFillID: "provider-fill-1", Actor: "test", Reason: "authoritative exchange fill fixture"})
 	if err != nil {
-		t.Fatal(err)
-	}
-	if err := database.DB.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Exec("SET LOCAL trading_bot.ledger_write='on'").Error; err != nil {
-			return err
-		}
-		return tx.Model(&database.Position{}).Where("id = ?", opened.Position.ID).Update("execution_mode", ExecutionModeExchange).Error
-	}); err != nil {
 		t.Fatal(err)
 	}
 	executor := &countingExecutor{}

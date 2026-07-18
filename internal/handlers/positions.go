@@ -180,7 +180,7 @@ func ExecuteOpenTrade(c *fiber.Ctx) error {
 	if key == "" {
 		key = fmt.Sprintf("paper-open-%s-%d", req.Symbol, now.UnixNano())
 	}
-	fillResult, err := ledgerpkg.New(database.DB).ApplyFill(c.UserContext(), ledgerpkg.FillCommand{IdempotencyKey: key, Symbol: req.Symbol, Side: "buy", Quantity: quantityExact, RequestedPrice: requestedExact, FillPrice: fillExact, Fee: feeExact, FeeType: ledgerpkg.EventTradingFee, Currency: wallet.Currency, ExecutionMode: services.ExecutionModePaper, OccurredAt: now, Actor: "paper_trade_api", Reason: "manual paper buy", EntrySource: services.EntrySourcePaperTest, DecisionTimeframe: services.DecisionTimeframeDefault, Metadata: map[string]interface{}{"fee_bps": feeBPS, "slippage_bps": slippageBPS}})
+	fillResult, err := ledgerpkg.New(database.LedgerWriter()).ApplyFill(c.UserContext(), ledgerpkg.FillCommand{IdempotencyKey: key, Symbol: req.Symbol, Side: "buy", Quantity: quantityExact, RequestedPrice: requestedExact, FillPrice: fillExact, Fee: feeExact, FeeType: ledgerpkg.EventTradingFee, Currency: wallet.Currency, ExecutionMode: services.ExecutionModePaper, OccurredAt: now, Actor: "paper_trade_api", Reason: "manual paper buy", EntrySource: services.EntrySourcePaperTest, DecisionTimeframe: services.DecisionTimeframeDefault, Metadata: map[string]interface{}{"fee_bps": feeBPS, "slippage_bps": slippageBPS}})
 	if err != nil {
 		return writeLedgerError(c, err)
 	}
@@ -296,7 +296,7 @@ func ExecuteCloseTrade(c *fiber.Ctx) error {
 	if key == "" {
 		key = fmt.Sprintf("paper-close-%d-%d", position.ID, now.UnixNano())
 	}
-	fillResult, err := ledgerpkg.New(database.DB).ApplyFill(c.UserContext(), ledgerpkg.FillCommand{IdempotencyKey: key, Symbol: position.Symbol, Side: "sell", Quantity: *position.AmountExact, RequestedPrice: requestedExact, FillPrice: fillExact, Fee: feeExact, FeeType: ledgerpkg.EventTradingFee, Currency: wallet.Currency, ExecutionMode: services.ExecutionModePaper, OccurredAt: now, Actor: "paper_trade_api", Reason: req.CloseReason, Metadata: map[string]interface{}{"fee_bps": feeBPS, "slippage_bps": slippageBPS}})
+	fillResult, err := ledgerpkg.New(database.LedgerWriter()).ApplyFill(c.UserContext(), ledgerpkg.FillCommand{IdempotencyKey: key, Symbol: position.Symbol, Side: "sell", Quantity: *position.AmountExact, RequestedPrice: requestedExact, FillPrice: fillExact, Fee: feeExact, FeeType: ledgerpkg.EventTradingFee, Currency: wallet.Currency, ExecutionMode: services.ExecutionModePaper, OccurredAt: now, Actor: "paper_trade_api", Reason: req.CloseReason, Metadata: map[string]interface{}{"fee_bps": feeBPS, "slippage_bps": slippageBPS}})
 	if err != nil {
 		return writeLedgerError(c, err)
 	}

@@ -30,8 +30,14 @@ func main() {
 		log.Fatal("AUTH_USERNAME and AUTH_PASSWORD must be set")
 	}
 
-	if err := database.OpenAndMigrate(cfg); err != nil {
-		log.Fatalf("Failed to initialize database: %v", err)
+	if err := database.OpenRuntime(cfg); err != nil {
+		log.Fatalf("Failed to open runtime database: %v", err)
+	}
+	if err := database.OpenLedgerWriter(cfg); err != nil {
+		log.Fatalf("Failed to initialize isolated ledger writer: %v", err)
+	}
+	if err := database.OpenParityWriter(cfg); err != nil {
+		log.Fatalf("Failed to initialize isolated parity writer: %v", err)
 	}
 	stage08 := operations.New(database.DB, cfg.Stage08Flags)
 	if _, err := stage08.Initialize(context.Background()); err != nil {

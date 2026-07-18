@@ -88,6 +88,14 @@ func TestPointInTimeLifecycleImmutableDataManifestResumeAndConstraints(t *testin
 	if len(after) != 2 || containsSymbol(after, "AAAOLDUSDT") || !containsSymbol(after, "AAAUSDT") {
 		t.Fatalf("rename lifecycle=%v", tickers(after))
 	}
+	page1, cursor, err := repo.SymbolsAsOfPage(manifest.ID, base.Add(6*24*time.Hour), true, SymbolCursor{}, 1)
+	if err != nil || len(page1) != 1 || cursor == nil {
+		t.Fatalf("bounded PIT universe first page=%v cursor=%+v err=%v", tickers(page1), cursor, err)
+	}
+	page2, next, err := repo.SymbolsAsOfPage(manifest.ID, base.Add(6*24*time.Hour), true, *cursor, 1)
+	if err != nil || len(page2) != 1 || next != nil || page1[0].ID == page2[0].ID {
+		t.Fatalf("bounded PIT universe traversal page1=%v page2=%v next=%+v err=%v", tickers(page1), tickers(page2), next, err)
+	}
 	seen := map[string]bool{}
 	for _, s := range after {
 		if seen[s.AssetID] {

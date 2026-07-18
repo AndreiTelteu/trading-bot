@@ -35,6 +35,7 @@ type Position struct {
 	ClientPositionID    *string             `json:"client_position_id" gorm:"size:100;index"`
 	DecisionTimeframe   string              `json:"decision_timeframe" gorm:"size:10;default:15m"`
 	ModelVersion        string              `json:"model_version" gorm:"size:100;index"`
+	StrategyVersion     string              `json:"strategy_version" gorm:"type:text"`
 	PolicyVersion       string              `json:"policy_version" gorm:"size:100;index"`
 	UniverseMode        string              `json:"universe_mode" gorm:"size:40;index"`
 	RolloutState        string              `json:"rollout_state" gorm:"size:20;index"`
@@ -126,7 +127,7 @@ type Fill struct {
 	FeeType            string             `json:"fee_type" gorm:"size:30;not null"`
 	FeeCurrency        string             `json:"fee_currency" gorm:"size:20;not null"`
 	ExecutionMode      string             `json:"execution_mode" gorm:"size:20;not null;index"`
-	StrategyVersion    string             `json:"strategy_version" gorm:"size:100"`
+	StrategyVersion    string             `json:"strategy_version" gorm:"type:text"`
 	PolicyVersion      string             `json:"policy_version" gorm:"size:100"`
 	CostModelVersion   string             `json:"cost_model_version" gorm:"size:100;not null;default:unknown"`
 	Stage08ContextJSON string             `json:"stage08_context" gorm:"column:stage08_context_json;type:jsonb;not null;default:'{}'"`
@@ -153,7 +154,7 @@ type LedgerEvent struct {
 	FillID             *string            `json:"fill_id,omitempty" gorm:"size:100;index"`
 	PositionID         *uint              `json:"position_id,omitempty" gorm:"index"`
 	ExecutionMode      string             `json:"execution_mode" gorm:"size:20;not null;index"`
-	StrategyVersion    string             `json:"strategy_version" gorm:"size:100"`
+	StrategyVersion    string             `json:"strategy_version" gorm:"type:text"`
 	PolicyVersion      string             `json:"policy_version" gorm:"size:100"`
 	Actor              string             `json:"actor" gorm:"size:100;not null"`
 	Reason             string             `json:"reason" gorm:"size:500"`
@@ -774,17 +775,19 @@ type Stage08FlagSnapshot struct {
 
 type ParityObservation struct {
 	ID                    string    `json:"id" gorm:"primaryKey;size:64"`
-	ContextID             string    `json:"context_id" gorm:"size:64;not null;index;uniqueIndex:idx_parity_context_pair,priority:1"`
-	PairKey               string    `json:"pair_key" gorm:"size:160;not null;uniqueIndex:idx_parity_context_pair,priority:2"`
+	ContextID             string    `json:"context_id" gorm:"size:64;not null;index;uniqueIndex:idx_parity_population_context_pair,priority:2"`
+	PairKey               string    `json:"pair_key" gorm:"size:160;not null;uniqueIndex:idx_parity_population_context_pair,priority:3"`
 	SchemaVersion         string    `json:"schema_version" gorm:"size:50;not null"`
 	FlagSnapshotID        string    `json:"flag_snapshot_id" gorm:"size:64;not null;index"`
 	FlagSnapshotDigest    string    `json:"flag_snapshot_digest" gorm:"size:64;not null;default:''"`
 	PolicyID              string    `json:"policy_id" gorm:"size:64;not null;default:'';index:idx_parity_exact_binding"`
 	PolicyDigest          string    `json:"policy_digest" gorm:"size:64;not null;default:''"`
-	PopulationID          string    `json:"population_id" gorm:"size:64;not null;default:'';index:idx_parity_exact_binding"`
+	PopulationID          string    `json:"population_id" gorm:"size:64;not null;default:'';index:idx_parity_exact_binding;uniqueIndex:idx_parity_population_context_pair,priority:1"`
 	CutoverAttemptID      string    `json:"cutover_attempt_id" gorm:"size:64;not null;default:'';index:idx_parity_exact_binding"`
 	LegacyDigest          string    `json:"legacy_digest" gorm:"size:64;not null"`
 	CandidateDigest       string    `json:"candidate_digest" gorm:"size:64;not null"`
+	ComparisonDigest      string    `json:"comparison_digest" gorm:"size:64;not null;default:''"`
+	ComparisonJSON        string    `json:"comparison" gorm:"column:comparison_json;type:jsonb;not null;default:'{}'"`
 	Classification        string    `json:"classification" gorm:"size:30;not null;index"`
 	DivergenceCodesJSON   string    `json:"divergence_codes" gorm:"column:divergence_codes_json;type:jsonb;not null"`
 	ExpectedPolicyReasons string    `json:"expected_policy_reasons" gorm:"column:expected_policy_reasons;type:jsonb;not null"`

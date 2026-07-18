@@ -15,46 +15,63 @@ import (
 
 type Repository struct{ DB *gorm.DB }
 
+type SymbolCursor struct {
+	AssetID string `json:"asset_id"`
+	ID      string `json:"id"`
+}
+
 func (r Repository) SymbolsAsOf(manifestID string, asOf time.Time, tradableOnly bool) ([]database.ExchangeSymbol, error) {
-	manifest, _, err := ValidateManifest(r.DB, ManifestRequirement{ManifestID: manifestID, Start: asOf, End: asOf})
+	rows, next, err := r.SymbolsAsOfPage(manifestID, asOf, tradableOnly, SymbolCursor{}, 1000)
 	if err != nil {
 		return nil, err
 	}
-	cutoff := mustTime(manifest.KnowledgeCutoff)
-	ids := make([]string, 0, len(manifest.Series))
-	seenID := map[string]bool{}
-	for _, s := range manifest.Series {
-		if !seenID[s.ExchangeSymbolID] {
-			ids = append(ids, s.ExchangeSymbolID)
-			seenID[s.ExchangeSymbolID] = true
-		}
+	if next != nil {
+		return nil, fmt.Errorf("point-in-time symbol universe exceeds 1000 rows; use bounded pagination")
 	}
-	if len(ids) == 0 {
-		return []database.ExchangeSymbol{}, nil
+	return rows, nil
+}
+
+func (r Repository) SymbolsAsOfPage(manifestID string, asOf time.Time, tradableOnly bool, cursor SymbolCursor, limit int) ([]database.ExchangeSymbol, *SymbolCursor, error) {
+	if limit < 1 || limit > 1000 {
+		return nil, nil, fmt.Errorf("limit out of range")
+	}
+	manifest, _, err := ValidateManifest(r.DB, ManifestRequirement{ManifestID: manifestID, Start: asOf, End: asOf})
+	if err != nil {
+		return nil, nil, err
+	}
+	cutoff := mustTime(manifest.KnowledgeCutoff)
+	if len(manifest.Series) == 0 {
+		return []database.ExchangeSymbol{}, nil, nil
 	}
 	query := r.DB.Model(&database.ExchangeSymbol{}).
-		Where("id IN ? AND listed_at<=? AND available_at<=? AND retrieved_at<=? AND (delisted_at IS NULL OR delisted_at>?)", ids, asOf, asOf, cutoff, asOf).
+		Where(`EXISTS (SELECT 1 FROM dataset_manifests dm, jsonb_array_elements(dm.roles_timeframes_json) elem WHERE dm.id=? AND elem->>'exchange_symbol_id'=exchange_symbols.id)`, manifestID).
+		Where("listed_at<=? AND available_at<=? AND retrieved_at<=? AND (delisted_at IS NULL OR delisted_at>?)", asOf, asOf, cutoff, asOf).
 		Where(`EXISTS (SELECT 1 FROM assets a WHERE a.id=exchange_symbols.asset_id AND a.available_at<=? AND a.retrieved_at<=?)`, asOf, cutoff)
 	if tradableOnly {
 		query = query.Where(`EXISTS (SELECT 1 FROM tradability_intervals ti WHERE ti.exchange_symbol_id=exchange_symbols.id AND ti.spot_tradable=true AND ti.effective_from<=? AND (ti.effective_to IS NULL OR ti.effective_to>?) AND ti.available_at<=? AND ti.retrieved_at<=?)`, asOf, asOf, asOf, cutoff)
 	}
-	var rows []database.ExchangeSymbol
-	if err := query.Order("asset_id ASC,ticker ASC,version DESC,id ASC").Find(&rows).Error; err != nil {
-		return nil, err
+	selected := query.Select("DISTINCT ON (asset_id) exchange_symbols.*").Order("asset_id ASC,ticker ASC,version DESC,id ASC")
+	page := r.DB.Table("(?) AS pit_symbols", selected).Order("asset_id ASC,id ASC")
+	if cursor.AssetID != "" {
+		page = page.Where("asset_id > ? OR (asset_id = ? AND id > ?)", cursor.AssetID, cursor.AssetID, cursor.ID)
 	}
-	seenAsset := map[string]bool{}
-	out := make([]database.ExchangeSymbol, 0, len(rows))
-	for _, row := range rows {
-		if seenAsset[row.AssetID] {
-			continue
-		}
-		seenAsset[row.AssetID] = true
+	var rows []database.ExchangeSymbol
+	if err := page.Limit(limit + 1).Find(&rows).Error; err != nil {
+		return nil, nil, err
+	}
+	var next *SymbolCursor
+	if len(rows) > limit {
+		rows = rows[:limit]
+		last := rows[len(rows)-1]
+		next = &SymbolCursor{AssetID: last.AssetID, ID: last.ID}
+	}
+	for index := range rows {
+		row := &rows[index]
 		if row.DelistedAt != nil && row.DelistedAt.After(asOf) {
 			row.DelistedAt = nil
 		}
-		out = append(out, row)
 	}
-	return out, nil
+	return rows, next, nil
 }
 
 func (r Repository) Bars(manifestID, symbolID, role, timeframe string, start, end, asOf time.Time) ([]services.OHLCV, error) {
