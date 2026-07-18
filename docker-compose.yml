@@ -28,12 +28,18 @@ services:
       - ./:/app
     command: ["-c", "go run ./cmd/bootstrap"]
     environment:
+      DATABASE_URL_FILE: /run/secrets/runtime_database_url
       MIGRATION_DATABASE_URL_FILE: /run/secrets/migration_database_url
+      LEDGER_DATABASE_URL_FILE: /run/secrets/ledger_database_url
+      PARITY_DATABASE_URL_FILE: /run/secrets/parity_database_url
       BOOTSTRAP_RUNTIME_PASSWORD_FILE: /run/secrets/runtime_database_password
       BOOTSTRAP_LEDGER_PASSWORD_FILE: /run/secrets/ledger_database_password
       BOOTSTRAP_PARITY_PASSWORD_FILE: /run/secrets/parity_database_password
     secrets:
       - migration_database_url
+      - runtime_database_url
+      - ledger_database_url
+      - parity_database_url
       - runtime_database_password
       - ledger_database_password
       - parity_database_password
