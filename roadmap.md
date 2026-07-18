@@ -147,7 +147,7 @@ Detailed plan: [`docs/reimplementation/stage-08-migration-cutover.md`](docs/reim
 - [x] Run one final Codex implementation session for verified gaps
 - [x] Independently verify the final gap-closing diff
 - [x] Run full backend, frontend, migration, and Compose checks
-- [ ] Confirm repository clean and pushed
+- [x] Confirm repository clean and pushed
 - [x] Record final limitations that require real market history or elapsed shadow time
 
 ## Global definition of done
