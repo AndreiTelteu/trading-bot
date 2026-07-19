@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"trading-go/internal/database"
 	"trading-go/internal/operations"
@@ -68,10 +69,10 @@ func authorityAffectingSetting(key string) bool {
 	if key == "" {
 		return true
 	}
-	// This is an authenticated operational enable/kill switch, not a strategy,
-	// risk, model, rollout, or live-promotion policy. Live exchange submission
-	// remains independently fenced and governance-controlled.
-	if key == "auto_trade_enabled" {
+	// These are authenticated operational controls: the paper-entry enable/kill
+	// switch and the analysis workload limit. They do not mutate eligibility,
+	// strategy, risk, model, rollout, or live-promotion policy.
+	if key == "auto_trade_enabled" || key == "universe_analyze_top_n" {
 		return false
 	}
 	for _, prefix := range []string{"active_", "selection_", "model_", "universe_", "risk_", "portfolio_", "entry_", "rebuy_", "pyramid", "max_position", "max_trade", "max_order", "auto_trade", "buy_only", "min_confidence", "paper_", "backtest_", "exchange_", "execution_", "trading_engine", "stage08_", "stop_", "tp_", "trailing_", "time_stop", "position_", "strategy_", "indicator_", "regime_", "cash_", "turnover_", "fee_", "slippage_", "rollout_", "vol_", "atr_", "sell_", "allow_sell", "stream_exit"} {
@@ -94,6 +95,12 @@ func validateGenericSettingMutation(key, value string) error {
 		value = strings.ToLower(strings.TrimSpace(value))
 		if value != "true" && value != "false" {
 			return fmt.Errorf("auto_trade_enabled must be true or false")
+		}
+	}
+	if key == "universe_analyze_top_n" {
+		parsed, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil || parsed < 1 || parsed > 1000 {
+			return fmt.Errorf("universe_analyze_top_n must be an integer between 1 and 1000")
 		}
 	}
 	return nil

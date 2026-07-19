@@ -169,6 +169,8 @@ WS:  ws://localhost:5001/ws
 
 Other strategy, risk, model, universe, rollout, fee/slippage, and backtest settings are authority-affecting. They must move through research/governance workflows rather than silent generic settings mutation.
 
+`universe_analyze_top_n` is also editable as an authenticated operational workload limit. It controls how many members of the governed active universe are analyzed, accepts integers from `1` to `1000`, and is capped at `universe_top_k` at runtime. It does not change universe eligibility rules or the governed Top K itself.
+
 ## Command-line tools
 
 All commands require the DSNs appropriate to their action. Prefer `*_FILE` variables.

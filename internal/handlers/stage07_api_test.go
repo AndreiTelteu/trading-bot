@@ -42,6 +42,40 @@ func TestAutoTradeOperationalSwitchRejectsMalformedValue(t *testing.T) {
 	}
 }
 
+func TestAnalyzeTopNOperationalLimitPersists(t *testing.T) {
+	db := testutil.SetupPostgresDB(t)
+	if err := db.Create(&database.Setting{Key: "universe_analyze_top_n", Value: "8"}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	app := fiber.New()
+	app.Put("/settings", UpdateSettings)
+	request := httptest.NewRequest("PUT", "/settings", bytes.NewBufferString(`[{"key":"universe_analyze_top_n","value":"12"}]`))
+	request.Header.Set("Content-Type", "application/json")
+	response, err := app.Test(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != fiber.StatusOK {
+		t.Fatalf("status=%d", response.StatusCode)
+	}
+	var setting database.Setting
+	if err := db.First(&setting, "key=?", "universe_analyze_top_n").Error; err != nil {
+		t.Fatal(err)
+	}
+	if setting.Value != "12" {
+		t.Fatalf("universe_analyze_top_n=%q", setting.Value)
+	}
+}
+
+func TestAnalyzeTopNOperationalLimitRejectsMalformedValue(t *testing.T) {
+	for _, value := range []string{"", "0", "1.5", "1001"} {
+		if err := validateGenericSettingMutation("universe_analyze_top_n", value); err == nil {
+			t.Fatalf("malformed Analyze Top N value %q accepted", value)
+		}
+	}
+}
+
 func TestStage07GenericSettingsAPICannotBypassGovernance(t *testing.T) {
 	app := fiber.New()
 	app.Put("/settings", UpdateSettings)

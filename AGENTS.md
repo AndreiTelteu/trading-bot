@@ -100,8 +100,9 @@ See [`docs/database-roles.md`](docs/database-roles.md).
 
 ## Settings and governance
 
-- `auto_trade_enabled` is the only generic settings control intentionally treated as an operational enable/kill switch. Accepted values are exactly `true` or `false`.
+- `auto_trade_enabled` is a generic operational enable/kill switch. Accepted values are exactly `true` or `false`.
 - It enables automated paper-entry evaluation only; direct live submission remains fenced.
+- `universe_analyze_top_n` is an authenticated operational analysis-workload limit. It must be an integer from 1 to 1000 and runtime caps it at the governed `universe_top_k`.
 - Strategy, risk, universe, model, rollout, execution, fee/slippage, backtest, and indicator policy keys are authority-affecting and must not be silently mutated through the generic settings endpoint.
 - The frontend must send only fields actually edited and must surface non-2xx API responses.
 - Promotion and rollback use immutable experiment/deployment/transition records and authenticated operator capabilities.
