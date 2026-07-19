@@ -34,6 +34,9 @@ func UpdateSettings(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "Invalid request body"})
 	}
 	for _, req := range requests {
+		if err := validateGenericSettingMutation(req.Key, req.Value); err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		}
 		if authorityAffectingSetting(req.Key) {
 			operations.RecordGovernanceBypass(fmt.Errorf("generic settings mutation attempted for %s", req.Key))
 			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "authority-affecting settings are immutable through the generic API; create a new research experiment"})
@@ -65,6 +68,12 @@ func authorityAffectingSetting(key string) bool {
 	if key == "" {
 		return true
 	}
+	// This is an authenticated operational enable/kill switch, not a strategy,
+	// risk, model, rollout, or live-promotion policy. Live exchange submission
+	// remains independently fenced and governance-controlled.
+	if key == "auto_trade_enabled" {
+		return false
+	}
 	for _, prefix := range []string{"active_", "selection_", "model_", "universe_", "risk_", "portfolio_", "entry_", "rebuy_", "pyramid", "max_position", "max_trade", "max_order", "auto_trade", "buy_only", "min_confidence", "paper_", "backtest_", "exchange_", "execution_", "trading_engine", "stage08_", "stop_", "tp_", "trailing_", "time_stop", "position_", "strategy_", "indicator_", "regime_", "cash_", "turnover_", "fee_", "slippage_", "rollout_", "vol_", "atr_", "sell_", "allow_sell", "stream_exit"} {
 		if strings.HasPrefix(key, prefix) {
 			return true
@@ -75,6 +84,21 @@ func authorityAffectingSetting(key string) bool {
 	}
 	return governanceDeploymentExists()
 }
+
+func validateGenericSettingMutation(key, value string) error {
+	key = strings.ToLower(strings.TrimSpace(key))
+	if key == "" {
+		return fmt.Errorf("setting key is required")
+	}
+	if key == "auto_trade_enabled" {
+		value = strings.ToLower(strings.TrimSpace(value))
+		if value != "true" && value != "false" {
+			return fmt.Errorf("auto_trade_enabled must be true or false")
+		}
+	}
+	return nil
+}
+
 func governanceDeploymentExists() bool {
 	if database.DB == nil {
 		return false

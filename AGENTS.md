@@ -1,178 +1,181 @@
-# AGENTS.md — Trading Bot Codebase Guide
+# AGENTS.md — Trading Platform Engineering Guide
 
-## Core Functionality and Value Proposition
-- End-to-end crypto trading platform that combines automated technical analysis, AI-generated trade proposals, and real-time portfolio monitoring.
-- Provides a full-stack experience: Go backend for analysis/trading logic and a React frontend for live dashboards and controls.
-- Supports both live exchange interaction (Binance API) and paper-trade style simulated trades for safe testing.
+## Purpose
 
-## Distinctive Features vs Typical LLM Agent Implementations
-- AI proposals are first-class domain objects with approval/denial workflows and persistence in a trading DB, not just transient chat outputs.
-- Hybrid automation: scheduled trending analysis can auto-open trades while AI proposals remain human-approval gates.
-- Weighted technical indicator scoring that can be tuned dynamically via persisted indicator weights and settings.
-- Real-time state synchronization (wallet, positions, orders, snapshots, logs) via a WebSocket hub with initial full-sync and incremental updates.
-- Tight coupling between analysis history and AI prompts to ground LLM suggestions on recent market data.
+This repository is a PostgreSQL-backed research and paper-trading platform. Its core contract is not “generate a signal and mutate a wallet”; it is to produce deterministic, auditable decisions through the same strategy and risk engine in backtest, paper, and eventual live modes while preserving exact accounting and point-in-time evidence.
 
-## Technical Architecture Overview
-- Backend: Go (Fiber HTTP server, GORM ORM, SQLite by default).
-- Frontend: React (Vite), real-time updates via WebSocket manager singleton.
-- Data layer: GORM models for wallet, positions, orders, settings, AI proposals, activity logs, analysis history, snapshots.
-- Messaging: In-process WebSocket Hub + Broadcaster singleton for fan-out to all clients or rooms.
-- Scheduling: Cron jobs for recurring price updates and trending analysis.
+The implementation follows [`roadmap.md`](roadmap.md). Read that file and the relevant stage document in [`docs/reimplementation/`](docs/reimplementation/) before changing behavior.
 
-## High-Level Data Flow
-```mermaid
-flowchart LR
-  UI[React UI] <-- WS --> WS[WebSocket Hub]
-  UI -->|REST| API[Go Fiber API]
-  API --> DB[(SQLite via GORM)]
-  API --> EX[Binance REST API]
-  CRON[Cron Jobs] --> API
-  API --> AI[LLM Provider API]
-  WS --> UI
+## Current operational status
+
+- Stages 00–08 are implemented and verified.
+- The legacy path remains available only for controlled rollback/cutover compatibility.
+- The production candidate remains research/shadow fenced until its validation and rollout evidence authorize promotion.
+- Direct live exchange order submission is fenced.
+- `auto_trade_enabled` is an authenticated operational paper-entry switch. It does not authorize live execution or replace governance approval.
+- Missing data, unreconciled accounting, stale authority, or insufficient evidence must fail closed.
+
+## Non-negotiable invariants
+
+1. **One decision path.** Backtest, paper, and live adapters consume the same strategy decisions, portfolio snapshots, and risk decisions.
+2. **One accounting truth.** Cash, fills, fees, capital adjustments, position quantity, cost basis, accumulated fees, and realized P&L reconcile to immutable ledger events.
+3. **No direct economic bypass.** Handlers and services must not directly create/delete economic projections or mutate protected wallet/position fields.
+4. **Point-in-time inputs.** Historical runs may use only data, symbol metadata, tradability, constraints, and universe membership known at the simulated time.
+5. **Determinism.** Replay uses explicit clocks/IDs, versioned manifests, deterministic costs, and explicit fill/exit precedence.
+6. **Comparable evidence.** Strategy comparisons use the same exposure, fee, slippage, coverage, and final-position policy.
+7. **No false evidence.** Missing/empty data, zero-trade output, unreconciled state, or malformed backup evidence cannot be presented as success.
+8. **Human-controlled promotion.** Models and strategies cannot promote themselves to paper/live authority. Bootstrap/test artifacts never control execution.
+9. **Least privilege.** Migration, runtime, ledger writer, and parity writer connections stay separate and fail closed when missing or overprivileged.
+10. **Reversible cutover.** Stage 08 authority and feature flags remain explicit and persisted; legacy removal waits for successful cutover evidence.
+
+## Runtime topology
+
+- **Backend:** Go, Fiber, GORM.
+- **Database:** PostgreSQL 16 only. SQLite is not a supported runtime or integration-test substitute.
+- **Frontend:** React + Vite.
+- **Realtime:** authenticated WebSocket hub.
+- **External data:** Binance public market-data endpoints; private/live submission remains fenced.
+- **LLM:** configurable provider used for proposals/research. LLM output is advisory and cannot bypass governance.
+
+Compose services:
+
+- `postgres`: PostgreSQL 16 with persistent volume.
+- `bootstrap`: one-shot migrations, grants, role/login provisioning, opening-capital seed, and Stage 08 initialization.
+- `app`: long-lived backend/frontend server; never receives the migration/admin DSN.
+
+## PostgreSQL authority boundaries
+
+Four DSNs have different purposes:
+
+| Configuration | Login/purpose | Allowed scope |
+|---|---|---|
+| `MIGRATION_DATABASE_URL[_FILE]` | administrative bootstrap/isolated restore | migrations, ownership, grants, login provisioning |
+| `DATABASE_URL[_FILE]` | `trading_bot_app_runtime` | runtime reads, settings/operational state, narrowly scoped non-economic updates |
+| `LEDGER_DATABASE_URL[_FILE]` | `trading_bot_app_ledger` | immutable ledger and transaction-coupled economic projections |
+| `PARITY_DATABASE_URL[_FILE]` | `trading_bot_app_parity` | Stage 08 parity evidence only |
+
+Rules:
+
+- Never give the server the migration DSN.
+- Never fall back from ledger/parity to runtime.
+- Never add broad schema/table DML grants to make a test pass.
+- Migration execution belongs to `cmd/bootstrap` or explicit operator/restore workflows.
+- Runtime has no direct table DML on `backup_verifications`; verified evidence is written only through `record_verified_backup_evidence`, a pinned `SECURITY DEFINER` function.
+- Preserve fixed `search_path`, controlled ownership, revoked `PUBLIC EXECUTE`, FK bindings, and server-side checksum/authority validation on security-definer functions.
+
+See [`docs/database-roles.md`](docs/database-roles.md).
+
+## Package map
+
+- `cmd/server`: authenticated HTTP/WebSocket server and schedulers.
+- `cmd/bootstrap`: one-shot fresh-install/migration and application-login provisioning.
+- `cmd/backtest`: deterministic replay and Stage 05/06 comparison CLI.
+- `cmd/marketdata`: point-in-time metadata/bar ingestion, coverage, manifests, and universe snapshots.
+- `cmd/ledger`: reconciliation, approved backfill, corrections, and reversals.
+- `cmd/operations`: Stage 08 verify/status/fingerprint/restore/backup evidence.
+- `internal/tradingcore`: exact values, contracts, strategy, risk, broker adapters, orchestration, exits, determinism, rollout.
+- `internal/ledger`: immutable events, fills, corrections, reconciliation, backfill, projection coupling.
+- `internal/backtest`: realistic replay, costs, manifests, baselines, candidate strategy, walk-forward integration.
+- `internal/pointintime`: historical metadata, bars, coverage, manifests, and universe membership.
+- `internal/validation`: walk-forward validation, bootstrap statistics, promotion evidence, ML diagnostics.
+- `internal/governance`: immutable experiments, policies, deployments, approval and rollback state.
+- `internal/cutover`: Stage 08 flags, authority, parity, and transition contracts.
+- `internal/operations`: bootstrap authority, monitoring, backup fingerprints/evidence, and backfill operations.
+- `internal/database`: models, migrations, pool wiring, role provisioning, principal validation, seed boundary.
+- `internal/services`: application adapters around analysis, exchange data, execution coordination, models, monitoring, and universe policy.
+- `internal/handlers`: authenticated API boundaries; handlers orchestrate services but do not bypass domain invariants.
+- `frontend`: React operator interface.
+
+## Change workflow
+
+1. Read `roadmap.md`, the relevant stage plan, and affected runbook.
+2. Trace the complete path: UI/API → handler → service/domain → DB role/transaction → evidence/output.
+3. Write or update the regression test first when fixing a bug.
+4. Make the smallest change that preserves all invariants.
+5. Test with real PostgreSQL 16 for migrations, grants, roles, transactions, triggers, functions, RLS, fingerprints, and restore behavior.
+6. Build the frontend when frontend code changes.
+7. Render Compose when topology/configuration changes.
+8. Run `git diff --check`, inspect the full diff, and scan staged/untracked files for secrets.
+9. Do not claim completion until the requested artifact has been exercised successfully.
+
+## Settings and governance
+
+- `auto_trade_enabled` is the only generic settings control intentionally treated as an operational enable/kill switch. Accepted values are exactly `true` or `false`.
+- It enables automated paper-entry evaluation only; direct live submission remains fenced.
+- Strategy, risk, universe, model, rollout, execution, fee/slippage, backtest, and indicator policy keys are authority-affecting and must not be silently mutated through the generic settings endpoint.
+- The frontend must send only fields actually edited and must surface non-2xx API responses.
+- Promotion and rollback use immutable experiment/deployment/transition records and authenticated operator capabilities.
+
+## Accounting rules
+
+- Use exact decimal primitives from `internal/accounting`/`internal/tradingcore`; do not route economic values through `float64` when exactness is required.
+- Every fill, fee, capital adjustment, correction, and reversal has a stable idempotency identity.
+- Projection updates and ledger events belong in the same top-level PostgreSQL transaction.
+- Reconciliation exit code `2` means unbalanced/degraded, not a successful run.
+- Administrative corruption tests may bypass immutable triggers only in tightly scoped test setup; production triggers must not be weakened.
+
+## Backtest and data rules
+
+- Signal time and executable fill time are distinct.
+- Missing benchmark, execution, universe, tradability, constraint, or feature coverage is an explicit error.
+- Do not substitute current exchange listings for historical universe membership.
+- Keep final-position policy explicit (`liquidate` or `mark_to_market`).
+- Version and persist code/config/dataset/strategy/policy/cost identities in run manifests.
+- A candidate cannot be optimized/promoted merely because nominal return is positive; it must pass predefined out-of-sample and baseline gates.
+
+## Testing
+
+Repository Go toolchain in this environment:
+
+```bash
+/home/andrei/.local/opt/go-v1.26.1/bin/go
 ```
 
-```mermaid
-flowchart TD
-  CRON[cron/scheduler.go] --> TREND[services/trending.go]
-  TREND --> EX[services/exchange.go]
-  TREND --> DB[(database)]
-  TREND --> WS[websocket/broadcaster.go]
-  AI[services/ai.go] --> DB
-  AI --> LLM[External LLM API]
-  API[handlers/*] --> SERVICES[services/*]
-  SERVICES --> DB
+Core verification:
+
+```bash
+make test-db-up
+TEST_DATABASE_URL='postgres://postgres:<test-password>@127.0.0.1:5433/trading_bot_test?sslmode=disable' \
+  /home/andrei/.local/opt/go-v1.26.1/bin/go test -p 1 -count=1 ./...
+
+/home/andrei/.local/opt/go-v1.26.1/bin/go vet ./...
+cd frontend && npm run build
+cd .. && docker compose config --quiet
+git diff --check
 ```
 
-## Key Algorithms and Design Patterns
-- Indicator calculations: RSI, MACD, Bollinger Bands, Momentum, Volume MA.
-  - [indicators.go](file:///f:/Sites/trading-bot/internal/services/indicators.go)
-- Weighted scoring and signal determination (BUY/SELL/HOLD, STRONG_* signals).
-  - [analyzer.go](file:///f:/Sites/trading-bot/internal/services/analyzer.go)
-  - [trending.go](file:///f:/Sites/trading-bot/internal/services/trending.go)
-- Trending analysis pipeline mirrors a prior Python design with rating conversion and normalized scoring.
-  - [trending.go](file:///f:/Sites/trading-bot/internal/services/trending.go)
-- AI proposal pipeline: build prompt from recent analyses + wallet + positions + settings, parse JSON response safely.
-  - [ai.go](file:///f:/Sites/trading-bot/internal/services/ai.go)
-- WebSocket Hub + Broadcaster singleton pattern for centralized fan-out.
-  - [hub.go](file:///f:/Sites/trading-bot/internal/websocket/hub.go)
-  - [broadcaster.go](file:///f:/Sites/trading-bot/internal/websocket/broadcaster.go)
+Use serial PostgreSQL tests when packages share/reset one schema. Run race tests for concurrency-sensitive packages (`internal/ledger`, `internal/services`, `internal/tradingcore`, `internal/operations`, `internal/database`) after meaningful concurrency or pool changes.
 
-## Critical Code Sections (Role and Location)
-- Server entrypoint and route wiring: [main.go](file:///f:/Sites/trading-bot/cmd/server/main.go)
-  - Initializes config, DB, cron, routes, websocket hub, and static frontend.
-- Configuration loading and defaults: [config.go](file:///f:/Sites/trading-bot/internal/config/config.go)
-- Database models and schema: [models.go](file:///f:/Sites/trading-bot/internal/database/models.go)
-- Database init + seed data: [database.go](file:///f:/Sites/trading-bot/internal/database/database.go)
-- Trading execution + auto-close logic: [trading.go](file:///f:/Sites/trading-bot/internal/services/trading.go)
-- Analysis engine and scoring: [analyzer.go](file:///f:/Sites/trading-bot/internal/services/analyzer.go)
-- Indicator math and helper funcs: [indicators.go](file:///f:/Sites/trading-bot/internal/services/indicators.go)
-- Trending analysis pipeline + auto-trade: [trending.go](file:///f:/Sites/trading-bot/internal/services/trending.go)
-- Exchange API wrapper (Binance REST): [exchange.go](file:///f:/Sites/trading-bot/internal/services/exchange.go)
-- AI proposal generation/approval: [ai.go](file:///f:/Sites/trading-bot/internal/services/ai.go)
-- WebSocket client lifecycle + protocol: [client.go](file:///f:/Sites/trading-bot/internal/websocket/client.go)
-- WebSocket hub + broadcaster: [hub.go](file:///f:/Sites/trading-bot/internal/websocket/hub.go), [broadcaster.go](file:///f:/Sites/trading-bot/internal/websocket/broadcaster.go)
-- API handlers by domain: [handlers](file:///f:/Sites/trading-bot/internal/handlers)
-- Frontend dashboard + LLM config UI: [App.jsx](file:///f:/Sites/trading-bot/frontend/src/App.jsx), [LLMConfig.jsx](file:///f:/Sites/trading-bot/frontend/src/components/LLMConfig.jsx)
-- WebSocket client manager (reconnect + heartbeat): [websocketManager.js](file:///f:/Sites/trading-bot/frontend/src/services/websocketManager.js)
+## Operations
 
-## Configuration Requirements and Setup
-- Environment variables (defaults in [.env.example](file:///f:/Sites/trading-bot/.env.example)):
-  - PORT, DATABASE_PATH, DEFAULT_BALANCE, DEFAULT_CURRENCY
-  - BINANCE_API_KEY, BINANCE_SECRET (required for live trading)
-  - REDIS_ADDR/REDIS_PASSWORD/REDIS_DB (present but not currently used in services)
-- Local dev (backend):
-  - `go run cmd/server/main.go` or `make run`
-- Local dev (frontend):
-  - `cd frontend && npm install && npm run dev`
-- Backtest CLI:
-  - `go run cmd/backtest/main.go -symbols BTCUSDT,ETHUSDT -start 2024-01-01 -end 2024-06-30 -fee-bps 8 -slippage-bps 3`
-- Full build:
-  - `make build-all` (build frontend + production backend)
-- Docker build/run:
-  - `make docker-build` and `make docker-run`
-  - [Dockerfile](file:///f:/Sites/trading-bot/Dockerfile), [run.sh](file:///f:/Sites/trading-bot/run.sh)
+Runbooks are indexed in [`docs/operations/README.md`](docs/operations/README.md). Important commands:
 
-## API Endpoints (Backend)
-Base path: `/api`
-- Health/config: `GET /health`, `GET /config`
-- Wallet: `GET /wallet`, `PUT /wallet`, `GET /wallet/snapshots`
-  - [wallet.go](file:///f:/Sites/trading-bot/internal/handlers/wallet.go)
-- Positions: `GET /positions`, `POST /positions`, `POST /positions/:id/close`, `DELETE /positions/:symbol`
-  - [positions.go](file:///f:/Sites/trading-bot/internal/handlers/positions.go)
-- Orders: `GET /orders`, `POST /orders`
-  - [orders.go](file:///f:/Sites/trading-bot/internal/handlers/orders.go)
-- Settings: `GET /settings`, `PUT /settings`, `GET /settings/:key`
-  - [settings.go](file:///f:/Sites/trading-bot/internal/handlers/settings.go)
-- Indicator weights: `GET /indicator-weights`, `PUT /indicator-weights`
-  - [settings.go](file:///f:/Sites/trading-bot/internal/handlers/settings.go)
-- Trading: `POST /trading/buy`, `POST /trading/sell`, `POST /trading/update-prices`
-  - [trading.go](file:///f:/Sites/trading-bot/internal/handlers/trading.go)
-- Paper trades: `POST /positions-trade/open`, `POST /positions-trade/:id/close`
-  - [positions.go](file:///f:/Sites/trading-bot/internal/handlers/positions.go)
-- Analysis: `GET /analysis/:symbol`, `GET /analysis`, `POST /analysis/analyze`
-  - [analyzer.go](file:///f:/Sites/trading-bot/internal/handlers/analyzer.go)
-- Trending: `GET /trending`, `GET /trending/recent`, `POST /trending/analyze`
-  - [analyzer.go](file:///f:/Sites/trading-bot/internal/handlers/analyzer.go)
-- Activity logs: `GET /activity-logs`, `POST /activity-logs`
-  - [activity.go](file:///f:/Sites/trading-bot/internal/handlers/activity.go)
-- AI proposals: `GET /ai/proposals`, `POST /ai/generate-proposals`, `POST /ai/proposals/:id/approve`, `POST /ai/proposals/:id/deny`
-  - [ai.go](file:///f:/Sites/trading-bot/internal/handlers/ai.go)
-- WebSocket: `WS /ws` (real-time updates)
-  - [websocket.go](file:///f:/Sites/trading-bot/internal/handlers/websocket.go)
+```bash
+go run ./cmd/ledger -action reconcile -json
+go run ./cmd/operations -action status
+go run ./cmd/operations -action fingerprint
+go run ./cmd/marketdata -action coverage ...
+go run ./cmd/backtest ...
+```
 
-## WebSocket Message Types (Selected)
-- Wallet/positions/orders: `wallet_update`, `positions_update`, `orders_update`, `position_update`
-- Analysis/trending: `trending_update`, `analysis_complete`, `snapshot_update`
-- Activity: `activity_log_new`, `activity_log_bulk`
-- Trade events: `trade_executed`
-  - [broadcaster.go](file:///f:/Sites/trading-bot/internal/websocket/broadcaster.go)
+Fresh install/rebuild:
 
-## Performance Optimizations
-- Batch price updates using `FetchMultipleTickerPrices` to avoid per-position requests.
-  - [trading.go](file:///f:/Sites/trading-bot/internal/services/trading.go)
-- Trending analysis limits and deduplication to reduce API calls and computation.
-  - [trending.go](file:///f:/Sites/trading-bot/internal/services/trending.go)
-- WebSocket backpressure handling with buffered channels and drop-on-failure.
-  - [hub.go](file:///f:/Sites/trading-bot/internal/websocket/hub.go)
-- Frontend reconnection with exponential backoff and heartbeat to reduce stale connections.
-  - [websocketManager.js](file:///f:/Sites/trading-bot/frontend/src/services/websocketManager.js)
+```bash
+docker compose config --quiet
+docker compose up -d --build
+```
 
-## Security Considerations
-- Binance API requests are HMAC signed for private endpoints.
-  - [exchange.go](file:///f:/Sites/trading-bot/internal/services/exchange.go)
-- LLM API key is stored in DB and sent as bearer token to the configured provider.
-  - [ai.go](file:///f:/Sites/trading-bot/internal/services/ai.go)
-- Current CORS policy is permissive (`*`). Consider tightening for production.
-  - [cors.go](file:///f:/Sites/trading-bot/internal/middleware/cors.go)
-- API endpoints have no authentication/authorization layer; intended for trusted environments.
+A fresh installation seeds exactly one opening-capital ledger event and may report operationally degraded until required market-data, backtest, parity, backup, and elapsed shadow evidence exists.
 
-## Testing Strategy
-- Unit tests cover indicators and exchange utility functions.
-  - [indicators_test.go](file:///f:/Sites/trading-bot/internal/services/indicators_test.go)
-  - [exchange_test.go](file:///f:/Sites/trading-bot/internal/services/exchange_test.go)
-- Configuration defaults are verified in tests.
-  - [config_test.go](file:///f:/Sites/trading-bot/internal/config/config_test.go)
-- Integration tests exercise Fiber endpoints with in-memory SQLite.
-  - [integration_test.go](file:///f:/Sites/trading-bot/internal/testing/integration_test.go)
-- Run tests with `go test -v ./...` (see [Makefile](file:///f:/Sites/trading-bot/Makefile)).
+## Security and secret handling
 
-## Deployment Instructions
-- Container build/run:
-  - `make docker-build` and `make docker-run`
-  - [Dockerfile](file:///f:/Sites/trading-bot/Dockerfile), [docker-compose.yml](file:///f:/Sites/trading-bot/docker-compose.yml)
-- Prod build (binary + frontend):
-  - `make build-all`
-- Direct server run:
-  - `make run` or `go run cmd/server/main.go`
+- Never commit `.env`, DSNs, passwords, API keys, pgpass/service files, dumps, or generated credentials.
+- Prefer `*_FILE` variables and local files mode `0600`.
+- Do not print secret values in tests, logs, reviews, or completion reports.
+- API and WebSocket routes are authenticated. Governance approval additionally requires a user listed in `GOVERNANCE_ADMIN_USERS`.
+- Treat external market/LLM responses as untrusted input.
+- Public CORS, auth weakening, superuser runtime logins, direct projection writes, or migration access in the server are release blockers.
 
-## Notable Implementation Details and Extension Points
-- Indicator weighting and settings are stored in DB and can be updated live via API.
-- AI proposals are persisted with status transitions and can mutate settings on approval.
-- WebSocket uses an initial full-sync on connect for robust UI hydration.
-- Frontend’s LLM config UI exists even if LLM calls are disabled or unconfigured; backend uses DB config when available.
+## Documentation expectations
 
-## Suggested Modification Hotspots
-- Trading strategy/thresholds: [trending.go](file:///f:/Sites/trading-bot/internal/services/trending.go), [trading.go](file:///f:/Sites/trading-bot/internal/services/trading.go)
-- Indicator logic and scoring: [indicators.go](file:///f:/Sites/trading-bot/internal/services/indicators.go), [analyzer.go](file:///f:/Sites/trading-bot/internal/services/analyzer.go)
-- AI prompt format and response parsing: [ai.go](file:///f:/Sites/trading-bot/internal/services/ai.go)
-- Real-time UX: [websocketManager.js](file:///f:/Sites/trading-bot/frontend/src/services/websocketManager.js), [useWebSocket.js](file:///f:/Sites/trading-bot/frontend/src/hooks/useWebSocket.js)
+When behavior changes, update the relevant stage document/runbook plus README/AGENTS if the public architecture or contributor contract changes. Document external limitations honestly: real market-history quality, sufficient sample sizes, elapsed shadow observation, exchange behavior, and operational approval cannot be manufactured by tests.

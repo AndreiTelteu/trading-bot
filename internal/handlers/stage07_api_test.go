@@ -4,9 +4,43 @@ import (
 	"bytes"
 	"net/http/httptest"
 	"testing"
+	"trading-go/internal/database"
+	"trading-go/internal/testutil"
 
 	"github.com/gofiber/fiber/v2"
 )
+
+func TestAutoTradeOperationalSwitchPersists(t *testing.T) {
+	db := testutil.SetupPostgresDB(t)
+	if err := db.Create(&database.Setting{Key: "auto_trade_enabled", Value: "false"}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	app := fiber.New()
+	app.Put("/settings", UpdateSettings)
+	request := httptest.NewRequest("PUT", "/settings", bytes.NewBufferString(`[{"key":"auto_trade_enabled","value":"true"}]`))
+	request.Header.Set("Content-Type", "application/json")
+	response, err := app.Test(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != fiber.StatusOK {
+		t.Fatalf("status=%d", response.StatusCode)
+	}
+	var setting database.Setting
+	if err := db.First(&setting, "key=?", "auto_trade_enabled").Error; err != nil {
+		t.Fatal(err)
+	}
+	if setting.Value != "true" {
+		t.Fatalf("auto_trade_enabled=%q", setting.Value)
+	}
+}
+
+func TestAutoTradeOperationalSwitchRejectsMalformedValue(t *testing.T) {
+	if err := validateGenericSettingMutation("auto_trade_enabled", "yes"); err == nil {
+		t.Fatal("malformed auto-trade value accepted")
+	}
+}
 
 func TestStage07GenericSettingsAPICannotBypassGovernance(t *testing.T) {
 	app := fiber.New()

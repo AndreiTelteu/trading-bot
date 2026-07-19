@@ -332,6 +332,7 @@ const SETTINGS_SECTIONS = [
 
 function SettingsPanel({ activeSection }) {
   const [settings, setSettings] = useState({})
+  const [dirtySettings, setDirtySettings] = useState(() => new Set())
   const [weights, setWeights] = useState({})
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -374,6 +375,7 @@ function SettingsPanel({ activeSection }) {
         }
       }
       setSettings(normalized)
+      setDirtySettings(new Set())
     } catch (err) {
       console.error('Failed to fetch settings:', err)
     }
@@ -452,6 +454,11 @@ function SettingsPanel({ activeSection }) {
 
   const handleSettingChange = (key, value) => {
     setSettings(prev => ({ ...prev, [key]: value }))
+    setDirtySettings(prev => {
+      const next = new Set(prev)
+      next.add(key)
+      return next
+    })
   }
 
   const handleWeightChange = (indicator, value) => {
@@ -459,18 +466,25 @@ function SettingsPanel({ activeSection }) {
   }
 
   const handleSaveSettings = async () => {
+    if (dirtySettings.size === 0) return
     setSaving(true)
     try {
-      // Backend expects an array of {key, value} objects
-      const payload = Object.entries(settings).map(([key, value]) => ({
+      // Send only fields edited by the operator. Sending the entire snapshot
+      // would mix an operational switch with immutable policy settings.
+      const payload = Array.from(dirtySettings).map(key => ({
         key,
-        value: String(value)
+        value: String(settings[key])
       }))
-      await apiFetch(`${API_BASE}/settings`, {
+      const res = await apiFetch(`${API_BASE}/settings`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        throw new Error(data.error || `HTTP ${res.status}`)
+      }
+      await fetchSettings()
       await fetchGovernanceOverview()
       alert('Settings saved!')
     } catch (err) {
@@ -1050,7 +1064,7 @@ function SettingsPanel({ activeSection }) {
           </div>
         )}
 
-        <button className="btn-save" onClick={handleSaveSettings} disabled={saving}>
+        <button className="btn-save" onClick={handleSaveSettings} disabled={saving || dirtySettings.size === 0}>
           {saving ? 'Saving...' : 'Save Settings'}
         </button>
           {activeSection === 'backtest' && (
