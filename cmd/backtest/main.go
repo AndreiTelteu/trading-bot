@@ -6,6 +6,9 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net/http"
+	_ "net/http/pprof"
+	"os"
 	"strconv"
 	"strings"
 
@@ -17,6 +20,15 @@ import (
 )
 
 func main() {
+	if addr := strings.TrimSpace(os.Getenv("BACKTEST_PPROF_ADDR")); addr != "" {
+		go func() {
+			log.Printf("backtest pprof listening on %s (operator telemetry only)", addr)
+			if err := http.ListenAndServe(addr, nil); err != nil {
+				log.Printf("backtest pprof server stopped: %v", err)
+			}
+		}()
+	}
+
 	cfg, loadErr := config.LoadValidated()
 	if loadErr != nil {
 		log.Fatalf("Invalid startup configuration: %v", loadErr)

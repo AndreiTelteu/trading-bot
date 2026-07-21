@@ -6,6 +6,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"trading-go/internal/services"
 )
@@ -56,6 +57,8 @@ type ValidationSummary struct {
 	PromotionReadiness              PromotionReadiness        `json:"promotion_readiness"`
 	TrainingPassed                  bool                      `json:"training_passed"`
 	Passed                          bool                      `json:"passed"`
+	// WindowDurationsMS is operator telemetry only (wall-clock per walk-forward window).
+	WindowDurationsMS []int64 `json:"window_durations_ms,omitempty"`
 }
 type ValidationWindowFailure struct {
 	Window         WalkForwardWindow `json:"window"`
@@ -107,7 +110,7 @@ type validationCISet struct {
 	AcceptedMetrics       []string
 }
 
-func RunValidation(config BacktestConfig, series map[string][]services.OHLCV, trainMonths int, testMonths int, iterations int) (ValidationSummary, error) {
+func RunValidation(config BacktestConfig, series map[string][]services.OHLCV, trainMonths int, testMonths int, iterations int, progress ProgressFunc) (ValidationSummary, error) {
 	if config.EngineMode != EngineShared {
 		return ValidationSummary{}, fmt.Errorf("validation requires shared backtest engine")
 	}
@@ -125,6 +128,7 @@ func RunValidation(config BacktestConfig, series map[string][]services.OHLCV, tr
 		window        WalkForwardWindow
 		ok            bool
 		failures      []ValidationWindowFailure
+		durationMS    int64
 	}
 
 	results := make([]windowResult, len(windows))
@@ -142,27 +146,43 @@ func RunValidation(config BacktestConfig, series map[string][]services.OHLCV, tr
 	}
 	close(windowCh)
 
+	emitProgress(progress, ProgressUpdate{
+		Phase:       "validation",
+		WindowTotal: len(windows),
+		Fraction:    0,
+		Message:     "validation_start",
+		RSSBytes:    currentRSSBytes(),
+	})
+
+	var completed atomic.Int64
 	var wg sync.WaitGroup
 	for w := 0; w < workers; w++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for idx := range windowCh {
+				windowClock := startPhaseClock()
 				window := windows[idx]
 				trainSeries := filterSeriesByTime(series, window.TrainStart, window.TrainEnd)
 				testSeries := filterSeriesByTime(series, window.TestStart, window.TestEnd)
 				if len(trainSeries) == 0 || len(testSeries) == 0 {
-					results[idx] = windowResult{index: idx, window: window, failures: []ValidationWindowFailure{{Window: window, Lane: "window", Reason: "empty window series", Classification: RunCoverageFailed}}}
+					results[idx] = windowResult{index: idx, window: window, failures: []ValidationWindowFailure{{Window: window, Lane: "window", Reason: "empty window series", Classification: RunCoverageFailed}}, durationMS: windowClock.ms()}
+					done := int(completed.Add(1))
+					emitProgress(progress, ProgressUpdate{Phase: "validation", Lane: "window", WindowIndex: done, WindowTotal: len(windows), Fraction: float64(done) / float64(len(windows)), Message: "window_empty", ElapsedMS: windowClock.ms(), RSSBytes: currentRSSBytes()})
 					continue
 				}
 				trainBaseline, trainVol, err := runValidationPair(config, trainSeries, window.TrainStart, window.TrainEnd)
 				if err != nil {
-					results[idx] = windowResult{index: idx, window: window, failures: validationFailures(window, "train", trainBaseline, trainVol, err)}
+					results[idx] = windowResult{index: idx, window: window, failures: validationFailures(window, "train", trainBaseline, trainVol, err), durationMS: windowClock.ms()}
+					done := int(completed.Add(1))
+					emitProgress(progress, ProgressUpdate{Phase: "validation", Lane: "train", WindowIndex: done, WindowTotal: len(windows), Fraction: float64(done) / float64(len(windows)), Message: "window_train_failed", ElapsedMS: windowClock.ms(), RSSBytes: currentRSSBytes()})
 					continue
 				}
 				testBaseline, testVol, err := runValidationPair(config, testSeries, window.TestStart, window.TestEnd)
 				if err != nil {
-					results[idx] = windowResult{index: idx, window: window, failures: validationFailures(window, "test", testBaseline, testVol, err)}
+					results[idx] = windowResult{index: idx, window: window, failures: validationFailures(window, "test", testBaseline, testVol, err), durationMS: windowClock.ms()}
+					done := int(completed.Add(1))
+					emitProgress(progress, ProgressUpdate{Phase: "validation", Lane: "test", WindowIndex: done, WindowTotal: len(windows), Fraction: float64(done) / float64(len(windows)), Message: "window_test_failed", ElapsedMS: windowClock.ms(), RSSBytes: currentRSSBytes()})
 					continue
 				}
 				results[idx] = windowResult{
@@ -173,11 +193,19 @@ func RunValidation(config BacktestConfig, series map[string][]services.OHLCV, tr
 					testVol:       testVol,
 					window:        window,
 					ok:            true,
+					durationMS:    windowClock.ms(),
 				}
+				done := int(completed.Add(1))
+				emitProgress(progress, ProgressUpdate{Phase: "validation", Lane: "window", WindowIndex: done, WindowTotal: len(windows), Fraction: float64(done) / float64(len(windows)), Message: "window_done", ElapsedMS: windowClock.ms(), RSSBytes: currentRSSBytes()})
 			}
 		}()
 	}
 	wg.Wait()
+
+	windowDurations := make([]int64, len(windows))
+	for i, res := range results {
+		windowDurations[i] = res.durationMS
+	}
 
 	var trainBaselineMetrics []Metrics
 	var trainVolMetrics []Metrics
@@ -271,6 +299,7 @@ func RunValidation(config BacktestConfig, series map[string][]services.OHLCV, tr
 		PromotionReadiness:              readiness,
 		TrainingPassed:                  trainingPassed,
 		Passed:                          trainingPassed && testPassed,
+		WindowDurationsMS:               windowDurations,
 	}, nil
 }
 

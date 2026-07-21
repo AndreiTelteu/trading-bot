@@ -41,6 +41,8 @@ type BacktestJobSummary struct {
 	Baseline          BacktestJobStrategySummary   `json:"baseline"`
 	VolSizing         BacktestJobStrategySummary   `json:"vol_sizing"`
 	Validation        BacktestJobValidationSummary `json:"validation"`
+	// PhaseTimers is operator wall-clock telemetry only.
+	PhaseTimers PhaseTimers `json:"phase_timers,omitempty"`
 }
 
 type BacktestJobResponse struct {
@@ -228,6 +230,7 @@ func BuildBacktestJobSummary(summary BacktestRunSummary) BacktestJobSummary {
 			RecommendedStage: summary.Validation.PromotionReadiness.RecommendedStage,
 			FailedWindows:    summary.Validation.FailedWindows,
 		},
+		PhaseTimers: summary.PhaseTimers,
 	}
 }
 

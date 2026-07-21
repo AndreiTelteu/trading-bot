@@ -198,8 +198,23 @@ func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (Bac
 	currentUniverse := backtestUniverseSelection{}
 	lastRebalance := time.Time{}
 	liquidationWindowClosed := map[string]bool{}
+	progressEvery := engineProgressEvery(len(timeline))
+	laneStarted := time.Now()
+	laneLabel := string(config.StrategyMode)
+	if laneLabel == "" {
+		laneLabel = "engine"
+	}
+	emitProgress(config.Progress, ProgressUpdate{
+		Phase:    "engine",
+		Lane:     laneLabel,
+		BarTotal: len(timeline),
+		Fraction: 0,
+		Message:  "engine_start",
+		ElapsedMS: 0,
+		RSSBytes: currentRSSBytes(),
+	})
 
-	for _, ts := range timeline {
+	for barIdx, ts := range timeline {
 		currentTime := time.UnixMilli(ts)
 		contexts := map[string]barContext{}
 		currentBars := map[string]services.OHLCV{}
@@ -577,7 +592,32 @@ func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (Bac
 			}
 			equityBySymbol[symbol] = append(equityBySymbol[symbol], EquityPoint{Time: equityTime, Value: value})
 		}
+
+		if config.Progress != nil && (barIdx == 0 || barIdx+1 == len(timeline) || (barIdx+1)%progressEvery == 0) {
+			fraction := float64(barIdx+1) / float64(len(timeline))
+			emitProgress(config.Progress, ProgressUpdate{
+				Phase:     "engine",
+				Lane:      laneLabel,
+				BarIndex:  barIdx + 1,
+				BarTotal:  len(timeline),
+				Fraction:  fraction,
+				Message:   "engine_bar",
+				ElapsedMS: time.Since(laneStarted).Milliseconds(),
+				RSSBytes:  currentRSSBytes(),
+			})
+		}
 	}
+
+	emitProgress(config.Progress, ProgressUpdate{
+		Phase:     "engine",
+		Lane:      laneLabel,
+		BarIndex:  len(timeline),
+		BarTotal:  len(timeline),
+		Fraction:  1,
+		Message:   "engine_done",
+		ElapsedMS: time.Since(laneStarted).Milliseconds(),
+		RSSBytes:  currentRSSBytes(),
+	})
 
 	metrics := ComputeMetrics(equity, trades, config.TimeframeMinutes, config.AtrAnnualizationDays)
 	rankingMetrics := buildRankingMetrics(trades, config)

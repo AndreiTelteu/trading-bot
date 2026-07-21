@@ -87,6 +87,8 @@ type BacktestRunSummary struct {
 	Baseline          BacktestResult             `json:"baseline"`
 	VolSizing         BacktestResult             `json:"vol_sizing"`
 	Validation        ValidationSummary          `json:"validation"`
+	// PhaseTimers is observational wall-clock telemetry for operators only.
+	PhaseTimers PhaseTimers `json:"phase_timers,omitempty"`
 }
 
 func StartBacktestJob() (*database.BacktestJob, error) {
@@ -227,10 +229,15 @@ func GetLatestBacktestJob() (*database.BacktestJob, error) {
 
 func runBacktestJob(jobID uint) {
 	startedAt := time.Now()
+	totalClock := startPhaseClock()
+	var timers PhaseTimers
 	updateBacktestJob(jobID, "running", 0.02, "Loading settings")
+	emitProgress(StderrProgressWriter(), ProgressUpdate{Phase: "prep", Message: "loading_settings", Fraction: 0.02, RSSBytes: currentRSSBytes()})
 
+	prepClock := startPhaseClock()
 	settingsSnapshot := services.GetAllSettings()
 	config, series, err := prepareBacktestInputsWithSettings(settingsSnapshot)
+	timers.PrepMS = prepClock.ms()
 	if err != nil {
 		if pointintime.IsCoverageError(err) {
 			coverage := CoverageReport{SchemaVersion: CoverageSchemaVersion, PolicyVersion: "point-in-time-manifest", Passed: false, Reasons: []CoverageReason{CoverageManifestIncompatible}, Diagnostics: []CoverageDiagnostic{{Dataset: "manifest", Status: "failed", Reason: CoverageManifestIncompatible}}}
@@ -244,24 +251,54 @@ func runBacktestJob(jobID uint) {
 	database.DB.Model(&database.BacktestJob{}).Where("id=?", jobID).Update("dataset_manifest_id", config.DatasetManifestID)
 
 	updateBacktestJob(jobID, "running", 0.35, "Running baseline + vol sizing backtests")
+	emitProgress(StderrProgressWriter(), ProgressUpdate{Phase: "lanes", Message: "dual_lane_start", Fraction: 0.35, ElapsedMS: totalClock.ms(), RSSBytes: currentRSSBytes()})
+
+	jobProgress := RateLimitedProgress(30*time.Second, func(update ProgressUpdate) {
+		// Map engine bar fraction into the dual-lane progress band [0.35, 0.70).
+		fraction := 0.35
+		if update.BarTotal > 0 {
+			laneShare := update.Fraction
+			if laneShare < 0 {
+				laneShare = 0
+			}
+			if laneShare > 1 {
+				laneShare = 1
+			}
+			fraction = 0.35 + 0.35*laneShare
+		}
+		msg := update.Message
+		if update.Lane != "" && update.BarTotal > 0 {
+			msg = fmt.Sprintf("%s %s bars %d/%d", update.Lane, update.Phase, update.BarIndex, update.BarTotal)
+		}
+		updateBacktestJob(jobID, "running", fraction, msg)
+		emitProgress(StderrProgressWriter(), update)
+	})
+	config.Progress = jobProgress
 
 	var baselineResult, volResult BacktestResult
 	var baselineErr, volErr error
+	var baselineMS, volMS int64
 	var btWg sync.WaitGroup
 	btWg.Add(2)
 	go func() {
 		defer btWg.Done()
+		clock := startPhaseClock()
 		baselineConfig := config
 		baselineConfig.StrategyMode = StrategyBaseline
 		baselineResult, baselineErr = RunBacktest(baselineConfig, series)
+		baselineMS = clock.ms()
 	}()
 	go func() {
 		defer btWg.Done()
+		clock := startPhaseClock()
 		volConfig := config
 		volConfig.StrategyMode = StrategyVolSizing
 		volResult, volErr = RunBacktest(volConfig, series)
+		volMS = clock.ms()
 	}()
 	btWg.Wait()
+	timers.LaneBaselineMS = baselineMS
+	timers.LaneVolMS = volMS
 	if baselineErr != nil {
 		failBacktestJobWithResults(jobID, config, settingsSnapshot, baselineResult, volResult, ValidationSummary{}, "baseline", baselineErr)
 		return
@@ -272,17 +309,35 @@ func runBacktestJob(jobID uint) {
 	}
 
 	updateBacktestJob(jobID, "running", 0.7, "Running validation")
+	emitProgress(StderrProgressWriter(), ProgressUpdate{Phase: "validation", Message: "validation_start", Fraction: 0.7, ElapsedMS: totalClock.ms(), RSSBytes: currentRSSBytes()})
+	validationProgress := RateLimitedProgress(30*time.Second, func(update ProgressUpdate) {
+		fraction := 0.7
+		if update.WindowTotal > 0 {
+			fraction = 0.7 + 0.25*(float64(update.WindowIndex)/float64(update.WindowTotal))
+		}
+		msg := update.Message
+		if update.WindowTotal > 0 {
+			msg = fmt.Sprintf("validation window %d/%d %s", update.WindowIndex, update.WindowTotal, update.Lane)
+		}
+		updateBacktestJob(jobID, "running", fraction, msg)
+		emitProgress(StderrProgressWriter(), update)
+	})
+	validationClock := startPhaseClock()
 	validation, err := RunValidation(config, series,
 		getSettingInt(settingsSnapshot, "validation_train_months", 12),
 		getSettingInt(settingsSnapshot, "validation_test_months", 3),
 		getSettingInt(settingsSnapshot, "validation_bootstrap_iterations", 500),
+		validationProgress,
 	)
+	timers.ValidationMS = validationClock.ms()
+	timers.ValidationWindowMS = append([]int64(nil), validation.WindowDurationsMS...)
 	if err != nil {
 		failBacktestJobWithResults(jobID, config, settingsSnapshot, baselineResult, volResult, validation, "validation", err)
 		return
 	}
 
 	finishedAt := time.Now()
+	timers.TotalMS = totalClock.ms()
 	summary := BacktestRunSummary{
 		JobID:             jobID,
 		StartedAt:         startedAt,
@@ -298,6 +353,7 @@ func runBacktestJob(jobID uint) {
 		Baseline:          baselineResult,
 		VolSizing:         volResult,
 		Validation:        validation,
+		PhaseTimers:       timers,
 	}
 	if experimentID, err := RegisterExperimentRun(jobID, &summary); err == nil {
 		summary.ExperimentID = experimentID
@@ -328,6 +384,13 @@ func RunBacktestSync() (BacktestRunSummary, error) {
 }
 
 func RunBacktestSyncWithOverrides(overrides map[string]string) (BacktestRunSummary, error) {
+	totalClock := startPhaseClock()
+	var timers PhaseTimers
+	startedAt := time.Now()
+	progress := RateLimitedProgress(30*time.Second, StderrProgressWriter())
+	emitProgress(progress, ProgressUpdate{Phase: "prep", Message: "loading_settings", Fraction: 0.02, RSSBytes: currentRSSBytes()})
+
+	prepClock := startPhaseClock()
 	settings := services.GetAllSettings()
 	for key, value := range overrides {
 		if strings.TrimSpace(value) == "" {
@@ -336,27 +399,37 @@ func RunBacktestSyncWithOverrides(overrides map[string]string) (BacktestRunSumma
 		settings[key] = value
 	}
 	config, series, err := prepareBacktestInputsWithSettings(settings)
+	timers.PrepMS = prepClock.ms()
 	if err != nil {
 		return BacktestRunSummary{}, err
 	}
+	config.Progress = progress
+	emitProgress(progress, ProgressUpdate{Phase: "lanes", Message: "dual_lane_start", Fraction: 0.35, ElapsedMS: totalClock.ms(), RSSBytes: currentRSSBytes()})
 
 	var baselineResult, volResult BacktestResult
 	var baselineErr, volErr error
+	var baselineMS, volMS int64
 	var btWg sync.WaitGroup
 	btWg.Add(2)
 	go func() {
 		defer btWg.Done()
+		clock := startPhaseClock()
 		c := config
 		c.StrategyMode = StrategyBaseline
 		baselineResult, baselineErr = RunBacktest(c, series)
+		baselineMS = clock.ms()
 	}()
 	go func() {
 		defer btWg.Done()
+		clock := startPhaseClock()
 		c := config
 		c.StrategyMode = StrategyVolSizing
 		volResult, volErr = RunBacktest(c, series)
+		volMS = clock.ms()
 	}()
 	btWg.Wait()
+	timers.LaneBaselineMS = baselineMS
+	timers.LaneVolMS = volMS
 	if baselineErr != nil {
 		return BacktestRunSummary{}, baselineErr
 	}
@@ -364,20 +437,26 @@ func RunBacktestSyncWithOverrides(overrides map[string]string) (BacktestRunSumma
 		return BacktestRunSummary{}, volErr
 	}
 
+	emitProgress(progress, ProgressUpdate{Phase: "validation", Message: "validation_start", Fraction: 0.7, ElapsedMS: totalClock.ms(), RSSBytes: currentRSSBytes()})
+	validationClock := startPhaseClock()
 	validation, err := RunValidation(config, series,
 		getSettingInt(settings, "validation_train_months", 12),
 		getSettingInt(settings, "validation_test_months", 3),
 		getSettingInt(settings, "validation_bootstrap_iterations", 500),
+		progress,
 	)
+	timers.ValidationMS = validationClock.ms()
+	timers.ValidationWindowMS = append([]int64(nil), validation.WindowDurationsMS...)
 	if err != nil {
 		return BacktestRunSummary{}, err
 	}
 
-	now := time.Now()
+	finishedAt := time.Now()
+	timers.TotalMS = totalClock.ms()
 	summary := BacktestRunSummary{
 		JobID:             0,
-		StartedAt:         now,
-		FinishedAt:        now,
+		StartedAt:         startedAt,
+		FinishedAt:        finishedAt,
 		BacktestMode:      config.BacktestMode,
 		ModelVersion:      config.Governance.ModelVersion,
 		PolicyVersion:     config.Governance.PolicyVersions.CompositeVersion,
@@ -389,6 +468,7 @@ func RunBacktestSyncWithOverrides(overrides map[string]string) (BacktestRunSumma
 		Baseline:          baselineResult,
 		VolSizing:         volResult,
 		Validation:        validation,
+		PhaseTimers:       timers,
 	}
 
 	if experimentID, err := RegisterExperimentRun(0, &summary); err == nil {
