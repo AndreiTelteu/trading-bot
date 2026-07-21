@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -481,4 +482,22 @@ func mustPositionID(symbol string) tradingcore.PositionID {
 	return result
 }
 
-func decimalString(value float64) string { return strconv.FormatFloat(value, 'f', -1, 64) }
+// decimalString bridges float64 engine state into tradingcore exact decimals.
+// FormatFloat with prec=-1 can emit more than MaxDecimalScale fraction digits
+// from binary float noise (especially on accumulated cash/mark values); that
+// previously panicked mustAmount mid-run with "decimal scale 19 exceeds maximum 18".
+// Cap at MaxDecimalScale and strip trailing zeros so ParseDecimal always accepts.
+func decimalString(value float64) string {
+	if math.IsNaN(value) || math.IsInf(value, 0) {
+		return "0"
+	}
+	formatted := strconv.FormatFloat(value, 'f', int(tradingcore.MaxDecimalScale), 64)
+	if strings.Contains(formatted, ".") {
+		formatted = strings.TrimRight(formatted, "0")
+		formatted = strings.TrimRight(formatted, ".")
+	}
+	if formatted == "-0" {
+		return "0"
+	}
+	return formatted
+}

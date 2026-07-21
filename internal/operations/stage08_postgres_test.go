@@ -62,6 +62,25 @@ func stage08DB(t *testing.T) (Service, string) {
 	return service, snapshot.ID
 }
 
+func enterResearchIngestion(t *testing.T, service Service) database.Stage08FlagSnapshot {
+	t.Helper()
+	flags := cutover.SafeFlags()
+	flags.NewBacktest, flags.PointInTime = "research", "research"
+	snapshot, err := service.DeclareFlagSnapshot(context.Background(), flags, "operator")
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := TransitionRequest{IdempotencyKey: "enter-research-ingestion", ToStage: "research_ingestion", Principal: "operator", Reason: "approve manifest-backed research ingestion", FlagSnapshotID: snapshot.ID}
+	transition, err := service.TransitionCutover(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if transition.ToAuthority != "legacy" {
+		t.Fatalf("research ingestion changed capital authority: %+v", transition)
+	}
+	return snapshot
+}
+
 func TestInitializeCreatesExactBootstrapTransitionSentinel(t *testing.T) {
 	service, flagID := stage08DB(t)
 	var state database.CutoverState
@@ -249,6 +268,10 @@ func TestStage08MigrationIncidentAndCutoverAudit(t *testing.T) {
 	if audits != 2 {
 		t.Fatalf("incident audits=%d", audits)
 	}
+	research := enterResearchIngestion(t, service)
+	if _, err := New(service.DB, mustFlags(t, research)).Initialize(context.Background()); err != nil {
+		t.Fatalf("research authority did not initialize: %v", err)
+	}
 	r := TransitionRequest{IdempotencyKey: "cutover-1", ToStage: "ledger_compare", Principal: "operator", Reason: "approved", FlagSnapshotID: flagID}
 	transition, err := service.TransitionCutover(context.Background(), r)
 	if err != nil {
@@ -303,6 +326,7 @@ func TestParityPersistenceThresholdsAndBounds(t *testing.T) {
 	if err != nil || !aggregate.Accepted {
 		t.Fatalf("matching threshold failed: %+v %v", aggregate, err)
 	}
+	enterResearchIngestion(t, service)
 	if _, err := service.TransitionCutover(context.Background(), TransitionRequest{IdempotencyKey: "new-attempt", ToStage: "ledger_compare", Principal: "operator", Reason: "start new attempt", FlagSnapshotID: flagID}); err != nil {
 		t.Fatal(err)
 	}

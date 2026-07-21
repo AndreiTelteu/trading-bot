@@ -1150,20 +1150,42 @@ func buildRuntimeFeatureCoverage(names []string, series map[string][]services.OH
 	if len(symbols) == 0 {
 		return result
 	}
+	// Feature rows only need a bounded warmup (120 bars minimum in
+	// BuildModelFeatureRow, with MACD/return windows well under that). Rebuilding
+	// features from the full history on every bar is O(n^2)/O(n^3) and made the
+	// 18-month research init appear hung for hours before the engine started.
+	const featureCoverageLookback = 256
 	observations := map[string][]FeatureObservation{}
 	source := series[symbols[0]]
 	btc := series["BTCUSDT"]
+	sourceCandles := candlesFromOHLCV(source)
+	btcCandles := candlesFromOHLCV(btc)
 	for i, bar := range source {
 		if i < 119 {
 			continue
 		}
 		available := time.UnixMilli(bar.CloseTime)
 		candidate := services.UniverseCandidateMetrics{Symbol: symbols[0], LastPrice: bar.Close}
-		btcEnd := i + 1
-		if btcEnd > len(btc) {
-			btcEnd = len(btc)
+		startIdx := i + 1 - featureCoverageLookback
+		if startIdx < 0 {
+			startIdx = 0
 		}
-		row := services.BuildModelFeatureRow(services.ModelFeatureInput{Timestamp: available, Symbol: symbols[0], Candles15m: candlesFromOHLCV(source[:i+1]), Candidate: candidate, ActiveUniverse: []services.UniverseCandidateMetrics{candidate}, BTCCandles15m: candlesFromOHLCV(btc[:btcEnd])})
+		btcEnd := i + 1
+		if btcEnd > len(btcCandles) {
+			btcEnd = len(btcCandles)
+		}
+		btcStart := btcEnd - (i + 1 - startIdx)
+		if btcStart < 0 {
+			btcStart = 0
+		}
+		row := services.BuildModelFeatureRow(services.ModelFeatureInput{
+			Timestamp:      available,
+			Symbol:         symbols[0],
+			Candles15m:     sourceCandles[startIdx : i+1],
+			Candidate:      candidate,
+			ActiveUniverse: []services.UniverseCandidateMetrics{candidate},
+			BTCCandles15m:  btcCandles[btcStart:btcEnd],
+		})
 		if !row.Valid {
 			continue
 		}

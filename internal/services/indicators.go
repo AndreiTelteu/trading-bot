@@ -124,16 +124,17 @@ func CalculateMACD(closes []float64, fastPeriod, slowPeriod, signalPeriod int) M
 		return MACDResult{MACD: 0, SignalLine: 0, Histogram: 0, Signal: "neutral"}
 	}
 
-	fastEMA := calculateEMA(closes, fastPeriod)
-	slowEMA := calculateEMA(closes, slowPeriod)
-
-	macdLine := fastEMA - slowEMA
-
+	// Single-pass EMA series keep this O(n). The previous implementation rebuilt
+	// both EMAs from scratch for every index, which is O(n^2) and dominated
+	// long research backtests during feature-coverage preparation.
+	fastSeries := calculateEMASeries(closes, fastPeriod)
+	slowSeries := calculateEMASeries(closes, slowPeriod)
 	macdValues := make([]float64, len(closes))
 	for i := slowPeriod - 1; i < len(closes); i++ {
-		macdValues[i] = calculateEMA(closes[:i+1], fastPeriod) - calculateEMA(closes[:i+1], slowPeriod)
+		macdValues[i] = fastSeries[i] - slowSeries[i]
 	}
 
+	macdLine := macdValues[len(closes)-1]
 	signalLine := calculateEMA(macdValues, signalPeriod)
 	histogram := macdLine - signalLine
 
@@ -157,18 +158,30 @@ func CalculateEMA(data []float64, period int) float64 {
 }
 
 func calculateEMA(data []float64, period int) float64 {
-	if len(data) < period {
+	series := calculateEMASeries(data, period)
+	if len(series) == 0 {
 		return 0
+	}
+	return series[len(series)-1]
+}
+
+// calculateEMASeries returns one EMA value per input point using the same seed
+// and update rule as calculateEMA (seed at data[0], then recursive multiplier).
+// Returns nil when the series is shorter than period.
+func calculateEMASeries(data []float64, period int) []float64 {
+	if len(data) < period {
+		return nil
 	}
 
 	multiplier := 2.0 / float64(period+1)
+	out := make([]float64, len(data))
 	ema := data[0]
-
+	out[0] = ema
 	for i := 1; i < len(data); i++ {
 		ema = (data[i]-ema)*multiplier + ema
+		out[i] = ema
 	}
-
-	return ema
+	return out
 }
 
 func CalculateATR(candles []Candle, period int) float64 {

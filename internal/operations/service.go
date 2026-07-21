@@ -989,7 +989,10 @@ func canonicalJSONText(raw string) (string, error) {
 	return string(canonical), err
 }
 
-var stages = []string{"schema_legacy", "ledger_compare", "shared_shadow", "parity_accepted", "new_paper", "paper_observation", "research_validation", "limited_live", "legacy_removal_eligible"}
+// research_ingestion is deliberately non-capital: it permits collection and
+// manifesting of point-in-time research data from a fresh install before later
+// stages require a dataset as prerequisite evidence.
+var stages = []string{"schema_legacy", "research_ingestion", "ledger_compare", "shared_shadow", "parity_accepted", "new_paper", "paper_observation", "research_validation", "limited_live", "legacy_removal_eligible"}
 
 type TransitionRequest struct {
 	IdempotencyKey         string          `json:"idempotency_key"`
@@ -1235,6 +1238,12 @@ func validateFlagsForStage(f cutover.Flags, stage string) error {
 	if stage == "schema_legacy" || stage == "ledger_compare" {
 		if f != cutover.SafeFlags() {
 			return fmt.Errorf("legacy cutover stages require exact safe flag snapshot")
+		}
+		return nil
+	}
+	if stage == "research_ingestion" {
+		if f.LedgerAuthority != "legacy" || f.SharedEngine != "off" || f.NewBacktest != "research" || f.PointInTime != "research" || f.CandidateStrategy != "off" || f.DualRun != "off" || f.Stage07Context != "" {
+			return fmt.Errorf("research ingestion requires legacy ledger, engine off, research-only backtest/PIT flags, and no candidate or Stage 07 context")
 		}
 		return nil
 	}
@@ -1487,7 +1496,7 @@ func stageIndex(stage string) int {
 	return -1
 }
 func requiredPrerequisites(stage string) []string {
-	m := map[string][]string{"ledger_compare": {"schema_deployed"}, "shared_shadow": {"ledger_compare_clean"}, "parity_accepted": {"parity_threshold_passed"}, "new_paper": {"ledger_reconciled", "dataset_coverage", "stage07_paper"}, "paper_observation": {"paper_round_trip", "restart_idempotency"}, "research_validation": {"dataset_coverage", "backtest_reproduced"}, "limited_live": {"observation_elapsed", "validation_passed", "human_approved", "stage07_exact"}}
+	m := map[string][]string{"research_ingestion": {"schema_deployed"}, "ledger_compare": {"schema_deployed"}, "shared_shadow": {"ledger_compare_clean"}, "parity_accepted": {"parity_threshold_passed"}, "new_paper": {"ledger_reconciled", "dataset_coverage", "stage07_paper"}, "paper_observation": {"paper_round_trip", "restart_idempotency"}, "research_validation": {"dataset_coverage", "backtest_reproduced"}, "limited_live": {"observation_elapsed", "validation_passed", "human_approved", "stage07_exact"}}
 	result := append([]string(nil), m[stage]...)
 	if stageIndex(stage) > stageIndex("new_paper") {
 		result = append([]string{"ledger_reconciled"}, result...)

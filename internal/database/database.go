@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"net/url"
+	"os"
 	"strings"
 	"trading-go/internal/config"
 
@@ -251,7 +252,9 @@ func OpenRuntime(cfg *config.Config) error {
 }
 
 func openPostgres(dsn string, cfg *config.Config) (*gorm.DB, error) {
-	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{Logger: logger.Default.LogMode(logger.Info)})
+	// GORM_LOG_LEVEL: silent|error|warn|info (default info). CLI backtests set
+	// silent so multi-hour PIT loads do not fill the disk with SQL tees.
+	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{Logger: logger.Default.LogMode(gormLogLevel())})
 	if err != nil {
 		return nil, err
 	}
@@ -270,6 +273,21 @@ func openPostgres(dsn string, cfg *config.Config) (*gorm.DB, error) {
 		return nil, err
 	}
 	return db, nil
+}
+
+func gormLogLevel() logger.LogLevel {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("GORM_LOG_LEVEL"))) {
+	case "silent":
+		return logger.Silent
+	case "error":
+		return logger.Error
+	case "warn", "warning":
+		return logger.Warn
+	case "info", "":
+		return logger.Info
+	default:
+		return logger.Info
+	}
 }
 
 func closeDB(db *gorm.DB) {
