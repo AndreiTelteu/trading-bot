@@ -1619,6 +1619,23 @@ func RunMigrations(db *gorm.DB) error {
 			},
 			Rollback: func(tx *gorm.DB) error { return fmt.Errorf("bootstrap transition sentinel is intentionally retained") },
 		},
+		{
+			ID: "202607190111_historical_bars_manifest_order_lookup",
+			Migrate: func(tx *gorm.DB) error {
+				// The point-in-time manifest and universe builders read one exact
+				// dataset/symbol/role/timeframe series in open-time order. Keep id
+				// in the key to satisfy their deterministic secondary ordering
+				// without an external sort. retrieved_at remains a post-index
+				// predicate because its upper bound varies by manifest cutoff.
+				return tx.Exec(`
+					CREATE INDEX IF NOT EXISTS idx_historical_bars_manifest_order_lookup
+					ON historical_bars(dataset_version,exchange_symbol_id,role,timeframe,open_time,id);
+				`).Error
+			},
+			Rollback: func(tx *gorm.DB) error {
+				return Stage04RollbackError()
+			},
+		},
 	})
 
 	return m.Migrate()

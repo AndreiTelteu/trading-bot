@@ -55,12 +55,6 @@ services:
     depends_on:
       bootstrap:
         condition: service_completed_successfully
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.trading-backend.rule=Host(`trading.local`)"
-      - "traefik.http.routers.trading-backend.entrypoints=websecure,web"
-      - "traefik.http.routers.trading-backend.tls=true"
-      - "traefik.http.services.trading-backend.loadbalancer.server.port=5001"
     volumes:
       - ./:/app
     environment:
@@ -89,10 +83,7 @@ services:
       - ledger_database_url
       - parity_database_url
     ports:
-      - 5001:5001
-    networks:
-      - default
-      - pub
+      - 0.0.0.0:5001:5001
 
   postgres-test:
     image: postgres:16-alpine
@@ -116,10 +107,6 @@ services:
 volumes:
   postgres_data:
   postgres_test_data:
-
-networks:
-  pub:
-    external: true
 
 secrets:
   postgres_password:
