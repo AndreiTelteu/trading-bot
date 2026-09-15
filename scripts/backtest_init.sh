@@ -18,6 +18,8 @@ SYMBOLS_CSV="${BACKTEST_INIT_SYMBOLS:-BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT}"
 TIMEFRAME="${BACKTEST_INIT_TIMEFRAME:-15m}"
 RATE_LIMIT="${BACKTEST_INIT_RATE_LIMIT:-300ms}"
 WARMUP_DAYS="${BACKTEST_INIT_WARMUP_DAYS:-35}"
+FEE_BPS="${BACKTEST_INIT_FEE_BPS:-10}"
+SLIPPAGE_BPS="${BACKTEST_INIT_SLIPPAGE_BPS:-5}"
 WARMUP_START="$(python3 - "$START" "$WARMUP_DAYS" <<'PY'
 from datetime import datetime, timedelta, timezone
 import sys
@@ -444,7 +446,7 @@ status "Backtest code revision: $CODE_REVISION"
 docker compose run --rm --no-deps \
   -e "BACKTEST_CODE_REVISION=$CODE_REVISION" \
   -e "GORM_LOG_LEVEL=silent" \
-  bootstrap -c "go run ./cmd/backtest" 2>&1 | tee "$BACKTEST_JSON.raw"
+  bootstrap -c "go run ./cmd/backtest -symbols '$SYMBOLS_CSV' -start '$START' -end '$END' -fee-bps '$FEE_BPS' -slippage-bps '$SLIPPAGE_BPS' -universe-mode dynamic_replay" 2>&1 | tee "$BACKTEST_JSON.raw"
 grep '^{' "$BACKTEST_JSON.raw" | tail -1 > "$BACKTEST_JSON"
 rm -f "$BACKTEST_JSON.raw"
 
