@@ -44,6 +44,7 @@ Ensure every historical decision sees only assets, metadata, liquidity, and bars
 - [x] Include assets later delisted when they were tradable historically.
 - [x] Avoid selecting candidates from the exchange's current symbol list for old periods.
 - [x] Make snapshot generation idempotent and resumable.
+- [x] Preload immutable range inputs once and reuse binary-searched in-memory windows across snapshots, instead of revalidating and reloading overlapping history per timestamp.
 
 ### Backfill tooling
 
@@ -68,6 +69,7 @@ Ensure every historical decision sees only assets, metadata, liquidity, and bars
 - [x] Duplicate bars are rejected or deterministically resolved with provenance.
 - [x] Missing bars appear in coverage diagnostics.
 - [x] Rebuilding identical inputs produces the same manifest hash and snapshots.
+- [x] Optimized range generation remains semantically identical to the single-snapshot reference path.
 - [x] Interrupted backfill resumes without duplicates.
 - [x] Backtest refuses incompatible or insufficient manifests.
 - [x] Full `go test ./...` passes.

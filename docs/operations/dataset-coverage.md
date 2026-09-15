@@ -20,3 +20,5 @@ After reviewing provenance/row bounds, repeat with `-dry-run=false`, build a man
 ```
 
 Build universe ranges first with `-dry-run=true`; supply the actual benchmark symbol/asset IDs and policy version. Missing benchmark, constraints, bars, or incomplete membership is a coverage failure, not an empty valid strategy result. Corrections require a new dataset version/manifest; never overwrite immutable history.
+
+The range command validates the immutable manifest once, bulk-loads only the required decision/benchmark series for the bounded range plus the 90-day lookback, and reuses binary-searched in-memory windows for each snapshot. Keep operational ranges bounded to control peak memory; checkpoint resume starts loading from the first unresolved timestamp rather than repeating the completed prefix.

@@ -25,6 +25,11 @@ type UniverseBuildRequest struct {
 	BenchmarkTradable  bool
 }
 
+type universeBuildItem struct {
+	symbol database.ExchangeSymbol
+	metric services.UniverseCandidateMetrics
+}
+
 type UniverseBuildResult struct {
 	Snapshot database.UniverseSnapshot `json:"snapshot"`
 	Members  []database.UniverseMember `json:"members"`
@@ -81,11 +86,7 @@ func BuildUniverseSnapshot(db *gorm.DB, request UniverseBuildRequest) (UniverseB
 			benchmarkHigher = trendUp(hourly, 50, 200)
 		}
 	}
-	type item struct {
-		symbol database.ExchangeSymbol
-		metric services.UniverseCandidateMetrics
-	}
-	items := []item{}
+	items := []universeBuildItem{}
 	candidateIDs := []string{}
 	assetSeen := map[string]bool{}
 	for _, symbol := range symbols {
@@ -105,7 +106,7 @@ func BuildUniverseSnapshot(db *gorm.DB, request UniverseBuildRequest) (UniverseB
 		if dErr != nil || hErr != nil || !completeBarsAsOf(daily, effectiveStart, request.EffectiveAt, mustDuration(request.DecisionTimeframe)) || !completeBarsAsOf(hourly, effectiveStart, request.EffectiveAt, mustDuration(request.LiquidityTimeframe)) {
 			metric.RejectionReason = "coverage_incomplete"
 			coverageComplete = false
-			items = append(items, item{symbol, metric})
+			items = append(items, universeBuildItem{symbol, metric})
 			continue
 		}
 		last := daily[len(daily)-1].Close
@@ -116,8 +117,12 @@ func BuildUniverseSnapshot(db *gorm.DB, request UniverseBuildRequest) (UniverseB
 		if rejection := services.UniverseHardFilterReason(metric, request.Policy); rejection != "" {
 			metric.RejectionReason = rejection
 		}
-		items = append(items, item{symbol, metric})
+		items = append(items, universeBuildItem{symbol, metric})
 	}
+	return persistUniverseBuild(db, request, manifest, report, benchmarkHigher, benchmarkDaily, coverageComplete, candidateIDs, items)
+}
+
+func persistUniverseBuild(db *gorm.DB, request UniverseBuildRequest, manifest Manifest, report CoverageReport, benchmarkHigher, benchmarkDaily, coverageComplete bool, candidateIDs []string, items []universeBuildItem) (UniverseBuildResult, error) {
 	accepted := []services.UniverseCandidateMetrics{}
 	for _, it := range items {
 		if it.metric.RejectionReason == "" {
@@ -183,7 +188,7 @@ func BuildUniverseSnapshot(db *gorm.DB, request UniverseBuildRequest) (UniverseB
 	coverageJSON := EncodeJSON(report)
 	manifestID := manifest.ID
 	snapshot := database.UniverseSnapshot{SnapshotTime: request.EffectiveAt.UTC(), PolicyVersion: request.PolicyVersion, DatasetManifestID: &manifestID, CoverageState: state, CoverageJSON: coverageJSON, BenchmarkAssetID: stringPointer(request.BenchmarkAssetID), BenchmarkSymbolID: stringPointer(request.BenchmarkSymbolID), CandidatePoolJSON: EncodeJSON(candidateIDs), RebalanceInterval: request.Policy.RebalanceIntervalLabel, RegimeState: regime, BreadthRatio: breadth, EligibleCount: len(accepted), CandidateCount: len(items), RankedCount: len(ranked), ShortlistCount: len(shortlist)}
-	err = db.Transaction(func(tx *gorm.DB) error {
+	err := db.Transaction(func(tx *gorm.DB) error {
 		var existing database.UniverseSnapshot
 		find := tx.Where("snapshot_time=? AND policy_version=? AND dataset_manifest_id=?", snapshot.SnapshotTime, snapshot.PolicyVersion, manifestID).Preload("Members").First(&existing).Error
 		if find == nil {
@@ -268,14 +273,21 @@ func BuildUniverseSnapshotRange(db *gorm.DB, request UniverseRangeRequest) (Univ
 	} else if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 		return result, err
 	}
+	var builder *universeRangeBuilder
+	if cursor.Before(request.End) {
+		optimized := request
+		optimized.Start = cursor
+		builder, err = newUniverseRangeBuilder(db, optimized)
+		if err != nil {
+			return result, err
+		}
+	}
 	for cursor.Before(request.End) {
-		build := request.Build
-		build.EffectiveAt = cursor
 		if request.DryRun {
 			rollback := errors.New("universe range dry-run rollback")
 			var buildErr error
 			err = db.Transaction(func(tx *gorm.DB) error {
-				_, buildErr = BuildUniverseSnapshot(tx, build)
+				_, buildErr = builder.build(tx, cursor)
 				if buildErr != nil {
 					return buildErr
 				}
@@ -286,7 +298,7 @@ func BuildUniverseSnapshotRange(db *gorm.DB, request UniverseRangeRequest) (Univ
 				return result, err
 			}
 		} else {
-			if _, err := BuildUniverseSnapshot(db, build); err != nil {
+			if _, err := builder.build(db, cursor); err != nil {
 				result.Unresolved = append(result.Unresolved, canonicalTime(cursor)+":"+err.Error())
 				return result, err
 			}

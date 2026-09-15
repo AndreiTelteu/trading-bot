@@ -192,6 +192,27 @@ func TestManifestGapsAndUniverseNoFutureRankOrBenchmarkTrade(t *testing.T) {
 	if second.Snapshot.ID != first.Snapshot.ID || EncodeJSON(second.Members) != EncodeJSON(first.Members) {
 		t.Fatalf("snapshot not deterministic/idempotent\nfirst=%s\nsecond=%s\nfirst_snapshot=%+v\nsecond_snapshot=%+v", EncodeJSON(first.Members), EncodeJSON(second.Members), first.Snapshot, second.Snapshot)
 	}
+
+	// The range builder preloads immutable inputs once. Its result must remain
+	// semantically identical to the single-snapshot reference implementation.
+	optimized, err := BuildUniverseSnapshotRange(db, UniverseRangeRequest{Start: snapAt, End: snapAt.Add(24 * time.Hour), Step: 24 * time.Hour, Build: UniverseBuildRequest{ManifestID: manifest.ID, PolicyVersion: "optimized-p1", Policy: policy, BenchmarkSymbolID: "btc-s", BenchmarkAssetID: "btc"}})
+	if err != nil || optimized.Built != 1 {
+		t.Fatalf("optimized range=%+v err=%v", optimized, err)
+	}
+	var optimizedSnapshot database.UniverseSnapshot
+	if err := db.Where("snapshot_time=? AND policy_version=? AND dataset_manifest_id=?", snapAt, "optimized-p1", manifest.ID).First(&optimizedSnapshot).Error; err != nil {
+		t.Fatal(err)
+	}
+	var optimizedMembers []database.UniverseMember
+	if err := db.Where("universe_snapshot_id=?", optimizedSnapshot.ID).Order("rank_score DESC, symbol ASC").Find(&optimizedMembers).Error; err != nil {
+		t.Fatal(err)
+	}
+	if got, want := universeMemberEvidence(optimizedMembers), universeMemberEvidence(first.Members); got != want {
+		t.Fatalf("optimized builder changed PIT evidence\noptimized=%s\nreference=%s", got, want)
+	}
+	if optimizedSnapshot.RegimeState != first.Snapshot.RegimeState || optimizedSnapshot.BreadthRatio != first.Snapshot.BreadthRatio || optimizedSnapshot.CandidatePoolJSON != first.Snapshot.CandidatePoolJSON {
+		t.Fatalf("optimized snapshot changed selection: optimized=%+v reference=%+v", optimizedSnapshot, first.Snapshot)
+	}
 	var snapshotCount int64
 	db.Model(&database.UniverseSnapshot{}).Count(&snapshotCount)
 	dryRange, err := BuildUniverseSnapshotRange(db, UniverseRangeRequest{Start: snapAt, End: snapAt.Add(24 * time.Hour), Step: 24 * time.Hour, DryRun: true, Build: UniverseBuildRequest{ManifestID: manifest.ID, PolicyVersion: "p1", Policy: policy, BenchmarkSymbolID: "btc-s", BenchmarkAssetID: "btc"}})
@@ -225,6 +246,23 @@ func TestManifestGapsAndUniverseNoFutureRankOrBenchmarkTrade(t *testing.T) {
 	if gapManifest.Series[0].Gaps != 1 || gapManifest.Series[0].Rows != 2 {
 		t.Fatalf("gap diagnostic=%+v", gapManifest.Series[0])
 	}
+}
+
+func universeMemberEvidence(members []database.UniverseMember) string {
+	type evidence struct {
+		Symbol, Stage, Rejection string
+		Rank                     int
+		LastPrice, RankScore     float64
+	}
+	values := make([]evidence, 0, len(members))
+	for _, member := range members {
+		rejection := ""
+		if member.RejectionReason != nil {
+			rejection = *member.RejectionReason
+		}
+		values = append(values, evidence{member.Symbol, member.Stage, rejection, member.Rank, member.LastPrice, member.RankScore})
+	}
+	return EncodeJSON(values)
 }
 
 func bars(start time.Time, count int, step time.Duration, price, volume float64) []Bar {
