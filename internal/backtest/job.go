@@ -238,6 +238,9 @@ func runBacktestJob(jobID uint) {
 	settingsSnapshot := services.GetAllSettings()
 	config, series, err := prepareBacktestInputsWithSettings(settingsSnapshot)
 	timers.PrepMS = prepClock.ms()
+	if err == nil {
+		err = ValidateValidationWindow(config)
+	}
 	if err != nil {
 		if pointintime.IsCoverageError(err) {
 			coverage := CoverageReport{SchemaVersion: CoverageSchemaVersion, PolicyVersion: "point-in-time-manifest", Passed: false, Reasons: []CoverageReason{CoverageManifestIncompatible}, Diagnostics: []CoverageDiagnostic{{Dataset: "manifest", Status: "failed", Reason: CoverageManifestIncompatible}}}
@@ -323,12 +326,7 @@ func runBacktestJob(jobID uint) {
 		emitProgress(StderrProgressWriter(), update)
 	})
 	validationClock := startPhaseClock()
-	validation, err := RunValidation(config, series,
-		getSettingInt(settingsSnapshot, "validation_train_months", 12),
-		getSettingInt(settingsSnapshot, "validation_test_months", 3),
-		getSettingInt(settingsSnapshot, "validation_bootstrap_iterations", 500),
-		validationProgress,
-	)
+	validation, err := RunValidation(config, series, validationProgress)
 	timers.ValidationMS = validationClock.ms()
 	timers.ValidationWindowMS = append([]int64(nil), validation.WindowDurationsMS...)
 	if err != nil {
@@ -338,23 +336,7 @@ func runBacktestJob(jobID uint) {
 
 	finishedAt := time.Now()
 	timers.TotalMS = totalClock.ms()
-	summary := BacktestRunSummary{
-		JobID:             jobID,
-		StartedAt:         startedAt,
-		FinishedAt:        finishedAt,
-		BacktestMode:      config.BacktestMode,
-		ModelVersion:      config.Governance.ModelVersion,
-		PolicyVersion:     config.Governance.PolicyVersions.CompositeVersion,
-		UniverseMode:      config.UniverseMode,
-		PolicyContext:     config.Governance,
-		CandidateSymbols:  append([]string(nil), config.Symbols...),
-		DatasetManifestID: config.DatasetManifestID,
-		SettingsSnapshot:  settingsSnapshot,
-		Baseline:          baselineResult,
-		VolSizing:         volResult,
-		Validation:        validation,
-		PhaseTimers:       timers,
-	}
+	summary := buildBacktestRunSummary(jobID, startedAt, finishedAt, config, settingsSnapshot, baselineResult, volResult, validation, timers)
 	if experimentID, err := RegisterExperimentRun(jobID, &summary); err == nil {
 		summary.ExperimentID = experimentID
 		summary.PolicyContext.ExperimentID = experimentID
@@ -379,6 +361,26 @@ func runBacktestJob(jobID uint) {
 	logActivity("system", "Backtest completed", fmt.Sprintf("Job %d completed", jobID))
 }
 
+func buildBacktestRunSummary(jobID uint, startedAt, finishedAt time.Time, config BacktestConfig, settings map[string]string, baseline, vol BacktestResult, validation ValidationSummary, timers PhaseTimers) BacktestRunSummary {
+	return BacktestRunSummary{
+		JobID:             jobID,
+		StartedAt:         startedAt,
+		FinishedAt:        finishedAt,
+		BacktestMode:      config.BacktestMode,
+		ModelVersion:      config.Governance.ModelVersion,
+		PolicyVersion:     config.Governance.PolicyVersions.CompositeVersion,
+		UniverseMode:      config.UniverseMode,
+		PolicyContext:     config.Governance,
+		CandidateSymbols:  append([]string(nil), config.Symbols...),
+		DatasetManifestID: config.DatasetManifestID,
+		SettingsSnapshot:  settings,
+		Baseline:          baseline,
+		VolSizing:         vol,
+		Validation:        validation,
+		PhaseTimers:       timers,
+	}
+}
+
 func RunBacktestSync() (BacktestRunSummary, error) {
 	return RunBacktestSyncWithOverrides(nil)
 }
@@ -401,6 +403,9 @@ func RunBacktestSyncWithOverrides(overrides map[string]string) (BacktestRunSumma
 	config, series, err := prepareBacktestInputsWithSettings(settings)
 	timers.PrepMS = prepClock.ms()
 	if err != nil {
+		return BacktestRunSummary{}, err
+	}
+	if err := ValidateValidationWindow(config); err != nil {
 		return BacktestRunSummary{}, err
 	}
 	config.Progress = progress
@@ -439,37 +444,15 @@ func RunBacktestSyncWithOverrides(overrides map[string]string) (BacktestRunSumma
 
 	emitProgress(progress, ProgressUpdate{Phase: "validation", Message: "validation_start", Fraction: 0.7, ElapsedMS: totalClock.ms(), RSSBytes: currentRSSBytes()})
 	validationClock := startPhaseClock()
-	validation, err := RunValidation(config, series,
-		getSettingInt(settings, "validation_train_months", 12),
-		getSettingInt(settings, "validation_test_months", 3),
-		getSettingInt(settings, "validation_bootstrap_iterations", 500),
-		progress,
-	)
+	validation, err := RunValidation(config, series, progress)
 	timers.ValidationMS = validationClock.ms()
 	timers.ValidationWindowMS = append([]int64(nil), validation.WindowDurationsMS...)
 	if err != nil {
 		return BacktestRunSummary{}, err
 	}
-
 	finishedAt := time.Now()
 	timers.TotalMS = totalClock.ms()
-	summary := BacktestRunSummary{
-		JobID:             0,
-		StartedAt:         startedAt,
-		FinishedAt:        finishedAt,
-		BacktestMode:      config.BacktestMode,
-		ModelVersion:      config.Governance.ModelVersion,
-		PolicyVersion:     config.Governance.PolicyVersions.CompositeVersion,
-		UniverseMode:      config.UniverseMode,
-		PolicyContext:     config.Governance,
-		CandidateSymbols:  append([]string(nil), config.Symbols...),
-		DatasetManifestID: config.DatasetManifestID,
-		SettingsSnapshot:  settings,
-		Baseline:          baselineResult,
-		VolSizing:         volResult,
-		Validation:        validation,
-		PhaseTimers:       timers,
-	}
+	summary := buildBacktestRunSummary(0, startedAt, finishedAt, config, settings, baselineResult, volResult, validation, timers)
 
 	if experimentID, err := RegisterExperimentRun(0, &summary); err == nil {
 		summary.ExperimentID = experimentID
@@ -906,12 +889,15 @@ func prepareBacktestInputsWithSettings(settings map[string]string) (BacktestConf
 	}
 
 	config := BacktestConfig{
-		EngineMode:      engineMode,
-		CodeRevision:    revision,
-		ConfigVersion:   getSettingString(settings, "backtest_config_version", "backtest-config-v1"),
-		StrategyVersion: "legacy-rule-strategy-v1",
-		Seed:            int64(getSettingInt(settings, "backtest_seed", 0)),
-		AccountID:       "backtest", SettlementCurrency: getSettingString(settings, "backtest_settlement_currency", "USDT"), VenueID: getSettingString(settings, "backtest_venue_id", "binance"),
+		EngineMode:                    engineMode,
+		CodeRevision:                  revision,
+		ConfigVersion:                 getSettingString(settings, "backtest_config_version", "backtest-config-v1"),
+		StrategyVersion:               "legacy-rule-strategy-v1",
+		Seed:                          int64(getSettingInt(settings, "backtest_seed", 0)),
+		ValidationTrainMonths:         getSettingInt(settings, "validation_train_months", 12),
+		ValidationTestMonths:          getSettingInt(settings, "validation_test_months", 3),
+		ValidationBootstrapIterations: getSettingInt(settings, "validation_bootstrap_iterations", 500),
+		AccountID:                     "backtest", SettlementCurrency: getSettingString(settings, "backtest_settlement_currency", "USDT"), VenueID: getSettingString(settings, "backtest_venue_id", "binance"),
 		BacktestMode:            resolveBacktestMode(universeMode, modelArtifact != nil),
 		ExecutionSeries:         executionSeries,
 		ExecutionSeriesRequired: fetchExecution,
@@ -1202,7 +1188,7 @@ func preparePointInTimeBacktestInputs(settings map[string]string) (BacktestConfi
 	for _, s := range validated.Series {
 		auditSeries = append(auditSeries, DatasetSeriesIdentity{ExchangeSymbolID: s.ExchangeSymbolID, SymbolVersion: s.SymbolVersion, AssetID: s.AssetID, Ticker: s.Ticker, Role: s.Role, Timeframe: s.Timeframe, ListedAt: s.ListedAt, DelistedAt: s.DelistedAt, SymbolAvailableAt: s.SymbolAvailableAt, AssetAvailableAt: s.AssetAvailableAt, Rows: s.Rows, SeriesHash: s.SeriesHash, TradabilityRows: s.TradabilityRows, TradabilityHash: s.TradabilityHash, ConstraintRows: s.ConstraintRows, ConstraintHash: s.ConstraintHash})
 	}
-	config := BacktestConfig{EngineMode: engineMode, CodeRevision: revision, ConfigVersion: getSettingString(settings, "backtest_config_version", "backtest-config-v1"), StrategyVersion: "legacy-rule-strategy-v1", Seed: int64(getSettingInt(settings, "backtest_seed", 0)), AccountID: "backtest", SettlementCurrency: getSettingString(settings, "backtest_settlement_currency", "USDT"), VenueID: getSettingString(settings, "backtest_venue_id", "binance"), BacktestMode: resolveBacktestMode(UniverseDynamicReplay, modelArtifact != nil), ExecutionSeries: execution, ExecutionSeriesRequired: fetchExecution, ExecutionTimeframe: "1m", ExecutionTimeframeMins: 1, BenchmarkSymbol: benchmark, BenchmarkSeries: benchmarkBars, BenchmarkRequired: true, ConstraintsAvailable: constraintsAvailable, Symbols: symbols, UniverseMode: UniverseDynamicReplay, UniversePolicy: policy, Governance: governance, Start: start, End: end, IndicatorConfig: services.GetIndicatorSettings(), IndicatorWeights: services.GetIndicatorWeights(), Timeframe: "15m", TimeframeMinutes: 15, InitialBalance: 1000, FeeBps: getSettingFloat(settings, "backtest_fee_bps", 10), SlippageBps: getSettingFloat(settings, "backtest_slippage_bps", 5), ModelArtifact: modelArtifact, ModelPolicy: services.GetModelSelectionPolicy(settings), MaxPositions: getSettingInt(settings, "max_positions", 5), TimeStopBars: getSettingInt(settings, "time_stop_bars", 0), EntryPercent: getSettingFloat(settings, "entry_percent", 5), StopLossPercent: getSettingFloat(settings, "stop_loss_percent", 5), TakeProfitPercent: getSettingFloat(settings, "take_profit_percent", 30), RiskPerTrade: getSettingFloat(settings, "risk_per_trade", .5), StopMult: getSettingFloat(settings, "stop_mult", 1.5), TpMult: getSettingFloat(settings, "tp_mult", 3), MaxPositionValue: getSettingFloat(settings, "max_position_value", 0), AtrPeriod: getSettingInt(settings, "atr_trailing_period", 14), AtrTrailingEnabled: getSettingBool(settings, "atr_trailing_enabled", false), AtrTrailingMult: getSettingFloat(settings, "atr_trailing_mult", 1), AtrAnnualizationEnabled: getSettingBool(settings, "atr_annualization_enabled", false), AtrAnnualizationDays: getSettingInt(settings, "atr_annualization_days", 365), BuyOnlyStrong: getSettingBool(settings, "buy_only_strong", true), MinConfidenceToBuy: getSettingFloat(settings, "min_confidence_to_buy", 4), SellOnSignal: getSettingBool(settings, "sell_on_signal", true), MinConfidenceToSell: getSettingFloat(settings, "min_confidence_to_sell", 3.5), AllowSellAtLoss: getSettingBool(settings, "allow_sell_at_loss", false), TrailingStopEnabled: getSettingBool(settings, "trailing_stop_enabled", false), TrailingStopPercent: getSettingFloat(settings, "trailing_stop_percent", 10), ExecutionPolicy: ExecutionPolicy{Version: "backtest-execution-v1", Timing: ExecutionNextExecutable, Liquidity: LiquidityFullFillOHLCV, CostVersion: "backtest-cost-v1", Constraints: map[string]SymbolConstraints{}}, DatasetManifestID: validated.ID, DatasetManifestValidated: true, DatasetManifestRequired: true, DatasetLimitations: validated.Limitations, SymbolIdentities: identities, EconomicAssetIdentities: economicIdentities, SymbolLifecycles: lifecycles, ConstraintResolver: resolver, DatasetKnowledgeCutoff: validated.KnowledgeCutoff, DatasetSeries: auditSeries}
+	config := BacktestConfig{EngineMode: engineMode, CodeRevision: revision, ConfigVersion: getSettingString(settings, "backtest_config_version", "backtest-config-v1"), StrategyVersion: "legacy-rule-strategy-v1", Seed: int64(getSettingInt(settings, "backtest_seed", 0)), ValidationTrainMonths: getSettingInt(settings, "validation_train_months", 12), ValidationTestMonths: getSettingInt(settings, "validation_test_months", 3), ValidationBootstrapIterations: getSettingInt(settings, "validation_bootstrap_iterations", 500), AccountID: "backtest", SettlementCurrency: getSettingString(settings, "backtest_settlement_currency", "USDT"), VenueID: getSettingString(settings, "backtest_venue_id", "binance"), BacktestMode: resolveBacktestMode(UniverseDynamicReplay, modelArtifact != nil), ExecutionSeries: execution, ExecutionSeriesRequired: fetchExecution, ExecutionTimeframe: "1m", ExecutionTimeframeMins: 1, BenchmarkSymbol: benchmark, BenchmarkSeries: benchmarkBars, BenchmarkRequired: true, ConstraintsAvailable: constraintsAvailable, Symbols: symbols, UniverseMode: UniverseDynamicReplay, UniversePolicy: policy, Governance: governance, Start: start, End: end, IndicatorConfig: services.GetIndicatorSettings(), IndicatorWeights: services.GetIndicatorWeights(), Timeframe: "15m", TimeframeMinutes: 15, InitialBalance: 1000, FeeBps: getSettingFloat(settings, "backtest_fee_bps", 10), SlippageBps: getSettingFloat(settings, "backtest_slippage_bps", 5), ModelArtifact: modelArtifact, ModelPolicy: services.GetModelSelectionPolicy(settings), MaxPositions: getSettingInt(settings, "max_positions", 5), TimeStopBars: getSettingInt(settings, "time_stop_bars", 0), EntryPercent: getSettingFloat(settings, "entry_percent", 5), StopLossPercent: getSettingFloat(settings, "stop_loss_percent", 5), TakeProfitPercent: getSettingFloat(settings, "take_profit_percent", 30), RiskPerTrade: getSettingFloat(settings, "risk_per_trade", .5), StopMult: getSettingFloat(settings, "stop_mult", 1.5), TpMult: getSettingFloat(settings, "tp_mult", 3), MaxPositionValue: getSettingFloat(settings, "max_position_value", 0), AtrPeriod: getSettingInt(settings, "atr_trailing_period", 14), AtrTrailingEnabled: getSettingBool(settings, "atr_trailing_enabled", false), AtrTrailingMult: getSettingFloat(settings, "atr_trailing_mult", 1), AtrAnnualizationEnabled: getSettingBool(settings, "atr_annualization_enabled", false), AtrAnnualizationDays: getSettingInt(settings, "atr_annualization_days", 365), BuyOnlyStrong: getSettingBool(settings, "buy_only_strong", true), MinConfidenceToBuy: getSettingFloat(settings, "min_confidence_to_buy", 4), SellOnSignal: getSettingBool(settings, "sell_on_signal", true), MinConfidenceToSell: getSettingFloat(settings, "min_confidence_to_sell", 3.5), AllowSellAtLoss: getSettingBool(settings, "allow_sell_at_loss", false), TrailingStopEnabled: getSettingBool(settings, "trailing_stop_enabled", false), TrailingStopPercent: getSettingFloat(settings, "trailing_stop_percent", 10), ExecutionPolicy: ExecutionPolicy{Version: "backtest-execution-v1", Timing: ExecutionNextExecutable, Liquidity: LiquidityFullFillOHLCV, CostVersion: "backtest-cost-v1", Constraints: map[string]SymbolConstraints{}}, DatasetManifestID: validated.ID, DatasetManifestValidated: true, DatasetManifestRequired: true, DatasetLimitations: validated.Limitations, SymbolIdentities: identities, EconomicAssetIdentities: economicIdentities, SymbolLifecycles: lifecycles, ConstraintResolver: resolver, DatasetKnowledgeCutoff: validated.KnowledgeCutoff, DatasetSeries: auditSeries}
 	if modelArtifact != nil {
 		for _, feature := range modelArtifact.Features {
 			config.CoveragePolicy.RequiredModelFeatures = append(config.CoveragePolicy.RequiredModelFeatures, feature.Name)

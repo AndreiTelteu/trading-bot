@@ -20,6 +20,9 @@ RATE_LIMIT="${BACKTEST_INIT_RATE_LIMIT:-300ms}"
 WARMUP_DAYS="${BACKTEST_INIT_WARMUP_DAYS:-35}"
 FEE_BPS="${BACKTEST_INIT_FEE_BPS:-10}"
 SLIPPAGE_BPS="${BACKTEST_INIT_SLIPPAGE_BPS:-5}"
+VALIDATION_TRAIN_MONTHS="${BACKTEST_INIT_VALIDATION_TRAIN_MONTHS:-12}"
+VALIDATION_TEST_MONTHS="${BACKTEST_INIT_VALIDATION_TEST_MONTHS:-3}"
+VALIDATION_BOOTSTRAP_ITERATIONS="${BACKTEST_INIT_VALIDATION_BOOTSTRAP_ITERATIONS:-500}"
 WARMUP_START="$(python3 - "$START" "$WARMUP_DAYS" <<'PY'
 from datetime import datetime, timedelta, timezone
 import sys
@@ -36,6 +39,36 @@ exec > >(tee -a "$LOG") 2>&1
 
 status() { printf '[%s] %s\n' "$(date -u +%FT%TZ)" "$*"; }
 die() { status "ERROR: $*"; exit 1; }
+
+validate_walk_forward_interval() {
+  python3 - "$START" "$END" "$VALIDATION_TRAIN_MONTHS" "$VALIDATION_TEST_MONTHS" <<'PY'
+from datetime import datetime
+import calendar
+import sys
+
+def parse(value):
+    return datetime.fromisoformat(value.replace('Z', '+00:00'))
+
+def add_months(value, months):
+    index = value.month - 1 + months
+    year = value.year + index // 12
+    month = index % 12 + 1
+    day = min(value.day, calendar.monthrange(year, month)[1])
+    return value.replace(year=year, month=month, day=day)
+
+start, end = parse(sys.argv[1]), parse(sys.argv[2])
+train, test = int(sys.argv[3]), int(sys.argv[4])
+if train <= 0 or test <= 0:
+    raise SystemExit('validation train/test months must be positive')
+minimum_end = add_months(start, train + test)
+if end < minimum_end:
+    raise SystemExit(
+        f'evaluation interval [{sys.argv[1]},{sys.argv[2]}) cannot fit '
+        f'{train} training months plus {test} test months; '
+        f'end must be at or after {minimum_end.isoformat().replace("+00:00", "Z")}'
+    )
+PY
+}
 
 on_error() {
   local code=$?
@@ -182,6 +215,11 @@ fi
 
 status "Run directory: $RUN_DIR"
 status "Dataset=$DATASET_VERSION evaluation=[$START,$END) warmup=[$WARMUP_START,$START) timeframe=$TIMEFRAME symbols=$SYMBOLS_CSV"
+status "Validation=train:${VALIDATION_TRAIN_MONTHS}m test:${VALIDATION_TEST_MONTHS}m bootstrap:${VALIDATION_BOOTSTRAP_ITERATIONS}"
+if ! validation_error="$(validate_walk_forward_interval 2>&1)"; then
+  die "Validation preflight failed: $validation_error"
+fi
+status "Validation preflight passed before dataset ingestion and replay"
 
 METADATA="$RUN_DIR/binance_metadata.json"
 CONTAINER_METADATA="/app/${METADATA#"$ROOT"/}"
@@ -446,7 +484,7 @@ status "Backtest code revision: $CODE_REVISION"
 docker compose run --rm --no-deps \
   -e "BACKTEST_CODE_REVISION=$CODE_REVISION" \
   -e "GORM_LOG_LEVEL=silent" \
-  bootstrap -c "go run ./cmd/backtest -symbols '$SYMBOLS_CSV' -start '$START' -end '$END' -fee-bps '$FEE_BPS' -slippage-bps '$SLIPPAGE_BPS' -universe-mode dynamic_replay" 2>&1 | tee "$BACKTEST_JSON.raw"
+  bootstrap -c "go run ./cmd/backtest -symbols '$SYMBOLS_CSV' -start '$START' -end '$END' -fee-bps '$FEE_BPS' -slippage-bps '$SLIPPAGE_BPS' -universe-mode dynamic_replay -validation-train-months '$VALIDATION_TRAIN_MONTHS' -validation-test-months '$VALIDATION_TEST_MONTHS' -validation-bootstrap-iterations '$VALIDATION_BOOTSTRAP_ITERATIONS'" 2>&1 | tee "$BACKTEST_JSON.raw"
 grep '^{' "$BACKTEST_JSON.raw" | tail -1 > "$BACKTEST_JSON"
 rm -f "$BACKTEST_JSON.raw"
 

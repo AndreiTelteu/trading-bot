@@ -61,6 +61,9 @@ func main() {
 	targetGross := flag.String("target-gross", "1", "normalized Stage 05 gross exposure decimal")
 	maxNet := flag.String("max-net", "1", "normalized Stage 05 maximum net exposure decimal")
 	finalPolicy := flag.String("final-policy", "liquidate", "liquidate or mark_to_market")
+	validationTrainMonths := flag.Int("validation-train-months", -1, "walk-forward training months (default: persisted setting, normally 12)")
+	validationTestMonths := flag.Int("validation-test-months", -1, "walk-forward test months (default: persisted setting, normally 3)")
+	validationBootstrapIterations := flag.Int("validation-bootstrap-iterations", -1, "bootstrap iterations (default: persisted setting, normally 500)")
 	flag.Parse()
 
 	overrides := map[string]string{}
@@ -81,6 +84,15 @@ func main() {
 	}
 	if *universeMode != "" {
 		overrides["backtest_universe_mode"] = *universeMode
+	}
+	if *validationTrainMonths >= 0 {
+		overrides["validation_train_months"] = strconv.Itoa(*validationTrainMonths)
+	}
+	if *validationTestMonths >= 0 {
+		overrides["validation_test_months"] = strconv.Itoa(*validationTestMonths)
+	}
+	if *validationBootstrapIterations >= 0 {
+		overrides["validation_bootstrap_iterations"] = strconv.Itoa(*validationBootstrapIterations)
 	}
 
 	if *strategyID != "" {

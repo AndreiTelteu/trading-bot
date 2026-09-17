@@ -106,6 +106,9 @@ type BacktestConfig struct {
 	StrategyID                             string
 	StrategyParameters                     map[string]string
 	Seed                                   int64
+	ValidationTrainMonths                  int
+	ValidationTestMonths                   int
+	ValidationBootstrapIterations          int
 	// Progress is optional operator telemetry. It must never affect decisions,
 	// fills, digests, or any deterministic backtest output.
 	Progress ProgressFunc `json:"-"`
@@ -325,6 +328,13 @@ type SelectedStrategy struct {
 	Parameters map[string]string  `json:"parameters"`
 }
 
+type ValidationPolicy struct {
+	SchemaVersion       string `json:"schema_version"`
+	TrainMonths         int    `json:"train_months"`
+	TestMonths          int    `json:"test_months"`
+	BootstrapIterations int    `json:"bootstrap_iterations"`
+}
+
 type RunManifest struct {
 	SchemaVersion     string            `json:"schema_version"`
 	Classification    RunClassification `json:"classification"`
@@ -343,6 +353,7 @@ type RunManifest struct {
 	SlippageBPS       float64           `json:"slippage_bps"`
 	CoveragePolicy    CoveragePolicy    `json:"coverage_policy"`
 	ExecutionPolicy   ExecutionPolicy   `json:"execution_policy"`
+	ValidationPolicy  ValidationPolicy  `json:"validation_policy"`
 	Start             string            `json:"start"`
 	End               string            `json:"end"`
 	Coverage          CoverageReport    `json:"coverage"`

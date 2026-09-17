@@ -22,6 +22,8 @@ Require statistically meaningful, reproducible evidence before a strategy or mod
 - [x] Select/tune only from allowed training/validation evidence.
 - [x] Aggregate untouched test windows after decisions are frozen.
 - [x] Reject validation when windows, observations, trades, or regimes are insufficient.
+- [x] Resolve and preflight the effective walk-forward policy before launching either replay lane; the governed default remains 12 training months plus 3 test months, and warmup does not count toward the validation interval.
+- [x] Persist the effective train/test/bootstrap policy in the versioned backtest run manifest.
 
 ## Statistical evaluation
 

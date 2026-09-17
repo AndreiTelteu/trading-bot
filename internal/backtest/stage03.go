@@ -17,10 +17,11 @@ import (
 )
 
 const (
-	CoverageSchemaVersion       = "backtest-coverage-v1"
-	ManifestSchemaVersion       = "backtest-run-manifest-v4"
-	LegacyManifestSchemaVersion = "backtest-run-manifest-v3"
-	ArtifactSchemaVersion       = "backtest-artifacts-v1"
+	CoverageSchemaVersion         = "backtest-coverage-v1"
+	ManifestSchemaVersion         = "backtest-run-manifest-v5"
+	PreviousManifestSchemaVersion = "backtest-run-manifest-v4"
+	LegacyManifestSchemaVersion   = "backtest-run-manifest-v3"
+	ArtifactSchemaVersion         = "backtest-artifacts-v1"
 )
 
 type CoverageError struct{ Report CoverageReport }
@@ -78,6 +79,15 @@ func defaultStage03Policies(config *BacktestConfig) {
 	}
 	if config.StrategyVersion == "" {
 		config.StrategyVersion = "legacy-rule-strategy-v1"
+	}
+	if config.ValidationTrainMonths == 0 {
+		config.ValidationTrainMonths = 12
+	}
+	if config.ValidationTestMonths == 0 {
+		config.ValidationTestMonths = 3
+	}
+	if config.ValidationBootstrapIterations == 0 {
+		config.ValidationBootstrapIterations = 500
 	}
 }
 
@@ -402,7 +412,16 @@ func buildManifest(config BacktestConfig, coverage CoverageReport, classificatio
 	limitations = append(limitations, "ohlcv_full_fill_no_order_book_model")
 	sort.Strings(limitations)
 	selected := selectedStrategyForManifest(config)
-	return RunManifest{SchemaVersion: ManifestSchemaVersion, Classification: classification, CodeRevision: config.CodeRevision, ConfigVersion: config.ConfigVersion, StrategyVersion: selected.Descriptor.Version, Strategy: selected, PolicyVersion: backtestPolicyVersion(config), CostVersion: config.ExecutionPolicy.CostVersion, DatasetManifestID: config.DatasetManifestID, Dataset: DatasetAudit{ManifestID: config.DatasetManifestID, KnowledgeCutoff: config.DatasetKnowledgeCutoff, Series: append([]DatasetSeriesIdentity(nil), config.DatasetSeries...)}, UniverseMode: config.UniverseMode, BenchmarkSymbol: config.BenchmarkSymbol, Seed: config.Seed, FeeBPS: config.FeeBps, SlippageBPS: config.SlippageBps, CoveragePolicy: config.CoveragePolicy, ExecutionPolicy: config.ExecutionPolicy, Start: canonicalTime(config.Start), End: canonicalTime(config.End), Coverage: coverage, Limitations: limitations, Artifacts: ArtifactRefs{SchemaVersion: ArtifactSchemaVersion, Manifest: "manifest.json", Decisions: "decisions.json", Orders: "orders.json", Fills: "fills.json", Trades: "trades.json", Ledger: "ledger.json", Equity: "equity.json", Metrics: "metrics.json", Exposure: "exposure.json"}}
+	return RunManifest{SchemaVersion: ManifestSchemaVersion, Classification: classification, CodeRevision: config.CodeRevision, ConfigVersion: config.ConfigVersion, StrategyVersion: selected.Descriptor.Version, Strategy: selected, PolicyVersion: backtestPolicyVersion(config), CostVersion: config.ExecutionPolicy.CostVersion, DatasetManifestID: config.DatasetManifestID, Dataset: DatasetAudit{ManifestID: config.DatasetManifestID, KnowledgeCutoff: config.DatasetKnowledgeCutoff, Series: append([]DatasetSeriesIdentity(nil), config.DatasetSeries...)}, UniverseMode: config.UniverseMode, BenchmarkSymbol: config.BenchmarkSymbol, Seed: config.Seed, FeeBPS: config.FeeBps, SlippageBPS: config.SlippageBps, CoveragePolicy: config.CoveragePolicy, ExecutionPolicy: config.ExecutionPolicy, ValidationPolicy: validationPolicy(config), Start: canonicalTime(config.Start), End: canonicalTime(config.End), Coverage: coverage, Limitations: limitations, Artifacts: ArtifactRefs{SchemaVersion: ArtifactSchemaVersion, Manifest: "manifest.json", Decisions: "decisions.json", Orders: "orders.json", Fills: "fills.json", Trades: "trades.json", Ledger: "ledger.json", Equity: "equity.json", Metrics: "metrics.json", Exposure: "exposure.json"}}
+}
+
+func validationPolicy(config BacktestConfig) ValidationPolicy {
+	return ValidationPolicy{
+		SchemaVersion:       "backtest-validation-policy-v1",
+		TrainMonths:         config.ValidationTrainMonths,
+		TestMonths:          config.ValidationTestMonths,
+		BootstrapIterations: config.ValidationBootstrapIterations,
+	}
 }
 
 func selectedStrategyForManifest(config BacktestConfig) SelectedStrategy {
@@ -580,7 +599,7 @@ func UnmarshalRunManifest(data []byte) (RunManifest, error) {
 	if err := json.Unmarshal(data, &manifest); err != nil {
 		return RunManifest{}, err
 	}
-	if manifest.SchemaVersion != ManifestSchemaVersion && manifest.SchemaVersion != LegacyManifestSchemaVersion {
+	if manifest.SchemaVersion != ManifestSchemaVersion && manifest.SchemaVersion != PreviousManifestSchemaVersion && manifest.SchemaVersion != LegacyManifestSchemaVersion {
 		return RunManifest{}, fmt.Errorf("unsupported manifest schema %q", manifest.SchemaVersion)
 	}
 	if manifest.SchemaVersion == LegacyManifestSchemaVersion {

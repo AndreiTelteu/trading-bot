@@ -3,6 +3,7 @@ package backtest
 import (
 	"math"
 	"math/rand"
+	"strings"
 	"testing"
 	"time"
 	"trading-go/internal/services"
@@ -41,6 +42,37 @@ func TestWalkForwardSplit(t *testing.T) {
 		if !w.TestStart.After(w.TrainStart) {
 			t.Errorf("TestStart should be after TrainStart")
 		}
+	}
+}
+
+func TestValidateValidationWindowRejectsShortIntervalBeforeExecution(t *testing.T) {
+	config := BacktestConfig{
+		Start:                         time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
+		End:                           time.Date(2025, 10, 1, 0, 0, 0, 0, time.UTC),
+		ValidationTrainMonths:         12,
+		ValidationTestMonths:          3,
+		ValidationBootstrapIterations: 500,
+	}
+	err := ValidateValidationWindow(config)
+	if err == nil {
+		t.Fatal("expected short interval to fail validation preflight")
+	}
+	want := "cannot fit validation_train_months=12 plus validation_test_months=3; end must be at or after 2026-04-01T00:00:00Z"
+	if !strings.Contains(err.Error(), want) {
+		t.Fatalf("error = %q, want substring %q", err, want)
+	}
+}
+
+func TestValidateValidationWindowAcceptsExactMinimumInterval(t *testing.T) {
+	config := BacktestConfig{
+		Start:                         time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
+		End:                           time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC),
+		ValidationTrainMonths:         12,
+		ValidationTestMonths:          3,
+		ValidationBootstrapIterations: 500,
+	}
+	if err := ValidateValidationWindow(config); err != nil {
+		t.Fatalf("exact minimum interval rejected: %v", err)
 	}
 }
 

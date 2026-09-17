@@ -110,14 +110,45 @@ type validationCISet struct {
 	AcceptedMetrics       []string
 }
 
-func RunValidation(config BacktestConfig, series map[string][]services.OHLCV, trainMonths int, testMonths int, iterations int, progress ProgressFunc) (ValidationSummary, error) {
+type ValidationWindowError struct {
+	Start       time.Time
+	End         time.Time
+	TrainMonths int
+	TestMonths  int
+}
+
+func (err *ValidationWindowError) Error() string {
+	minimumEnd := addMonths(err.Start, err.TrainMonths+err.TestMonths)
+	return fmt.Sprintf("no validation windows: interval [%s,%s) cannot fit validation_train_months=%d plus validation_test_months=%d; end must be at or after %s", err.Start.UTC().Format(time.RFC3339), err.End.UTC().Format(time.RFC3339), err.TrainMonths, err.TestMonths, minimumEnd.UTC().Format(time.RFC3339))
+}
+
+func ValidateValidationWindow(config BacktestConfig) error {
+	if config.ValidationTrainMonths <= 0 {
+		return fmt.Errorf("validation_train_months must be positive")
+	}
+	if config.ValidationTestMonths <= 0 {
+		return fmt.Errorf("validation_test_months must be positive")
+	}
+	if config.ValidationBootstrapIterations <= 0 {
+		return fmt.Errorf("validation_bootstrap_iterations must be positive")
+	}
+	if len(walkForwardSplit(config.Start, config.End, config.ValidationTrainMonths, config.ValidationTestMonths)) == 0 {
+		return &ValidationWindowError{Start: config.Start, End: config.End, TrainMonths: config.ValidationTrainMonths, TestMonths: config.ValidationTestMonths}
+	}
+	return nil
+}
+
+func RunValidation(config BacktestConfig, series map[string][]services.OHLCV, progress ProgressFunc) (ValidationSummary, error) {
 	if config.EngineMode != EngineShared {
 		return ValidationSummary{}, fmt.Errorf("validation requires shared backtest engine")
 	}
-	windows := walkForwardSplit(config.Start, config.End, trainMonths, testMonths)
-	if len(windows) == 0 {
-		return ValidationSummary{}, fmt.Errorf("no validation windows")
+	if err := ValidateValidationWindow(config); err != nil {
+		return ValidationSummary{}, err
 	}
+	trainMonths := config.ValidationTrainMonths
+	testMonths := config.ValidationTestMonths
+	iterations := config.ValidationBootstrapIterations
+	windows := walkForwardSplit(config.Start, config.End, trainMonths, testMonths)
 
 	type windowResult struct {
 		index         int
