@@ -25,6 +25,28 @@ Require statistically meaningful, reproducible evidence before a strategy or mod
 - [x] Resolve and preflight the effective walk-forward policy before launching either replay lane; the governed default remains 12 training months plus 3 test months, and warmup does not count toward the validation interval.
 - [x] Persist the effective train/test/bootstrap policy in the versioned backtest run manifest.
 
+### Causally isolated fold execution
+
+Stage 07 consumes a `stage07-source-artifact-v2` envelope only as immutable
+strategy/configuration provenance. Legacy v1 envelopes are not validation
+evidence and fail closed. The v2 envelope includes a digest-bound, non-secret
+replay-settings snapshot; it does not donate its previously computed trades,
+curves, or metrics to a fold.
+
+For every fold, the source rebuilds manifest-pinned Stage 04 bars, benchmark
+availability, universe regime snapshots, quality/coverage, and forward-label
+availability. `FitAndSelect` validates those supplied train/validation samples,
+runs fresh chronological train and validation simulations for every
+predeclared configuration, and freezes the validation-selected configuration,
+partition digests, data digest, and selection rationale. `Test` validates the
+frozen artifact and supplied untouched test partition, truncates market data at
+the test boundary, and performs fresh candidate and baseline simulations.
+It never returns a Stage 05 primitive cached in a source job.
+
+Trade costs are reconstructed from the fills belonging to that trade: fee plus
+the observed fill-vs-market-price slippage. Missing fill attribution fails the
+fold; aggregate Stage 05 costs are never divided across trades.
+
 ## Statistical evaluation
 
 - [x] Bootstrap across the correct independent unit, normally windows/blocks rather than a single aggregate.

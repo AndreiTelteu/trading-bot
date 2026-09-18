@@ -11,6 +11,7 @@ import (
 	"time"
 	"trading-go/internal/database"
 	"trading-go/internal/pointintime"
+	"trading-go/internal/services"
 	"trading-go/internal/validation"
 
 	"gorm.io/gorm"
@@ -35,13 +36,21 @@ type Stage07StrategyRef struct {
 }
 
 type Stage07ExperimentSource struct{ DB *gorm.DB }
+
+const stage07SourceArtifactSchemaVersion = "stage07-source-artifact-v2"
+
 type stage07SourceArtifact struct {
 	SchemaVersion, ComparisonDigest, DatasetManifestID string
+	ReplaySettings                                     map[string]string                `json:"replay_settings"`
+	ReplaySettingsDigest                               string                           `json:"replay_settings_digest"`
 	Results                                            map[string]Stage05StrategyResult `json:"results"`
 }
 type stage07FoldArtifact struct {
-	bytes               []byte
-	candidate, baseline Stage05StrategyResult
+	config              BacktestConfig
+	series              map[string][]services.OHLCV
+	candidate, baseline SelectedStrategy
+	fixture             bool
+	dataDigest          string
 }
 type stage07Factory struct{ folds map[int]stage07FoldArtifact }
 type stage07Runner struct {
@@ -60,7 +69,8 @@ func (s Stage07ExperimentSource) Load(manifest validation.ExperimentManifest) ([
 	if dataset.ID != manifest.Spec.DatasetManifestID || dataset.ContentHash != manifest.Spec.DatasetManifestHash {
 		return nil, nil, &validation.DiagnosticError{Code: validation.DiagnosticManifestIntegrity, Details: "Stage 04 manifest identity/content mismatch"}
 	}
-	factory := &stage07Factory{folds: map[int]stage07FoldArtifact{}}
+	var replaySettings map[string]string
+	selections := make([]struct{ candidate, baseline SelectedStrategy }, len(manifest.Spec.Folds))
 	for i, jobID := range manifest.Spec.FoldSourceJobIDs {
 		ref, err := LoadStage07ComparisonReference(s.DB, jobID)
 		if err != nil {
@@ -84,7 +94,7 @@ func (s Stage07ExperimentSource) Load(manifest validation.ExperimentManifest) ([
 			return nil, nil, &validation.DiagnosticError{Code: validation.DiagnosticManifestIntegrity, Details: "Stage 05 primitive artifact digest mismatch"}
 		}
 		var artifact stage07SourceArtifact
-		if json.Unmarshal(raw, &artifact) != nil || artifact.SchemaVersion != "stage07-source-artifact-v1" || artifact.ComparisonDigest != ref.ArtifactDigest || artifact.DatasetManifestID != manifest.Spec.DatasetManifestID {
+		if json.Unmarshal(raw, &artifact) != nil || artifact.SchemaVersion != stage07SourceArtifactSchemaVersion || artifact.ComparisonDigest != ref.ArtifactDigest || artifact.DatasetManifestID != manifest.Spec.DatasetManifestID || artifact.ReplaySettingsDigest == "" || artifact.ReplaySettingsDigest != stage07SettingsDigest(artifact.ReplaySettings) {
 			return nil, nil, &validation.DiagnosticError{Code: validation.DiagnosticManifestIntegrity, Details: "Stage 05 primitive artifact envelope mismatch"}
 		}
 		candidate, ok := artifact.Results[manifest.Spec.Candidate.ID]
@@ -95,30 +105,45 @@ func (s Stage07ExperimentSource) Load(manifest validation.ExperimentManifest) ([
 		if !ok {
 			return nil, nil, &validation.DiagnosticError{Code: validation.DiagnosticMissingBenchmark, Details: "baseline result missing"}
 		}
-		if !runCoversFold(candidate.Manifest, manifest.Spec.Folds[i].Test) || !runCoversFold(baseline.Manifest, manifest.Spec.Folds[i].Test) {
-			return nil, nil, &validation.DiagnosticError{Code: validation.DiagnosticInvalidWindowOrder, Details: "source job clock differs from immutable test fold"}
+		if candidate.Manifest.DatasetManifestID != manifest.Spec.DatasetManifestID || baseline.Manifest.DatasetManifestID != manifest.Spec.DatasetManifestID {
+			return nil, nil, &validation.DiagnosticError{Code: validation.DiagnosticInvalidWindowOrder, Details: "source job dataset differs from immutable manifest"}
 		}
-		factory.folds[i] = stage07FoldArtifact{bytes: append([]byte(nil), raw...), candidate: candidate, baseline: baseline}
+		if replaySettings == nil {
+			replaySettings = cloneStringMap(artifact.ReplaySettings)
+		} else if stage07SettingsDigest(replaySettings) != artifact.ReplaySettingsDigest {
+			return nil, nil, &validation.DiagnosticError{Code: validation.DiagnosticManifestIntegrity, Details: "fold source replay settings differ"}
+		}
+		selections[i] = struct{ candidate, baseline SelectedStrategy }{candidate.Manifest.Strategy, baseline.Manifest.Strategy}
 	}
-	var bars []database.HistoricalBar
-	if err := s.DB.Where("dataset_version=? AND open_time>=? AND open_time<? AND role=?", dataset.DatasetVersion, manifest.Spec.Interval.Start, manifest.Spec.Interval.End, "decision").Order("open_time ASC, exchange_symbol_id ASC").Find(&bars).Error; err != nil {
+	if len(replaySettings) == 0 {
+		return nil, nil, &validation.DiagnosticError{Code: validation.DiagnosticManifestIntegrity, Details: "immutable replay settings are required"}
+	}
+	// Load the complete declared dataset once. Each fold runner then truncates
+	// it at its causal boundary before fitting or testing.
+	replaySettings["backtest_dataset_manifest_id"] = manifest.Spec.DatasetManifestID
+	replaySettings["backtest_start"] = manifest.Spec.Interval.Start.UTC().Format(time.RFC3339Nano)
+	replaySettings["backtest_end"] = manifest.Spec.Interval.End.UTC().Format(time.RFC3339Nano)
+	replaySettings["backtest_execution_1m"] = "true"
+	config, series, err := preparePointInTimeBacktestInputs(replaySettings)
+	if err != nil {
 		return nil, nil, err
 	}
-	samples := make([]validation.Sample, 0, len(bars))
-	for _, bar := range bars {
-		value, parseErr := strconv.ParseFloat(bar.Close, 64)
-		if parseErr != nil || math.IsNaN(value) || math.IsInf(value, 0) {
-			return nil, nil, &validation.DiagnosticError{Code: validation.DiagnosticNonFinite, Details: "invalid Stage 04 close"}
-		}
-		observed := bar.OpenTime.UTC()
-		samples = append(samples, validation.Sample{ID: fmt.Sprintf("%s:%s:%s", bar.ExchangeSymbolID, bar.Timeframe, observed.Format(time.RFC3339Nano)), ObservedAt: observed, FeatureStart: observed.Add(-manifest.Spec.FeatureHorizon), FeatureEnd: observed, LabelEnd: observed.Add(manifest.Spec.LabelHorizon), Symbol: bar.ExchangeSymbolID, Regime: "source", BenchmarkSeen: true, CoverageOK: bar.QualityStatus == "valid", Values: map[string]float64{"close": value}})
+	if config.DatasetManifestID != manifest.Spec.DatasetManifestID || !config.DatasetManifestValidated || config.CodeRevision != manifest.Spec.CodeRevision {
+		return nil, nil, &validation.DiagnosticError{Code: validation.DiagnosticManifestIntegrity, Details: "replay configuration does not match immutable validation manifest"}
+	}
+	samples, err := stage07Samples(s.DB, dataset, manifest, config)
+	if err != nil {
+		return nil, nil, err
+	}
+	dataDigest, err := stage07DataDigest(config, series)
+	if err != nil {
+		return nil, nil, err
+	}
+	factory := &stage07Factory{folds: map[int]stage07FoldArtifact{}}
+	for i, fold := range manifest.Spec.Folds {
+		factory.folds[fold.Index] = stage07FoldArtifact{config: config, series: cloneOHLCVSeries(series), candidate: selections[i].candidate, baseline: selections[i].baseline, dataDigest: dataDigest}
 	}
 	return samples, factory, nil
-}
-func runCoversFold(m RunManifest, fold validation.Interval) bool {
-	start, e1 := time.Parse(time.RFC3339Nano, m.Start)
-	end, e2 := time.Parse(time.RFC3339Nano, m.End)
-	return e1 == nil && e2 == nil && start.Equal(fold.Start) && end.Equal(fold.End) && m.DatasetManifestID != "" && m.Coverage.Passed
 }
 func (f *stage07Factory) NewFoldRunner(fold validation.Fold) (validation.FoldRunner, error) {
 	source, ok := f.folds[fold.Index]
@@ -127,39 +152,80 @@ func (f *stage07Factory) NewFoldRunner(fold validation.Fold) (validation.FoldRun
 	}
 	return &stage07Runner{fold: fold.Index, source: source}, nil
 }
-func (r *stage07Runner) FitAndSelect(_ validation.Fold, _, _ []validation.Sample, allowed map[string][]string) (validation.FoldFit, error) {
-	params := map[string]string{}
-	keys := make([]string, 0, len(allowed))
-	for key := range allowed {
-		keys = append(keys, key)
+func (r *stage07Runner) FitAndSelect(fold validation.Fold, train, valid []validation.Sample, allowed map[string][]string) (validation.FoldFit, error) {
+	if fold.Index != r.fold {
+		return validation.FoldFit{}, &validation.DiagnosticError{Code: validation.DiagnosticTestLeakage}
 	}
-	sort.Strings(keys)
-	choice := ""
-	for _, key := range keys {
-		actual := r.source.candidate.Manifest.Strategy.Parameters[key]
-		found := false
-		for _, value := range allowed[key] {
-			if value == actual {
-				found = true
-			}
-		}
-		if !found {
-			return validation.FoldFit{}, &validation.DiagnosticError{Code: validation.DiagnosticInvalidManifest, Details: "source parameter was not predeclared: " + key}
-		}
-		params[key] = actual
-		if choice == "" {
-			choice = actual
-		}
+	if err := r.validateSamples(train, fold.Train); err != nil {
+		return validation.FoldFit{}, err
 	}
-	return validation.FoldFit{Choice: choice, Parameters: params, Artifact: append([]byte(nil), r.source.bytes...)}, nil
+	if err := r.validateSamples(valid, fold.Validation); err != nil {
+		return validation.FoldFit{}, err
+	}
+	choices, err := stage07ParameterChoices(r.source.candidate.Parameters, allowed)
+	if err != nil {
+		return validation.FoldFit{}, err
+	}
+	type scored struct {
+		params       map[string]string
+		train, valid float64
+	}
+	scores := make([]scored, 0, len(choices))
+	for _, params := range choices {
+		trainResult, err := r.run(r.source.candidate, params, fold.Train, fold.Train.End)
+		if err != nil {
+			return validation.FoldFit{}, err
+		}
+		validResult, err := r.run(r.source.candidate, params, fold.Validation, fold.Validation.End)
+		if err != nil {
+			return validation.FoldFit{}, err
+		}
+		scores = append(scores, scored{params: params, train: stage07Return(trainResult), valid: stage07Return(validResult)})
+	}
+	sort.Slice(scores, func(i, j int) bool {
+		if scores[i].valid != scores[j].valid {
+			return scores[i].valid > scores[j].valid
+		}
+		return stage07ParameterKey(scores[i].params) < stage07ParameterKey(scores[j].params)
+	})
+	if len(scores) == 0 {
+		return validation.FoldFit{}, &validation.DiagnosticError{Code: validation.DiagnosticInvalidManifest, Details: "no predeclared tuning candidates"}
+	}
+	trainDigest, _ := stage07SampleDigest(train)
+	validDigest, _ := stage07SampleDigest(valid)
+	artifact := stage07FrozenArtifact{SchemaVersion: "stage07-frozen-fold-v1", Fold: fold.Index, Parameters: scores[0].params, TrainDigest: trainDigest, ValidationDigest: validDigest, DataDigest: r.source.dataDigest, SelectionRationale: fmt.Sprintf("validation_after_cost_return=%+.12f;train_after_cost_return=%+.12f", scores[0].valid, scores[0].train)}
+	encoded, err := json.Marshal(artifact)
+	if err != nil {
+		return validation.FoldFit{}, err
+	}
+	return validation.FoldFit{Choice: stage07ParameterKey(scores[0].params), Parameters: cloneStringMap(scores[0].params), Artifact: encoded, TrainDigest: trainDigest, ValidationDigest: validDigest, DataDigest: r.source.dataDigest, SelectionRationale: artifact.SelectionRationale}, nil
 }
-func (r *stage07Runner) Test(fold validation.Fold, _ []byte, test []validation.Sample) (validation.FoldPrimitives, error) {
+func (r *stage07Runner) Test(fold validation.Fold, artifact []byte, test []validation.Sample) (validation.FoldPrimitives, error) {
 	if fold.Index != r.fold {
 		return validation.FoldPrimitives{}, &validation.DiagnosticError{Code: validation.DiagnosticTestLeakage}
 	}
-	return stage07Primitives(r.source.candidate, r.source.baseline, fold.Index, len(test))
+	if err := r.validateSamples(test, fold.Test); err != nil {
+		return validation.FoldPrimitives{}, err
+	}
+	var frozen stage07FrozenArtifact
+	if json.Unmarshal(artifact, &frozen) != nil || frozen.SchemaVersion != "stage07-frozen-fold-v1" || frozen.Fold != fold.Index || frozen.DataDigest != r.source.dataDigest {
+		return validation.FoldPrimitives{}, &validation.DiagnosticError{Code: validation.DiagnosticTestLeakage, Details: "frozen selection artifact is invalid"}
+	}
+	testDigest, _ := stage07SampleDigest(test)
+	if frozen.Parameters == nil || testDigest == "" {
+		return validation.FoldPrimitives{}, &validation.DiagnosticError{Code: validation.DiagnosticTestLeakage}
+	}
+	candidate, err := r.run(r.source.candidate, frozen.Parameters, fold.Test, fold.Test.End)
+	if err != nil {
+		return validation.FoldPrimitives{}, err
+	}
+	baseline, err := r.run(r.source.baseline, r.source.baseline.Parameters, fold.Test, fold.Test.End)
+	if err != nil {
+		return validation.FoldPrimitives{}, err
+	}
+	return stage07Primitives(candidate, baseline, fold.Index, len(test), r.source.series)
 }
-func stage07Primitives(candidate, baseline Stage05StrategyResult, fold, observations int) (validation.FoldPrimitives, error) {
+func stage07Primitives(candidate, baseline Stage05StrategyResult, fold, observations int, series map[string][]services.OHLCV) (validation.FoldPrimitives, error) {
 	start, err := strconv.ParseFloat(candidate.Metrics.StartingCapital, 64)
 	if err != nil || start <= 0 {
 		return validation.FoldPrimitives{}, &validation.DiagnosticError{Code: validation.DiagnosticNonFinite, Details: "invalid starting capital"}
@@ -175,24 +241,289 @@ func stage07Primitives(candidate, baseline Stage05StrategyResult, fold, observat
 		}
 		curve[i] = validation.CurvePrimitive{At: candidate.Equity[i].Time.UTC(), Equity: candidate.Equity[i].Value, Benchmark: baseline.Equity[i].Value, GrossExposure: gross, NetExposure: net}
 	}
-	totalCost, _ := strconv.ParseFloat(candidate.Metrics.TotalCosts, 64)
-	perCost := 0.0
-	if len(candidate.Trades) > 0 {
-		perCost = totalCost / float64(len(candidate.Trades))
-	}
 	trades := make([]validation.TradePrimitive, len(candidate.Trades))
 	for i, t := range candidate.Trades {
 		regime := strings.TrimSpace(t.RegimeState)
 		if regime == "" {
 			regime = "unknown"
 		}
-		trades[i] = validation.TradePrimitive{ID: fmt.Sprintf("%d:%d:%s:%s", fold, i, t.Symbol, t.EntryTime.UTC().Format(time.RFC3339Nano)), Symbol: t.Symbol, Regime: regime, OpenedAt: t.EntryTime.UTC(), ClosedAt: t.ExitTime.UTC(), Notional: math.Abs(t.EntryPrice * t.Size), GrossPnL: t.Pnl + perCost, Cost: perCost, NetPnL: t.Pnl}
+		cost, err := stage07TradeCost(candidate.Artifacts.Fills, series, t)
+		if err != nil {
+			return validation.FoldPrimitives{}, err
+		}
+		trades[i] = validation.TradePrimitive{ID: fmt.Sprintf("%d:%d:%s:%s", fold, i, t.Symbol, t.EntryTime.UTC().Format(time.RFC3339Nano)), Symbol: t.Symbol, Regime: regime, OpenedAt: t.EntryTime.UTC(), ClosedAt: t.ExitTime.UTC(), Notional: math.Abs(t.EntryPrice * t.Size), GrossPnL: t.Pnl + cost, Cost: cost, NetPnL: t.Pnl}
 	}
 	return validation.FoldPrimitives{StartingCapital: start, ExpectedObservations: observations, ObservedObservations: observations, Trades: trades, Curve: curve}, nil
 }
 func metricValue(v OptionalMetric) float64 {
 	if v.Available {
 		return v.Value
+	}
+	return 0
+}
+
+// stage07ReplaySettings deliberately stores only non-secret replay controls.
+// It is an immutable input snapshot, never a route to reuse a live setting.
+func stage07ReplaySettings(values map[string]string) map[string]string {
+	result := map[string]string{}
+	for key, value := range values {
+		lower := strings.ToLower(key)
+		if strings.Contains(lower, "password") || strings.Contains(lower, "secret") || strings.Contains(lower, "token") || strings.Contains(lower, "api_key") {
+			continue
+		}
+		if strings.HasPrefix(key, "backtest_") || strings.HasPrefix(key, "universe_") || strings.HasPrefix(key, "selection_policy_") || strings.HasPrefix(key, "active_model_") || strings.HasPrefix(key, "model_rollout_") || strings.HasPrefix(key, "model_fallback_") || strings.HasPrefix(key, "model_rollback_") || strings.HasPrefix(key, "entry_") || strings.HasPrefix(key, "risk_") || strings.HasPrefix(key, "max_") || strings.HasPrefix(key, "stop_") || strings.HasPrefix(key, "take_") || strings.HasPrefix(key, "atr_") || strings.HasPrefix(key, "buy_") || strings.HasPrefix(key, "min_") || strings.HasPrefix(key, "sell_") || strings.HasPrefix(key, "allow_") || strings.HasPrefix(key, "trailing_") || strings.HasPrefix(key, "rsi_") || strings.HasPrefix(key, "macd_") || strings.HasPrefix(key, "bb_") || strings.HasPrefix(key, "volume_") || strings.HasPrefix(key, "momentum_") {
+			result[key] = value
+		}
+	}
+	return result
+}
+
+func stage07SettingsDigest(values map[string]string) string {
+	encoded, _ := json.Marshal(values)
+	sum := sha256.Sum256(encoded)
+	return fmt.Sprintf("%x", sum)
+}
+
+type stage07FrozenArtifact struct {
+	SchemaVersion, TrainDigest, ValidationDigest, DataDigest, SelectionRationale string
+	Fold                                                                         int
+	Parameters                                                                   map[string]string
+}
+
+func (r *stage07Runner) run(selected SelectedStrategy, parameters map[string]string, interval validation.Interval, availableThrough time.Time) (Stage05StrategyResult, error) {
+	if !interval.Valid() || availableThrough.Before(interval.End) {
+		return Stage05StrategyResult{}, &validation.DiagnosticError{Code: validation.DiagnosticInvalidWindowOrder}
+	}
+	config := r.source.config
+	config.Start, config.End = interval.Start.UTC(), interval.End.UTC()
+	series := stage07TruncateSeries(r.source.series, availableThrough)
+	config.ExecutionSeries = stage07TruncateSeries(config.ExecutionSeries, availableThrough)
+	config.BenchmarkSeries = stage07TruncateBars(config.BenchmarkSeries, availableThrough)
+	params := cloneStringMap(selected.Parameters)
+	for key, value := range parameters {
+		params[key] = value
+	}
+	resolved, strategy, planner, err := DefaultStrategyRegistry.ResolveExecutable(selected.Descriptor.ID, selected.Descriptor.Version, params)
+	if err != nil {
+		return Stage05StrategyResult{}, err
+	}
+	return runStage05StrategyWithPlanner(config, series, resolved, strategy, planner, r.source.fixture)
+}
+
+func (r *stage07Runner) validateSamples(samples []validation.Sample, interval validation.Interval) error {
+	if len(samples) == 0 {
+		return &validation.DiagnosticError{Code: validation.DiagnosticInsufficientObservations}
+	}
+	for _, sample := range samples {
+		if sample.ObservedAt.Before(interval.Start) || !sample.ObservedAt.Before(interval.End) || !sample.CoverageOK || !sample.BenchmarkSeen {
+			return &validation.DiagnosticError{Code: validation.DiagnosticIncompleteCoverage, Details: sample.ID}
+		}
+		bar, ok := stage07BarAt(r.source.series[sample.Symbol], time.UnixMilli(int64(sample.Values["bar_open_ms"])))
+		if !ok || bar.Close != sample.Values["close"] {
+			return &validation.DiagnosticError{Code: validation.DiagnosticManifestIntegrity, Details: "sample does not match fold dataset: " + sample.ID}
+		}
+	}
+	return nil
+}
+
+func stage07ParameterChoices(base map[string]string, allowed map[string][]string) ([]map[string]string, error) {
+	keys := make([]string, 0, len(allowed))
+	for key, values := range allowed {
+		if len(values) == 0 {
+			return nil, &validation.DiagnosticError{Code: validation.DiagnosticInvalidManifest, Details: "empty tuning set: " + key}
+		}
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	result := []map[string]string{}
+	var visit func(int, map[string]string)
+	visit = func(index int, params map[string]string) {
+		if index == len(keys) {
+			result = append(result, cloneStringMap(params))
+			return
+		}
+		for _, value := range allowed[keys[index]] {
+			next := cloneStringMap(params)
+			next[keys[index]] = value
+			visit(index+1, next)
+		}
+	}
+	visit(0, cloneStringMap(base))
+	return result, nil
+}
+func stage07ParameterKey(params map[string]string) string {
+	keys := make([]string, 0, len(params))
+	for key := range params {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		parts = append(parts, key+"="+params[key])
+	}
+	return strings.Join(parts, ";")
+}
+func stage07Return(result Stage05StrategyResult) float64 {
+	if result.Metrics.TotalReturn.Available {
+		return result.Metrics.TotalReturn.Value
+	}
+	return math.Inf(-1)
+}
+func stage07SampleDigest(samples []validation.Sample) (string, error) {
+	encoded, err := json.Marshal(samples)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(encoded)
+	return fmt.Sprintf("%x", sum), nil
+}
+func stage07DataDigest(config BacktestConfig, series map[string][]services.OHLCV) (string, error) {
+	encoded, err := json.Marshal(struct {
+		Manifest string
+		Series   map[string][]services.OHLCV
+	}{config.DatasetManifestID, series})
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(encoded)
+	return fmt.Sprintf("%x", sum), nil
+}
+func stage07TruncateSeries(values map[string][]services.OHLCV, end time.Time) map[string][]services.OHLCV {
+	result := map[string][]services.OHLCV{}
+	for symbol, bars := range values {
+		result[symbol] = stage07TruncateBars(bars, end)
+	}
+	return result
+}
+func stage07TruncateBars(values []services.OHLCV, end time.Time) []services.OHLCV {
+	result := make([]services.OHLCV, 0, len(values))
+	for _, bar := range values {
+		if !time.UnixMilli(bar.OpenTime).UTC().After(end) {
+			result = append(result, bar)
+		}
+	}
+	return result
+}
+func stage07BarAt(values []services.OHLCV, at time.Time) (services.OHLCV, bool) {
+	for _, bar := range values {
+		if time.UnixMilli(bar.OpenTime).UTC().Equal(at.UTC()) {
+			return bar, true
+		}
+	}
+	return services.OHLCV{}, false
+}
+
+func stage07TradeCost(fills []FillArtifact, series map[string][]services.OHLCV, trade Trade) (float64, error) {
+	cost := 0.0
+	for _, fill := range fills {
+		at, err := time.Parse(time.RFC3339Nano, fill.FillAt)
+		if err != nil {
+			return 0, &validation.DiagnosticError{Code: validation.DiagnosticManifestIntegrity, Details: "invalid fill time"}
+		}
+		if fill.Symbol != trade.Symbol || (!at.Equal(trade.EntryTime) && !at.Equal(trade.ExitTime)) {
+			continue
+		}
+		fee, feeErr := strconv.ParseFloat(fill.Fee, 64)
+		price, priceErr := strconv.ParseFloat(fill.Price, 64)
+		quantity, qtyErr := strconv.ParseFloat(fill.Quantity, 64)
+		bar, found := stage07BarAt(series[fill.Symbol], at)
+		if feeErr != nil || priceErr != nil || qtyErr != nil || !found {
+			return 0, &validation.DiagnosticError{Code: validation.DiagnosticManifestIntegrity, Details: "actual fill cost cannot be attributed"}
+		}
+		cost += fee + math.Abs(price-bar.Open)*math.Abs(quantity)
+	}
+	if cost < 0 || math.IsNaN(cost) || math.IsInf(cost, 0) {
+		return 0, &validation.DiagnosticError{Code: validation.DiagnosticNonFinite, Details: "invalid actual fill cost"}
+	}
+	return cost, nil
+}
+
+// stage07Samples derives every fold input from the manifest-pinned records:
+// completed/available feature bars, a completed independent benchmark, a
+// completed universe regime, and an available forward label.  It intentionally
+// records incomplete rows so SplitFold/validation can fail closed instead of
+// silently treating a missing dependency as a favourable observation.
+func stage07Samples(db *gorm.DB, dataset pointintime.Manifest, manifest validation.ExperimentManifest, config BacktestConfig) ([]validation.Sample, error) {
+	if db == nil {
+		return nil, fmt.Errorf("Stage 07 source database is required")
+	}
+	ids := make([]string, 0, len(config.SymbolIdentities))
+	byID := map[string]string{}
+	for ticker, id := range config.SymbolIdentities {
+		ids = append(ids, id)
+		byID[id] = ticker
+	}
+	var decision, benchmark []database.HistoricalBar
+	if err := db.Where("dataset_version=? AND role=? AND timeframe=? AND exchange_symbol_id IN ? AND open_time>=? AND open_time<?", dataset.DatasetVersion, pointintime.RoleDecision, "15m", ids, manifest.Spec.Interval.Start.Add(-manifest.Spec.FeatureHorizon), manifest.Spec.Interval.End).Order("open_time ASC, exchange_symbol_id ASC").Find(&decision).Error; err != nil {
+		return nil, err
+	}
+	benchmarkID := config.SymbolIdentities[config.BenchmarkSymbol]
+	if err := db.Where("dataset_version=? AND role=? AND timeframe=? AND exchange_symbol_id=? AND open_time>=? AND open_time<?", dataset.DatasetVersion, pointintime.RoleBenchmark, "15m", benchmarkID, manifest.Spec.Interval.Start, manifest.Spec.Interval.End).Order("open_time ASC").Find(&benchmark).Error; err != nil {
+		return nil, err
+	}
+	benchAt := map[time.Time]database.HistoricalBar{}
+	for _, bar := range benchmark {
+		benchAt[bar.OpenTime.UTC()] = bar
+	}
+	bySymbolTime := map[string]map[time.Time]database.HistoricalBar{}
+	for _, bar := range decision {
+		if bySymbolTime[bar.ExchangeSymbolID] == nil {
+			bySymbolTime[bar.ExchangeSymbolID] = map[time.Time]database.HistoricalBar{}
+		}
+		bySymbolTime[bar.ExchangeSymbolID][bar.OpenTime.UTC()] = bar
+	}
+	var snapshots []database.UniverseSnapshot
+	if err := db.Where("dataset_manifest_id=? AND coverage_state='complete' AND snapshot_time<?", manifest.Spec.DatasetManifestID, manifest.Spec.Interval.End).Order("snapshot_time ASC").Find(&snapshots).Error; err != nil {
+		return nil, err
+	}
+	samples := []validation.Sample{}
+	for _, bar := range decision {
+		ticker := byID[bar.ExchangeSymbolID]
+		if ticker == "" {
+			continue
+		}
+		observed := bar.AvailableAt.UTC()
+		if observed.Before(manifest.Spec.Interval.Start) || !observed.Before(manifest.Spec.Interval.End) {
+			continue
+		}
+		closeValue, err := strconv.ParseFloat(bar.Close, 64)
+		if err != nil || !finiteStage07(closeValue) {
+			return nil, &validation.DiagnosticError{Code: validation.DiagnosticNonFinite, Details: "invalid Stage 04 close"}
+		}
+		benchmarkBar, benchmarkOK := benchAt[bar.OpenTime.UTC()]
+		regime, regimeOK := stage07RegimeAt(snapshots, observed)
+		featureOK := bar.QualityStatus == "valid" && !bar.AvailableAt.After(observed)
+		for at := observed.Add(-manifest.Spec.FeatureHorizon); at.Before(observed); at = at.Add(15 * time.Minute) {
+			candidate, ok := bySymbolTime[bar.ExchangeSymbolID][at.Truncate(15*time.Minute)]
+			featureOK = featureOK && ok && candidate.QualityStatus == "valid" && !candidate.AvailableAt.After(observed)
+		}
+		labelAt := bar.OpenTime.UTC().Add(manifest.Spec.LabelHorizon)
+		label, labelOK := bySymbolTime[bar.ExchangeSymbolID][labelAt]
+		labelValue := 0.0
+		if labelOK {
+			labelValue, err = strconv.ParseFloat(label.Close, 64)
+			labelOK = err == nil && finiteStage07(labelValue)
+		}
+		benchmarkSeen := benchmarkOK && benchmarkBar.QualityStatus == "valid" && !benchmarkBar.AvailableAt.After(observed)
+		samples = append(samples, validation.Sample{ID: fmt.Sprintf("%s:15m:%s", bar.ExchangeSymbolID, observed.Format(time.RFC3339Nano)), ObservedAt: observed, FeatureStart: observed.Add(-manifest.Spec.FeatureHorizon), FeatureEnd: observed, LabelEnd: observed.Add(manifest.Spec.LabelHorizon), Symbol: ticker, Regime: regime, BenchmarkSeen: benchmarkSeen, CoverageOK: featureOK && labelOK && regimeOK, Values: map[string]float64{"close": closeValue, "label_close": labelValue, "bar_open_ms": float64(bar.OpenTime.UnixMilli()), "quality_ok": boolFloat(featureOK)}})
+	}
+	return samples, nil
+}
+func stage07RegimeAt(values []database.UniverseSnapshot, at time.Time) (string, bool) {
+	regime := ""
+	found := false
+	for _, value := range values {
+		if value.SnapshotTime.After(at) {
+			break
+		}
+		regime, found = value.RegimeState, value.RegimeState != ""
+	}
+	return regime, found
+}
+func finiteStage07(value float64) bool { return !math.IsNaN(value) && !math.IsInf(value, 0) }
+func boolFloat(value bool) float64 {
+	if value {
+		return 1
 	}
 	return 0
 }

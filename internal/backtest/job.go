@@ -160,14 +160,14 @@ func runStage05ComparisonJob(jobID uint, request Stage05RunRequest, overrides ma
 	}
 	database.DB.Model(&database.BacktestJob{}).Where("id=?", jobID).Update("dataset_manifest_id", config.DatasetManifestID)
 	updateBacktestJob(jobID, "running", .35, "Running normalized candidate and market baselines")
-	_, err = executeAndPersistStage05ComparisonJob(jobID, config, series, request)
+	_, err = executeAndPersistStage05ComparisonJob(jobID, config, series, request, settings)
 	if err != nil {
 		failBacktestJob(jobID, err)
 	}
 	return
 }
 
-func executeAndPersistStage05ComparisonJob(jobID uint, config BacktestConfig, series map[string][]services.OHLCV, request Stage05RunRequest) (ComparisonArtifact, error) {
+func executeAndPersistStage05ComparisonJob(jobID uint, config BacktestConfig, series map[string][]services.OHLCV, request Stage05RunRequest, settings ...map[string]string) (ComparisonArtifact, error) {
 	comparison, err := RunStage05Comparison(config, series, request)
 	if err != nil {
 		return ComparisonArtifact{}, err
@@ -176,12 +176,18 @@ func executeAndPersistStage05ComparisonJob(jobID uint, config BacktestConfig, se
 	if err != nil {
 		return ComparisonArtifact{}, err
 	}
-	validationBytes, err := json.Marshal(struct {
-		SchemaVersion     string                           `json:"schema_version"`
-		ComparisonDigest  string                           `json:"comparison_digest"`
-		DatasetManifestID string                           `json:"dataset_manifest_id"`
-		Results           map[string]Stage05StrategyResult `json:"results"`
-	}{"stage07-source-artifact-v1", comparison.ArtifactDigest, comparison.ManifestID, comparison.Results})
+	replaySettings := map[string]string{}
+	if len(settings) == 1 {
+		replaySettings = stage07ReplaySettings(settings[0])
+	}
+	validationBytes, err := json.Marshal(stage07SourceArtifact{
+		SchemaVersion:        stage07SourceArtifactSchemaVersion,
+		ComparisonDigest:     comparison.ArtifactDigest,
+		DatasetManifestID:    comparison.ManifestID,
+		ReplaySettings:       replaySettings,
+		ReplaySettingsDigest: stage07SettingsDigest(replaySettings),
+		Results:              comparison.Results,
+	})
 	if err != nil || len(validationBytes) > 16<<20 {
 		return ComparisonArtifact{}, fmt.Errorf("bounded Stage 07 source artifact unavailable")
 	}

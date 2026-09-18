@@ -77,12 +77,17 @@ func contains(interval Interval, at time.Time) bool {
 }
 
 type FrozenDecision struct {
-	FoldIndex       int               `json:"fold_index"`
-	Choice          string            `json:"choice"`
-	Parameters      map[string]string `json:"parameters"`
-	FitDigest       string            `json:"fit_digest"`
-	SelectionDigest string            `json:"selection_digest"`
-	ArtifactDigest  string            `json:"artifact_digest"`
+	FoldIndex          int               `json:"fold_index"`
+	Choice             string            `json:"choice"`
+	Parameters         map[string]string `json:"parameters"`
+	FitDigest          string            `json:"fit_digest"`
+	SelectionDigest    string            `json:"selection_digest"`
+	ArtifactDigest     string            `json:"artifact_digest"`
+	TrainDigest        string            `json:"train_digest,omitempty"`
+	ValidationDigest   string            `json:"validation_digest,omitempty"`
+	TestDigest         string            `json:"test_digest,omitempty"`
+	DataDigest         string            `json:"data_digest,omitempty"`
+	SelectionRationale string            `json:"selection_rationale,omitempty"`
 }
 
 func (f FrozenDecision) Digest() (string, error) {
@@ -124,9 +129,13 @@ type FoldResult struct {
 const MaxFoldArtifactBytes = 4 << 20
 
 type FoldFit struct {
-	Choice     string            `json:"choice"`
-	Parameters map[string]string `json:"parameters"`
-	Artifact   []byte            `json:"artifact"`
+	Choice             string            `json:"choice"`
+	Parameters         map[string]string `json:"parameters"`
+	Artifact           []byte            `json:"artifact"`
+	TrainDigest        string            `json:"train_digest,omitempty"`
+	ValidationDigest   string            `json:"validation_digest,omitempty"`
+	DataDigest         string            `json:"data_digest,omitempty"`
+	SelectionRationale string            `json:"selection_rationale,omitempty"`
 }
 
 type TradePrimitive struct {
@@ -238,7 +247,11 @@ func RunWalkForward(manifest ExperimentManifest, samples []Sample, factory FoldR
 			Parameters         map[string]string
 			Allowed            map[string][]string
 		}{fold.Index, validationDigest, fit.Choice, fit.Parameters, cloneChoices(manifest.Spec.AllowedTuning)})
-		frozen := FrozenDecision{FoldIndex: fold.Index, Choice: fit.Choice, Parameters: cloneStringMap(fit.Parameters), FitDigest: fitDigest, SelectionDigest: selectionDigest, ArtifactDigest: artifactDigest}
+		testDigest, err := sampleDigest(split.Test)
+		if err != nil {
+			return WalkForwardResult{}, err
+		}
+		frozen := FrozenDecision{FoldIndex: fold.Index, Choice: fit.Choice, Parameters: cloneStringMap(fit.Parameters), FitDigest: fitDigest, SelectionDigest: selectionDigest, ArtifactDigest: artifactDigest, TrainDigest: fit.TrainDigest, ValidationDigest: fit.ValidationDigest, TestDigest: testDigest, DataDigest: fit.DataDigest, SelectionRationale: fit.SelectionRationale}
 		if frozen.Choice == "" || frozen.FitDigest == "" || frozen.SelectionDigest == "" {
 			return WalkForwardResult{}, &DiagnosticError{Code: DiagnosticTestLeakage, Field: fmt.Sprintf("folds[%d].frozen", fold.Index), Details: "trusted frozen decision is incomplete"}
 		}

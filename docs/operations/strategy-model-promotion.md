@@ -11,4 +11,12 @@ POST /api/validation/transitions
 
 Do not copy request fields from an LLM or mutable settings without matching them to the stored manifest/evidence. Bootstrap and contract-fixture artifacts cannot be promoted. Paper/live authority requires exact implementation, configuration, run-manifest, artifact, policy, dataset/universe, evidence, approval, elapsed-monitoring, and deployment digests. These digest classes are not interchangeable: an implementation digest cannot stand in for governed configuration or a replay manifest.
 
+For new Stage 07 runs, source jobs must expose a `stage07-source-artifact-v2`
+replay-settings digest. Older Stage 05 source envelopes are intentionally
+rejected: rerun the canonical comparison against the same immutable Stage 04
+dataset before creating the validation experiment. A source comparison is
+provenance only; each fold performs separate train, validation, and untouched
+test replay. Do not treat a prior comparison curve, aggregate cost, or trade
+list as fold evidence.
+
 Rollback uses `POST /api/validation/rollback` with the deployed context, predefined rollback evidence, fallback version, stable idempotency key, and an authenticated rollback-capable principal. Then perform the Stage 08 cutover rollback and restore compatible flags. Confirm `/api/operations/status`, ledger reconciliation, and immutable transition history. Rollback never deletes economics or validation history.
