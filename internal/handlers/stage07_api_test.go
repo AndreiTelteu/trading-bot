@@ -79,7 +79,7 @@ func TestAnalyzeTopNOperationalLimitRejectsMalformedValue(t *testing.T) {
 func TestStage07GenericSettingsAPICannotBypassGovernance(t *testing.T) {
 	app := fiber.New()
 	app.Put("/settings", UpdateSettings)
-	for _, payload := range []string{`[{"key":"model_rollout_state","value":"full_live"}]`, `[{"key":"active_model_version","value":"forged"}]`, `[{"key":"model_rollback_target","value":"forged"}]`, `[{"key":"selection_policy_top_k","value":"999"}]`, `[{"key":"risk_per_trade","value":"99"}]`, `[{"key":"universe_top_k","value":"1"}]`, `[{"key":"paper_fee_bps","value":"0"}]`, `[{"key":"strategy_version","value":"forged"}]`} {
+	for _, payload := range []string{`[{"key":"model_rollout_state","value":"full_live"}]`, `[{"key":"active_model_version","value":"forged"}]`, `[{"key":"model_rollback_target","value":"forged"}]`, `[{"key":"selection_policy_top_k","value":"999"}]`, `[{"key":"risk_per_trade","value":"99"}]`, `[{"key":"universe_top_k","value":"1"}]`, `[{"key":"research_readiness_min_folds","value":"1"}]`, `[{"key":"paper_fee_bps","value":"0"}]`, `[{"key":"strategy_version","value":"forged"}]`} {
 		request := httptest.NewRequest("PUT", "/settings", bytes.NewBufferString(payload))
 		request.Header.Set("Content-Type", "application/json")
 		response, err := app.Test(request)

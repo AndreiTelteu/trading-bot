@@ -24,6 +24,9 @@ Require statistically meaningful, reproducible evidence before a strategy or mod
 - [x] Reject validation when windows, observations, trades, or regimes are insufficient.
 - [x] Resolve and preflight the effective walk-forward policy before launching either replay lane; the governed default remains 12 training months plus 3 test months, and warmup does not count toward the validation interval.
 - [x] Persist the effective train/test/bootstrap policy in the versioned backtest run manifest.
+- [x] Require the independent `research-readiness-v1` preflight for Stage 05/06
+  source comparisons. Its policy snapshot is included in the Stage 07 replay
+  settings envelope and generic settings cannot weaken it.
 
 ### Causally isolated fold execution
 

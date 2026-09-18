@@ -33,11 +33,16 @@ type SeriesKey struct {
 
 type SeriesCoverage struct {
 	SeriesKey
-	SymbolVersion       int      `json:"symbol_version"`
-	ListedAt            string   `json:"listed_at"`
-	DelistedAt          string   `json:"delisted_at,omitempty"`
-	SymbolAvailableAt   string   `json:"symbol_available_at"`
-	AssetAvailableAt    string   `json:"asset_available_at"`
+	SymbolVersion     int    `json:"symbol_version"`
+	ListedAt          string `json:"listed_at"`
+	DelistedAt        string `json:"delisted_at,omitempty"`
+	SymbolAvailableAt string `json:"symbol_available_at"`
+	AssetAvailableAt  string `json:"asset_available_at"`
+	// Retrieved timestamps make metadata freshness auditable at the immutable
+	// manifest cutoff. Empty values identify pre-readiness manifests and fail
+	// the readiness gate rather than being treated as current metadata.
+	SymbolRetrievedAt   string   `json:"symbol_retrieved_at,omitempty"`
+	AssetRetrievedAt    string   `json:"asset_retrieved_at,omitempty"`
 	SeriesHash          string   `json:"series_hash"`
 	TradabilityHash     string   `json:"tradability_hash,omitempty"`
 	TradabilityRows     int      `json:"tradability_rows"`

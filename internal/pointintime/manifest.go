@@ -130,6 +130,8 @@ func BuildManifest(db *gorm.DB, request BuildRequest) (Manifest, error) {
 		}
 		d.SymbolAvailableAt = canonicalTime(symbol.AvailableAt)
 		d.AssetAvailableAt = canonicalTime(asset.AvailableAt)
+		d.SymbolRetrievedAt = canonicalTime(symbol.RetrievedAt)
+		d.AssetRetrievedAt = canonicalTime(asset.RetrievedAt)
 		if symbol.AvailableAt.After(coverageStart) {
 			d.QualityFlags = uniqueSorted(append(d.QualityFlags, "metadata_unavailable_at_interval_start"))
 			d.Complete = false

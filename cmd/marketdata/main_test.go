@@ -6,7 +6,7 @@ func TestMarketdataReadOnlyActionsDoNotRequireWriterPools(t *testing.T) {
 	for _, input := range []struct {
 		action string
 		dryRun bool
-	}{{"coverage", false}, {"ingest", true}} {
+	}{{"coverage", false}, {"readiness", false}, {"ingest", true}} {
 		requirements := marketdataPoolRequirements(input.action, input.dryRun)
 		if requirements.Migrate || !requirements.ValidateRuntime || requirements.LedgerWriter || requirements.ParityWriter {
 			t.Fatalf("%+v requirements = %+v", input, requirements)

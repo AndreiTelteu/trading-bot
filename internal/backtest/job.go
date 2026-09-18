@@ -158,6 +158,10 @@ func runStage05ComparisonJob(jobID uint, request Stage05RunRequest, overrides ma
 		failBacktestJob(jobID, &StrategyDiagnosticError{Code: DiagnosticManifestRequired, Strategy: request.StrategyID, Details: "production Stage 05 job requires Stage 04 evidence"})
 		return
 	}
+	if err := preflightResearchReadiness(config, settings); err != nil {
+		failBacktestJob(jobID, err)
+		return
+	}
 	database.DB.Model(&database.BacktestJob{}).Where("id=?", jobID).Update("dataset_manifest_id", config.DatasetManifestID)
 	updateBacktestJob(jobID, "running", .35, "Running normalized candidate and market baselines")
 	_, err = executeAndPersistStage05ComparisonJob(jobID, config, series, request, settings)
@@ -214,7 +218,30 @@ func RunStage05ComparisonSyncWithOverrides(request Stage05RunRequest, overrides 
 	if err != nil {
 		return ComparisonArtifact{}, err
 	}
+	if err := preflightResearchReadiness(config, settings); err != nil {
+		return ComparisonArtifact{}, err
+	}
 	return RunStage05Comparison(config, series, request)
+}
+
+func preflightResearchReadiness(config BacktestConfig, settings map[string]string) error {
+	if !config.DatasetManifestRequired || !config.DatasetManifestValidated {
+		return &StrategyDiagnosticError{Code: DiagnosticManifestRequired, Details: "research readiness requires a validated point-in-time manifest"}
+	}
+	report, err := pointintime.PreflightResearchReadiness(database.DB, pointintime.ResearchReadinessRequest{
+		ManifestID: config.DatasetManifestID, Start: config.Start, End: config.End,
+		Symbols: config.Symbols, Benchmark: config.BenchmarkSymbol,
+		DecisionTimeframe: config.Timeframe, ExecutionTimeframe: config.ExecutionTimeframe,
+		Policy: pointintime.ResearchReadinessPolicyFromSettings(settings),
+	})
+	if err != nil {
+		operations.RecordMissingMarketData("research_readiness", config.DatasetManifestID, err)
+		return err
+	}
+	if !report.Passed { // defensive: Preflight returns an error for every failed report.
+		return &pointintime.ResearchReadinessError{Report: report}
+	}
+	return nil
 }
 
 func GetBacktestJob(id uint) (*database.BacktestJob, error) {

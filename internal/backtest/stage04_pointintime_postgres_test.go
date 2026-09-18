@@ -78,6 +78,16 @@ func TestStage04PointInTimePreparationUsesExactSeriesRoles(t *testing.T) {
 	if runManifest.Dataset.ManifestID != manifest.ID || runManifest.Dataset.KnowledgeCutoff == "" || len(runManifest.Dataset.Series) != 2 || runManifest.Dataset.Series[0].ExchangeSymbolID == "symbol-aaa-unmanifested" {
 		t.Fatalf("run audit provenance=%+v", runManifest.Dataset)
 	}
+	// The readiness gate reads the immutable manifest and persisted universe
+	// observations; missing execution evidence is never inferred from decision
+	// bars and an absent universe range is a typed fail-closed diagnostic.
+	readinessPolicy := pointintime.DefaultResearchReadinessPolicy()
+	readinessPolicy.MinSymbols, readinessPolicy.MinDecisionRowsPerSymbol, readinessPolicy.MinExecutionRowsPerSymbol = 1, 1, 1
+	readinessPolicy.TrainMonths, readinessPolicy.TestMonths, readinessPolicy.MinFolds = 1, 1, 1
+	_, readinessErr := pointintime.PreflightResearchReadiness(db, pointintime.ResearchReadinessRequest{ManifestID: manifest.ID, Start: base, End: base.Add(30 * time.Minute), Symbols: []string{"AAAUSDT"}, Benchmark: "BTCUSDT", DecisionTimeframe: "15m", ExecutionTimeframe: "1m", Policy: readinessPolicy})
+	if !pointintime.IsResearchReadinessError(readinessErr) {
+		t.Fatalf("readiness missing data was not typed: %v", readinessErr)
+	}
 
 	settings["backtest_symbols"] = "BTCUSDT"
 	_, _, err = preparePointInTimeBacktestInputs(settings)

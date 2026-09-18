@@ -36,6 +36,10 @@ Ensure every historical decision sees only assets, metadata, liquidity, and bars
 - [x] Validate manifests before a backtest.
 - [x] Persist manifest identity into every run.
 - [x] Provide machine-readable coverage inspection through CLI/API.
+- [x] Provide a read-only research-readiness preflight that rejects insufficient
+  calendar span/folds, per-symbol decision and execution samples, incomplete
+  constraints, stale metadata, missing benchmark/execution series, manifest
+  gaps, insufficient point-in-time universe capacity, and regime samples.
 
 ### Historical universe builder
 
@@ -72,6 +76,10 @@ Ensure every historical decision sees only assets, metadata, liquidity, and bars
 - [x] Optimized range generation remains semantically identical to the single-snapshot reference path.
 - [x] Interrupted backfill resumes without duplicates.
 - [x] Backtest refuses incompatible or insufficient manifests.
+- [x] Stage 05/06 candidate comparison requires `research-readiness-v1` before
+  executing either replay lane; the default is 12 train months plus three
+  independent 3-month test folds (21 months total), not a manufactured
+  shorter-evidence substitute.
 - [x] Full `go test ./...` passes.
 
 ### Cannot yet be proven

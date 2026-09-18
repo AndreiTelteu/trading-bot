@@ -31,7 +31,7 @@ func (publicClient) FetchBars(ctx context.Context, ticker, frame string, start, 
 }
 
 func main() {
-	action := flag.String("action", "coverage", "ingest|import-metadata|build-manifest|coverage|build-universe|build-universe-range")
+	action := flag.String("action", "coverage", "ingest|import-metadata|build-manifest|coverage|readiness|build-universe|build-universe-range")
 	manifestID := flag.String("manifest-id", "", "")
 	dataset := flag.String("dataset-version", "", "")
 	symbolID := flag.String("symbol-id", "", "")
@@ -48,6 +48,7 @@ func main() {
 	policyVersion := flag.String("policy-version", "", "")
 	benchmarkID := flag.String("benchmark-symbol-id", "", "")
 	benchmarkAsset := flag.String("benchmark-asset-id", "", "")
+	benchmarkTicker := flag.String("benchmark-symbol", "BTCUSDT", "independent benchmark ticker for research readiness")
 	metadataFile := flag.String("metadata-file", "", "JSON envelope containing assets, symbols, tradability_intervals, and constraints")
 	knowledgeCutoffText := flag.String("knowledge-cutoff", "", "deterministic retrieval cutoff (RFC3339)")
 	step := flag.Duration("step", 24*time.Hour, "snapshot range step")
@@ -110,6 +111,9 @@ func main() {
 		}
 		_, report, err := pointintime.ValidateManifest(database.DB, pointintime.ManifestRequirement{ManifestID: *manifestID, DatasetVersion: *dataset, Start: start, End: end, Symbols: split(*symbols), Series: exact, Roles: map[string]string{*role: *frame}, RequireComplete: true})
 		output(report, err)
+	case "readiness":
+		report, err := pointintime.PreflightResearchReadiness(database.DB, pointintime.ResearchReadinessRequest{ManifestID: *manifestID, Start: start, End: end, Symbols: split(*symbols), Benchmark: strings.ToUpper(*benchmarkTicker), DecisionTimeframe: *frame, ExecutionTimeframe: "1m", Policy: pointintime.ResearchReadinessPolicyFromSettings(services.GetAllSettings())})
+		output(report, err)
 	case "build-manifest":
 		manifest, err := pointintime.BuildManifest(database.DB, pointintime.BuildRequest{DatasetVersion: *dataset, RequestedStart: start, RequestedEnd: end, KnowledgeCutoff: knowledgeCutoff, SymbolIDs: splitRaw(*symbols), Source: *source})
 		output(manifest, err)
@@ -125,7 +129,7 @@ func main() {
 }
 
 func marketdataActionWrites(action string, dryRun bool) bool {
-	return action != "coverage" && !(action == "ingest" && dryRun)
+	return action != "coverage" && action != "readiness" && !(action == "ingest" && dryRun)
 }
 
 func marketdataPoolRequirements(action string, dryRun bool) database.CommandPoolRequirements {

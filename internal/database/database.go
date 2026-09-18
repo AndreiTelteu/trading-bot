@@ -658,6 +658,20 @@ func SeedDataWithDefaults(defaultBalance float64, defaultCurrency string) error 
 		{Key: "validation_train_months", Value: "12", Category: strPtr("backtest")},
 		{Key: "validation_test_months", Value: "3", Category: strPtr("backtest")},
 		{Key: "validation_bootstrap_iterations", Value: "500", Category: strPtr("backtest")},
+		// Research readiness is an evidence-admissibility policy. These values
+		// are read into immutable research snapshots and cannot be changed by
+		// the generic settings API.
+		{Key: "research_readiness_train_months", Value: "12", Category: strPtr("research")},
+		{Key: "research_readiness_test_months", Value: "3", Category: strPtr("research")},
+		{Key: "research_readiness_min_folds", Value: "3", Category: strPtr("research")},
+		{Key: "research_readiness_min_symbols", Value: "8", Category: strPtr("research")},
+		{Key: "research_readiness_min_decision_rows_per_symbol", Value: "1000", Category: strPtr("research")},
+		{Key: "research_readiness_min_execution_rows_per_symbol", Value: "10000", Category: strPtr("research")},
+		{Key: "research_readiness_min_regime_snapshots", Value: "3", Category: strPtr("research")},
+		{Key: "research_readiness_min_universe_candidates", Value: "8", Category: strPtr("research")},
+		{Key: "research_readiness_min_universe_members", Value: "3", Category: strPtr("research")},
+		{Key: "research_readiness_max_metadata_age", Value: "168h", Category: strPtr("research")},
+		{Key: "research_readiness_max_universe_gap", Value: "48h", Category: strPtr("research")},
 		// DEPRECATED: Manual probability model betas are superseded by the learned model artifact.
 		// Retained for rollback compatibility. Do not use for new configurations.
 		{Key: "prob_model_enabled", Value: "false", Category: strPtr("probabilistic")}, // DEPRECATED

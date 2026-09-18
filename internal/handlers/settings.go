@@ -75,7 +75,7 @@ func authorityAffectingSetting(key string) bool {
 	if key == "auto_trade_enabled" || key == "universe_analyze_top_n" {
 		return false
 	}
-	for _, prefix := range []string{"active_", "selection_", "model_", "universe_", "risk_", "portfolio_", "entry_", "rebuy_", "pyramid", "max_position", "max_trade", "max_order", "auto_trade", "buy_only", "min_confidence", "paper_", "backtest_", "exchange_", "execution_", "trading_engine", "stage08_", "stop_", "tp_", "trailing_", "time_stop", "position_", "strategy_", "indicator_", "regime_", "cash_", "turnover_", "fee_", "slippage_", "rollout_", "vol_", "atr_", "sell_", "allow_sell", "stream_exit"} {
+	for _, prefix := range []string{"active_", "selection_", "model_", "universe_", "research_readiness_", "risk_", "portfolio_", "entry_", "rebuy_", "pyramid", "max_position", "max_trade", "max_order", "auto_trade", "buy_only", "min_confidence", "paper_", "backtest_", "exchange_", "execution_", "trading_engine", "stage08_", "stop_", "tp_", "trailing_", "time_stop", "position_", "strategy_", "indicator_", "regime_", "cash_", "turnover_", "fee_", "slippage_", "rollout_", "vol_", "atr_", "sell_", "allow_sell", "stream_exit"} {
 		if strings.HasPrefix(key, prefix) {
 			return true
 		}
