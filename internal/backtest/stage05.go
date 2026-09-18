@@ -126,6 +126,10 @@ type ComparisonRow struct {
 	Descriptor            StrategyDescriptor    `json:"descriptor"`
 	Parameters            map[string]string     `json:"parameters"`
 	ManifestIdentity      string                `json:"manifest_identity"`
+	ImplementationDigest  string                `json:"implementation_digest"`
+	ConfigDigest          string                `json:"config_digest"`
+	RunManifestDigest     string                `json:"run_manifest_digest"`
+	DatasetDigest         string                `json:"dataset_digest"`
 	DatasetManifestID     string                `json:"dataset_manifest_id"`
 	NormalizedRunManifest NormalizedRunManifest `json:"normalized_run_manifest"`
 	Baseline              bool                  `json:"baseline"`
@@ -1739,7 +1743,9 @@ func buildStage05Comparison(config BacktestConfig, request Stage05RunRequest, ca
 		normalized := NormalizedRunManifest{SchemaVersion: "normalized-run-manifest-v1", DatasetManifestID: config.DatasetManifestID, StrategyID: id, StrategyVersion: result.Manifest.Strategy.Descriptor.Version, Parameters: cloneStringMap(result.Manifest.Strategy.Parameters), Assumptions: assumptions}
 		encodedManifest, _ := json.Marshal(normalized)
 		runDigest := fmt.Sprintf("%x", sha256.Sum256(encodedManifest))
-		row := ComparisonRow{StrategyID: id, StrategyVersion: result.Manifest.Strategy.Descriptor.Version, Descriptor: cloneStrategyDescriptor(result.Manifest.Strategy.Descriptor), Parameters: cloneStringMap(result.Manifest.Strategy.Parameters), ManifestIdentity: runDigest, DatasetManifestID: result.Manifest.DatasetManifestID, NormalizedRunManifest: normalized, Baseline: result.Manifest.Strategy.Descriptor.Baseline, Metrics: result.Metrics, Reasons: []string{}}
+		implementationDigest := strategyImplementationDigest(id)
+		configDigest := strategyConfigDigest(id, result.Manifest.Strategy.Descriptor.Version, result.Manifest.Strategy.Parameters)
+		row := ComparisonRow{StrategyID: id, StrategyVersion: result.Manifest.Strategy.Descriptor.Version, Descriptor: cloneStrategyDescriptor(result.Manifest.Strategy.Descriptor), Parameters: cloneStringMap(result.Manifest.Strategy.Parameters), ManifestIdentity: runDigest, ImplementationDigest: implementationDigest, ConfigDigest: configDigest, RunManifestDigest: runDigest, DatasetDigest: result.Manifest.DatasetManifestID, DatasetManifestID: result.Manifest.DatasetManifestID, NormalizedRunManifest: normalized, Baseline: result.Manifest.Strategy.Descriptor.Baseline, Metrics: result.Metrics, Reasons: []string{}}
 		if result.Metrics.TotalReturn.Available && cashReturn.Available {
 			row.ExcessVsCash = availableMetric(result.Metrics.TotalReturn.Value - cashReturn.Value)
 		} else {
@@ -1827,6 +1833,25 @@ func buildStage05Comparison(config BacktestConfig, request Stage05RunRequest, ca
 	return artifact
 }
 
+func strategyImplementationDigest(id string) string {
+	// Stage 06 is the only deployable candidate and its digest covers the
+	// shared planner, target conversion and shared execution contracts. The
+	// Stage 05 baselines use the same target interpreter but remain distinct
+	// configuration identities.
+	if id == StrategyLegacyCompatibility {
+		return tradingcore.StrategyArtifactDigest("legacy")
+	}
+	return tradingcore.StrategyArtifactDigest("target")
+}
+
+func strategyConfigDigest(id, version string, parameters map[string]string) string {
+	payload, _ := json.Marshal(struct {
+		ID, Version string
+		Parameters  map[string]string
+	}{id, version, cloneStringMap(parameters)})
+	return fmt.Sprintf("%x", sha256.Sum256(payload))
+}
+
 func comparisonDigest(value ComparisonArtifact) (string, error) {
 	value.ArtifactDigest = ""
 	encoded, err := json.Marshal(value)
@@ -1843,6 +1868,9 @@ func MarshalComparisonArtifact(value ComparisonArtifact) ([]byte, error) {
 	}
 	if value.CandidateEvidence != nil && (value.CandidateEvidence.SchemaVersion != "trend-momentum-candidate-evidence-v1" || len(value.CandidateEvidence.FactorTraces) > 1024 || len(value.CandidateEvidence.Regimes) > 512 || len(value.CandidateEvidence.ExitReasons) > 1024 || len(value.CandidateEvidence.Diagnostics) > 1024 || len(value.CandidateEvidence.Sensitivity) > 16 || len(value.CandidateEvidence.Parity.BacktestApproved) > 512 || len(value.CandidateEvidence.Parity.PaperShadowApproved) > 512 || len(value.CandidateEvidence.Parity.LiveDryRunRequests) > 512 || len(value.CandidateEvidence.Parity.LiveFenceCodes) > 512 || len(value.CandidateEvidence.Parity.PaperShadowFenceCodes) > 512) {
 		return nil, fmt.Errorf("unbounded candidate evidence")
+	}
+	if err := validateComparisonIdentities(value); err != nil {
+		return nil, err
 	}
 	expected, err := comparisonDigest(value)
 	if err != nil || value.ArtifactDigest == "" || expected != value.ArtifactDigest {
@@ -1872,11 +1900,23 @@ func UnmarshalComparisonArtifact(data []byte) (ComparisonArtifact, error) {
 	if value.CandidateEvidence != nil && (value.CandidateEvidence.SchemaVersion != "trend-momentum-candidate-evidence-v1" || len(value.CandidateEvidence.FactorTraces) > 1024 || len(value.CandidateEvidence.Regimes) > 512 || len(value.CandidateEvidence.ExitReasons) > 1024 || len(value.CandidateEvidence.Diagnostics) > 1024 || len(value.CandidateEvidence.Sensitivity) > 16 || len(value.CandidateEvidence.Parity.BacktestApproved) > 512 || len(value.CandidateEvidence.Parity.PaperShadowApproved) > 512 || len(value.CandidateEvidence.Parity.LiveDryRunRequests) > 512 || len(value.CandidateEvidence.Parity.LiveFenceCodes) > 512 || len(value.CandidateEvidence.Parity.PaperShadowFenceCodes) > 512) {
 		return ComparisonArtifact{}, fmt.Errorf("unbounded candidate evidence")
 	}
+	if err := validateComparisonIdentities(value); err != nil {
+		return ComparisonArtifact{}, err
+	}
 	expected, err := comparisonDigest(value)
 	if err != nil || expected != value.ArtifactDigest {
 		return ComparisonArtifact{}, fmt.Errorf("comparison artifact digest mismatch")
 	}
 	return value, nil
+}
+
+func validateComparisonIdentities(value ComparisonArtifact) error {
+	for _, row := range value.Rows {
+		if row.ImplementationDigest == "" || row.ConfigDigest == "" || row.RunManifestDigest == "" || row.DatasetDigest == "" || row.DatasetDigest != value.ManifestID || row.RunManifestDigest != row.ManifestIdentity || row.ConfigDigest != strategyConfigDigest(row.StrategyID, row.StrategyVersion, row.Parameters) || row.ImplementationDigest != strategyImplementationDigest(row.StrategyID) {
+			return fmt.Errorf("comparison row has mismatched typed identities: %s", row.StrategyID)
+		}
+	}
+	return nil
 }
 
 func sameStrings(a, b []string) bool {

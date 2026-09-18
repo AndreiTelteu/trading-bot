@@ -91,6 +91,17 @@ This stage implements a research/shadow candidate. It does not authorize paper/l
 - [x] Ablations can determine which component contributes value.
 - [x] Reviewer checks lookahead, parameter leakage, turnover, and cap enforcement.
 
+## Shared executable identity
+
+The Stage 06 planner, completed-4h feature construction, ranking, regime, exit
+precedence, and target-weight calculation live in `internal/tradingcore`. The
+backtest adapter translates persisted point-in-time bars to its input and the
+runtime adapter captures timestamped 15-minute exchange bars into that same
+input. The candidate executable derives exact order deltas from the resulting
+weights and the immutable portfolio snapshot; it does not accept pre-populated
+`target_action` or `target_quantity` settings. Missing or stale planner input
+fails closed. Direct live submission remains fenced.
+
 ## Completion evidence
 
 - Initial implementation commit: `d1a45a6`.

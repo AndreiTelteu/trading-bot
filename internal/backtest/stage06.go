@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"trading-go/internal/services"
@@ -361,7 +362,99 @@ type candidateScore struct {
 	reason                    string
 }
 
+// Plan is a thin Stage 05 evidence adapter over the shared domain planner.
+// It may translate traces and diagnostics, but does not calculate features,
+// ranks, regime, targets, or exits.
 func (trendMomentumPlanner) Plan(context Stage05PlanningContext) (Stage05Plan, error) {
+	p := context.Selected.Parameters
+	if len(context.Reference) == 0 {
+		return Stage05Plan{}, &StrategyDiagnosticError{Code: DiagnosticInsufficientWarmup, Strategy: StrategyTrendMomentumCandidate, Field: "benchmark", Details: "completed benchmark regime warmup unavailable"}
+	}
+	lastDecisionOpen := time.UnixMilli(context.Reference[len(context.Reference)-1].OpenTime).UTC()
+	if lastDecisionOpen.Minute() != 45 || lastDecisionOpen.Hour()%4 != 3 {
+		return Stage05Plan{Targets: append([]string(nil), context.LastTargets...), Decide: false}, nil
+	}
+	snapshot, ok := replayAsOf(context.Replays, context.At)
+	if !ok || !snapshot.complete {
+		return Stage05Plan{}, &StrategyDiagnosticError{Code: DiagnosticUniverseCoverage, Strategy: StrategyTrendMomentumCandidate, Details: "complete active/shortlist point-in-time snapshot is missing or stale"}
+	}
+	if err := validateStage06Identities(snapshot.members, context.Config); err != nil {
+		return Stage05Plan{}, err
+	}
+	members := make([]tradingcore.TrendMomentumMember, 0, len(snapshot.members))
+	for _, member := range snapshot.members {
+		eligible, err := replayMemberEligible(member.Stage, member.Shortlisted, member.RejectionReason != "", ReplayMembershipPolicy{IncludeShortlist: p["include_shortlist"] == "true"})
+		if err != nil {
+			return Stage05Plan{}, &StrategyDiagnosticError{Code: DiagnosticUniverseCoverage, Strategy: StrategyTrendMomentumCandidate, Field: "stage", Details: err.Error()}
+		}
+		members = append(members, tradingcore.TrendMomentumMember{Symbol: member.Symbol, AssetID: member.AssetID, ExchangeSymbolID: member.ExchangeSymbolID, Eligible: eligible})
+	}
+	input := tradingcore.TrendMomentumInput{DecisionAt: context.At, LastRebalance: context.LastRebalance, Benchmark: stage06CoreBars(context.Reference), Series: map[string][]tradingcore.TrendMomentumBar{}, Members: members, LastTargets: append([]string(nil), context.LastTargets...), Parameters: cloneStringMap(p)}
+	for symbol, bars := range context.Series {
+		input.Series[symbol] = stage06CoreBars(bars)
+	}
+	for symbol := range context.Positions {
+		input.Positions = append(input.Positions, tradingcore.TrendMomentumPosition{Symbol: symbol, EntryPrice: context.PositionEntries[symbol], MarkPrice: context.Marks[symbol]})
+	}
+	plan, err := tradingcore.PlanTrendMomentum(input)
+	if err != nil {
+		code, field := DiagnosticManifestIncompatible, "planner"
+		if strings.Contains(err.Error(), "warmup") {
+			code, field = DiagnosticInsufficientWarmup, "benchmark"
+		}
+		return Stage05Plan{}, &StrategyDiagnosticError{Code: code, Strategy: StrategyTrendMomentumCandidate, Field: field, Details: err.Error()}
+	}
+	components := stage06Components[p["variant"]]
+	if p["variant"] == "combined" && p["vol_normalization"] == "true" {
+		components.VolatilityRanking, components.VolatilitySizing = true, true
+	}
+	factors := make([]FactorTrace, 0, len(plan.Factors))
+	rankings := make([]RankingArtifact, 0, len(plan.Factors))
+	lookback := p["lookback_bars"]
+	for _, factor := range plan.Factors {
+		rankingScore := factor.Normalized
+		if !components.RelativeRanking {
+			rankingScore = 0
+			if factor.AbsoluteTrend {
+				rankingScore = 1
+			}
+		}
+		rankings = append(rankings, RankingArtifact{DecisionAt: canonicalTime(context.At), Symbol: factor.Symbol, Rank: factor.Rank, Score: rankingScore, Selected: factor.Selected, AssetID: factor.AssetID, ExchangeSymbolID: factor.ExchangeSymbolID})
+		factors = append(factors, FactorTrace{SchemaVersion: FactorTraceSchemaVersion, DecisionAt: canonicalTime(context.At), ObservedAt: canonicalTime(context.At), AssetObservedAt: canonicalTime(context.At), BenchmarkObservedAt: canonicalTime(context.At), StrategyVersion: "1.0.0", Ablation: p["variant"], Symbol: factor.Symbol, AssetID: factor.AssetID, ExchangeSymbolID: factor.ExchangeSymbolID, LookbackReturns: map[string]float64{lookback + "x4h": factor.Momentum}, CompositeMomentum: factor.Momentum, RealizedVolatility: factor.Volatility, VolatilityFloor: parseFloatDefault(p["vol_floor"]), NormalizedMomentum: factor.Normalized, AbsoluteTrend: factor.AbsoluteTrend, AbsoluteTrendPrice: factor.Last, AbsoluteTrendMean: factor.TrendMean, RelativeRank: factor.Rank, Eligible: true, Selected: factor.Selected, Regime: plan.Regime, TargetWeight: plan.TargetWeights[factor.Symbol], Reason: factor.Reason, ModelObservation: parseFloatDefault(p["model_observation"]), Components: components})
+	}
+	exits := map[string]ExitReasonTrace{}
+	for symbol, exit := range plan.Exits {
+		exits[symbol] = ExitReasonTrace{Primary: exit.Primary, Concurrent: append([]string(nil), exit.Concurrent...)}
+	}
+	diagnostics := make([]StrategyTraceDiagnostic, 0, len(plan.Diagnostics))
+	for _, value := range plan.Diagnostics {
+		parts := strings.SplitN(value, ":", 2)
+		code := DiagnosticManifestIncompatible
+		if len(parts) == 2 && parts[1] == "insufficient_warmup" {
+			code = DiagnosticInsufficientWarmup
+		}
+		if len(parts) == 2 && parts[1] == "feature_bucket_mismatch" {
+			code = DiagnosticFeatureBucket
+		}
+		diagnostics = append(diagnostics, StrategyTraceDiagnostic{Code: code, Symbol: parts[0], Details: value})
+	}
+	regime := &RegimeObservation{SchemaVersion: FactorTraceSchemaVersion, DecisionAt: canonicalTime(context.At), ObservedAt: canonicalTime(context.At), State: plan.Regime, TargetGross: plan.TargetGross, TargetNet: plan.TargetGross, Reason: plan.RegimeReason}
+	return Stage05Plan{Targets: plan.Targets, Rankings: rankings, Decide: plan.Decide, TargetWeights: plan.TargetWeights, Regime: plan.Regime, RegimeObservation: regime, Factors: factors, ExitReasons: exits, Diagnostics: diagnostics, RiskStopOnly: plan.RiskStopOnly}, nil
+}
+
+func stage06CoreBars(values []services.OHLCV) []tradingcore.TrendMomentumBar {
+	result := make([]tradingcore.TrendMomentumBar, 0, len(values))
+	for _, value := range values {
+		result = append(result, tradingcore.TrendMomentumBar{OpenTime: time.UnixMilli(value.OpenTime).UTC(), CloseTime: time.UnixMilli(value.CloseTime).UTC(), Close: value.Close})
+	}
+	return result
+}
+
+// legacyTrendMomentumPlanForCompatibility retains the old evidence adapter for
+// a short migration window.  New decisions are made exclusively by the
+// tradingcore planner below; keeping this function isolated makes accidental
+// reintroduction of a second alpha path visible in review.
+func legacyTrendMomentumPlanForCompatibility(context Stage05PlanningContext) (Stage05Plan, error) {
 	p := context.Selected.Parameters
 	intent := p["execution_intent"]
 	if intent == "paper_capital" || intent == "live_submit" || intent == "promotion" {

@@ -13,7 +13,13 @@ import (
 
 func TestStage05ComparisonPersistenceIsBoundedAndSchemaVersioned(t *testing.T) {
 	db := testutil.SetupPostgresDB(t)
-	comparison := ComparisonArtifact{SchemaVersion: ComparisonSchemaVersion, ManifestID: "manifest-fixture", Candidate: "candidate@1.0.0", Assumptions: NormalizedAssumptions{StartingCapital: "1000", MaxGrossExposure: "1", MaxNetExposure: "1", DatasetManifestID: "manifest-fixture", FinalPolicy: "liquidate"}, Rows: []ComparisonRow{{StrategyID: StrategyCashID, StrategyVersion: "1.0.0", Baseline: true, Metrics: ComparableMetrics{SchemaVersion: EvaluationSchemaVersion, StartingCapital: "1000", EndingEquity: "1000", Reconciled: true}}, {StrategyID: "candidate", StrategyVersion: "1.0.0", Metrics: ComparableMetrics{SchemaVersion: EvaluationSchemaVersion, StartingCapital: "1000", EndingEquity: "1010", Reconciled: true}}}, Governance: GovernanceGate{SchemaVersion: GovernanceSchemaVersion, OptimizationAllowed: true, PromotionAllowed: true}}
+	rows := []ComparisonRow{{StrategyID: StrategyCashID, StrategyVersion: "1.0.0", Baseline: true, Metrics: ComparableMetrics{SchemaVersion: EvaluationSchemaVersion, StartingCapital: "1000", EndingEquity: "1000", Reconciled: true}}, {StrategyID: "candidate", StrategyVersion: "1.0.0", Metrics: ComparableMetrics{SchemaVersion: EvaluationSchemaVersion, StartingCapital: "1000", EndingEquity: "1010", Reconciled: true}}}
+	for i := range rows {
+		rows[i].ManifestIdentity, rows[i].RunManifestDigest, rows[i].DatasetDigest = "run-"+rows[i].StrategyID, "run-"+rows[i].StrategyID, "manifest-fixture"
+		rows[i].ImplementationDigest = strategyImplementationDigest(rows[i].StrategyID)
+		rows[i].ConfigDigest = strategyConfigDigest(rows[i].StrategyID, rows[i].StrategyVersion, rows[i].Parameters)
+	}
+	comparison := ComparisonArtifact{SchemaVersion: ComparisonSchemaVersion, ManifestID: "manifest-fixture", Candidate: "candidate@1.0.0", Assumptions: NormalizedAssumptions{StartingCapital: "1000", MaxGrossExposure: "1", MaxNetExposure: "1", DatasetManifestID: "manifest-fixture", FinalPolicy: "liquidate"}, Rows: rows, Governance: GovernanceGate{SchemaVersion: GovernanceSchemaVersion, OptimizationAllowed: true, PromotionAllowed: true}}
 	comparison.Governance.PromotionAllowed = false
 	comparison.Governance.Reasons = []string{"pending_stage07_validation"}
 	comparison.ArtifactDigest, _ = comparisonDigest(comparison)

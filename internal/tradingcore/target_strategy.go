@@ -3,7 +3,9 @@ package tradingcore
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
+	"math/big"
 	"strconv"
 	"strings"
 )
@@ -89,3 +91,110 @@ func (TargetAllocationStrategy) Decide(_ context.Context, snapshot DecisionConte
 	}
 	return NewStrategyResult(batch, noActions), nil
 }
+
+// TrendMomentumStrategy is the executable Stage 06 strategy.  The adapter
+// supplies a canonical point-in-time TrendMomentumInput, while all feature,
+// ranking, regime and target logic remains in PlanTrendMomentum.  This closes
+// the old runtime hole where a candidate deployment was merely an interpreter
+// for hand-populated target_action/target_quantity settings.
+type TrendMomentumStrategy struct{}
+
+func (TrendMomentumStrategy) Decide(ctx context.Context, snapshot DecisionContext) (StrategyResult, error) {
+	settings := snapshot.Settings()
+	raw := strings.TrimSpace(settings["trend_momentum_input"])
+	if raw == "" {
+		return StrategyResult{}, fmt.Errorf("trend momentum point-in-time input is required")
+	}
+	var input TrendMomentumInput
+	if err := json.Unmarshal([]byte(raw), &input); err != nil {
+		return StrategyResult{}, fmt.Errorf("decode trend momentum input: %w", err)
+	}
+	if input.DecisionAt.IsZero() {
+		input.DecisionAt = snapshot.DecisionAt()
+	}
+	if !input.DecisionAt.UTC().Equal(snapshot.DecisionAt().UTC()) {
+		return StrategyResult{}, fmt.Errorf("trend momentum decision clock differs from immutable snapshot")
+	}
+	plan, err := PlanTrendMomentum(input)
+	if err != nil {
+		return StrategyResult{}, err
+	}
+	derived, err := trendMomentumTargetSettings(snapshot, settings, plan)
+	if err != nil {
+		return StrategyResult{}, err
+	}
+	derived["trend_momentum_plan_schema"] = plan.SchemaVersion
+	derived["trend_momentum_regime"] = plan.Regime
+	derived["trend_momentum_regime_reason"] = plan.RegimeReason
+	derived["trend_momentum_target_gross"] = decimalPlanValue(plan.TargetGross)
+	contextWithTargets, err := NewDecisionContext(DecisionContextInput{MarketObservedAt: snapshot.MarketObservedAt(), SignalAt: snapshot.SignalAt(), DecisionAt: snapshot.DecisionAt(), Quotes: snapshot.Quotes(), Universe: snapshot.Universe(), Portfolio: snapshot.Portfolio(), Settings: derived, Versions: snapshot.Versions()})
+	if err != nil {
+		return StrategyResult{}, err
+	}
+	return TargetAllocationStrategy{}.Decide(ctx, contextWithTargets)
+}
+
+func trendMomentumTargetSettings(snapshot DecisionContext, base map[string]string, plan TrendMomentumPlan) (map[string]string, error) {
+	settings := cloneStrings(base)
+	portfolio := snapshot.Portfolio()
+	positions := map[InstrumentID]Position{}
+	for _, position := range portfolio.Positions() {
+		positions[position.Instrument.ID] = position
+	}
+	// Equity is exact even though the predeclared research weight is a decimal
+	// feature output. No float quantity is ever passed to the broker contract.
+	equity := new(big.Rat)
+	for _, cash := range portfolio.Cash() {
+		equity.Add(equity, decimalRat(cash.Decimal()))
+	}
+	for _, position := range portfolio.Positions() {
+		equity.Add(equity, notional(position.Quantity, position.MarkPrice))
+	}
+	if equity.Sign() <= 0 {
+		return nil, fmt.Errorf("trend momentum portfolio equity must be positive")
+	}
+	bySymbol := map[string]Instrument{}
+	for _, candidate := range snapshot.Universe().Candidates() {
+		bySymbol[candidate.Instrument.VenueSymbol] = candidate.Instrument
+	}
+	for _, position := range portfolio.Positions() {
+		bySymbol[position.Instrument.VenueSymbol] = position.Instrument
+	}
+	for symbol, instrument := range bySymbol {
+		key := instrument.ID.String()
+		quote, ok := snapshot.Quote(instrument.ID)
+		if !ok || !quote.Last.Valid() {
+			return nil, fmt.Errorf("trend momentum quote unavailable for %s", key)
+		}
+		weight := plan.TargetWeights[symbol]
+		weightDecimal, err := ParseDecimal(decimalPlanValue(weight))
+		if err != nil {
+			return nil, err
+		}
+		desired := new(big.Rat).Quo(new(big.Rat).Mul(equity, decimalRat(weightDecimal)), decimalRat(quote.Last.Decimal()))
+		current := new(big.Rat)
+		if position, ok := positions[instrument.ID]; ok {
+			current = decimalRat(position.Quantity.Decimal())
+		}
+		delta := new(big.Rat).Sub(desired, current)
+		if delta.Sign() == 0 {
+			settings["no_action_code."+key] = "target_unchanged"
+			continue
+		}
+		side := "buy"
+		if delta.Sign() < 0 {
+			side = "sell"
+			delta.Neg(delta)
+		}
+		quantity, err := quantityFromRat(delta)
+		if err != nil {
+			return nil, fmt.Errorf("trend momentum %s target: %w", symbol, err)
+		}
+		settings["target_action."+key], settings["target_quantity."+key] = side, quantity.Decimal().String()
+		settings["target_weight."+key], settings["target_regime."+key] = decimalPlanValue(weight), plan.Regime
+		settings["target_reason."+key] = "trend_momentum_" + plan.Regime
+	}
+	return settings, nil
+}
+
+func decimalPlanValue(value float64) string { return strconv.FormatFloat(value, 'f', 18, 64) }

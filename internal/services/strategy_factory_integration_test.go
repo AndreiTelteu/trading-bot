@@ -29,7 +29,7 @@ func TestRuntimeStrategyRegistryFailsClosedOnUnknownDigest(t *testing.T) {
 	if identity.CodeIdentity != targetStrategyCodeIdentity {
 		t.Fatalf("candidate code identity=%q", identity.CodeIdentity)
 	}
-	if _, ok := strategy.(tradingcore.TargetAllocationStrategy); !ok {
+	if _, ok := strategy.(tradingcore.TrendMomentumStrategy); !ok {
 		t.Fatalf("candidate resolved to %T", strategy)
 	}
 	if _, _, err := instantiateRegisteredStrategy(TrendMomentumCandidateID, TrendMomentumCandidateVersion, strings.Repeat("f", 64)); err == nil {
@@ -65,7 +65,7 @@ func TestProductionSharedOrchestratorBindsBaselineCandidateAndLimitedLive(t *tes
 			wantIdentity := BaselineStrategyID + "@" + BaselineStrategyVersion + "#" + BaselineStrategyDigest
 			if !test.baseline {
 				settings["strategy_id"], settings["strategy_version"], settings["strategy_digest"] = TrendMomentumCandidateID, TrendMomentumCandidateVersion, TrendMomentumCandidateDigest
-				settings["target_action.btc-usdt"], settings["target_quantity.btc-usdt"], settings["target_reason.btc-usdt"] = "buy", "1", "candidate_target"
+				settings["trend_momentum_input"] = stage06RuntimeInputFixture(t, "BTCUSDT")
 				analysis.Signal = "SELL" // Candidate output must not be legacy rule behavior.
 				installStrategyDeployment(t, db, settings, test.state)
 				flags := cutover.SafeFlags()
@@ -114,6 +114,31 @@ func TestProductionSharedOrchestratorBindsBaselineCandidateAndLimitedLive(t *tes
 	}
 }
 
+func stage06RuntimeInputFixture(t *testing.T, symbol string) string {
+	t.Helper()
+	start := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	bars := make([]tradingcore.TrendMomentumBar, 0, 16*31)
+	for i := 0; i < 16*31; i++ {
+		open := start.Add(time.Duration(i) * 15 * time.Minute)
+		bars = append(bars, tradingcore.TrendMomentumBar{OpenTime: open, CloseTime: open.Add(15*time.Minute - time.Millisecond), Close: 100 + float64(i)/16})
+	}
+	parameters := tradingcore.DefaultTrendMomentumParameters()
+	parameters["lookback_bars"], parameters["trend_bars"], parameters["regime_bars"] = "20", "20", "20"
+	encoded, err := json.Marshal(tradingcore.TrendMomentumInput{Benchmark: bars, Series: map[string][]tradingcore.TrendMomentumBar{symbol: bars}, Members: []tradingcore.TrendMomentumMember{{Symbol: symbol, AssetID: "BTC", ExchangeSymbolID: "btc-usdt", Eligible: true}}, Parameters: parameters})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded tradingcore.TrendMomentumInput
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	decoded.DecisionAt = time.Now().UTC()
+	if _, err := tradingcore.PlanTrendMomentum(decoded); err != nil {
+		t.Fatalf("fixture plan: %v", err)
+	}
+	return string(encoded)
+}
+
 func installStrategyDeployment(t *testing.T, db *gorm.DB, settings map[string]string, state string) {
 	t.Helper()
 	envelope, err := BuildRuntimeAuthorityPolicy(settings, state)
@@ -123,9 +148,9 @@ func installStrategyDeployment(t *testing.T, db *gorm.DB, settings map[string]st
 	base := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	spec := validation.ManifestSpec{
 		SchemaVersion: validation.ManifestSchemaVersion, StudyType: "exploratory", Exploratory: true, CodeRevision: targetStrategyCodeIdentity,
-		Candidate: validation.VersionRef{ID: TrendMomentumCandidateID, Version: TrendMomentumCandidateVersion, Digest: TrendMomentumCandidateDigest}, Baseline: validation.VersionRef{ID: BaselineStrategyID, Version: BaselineStrategyVersion, Digest: BaselineStrategyDigest},
+		Candidate: validation.VersionRef{ID: TrendMomentumCandidateID, Version: TrendMomentumCandidateVersion, ImplementationDigest: validation.ImplementationDigest(TrendMomentumCandidateDigest), ConfigDigest: validation.ConfigDigest(envelope.Digest)}, Baseline: validation.VersionRef{ID: BaselineStrategyID, Version: BaselineStrategyVersion, ImplementationDigest: validation.ImplementationDigest(BaselineStrategyDigest), ConfigDigest: validation.ConfigDigest(envelope.Digest)},
 		Policies: validation.PolicyBundle{Composite: "policy-v1", Execution: "exec-v1", Universe: "universe-v1", ModelSelection: "model-v1", EntrySelection: "entry-v1", PortfolioRisk: "risk-v1", Rollout: "rollout-v1", Cost: "paper-cost-v1"}, GovernancePolicy: validation.GovernancePolicyVersion, AuthorityPolicy: envelope,
-		DatasetManifestID: strings.Repeat("a", 64), DatasetManifestHash: strings.Repeat("a", 64), UniversePolicy: "universe-v1", Interval: validation.Interval{Start: base, End: base.Add(5 * time.Hour)}, DecisionClock: "15m-close", ExecutionClock: "dry-run", Seed: 1,
+		DatasetManifestID: strings.Repeat("a", 64), DatasetManifestHash: strings.Repeat("a", 64), DatasetDigest: validation.DatasetDigest(strings.Repeat("a", 64)), UniversePolicy: "universe-v1", Interval: validation.Interval{Start: base, End: base.Add(5 * time.Hour)}, DecisionClock: "15m-close", ExecutionClock: "dry-run", Seed: 1,
 		ExecutionSemantics: map[string]string{"fee_bps": "10", "slippage_bps": "5", "timing": "decision", "liquidity": "bounded"}, Folds: []validation.Fold{
 			{Index: 0, Train: validation.Interval{Start: base, End: base.Add(time.Hour)}, Validation: validation.Interval{Start: base.Add(time.Hour), End: base.Add(2 * time.Hour)}, Test: validation.Interval{Start: base.Add(2 * time.Hour), End: base.Add(3 * time.Hour)}},
 			{Index: 1, Train: validation.Interval{Start: base, End: base.Add(2 * time.Hour)}, Validation: validation.Interval{Start: base.Add(2 * time.Hour), End: base.Add(3 * time.Hour)}, Test: validation.Interval{Start: base.Add(3 * time.Hour), End: base.Add(4 * time.Hour)}},

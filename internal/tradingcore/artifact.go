@@ -20,6 +20,9 @@ var legacyStrategyArtifact []byte
 //go:embed target_strategy.go
 var targetStrategyArtifact []byte
 
+//go:embed trend_momentum.go
+var trendMomentumArtifact []byte
+
 func StrategyArtifactDigest(strategy string) string {
 	hash := sha256.New()
 	hash.Write([]byte("tradingcore-strategy-artifact-v1\x00"))
@@ -36,6 +39,7 @@ func StrategyArtifactDigest(strategy string) string {
 		hash.Write(legacyStrategyArtifact)
 	case "target":
 		hash.Write(targetStrategyArtifact)
+		hash.Write(trendMomentumArtifact)
 	default:
 		return ""
 	}

@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -390,6 +391,15 @@ func buildRuntimeDecisionContext(analyses []AnalyzedCoin, universe *UniverseSele
 	if activeFlags {
 		versions.FlagSchema = flags.SchemaVersion
 	}
+	if identity.ID == TrendMomentumCandidateID {
+		if strings.TrimSpace(coreSettings["trend_momentum_input"]) == "" {
+			raw, inputErr := buildRuntimeTrendMomentumInput(candidates, coreSettings, now)
+			if inputErr != nil {
+				return tradingcore.DecisionContext{}, tradingcore.RiskPolicy{}, inputErr
+			}
+			coreSettings["trend_momentum_input"] = raw
+		}
+	}
 	contextSnapshot, err := tradingcore.NewDecisionContext(tradingcore.DecisionContextInput{MarketObservedAt: now, SignalAt: now, DecisionAt: now, Quotes: quotes, Universe: universeSnapshot, Portfolio: portfolio, Settings: coreSettings, Versions: versions})
 	if err != nil {
 		return tradingcore.DecisionContext{}, tradingcore.RiskPolicy{}, err
@@ -399,6 +409,51 @@ func buildRuntimeDecisionContext(analyses []AnalyzedCoin, universe *UniverseSele
 	maxTurnover := getSettingFloat(settings, "max_turnover", maxGross)
 	policy := tradingcore.RiskPolicy{Version: policyVersion, MaxPositions: getSettingInt(settings, "max_positions", 5), MaxGrossExposure: mustCoreAmount(strconv.FormatFloat(maxGross, 'f', -1, 64)), MaxPositionValue: mustCoreAmount(strconv.FormatFloat(maxPosition, 'f', -1, 64)), MaxTurnover: mustCoreAmount(strconv.FormatFloat(maxTurnover, 'f', -1, 64)), CashReserve: mustCoreAmount("0"), MaxConcurrentOrders: getSettingInt(settings, "max_positions", 5), PyramidingEnabled: getSettingBool(settings, "pyramiding_enabled", false), MaxPyramidLayers: getSettingInt(settings, "max_pyramid_layers", 3), LotSize: mustCoreQuantity("0.00000001"), ExecutionCosts: tradingcore.ExecutionCostPolicy{Version: "paper-cost-v1", FeeBPS: int64(getSettingInt(settings, "paper_fee_bps", 10)), AdverseSlippageBPS: int64(getSettingInt(settings, "paper_slippage_bps", 5))}}
 	return contextSnapshot, policy, nil
+}
+
+// buildRuntimeTrendMomentumInput is the production adapter from the exchange
+// market-data boundary to the shared Stage 06 planner.  It captures raw 15m
+// bars with their exchange timestamps; the planner itself decides which fully
+// closed 4h buckets may be used.  No target action or quantity is fabricated
+// by this adapter.
+func buildRuntimeTrendMomentumInput(candidates []tradingcore.UniverseCandidate, settings map[string]string, now time.Time) (string, error) {
+	exchange := GetExchange()
+	load := func(symbol string) ([]tradingcore.TrendMomentumBar, error) {
+		values, err := exchange.FetchOHLCV(strings.ReplaceAll(symbol, "/", ""), "15m", 1000)
+		if err != nil || len(values) == 0 {
+			return nil, fmt.Errorf("load Stage 06 point-in-time bars for %s: %w", symbol, err)
+		}
+		bars := make([]tradingcore.TrendMomentumBar, 0, len(values))
+		for _, value := range values {
+			bars = append(bars, tradingcore.TrendMomentumBar{OpenTime: time.UnixMilli(value.OpenTime).UTC(), CloseTime: time.UnixMilli(value.CloseTime).UTC(), Close: value.Close})
+		}
+		return bars, nil
+	}
+	benchmark, err := load("BTCUSDT")
+	if err != nil {
+		return "", err
+	}
+	parameters := tradingcore.DefaultTrendMomentumParameters()
+	for key := range parameters {
+		if value := strings.TrimSpace(settings["stage06_"+key]); value != "" {
+			parameters[key] = value
+		}
+	}
+	input := tradingcore.TrendMomentumInput{DecisionAt: now.UTC(), Benchmark: benchmark, Series: map[string][]tradingcore.TrendMomentumBar{}, Members: make([]tradingcore.TrendMomentumMember, 0, len(candidates)), Parameters: parameters}
+	for _, candidate := range candidates {
+		symbol := candidate.Instrument.VenueSymbol
+		bars, loadErr := load(symbol)
+		if loadErr != nil {
+			return "", loadErr
+		}
+		input.Series[symbol] = bars
+		input.Members = append(input.Members, tradingcore.TrendMomentumMember{Symbol: symbol, AssetID: candidate.Instrument.BaseAsset.String(), ExchangeSymbolID: candidate.Instrument.ID.String(), Eligible: candidate.Eligible})
+	}
+	encoded, err := json.Marshal(input)
+	if err != nil {
+		return "", fmt.Errorf("encode Stage 06 point-in-time input: %w", err)
+	}
+	return string(encoded), nil
 }
 
 func markSharedEngineFailure(analyses []AnalyzedCoin, err error) []AnalyzedCoin {

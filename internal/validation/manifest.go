@@ -46,8 +46,8 @@ func CanonicalManifestSpec(spec ManifestSpec) ([]byte, ManifestSpec, error) {
 	if spec.SchemaVersion == "" {
 		spec.SchemaVersion = ManifestSchemaVersion
 	}
-	if spec.SchemaVersion != ManifestSchemaVersion || strings.TrimSpace(spec.CodeRevision) == "" || strings.TrimSpace(spec.Candidate.ID) == "" || strings.TrimSpace(spec.Candidate.Version) == "" || !exactDigest(spec.Candidate.Digest) || strings.TrimSpace(spec.Baseline.ID) == "" || strings.TrimSpace(spec.Baseline.Version) == "" || !exactDigest(spec.Baseline.Digest) || !exactDigest(spec.DatasetManifestID) || spec.DatasetManifestID != spec.DatasetManifestHash || !completePolicies(spec.Policies) || !spec.Interval.Valid() {
-		return nil, ManifestSpec{}, &DiagnosticError{Code: DiagnosticInvalidManifest, Details: "schema, revision, candidate, baseline, exact dataset digest, policy bundle, and interval are required"}
+	if spec.SchemaVersion != ManifestSchemaVersion || strings.TrimSpace(spec.CodeRevision) == "" || strings.TrimSpace(spec.Candidate.ID) == "" || strings.TrimSpace(spec.Candidate.Version) == "" || !exactDigest(string(spec.Candidate.ImplementationDigest)) || !exactDigest(string(spec.Candidate.ConfigDigest)) || strings.TrimSpace(spec.Baseline.ID) == "" || strings.TrimSpace(spec.Baseline.Version) == "" || !exactDigest(string(spec.Baseline.ImplementationDigest)) || !exactDigest(string(spec.Baseline.ConfigDigest)) || !exactDigest(spec.DatasetManifestID) || spec.DatasetManifestID != spec.DatasetManifestHash || !exactDigest(string(spec.DatasetDigest)) || string(spec.DatasetDigest) != spec.DatasetManifestHash || !completePolicies(spec.Policies) || !spec.Interval.Valid() {
+		return nil, ManifestSpec{}, &DiagnosticError{Code: DiagnosticInvalidManifest, Details: "schema, revision, candidate/baseline implementation and configuration identities, exact dataset digest, policy bundle, and interval are required"}
 	}
 	if spec.GovernancePolicy != GovernancePolicyVersion {
 		return nil, ManifestSpec{}, &DiagnosticError{Code: DiagnosticInvalidManifest, Field: "governance_policy", Details: "non-weakenable governance policy version is required"}

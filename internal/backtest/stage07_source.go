@@ -21,11 +21,17 @@ import (
 // admitted as manifest provenance. It does not treat a single comparison as
 // multi-window validation evidence.
 type Stage07ComparisonReference struct {
-	JobID           uint              `json:"job_id"`
-	ArtifactDigest  string            `json:"artifact_digest"`
-	Candidate       string            `json:"candidate"`
-	DatasetID       string            `json:"dataset_manifest_id"`
-	StrategyDigests map[string]string `json:"strategy_digests"`
+	JobID          uint                          `json:"job_id"`
+	ArtifactDigest string                        `json:"artifact_digest"`
+	Candidate      string                        `json:"candidate"`
+	DatasetDigest  validation.DatasetDigest      `json:"dataset_digest"`
+	Strategies     map[string]Stage07StrategyRef `json:"strategies"`
+}
+
+type Stage07StrategyRef struct {
+	ImplementationDigest validation.ImplementationDigest `json:"implementation_digest"`
+	ConfigDigest         validation.ConfigDigest         `json:"config_digest"`
+	RunManifestDigest    validation.RunManifestDigest    `json:"run_manifest_digest"`
 }
 
 type Stage07ExperimentSource struct{ DB *gorm.DB }
@@ -60,7 +66,9 @@ func (s Stage07ExperimentSource) Load(manifest validation.ExperimentManifest) ([
 		if err != nil {
 			return nil, nil, err
 		}
-		if ref.DatasetID != manifest.Spec.DatasetManifestID || ref.Candidate != manifest.Spec.Candidate.ID+"@"+manifest.Spec.Candidate.Version || ref.StrategyDigests[manifest.Spec.Candidate.ID] != manifest.Spec.Candidate.Digest || ref.StrategyDigests[manifest.Spec.Baseline.ID] != manifest.Spec.Baseline.Digest {
+		candidateRef, candidateOK := ref.Strategies[manifest.Spec.Candidate.ID]
+		baselineRef, baselineOK := ref.Strategies[manifest.Spec.Baseline.ID]
+		if !candidateOK || !baselineOK || string(ref.DatasetDigest) != manifest.Spec.DatasetManifestID || ref.Candidate != manifest.Spec.Candidate.ID+"@"+manifest.Spec.Candidate.Version || candidateRef.ImplementationDigest != manifest.Spec.Candidate.ImplementationDigest || candidateRef.ConfigDigest != manifest.Spec.Candidate.ConfigDigest || baselineRef.ImplementationDigest != manifest.Spec.Baseline.ImplementationDigest || baselineRef.ConfigDigest != manifest.Spec.Baseline.ConfigDigest {
 			return nil, nil, &validation.DiagnosticError{Code: validation.DiagnosticManifestIntegrity, Details: "Stage 05/06 source provenance mismatch"}
 		}
 		var job database.BacktestJob
@@ -282,9 +290,12 @@ func LoadStage07ComparisonReference(db *gorm.DB, jobID uint) (Stage07ComparisonR
 	if artifact.CandidateEvidence == nil && artifact.Candidate == StrategyTrendMomentumCandidate+"@1.0.0" {
 		return Stage07ComparisonReference{}, fmt.Errorf("Stage 06 candidate evidence is missing")
 	}
-	digests := map[string]string{}
+	strategies := map[string]Stage07StrategyRef{}
 	for _, row := range artifact.Rows {
-		digests[row.StrategyID] = row.ManifestIdentity
+		if row.ImplementationDigest == "" || row.ConfigDigest == "" || row.RunManifestDigest == "" || row.DatasetDigest != artifact.ManifestID {
+			return Stage07ComparisonReference{}, &validation.DiagnosticError{Code: validation.DiagnosticManifestIntegrity, Details: "Stage 05 row has incomplete typed identities"}
+		}
+		strategies[row.StrategyID] = Stage07StrategyRef{ImplementationDigest: validation.ImplementationDigest(row.ImplementationDigest), ConfigDigest: validation.ConfigDigest(row.ConfigDigest), RunManifestDigest: validation.RunManifestDigest(row.RunManifestDigest)}
 	}
-	return Stage07ComparisonReference{JobID: job.ID, ArtifactDigest: artifact.ArtifactDigest, Candidate: artifact.Candidate, DatasetID: artifact.ManifestID, StrategyDigests: digests}, nil
+	return Stage07ComparisonReference{JobID: job.ID, ArtifactDigest: artifact.ArtifactDigest, Candidate: artifact.Candidate, DatasetDigest: validation.DatasetDigest(artifact.ManifestID), Strategies: strategies}, nil
 }

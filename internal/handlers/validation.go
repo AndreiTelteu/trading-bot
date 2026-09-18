@@ -42,7 +42,9 @@ func CreateValidationExperiment(c *fiber.Ctx) error {
 		if loadErr != nil {
 			return stage07Error(c, loadErr)
 		}
-		if reference.DatasetID != request.Spec.DatasetManifestID || reference.Candidate != request.Spec.Candidate.ID+"@"+request.Spec.Candidate.Version || reference.StrategyDigests[request.Spec.Candidate.ID] != request.Spec.Candidate.Digest || reference.StrategyDigests[request.Spec.Baseline.ID] != request.Spec.Baseline.Digest {
+		candidateRef, candidateOK := reference.Strategies[request.Spec.Candidate.ID]
+		baselineRef, baselineOK := reference.Strategies[request.Spec.Baseline.ID]
+		if !candidateOK || !baselineOK || string(reference.DatasetDigest) != request.Spec.DatasetManifestID || request.Spec.DatasetDigest != reference.DatasetDigest || reference.Candidate != request.Spec.Candidate.ID+"@"+request.Spec.Candidate.Version || candidateRef.ImplementationDigest != request.Spec.Candidate.ImplementationDigest || candidateRef.ConfigDigest != request.Spec.Candidate.ConfigDigest || baselineRef.ImplementationDigest != request.Spec.Baseline.ImplementationDigest || baselineRef.ConfigDigest != request.Spec.Baseline.ConfigDigest {
 			return stage07Error(c, &validation.DiagnosticError{Code: validation.DiagnosticManifestIntegrity, Details: "server-derived Stage 05/06 provenance mismatch"})
 		}
 		references = append(references, reference)

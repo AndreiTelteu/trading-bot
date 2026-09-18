@@ -52,7 +52,7 @@ func ResolveStrategyAuthority(settings map[string]string) error {
 	if err != nil || deployment.ArtifactVersion != version || manifest.Spec.Candidate.ID != id || manifest.Spec.Candidate.Version != version {
 		return fmt.Errorf("experimental strategy manifest mismatch")
 	}
-	if configured := strings.TrimSpace(settings["strategy_digest"]); configured != "" && configured != manifest.Spec.Candidate.Digest {
+	if configured := strings.TrimSpace(settings["strategy_digest"]); configured != "" && configured != string(manifest.Spec.Candidate.ImplementationDigest) {
 		return fmt.Errorf("experimental strategy digest mismatch")
 	}
 	runtime, err := BuildRuntimeAuthorityPolicy(settings, deployment.State)

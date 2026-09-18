@@ -64,10 +64,21 @@ type Fold struct {
 	Test       Interval `json:"test"`
 }
 
+// Digest types are intentionally not interchangeable.  A strategy executable,
+// its governed configuration, a concrete replay manifest, a dataset and a
+// validation evidence record answer different audit questions and must never
+// be substituted for one another during promotion.
+type ImplementationDigest string
+type ConfigDigest string
+type RunManifestDigest string
+type DatasetDigest string
+type EvidenceDigest string
+
 type VersionRef struct {
-	ID      string `json:"id"`
-	Version string `json:"version"`
-	Digest  string `json:"digest,omitempty"`
+	ID                   string               `json:"id"`
+	Version              string               `json:"version"`
+	ImplementationDigest ImplementationDigest `json:"implementation_digest"`
+	ConfigDigest         ConfigDigest         `json:"config_digest"`
 }
 
 type PolicyBundle struct {
@@ -125,6 +136,7 @@ type ManifestSpec struct {
 	AuthorityPolicy     AuthorityPolicyEnvelope  `json:"authority_policy"`
 	DatasetManifestID   string                   `json:"dataset_manifest_id"`
 	DatasetManifestHash string                   `json:"dataset_manifest_hash"`
+	DatasetDigest       DatasetDigest            `json:"dataset_digest"`
 	UniversePolicy      string                   `json:"universe_policy"`
 	Interval            Interval                 `json:"interval"`
 	DecisionClock       string                   `json:"decision_clock"`

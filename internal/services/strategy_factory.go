@@ -43,7 +43,7 @@ var runtimeStrategyRegistry = map[string]registeredRuntimeStrategy{
 	},
 	TrendMomentumCandidateID + "@" + TrendMomentumCandidateVersion + "#" + TrendMomentumCandidateDigest: {
 		identity: executedStrategyIdentity{ID: TrendMomentumCandidateID, Version: TrendMomentumCandidateVersion, Digest: TrendMomentumCandidateDigest, CodeIdentity: targetStrategyCodeIdentity},
-		build:    func() tradingcore.Strategy { return tradingcore.TargetAllocationStrategy{} },
+		build:    func() tradingcore.Strategy { return tradingcore.TrendMomentumStrategy{} },
 	},
 }
 
@@ -77,7 +77,10 @@ func buildDeploymentStrategy(settings map[string]string) (executedStrategyIdenti
 	if deployment.ArtifactVersion != version || manifest.Spec.Candidate.ID != id || manifest.Spec.Candidate.Version != version {
 		return executedStrategyIdentity{}, nil, fmt.Errorf("deployed strategy identity mismatch")
 	}
-	digest := manifest.Spec.Candidate.Digest
+	digest := string(manifest.Spec.Candidate.ImplementationDigest)
+	if strings.TrimSpace(string(manifest.Spec.Candidate.ConfigDigest)) == "" {
+		return executedStrategyIdentity{}, nil, fmt.Errorf("deployed strategy lacks immutable configuration identity")
+	}
 	if configured := strings.TrimSpace(settings["strategy_digest"]); configured != "" && configured != digest {
 		return executedStrategyIdentity{}, nil, fmt.Errorf("configured strategy digest does not match approved deployment")
 	}

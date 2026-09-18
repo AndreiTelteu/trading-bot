@@ -18,10 +18,10 @@ func manifestFixture(t *testing.T) ExperimentManifest {
 	}
 	spec := ManifestSpec{
 		SchemaVersion: ManifestSchemaVersion, StudyType: "confirmatory", CodeRevision: "0657c08",
-		Candidate: VersionRef{ID: "trend-momentum", Version: "1.0.0", Digest: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}, Baseline: VersionRef{ID: "momentum", Version: "1.0.0", Digest: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"},
+		Candidate: VersionRef{ID: "trend-momentum", Version: "1.0.0", ImplementationDigest: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", ConfigDigest: "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}, Baseline: VersionRef{ID: "momentum", Version: "1.0.0", ImplementationDigest: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", ConfigDigest: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"},
 		Policies:         PolicyBundle{Composite: "policy-v1", Execution: "exec-v1", Universe: "universe-v1", ModelSelection: "model-v1", EntrySelection: "entry-v1", PortfolioRisk: "risk-v1", Rollout: "rollout-v1", Cost: "cost-v1"},
 		GovernancePolicy: GovernancePolicyVersion, AuthorityPolicy: authority,
-		DatasetManifestID: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", DatasetManifestHash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", UniversePolicy: "universe-v1",
+		DatasetManifestID: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", DatasetManifestHash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", DatasetDigest: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", UniversePolicy: "universe-v1",
 		Interval: Interval{base, base.Add(18 * 24 * time.Hour)}, DecisionClock: "4h-close", ExecutionClock: "next-1m-open", Seed: 42, ExecutionSemantics: map[string]string{"fee_bps": "10", "slippage_bps": "5", "timing": "next-open", "liquidity": "closed-bar"},
 		Folds: []Fold{
 			{Index: 0, Train: Interval{base, base.Add(3 * 24 * time.Hour)}, Validation: Interval{base.Add(3 * 24 * time.Hour), base.Add(5 * 24 * time.Hour)}, Test: Interval{base.Add(5 * 24 * time.Hour), base.Add(7 * 24 * time.Hour)}},

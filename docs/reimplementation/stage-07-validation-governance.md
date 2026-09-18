@@ -43,6 +43,19 @@ Require statistically meaningful, reproducible evidence before a strategy or mod
 - [x] Backtest authority follows rollout semantics or explicit research override recorded in manifest.
 - [x] No automatic optimizer may mutate live settings directly.
 
+### Typed identities
+
+Promotion records distinguish `implementation_digest`, `config_digest`,
+`run_manifest_digest`, `dataset_digest`, and `evidence_digest`. An
+implementation digest identifies executable shared strategy code; a config
+digest identifies the governed strategy configuration; a run-manifest digest
+identifies one replay invocation; a dataset digest identifies the Stage 04
+dataset; and an evidence digest identifies immutable validation output. The
+Stage 07 source adapter rejects a comparison artifact if any identity is
+missing, substituted, or conflated. Deployment additionally binds the approved
+implementation digest to the local registry; the separately persisted
+authority-policy digest binds the complete runtime policy envelope.
+
 ## ML quarantine and evaluation
 
 - [x] Mark bootstrap/contract fixtures with an artifact class that cannot be promoted.
