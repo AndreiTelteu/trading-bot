@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -68,5 +69,43 @@ func TestTerminalState(t *testing.T) {
 	}
 	if got := terminalState("SUCCESS: manifest-backed backtest initialized"); got != "completed" {
 		t.Fatalf("terminalState success = %q", got)
+	}
+}
+
+func TestParseInitializationStatus(t *testing.T) {
+	update, ok := parseInitializationStatus("[2026-09-18T06:46:32Z] Ingesting decision bars for BTCUSDT (15m) (have=0 need=47232)")
+	if !ok {
+		t.Fatal("expected initialization status")
+	}
+	if update.Phase != "initialization" || !strings.Contains(update.Message, "BTCUSDT") {
+		t.Fatalf("unexpected initialization update: %+v", update)
+	}
+	if _, ok := parseInitializationStatus("2026/09/18 INSERT INTO historical_bars"); ok {
+		t.Fatal("database noise must not be treated as initialization status")
+	}
+}
+
+func TestDiscoverRunsIncludesInitializationBeforeProgressFile(t *testing.T) {
+	root := t.TempDir()
+	runDir := filepath.Join(root, "12m-train-20260918T064537Z")
+	if err := os.Mkdir(runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	logPath := filepath.Join(runDir, initializationLog)
+	if err := os.WriteFile(logPath, []byte("[2026-09-18T06:46:32Z] Ingesting decision bars for BTCUSDT\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runs, err := discoverRuns(root, 15*time.Minute, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 1 {
+		t.Fatalf("got %d runs, want 1", len(runs))
+	}
+	if runs[0].Log != logPath || runs[0].State != "running" || runs[0].Last == nil {
+		t.Fatalf("unexpected run: %+v", runs[0])
+	}
+	if runs[0].Last.Update.Phase != "initialization" {
+		t.Fatalf("phase = %q, want initialization", runs[0].Last.Update.Phase)
 	}
 }

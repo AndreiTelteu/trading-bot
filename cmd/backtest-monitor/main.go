@@ -22,6 +22,11 @@ import (
 
 const progressPrefix = "backtest_progress "
 
+const (
+	backtestProgressLog = "backtest.json.raw"
+	initializationLog   = "backtest_init.log"
+)
+
 type progressUpdate struct {
 	Phase       string  `json:"phase"`
 	Lane        string  `json:"lane,omitempty"`
@@ -106,18 +111,34 @@ func discoverRuns(root string, staleAfter time.Duration, now time.Time) ([]runIn
 			continue
 		}
 		dir := filepath.Join(root, entry.Name())
-		logPath := filepath.Join(dir, "backtest.json.raw")
+		progressLogPath := filepath.Join(dir, backtestProgressLog)
+		initLogPath := filepath.Join(dir, initializationLog)
 		resultPath := filepath.Join(dir, "backtest.json")
-		info, logErr := os.Stat(logPath)
+		progressInfo, progressErr := os.Stat(progressLogPath)
+		initInfo, initErr := os.Stat(initLogPath)
 		resultInfo, resultErr := os.Stat(resultPath)
-		if logErr != nil && !errors.Is(logErr, os.ErrNotExist) {
-			return nil, logErr
+		if progressErr != nil && !errors.Is(progressErr, os.ErrNotExist) {
+			return nil, progressErr
+		}
+		if initErr != nil && !errors.Is(initErr, os.ErrNotExist) {
+			return nil, initErr
 		}
 		if resultErr != nil && !errors.Is(resultErr, os.ErrNotExist) {
 			return nil, resultErr
 		}
-		if errors.Is(logErr, os.ErrNotExist) && errors.Is(resultErr, os.ErrNotExist) {
+		if errors.Is(progressErr, os.ErrNotExist) && errors.Is(initErr, os.ErrNotExist) && errors.Is(resultErr, os.ErrNotExist) {
 			continue
+		}
+		// backtest_init.log exists from the first ingestion step and continues to
+		// receive the later engine telemetry. Prefer it so `latest` can attach
+		// before backtest.json.raw is created, without needing to switch files.
+		logPath := progressLogPath
+		logInfo := progressInfo
+		logErr := progressErr
+		if initErr == nil {
+			logPath = initLogPath
+			logInfo = initInfo
+			logErr = nil
 		}
 		state := "completed"
 		var last *progressSample
@@ -126,7 +147,7 @@ func discoverRuns(root string, staleAfter time.Duration, now time.Time) ([]runIn
 			modified = resultInfo.ModTime()
 		}
 		if logErr == nil {
-			modified = info.ModTime()
+			modified = logInfo.ModTime()
 			state, last, err = inspectLog(logPath, modified)
 			if err != nil {
 				return nil, err
@@ -159,6 +180,8 @@ func inspectLog(path string, modified time.Time) (string, *progressSample, error
 	for scanner.Scan() {
 		line := scanner.Text()
 		if update, ok := parseProgress(line); ok {
+			last = &progressSample{Update: update, At: modified}
+		} else if update, ok := parseInitializationStatus(line); ok {
 			last = &progressSample{Update: update, At: modified}
 		}
 		if terminalState(line) != "" {
@@ -250,7 +273,11 @@ func consume(file *os.File, state *monitorState, observedAt time.Time, estimate 
 	scanner.Buffer(buffer, 1024*1024)
 	for scanner.Scan() {
 		line := scanner.Text()
-		if update, ok := parseProgress(line); ok {
+		update, ok := parseProgress(line)
+		if !ok {
+			update, ok = parseInitializationStatus(line)
+		}
+		if ok {
 			sample := &progressSample{Update: update, At: observedAt}
 			if estimate && state.last != nil && sameTrack(state.last.Update, update) && update.Fraction > state.last.Update.Fraction {
 				delta := observedAt.Sub(state.last.At).Seconds()
@@ -271,6 +298,25 @@ func consume(file *os.File, state *monitorState, observedAt time.Time, estimate 
 		}
 	}
 	return scanner.Err()
+}
+
+func parseInitializationStatus(line string) (progressUpdate, bool) {
+	line = strings.TrimSpace(line)
+	if !strings.HasPrefix(line, "[") {
+		return progressUpdate{}, false
+	}
+	separator := strings.Index(line, "] ")
+	if separator <= 1 || separator+2 >= len(line) {
+		return progressUpdate{}, false
+	}
+	if _, err := time.Parse(time.RFC3339, line[1:separator]); err != nil {
+		return progressUpdate{}, false
+	}
+	message := strings.TrimSpace(line[separator+2:])
+	if message == "" {
+		return progressUpdate{}, false
+	}
+	return progressUpdate{Phase: "initialization", Message: message}, true
 }
 
 func parseProgress(line string) (progressUpdate, bool) {

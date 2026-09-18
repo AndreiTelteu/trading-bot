@@ -32,11 +32,19 @@ Copy the exact `reproduce` invocation from the immutable Stage 07 manifest when 
 
 ## Monitor a file-backed CLI run
 
-The monitor discovers runs under `instance/backtest-init`, prefers the newest active run, follows its `backtest.json.raw` telemetry, and refreshes an ASCII progress bar and ETA once per second:
+The monitor discovers runs under `instance/backtest-init`, prefers the newest active run, follows its initialization log and later engine telemetry, and refreshes an ASCII progress bar and ETA once per second:
 
 ```bash
 podman exec -it trading-backend go run ./cmd/backtest-monitor latest
 ```
+
+Discovery also includes a run that is still ingesting data and therefore has
+only `backtest_init.log`. During that phase the monitor shows the latest
+timestamped initialization step with an unknown ETA, ignores verbose database
+output, and automatically consumes engine progress from the same log once the
+deterministic replay starts. The command therefore works immediately after the
+background launcher creates the run directory; `backtest.json.raw` does not
+need to exist yet.
 
 List discovered active, stale, failed, and completed runs without following one:
 
