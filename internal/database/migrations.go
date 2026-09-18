@@ -510,39 +510,6 @@ func RunMigrations(db *gorm.DB) error {
 			},
 		},
 		{
-			ID: "202609180900_research_self_improvement_controls",
-			Migrate: func(tx *gorm.DB) error {
-				if err := tx.AutoMigrate(&ResearchExperimentFamily{}, &ResearchExperimentAttempt{}, &ResearchAttemptOutcome{}, &ResearchConfirmatoryHoldout{}, &ResearchConfirmatoryHoldoutUse{}); err != nil {
-					return err
-				}
-				return tx.Exec(`
-					CREATE OR REPLACE FUNCTION reject_research_control_mutation() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION 'research control audit record cannot be changed'; END; $$ LANGUAGE plpgsql;
-					DROP TRIGGER IF EXISTS research_experiment_families_immutable ON research_experiment_families;
-					CREATE TRIGGER research_experiment_families_immutable BEFORE UPDATE OR DELETE ON research_experiment_families FOR EACH ROW EXECUTE FUNCTION reject_research_control_mutation();
-					DROP TRIGGER IF EXISTS research_experiment_attempts_immutable ON research_experiment_attempts;
-					CREATE TRIGGER research_experiment_attempts_immutable BEFORE UPDATE OR DELETE ON research_experiment_attempts FOR EACH ROW EXECUTE FUNCTION reject_research_control_mutation();
-					DROP TRIGGER IF EXISTS research_attempt_outcomes_immutable ON research_attempt_outcomes;
-					CREATE TRIGGER research_attempt_outcomes_immutable BEFORE UPDATE OR DELETE ON research_attempt_outcomes FOR EACH ROW EXECUTE FUNCTION reject_research_control_mutation();
-					DROP TRIGGER IF EXISTS research_confirmatory_holdouts_immutable ON research_confirmatory_holdouts;
-					CREATE TRIGGER research_confirmatory_holdouts_immutable BEFORE UPDATE OR DELETE ON research_confirmatory_holdouts FOR EACH ROW EXECUTE FUNCTION reject_research_control_mutation();
-					DROP TRIGGER IF EXISTS research_confirmatory_holdout_uses_immutable ON research_confirmatory_holdout_uses;
-					CREATE TRIGGER research_confirmatory_holdout_uses_immutable BEFORE UPDATE OR DELETE ON research_confirmatory_holdout_uses FOR EACH ROW EXECUTE FUNCTION reject_research_control_mutation();
-					ALTER TABLE research_experiment_attempts ADD CONSTRAINT fk_research_attempt_family FOREIGN KEY (family_id) REFERENCES research_experiment_families(id) ON DELETE RESTRICT;
-					ALTER TABLE research_experiment_attempts ADD CONSTRAINT fk_research_attempt_experiment FOREIGN KEY (experiment_id) REFERENCES validation_experiments(id) ON DELETE RESTRICT;
-					ALTER TABLE research_attempt_outcomes ADD CONSTRAINT fk_research_outcome_attempt FOREIGN KEY (attempt_id) REFERENCES research_experiment_attempts(id) ON DELETE RESTRICT;
-					ALTER TABLE research_attempt_outcomes ADD CONSTRAINT fk_research_outcome_evidence FOREIGN KEY (evidence_id) REFERENCES validation_evidences(id) ON DELETE RESTRICT;
-					ALTER TABLE research_confirmatory_holdouts ADD CONSTRAINT fk_research_holdout_family FOREIGN KEY (family_id) REFERENCES research_experiment_families(id) ON DELETE RESTRICT;
-					ALTER TABLE research_confirmatory_holdout_uses ADD CONSTRAINT fk_research_holdout_use_holdout FOREIGN KEY (holdout_id) REFERENCES research_confirmatory_holdouts(id) ON DELETE RESTRICT;
-					ALTER TABLE research_confirmatory_holdout_uses ADD CONSTRAINT fk_research_holdout_use_experiment FOREIGN KEY (experiment_id) REFERENCES validation_experiments(id) ON DELETE RESTRICT;
-					ALTER TABLE research_attempt_outcomes ADD CONSTRAINT research_attempt_outcome_status_check CHECK (status IN ('passed','failed'));
-					ALTER TABLE research_confirmatory_holdouts ADD CONSTRAINT research_confirmatory_holdout_interval_check CHECK (end_at > start_at AND length(id)=64 AND length(content_digest)=64);
-				`).Error
-			},
-			Rollback: func(tx *gorm.DB) error {
-				return fmt.Errorf("research self-improvement audit history is intentionally retained")
-			},
-		},
-		{
 			ID: "202607170600_stage05_governance_evidence",
 			Migrate: func(tx *gorm.DB) error {
 				for _, column := range []string{"JobType", "ArtifactDigest", "DiagnosticJSON"} {
@@ -607,6 +574,43 @@ func RunMigrations(db *gorm.DB) error {
 			},
 			Rollback: func(tx *gorm.DB) error {
 				return fmt.Errorf("Stage 07 immutable validation and governance history is intentionally retained")
+			},
+		},
+		{
+			// This migration depends on the Stage 07 immutable evidence tables.
+			// Keep it after their historical creation migration: upgrades from a
+			// shaped Stage 03 database must reach the deliberate projection-shape
+			// rejection rather than fail on an unrelated missing relation.
+			ID: "202609180900_research_self_improvement_controls",
+			Migrate: func(tx *gorm.DB) error {
+				if err := tx.AutoMigrate(&ResearchExperimentFamily{}, &ResearchExperimentAttempt{}, &ResearchAttemptOutcome{}, &ResearchConfirmatoryHoldout{}, &ResearchConfirmatoryHoldoutUse{}); err != nil {
+					return err
+				}
+				return tx.Exec(`
+					CREATE OR REPLACE FUNCTION reject_research_control_mutation() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION 'research control audit record cannot be changed'; END; $$ LANGUAGE plpgsql;
+					DROP TRIGGER IF EXISTS research_experiment_families_immutable ON research_experiment_families;
+					CREATE TRIGGER research_experiment_families_immutable BEFORE UPDATE OR DELETE ON research_experiment_families FOR EACH ROW EXECUTE FUNCTION reject_research_control_mutation();
+					DROP TRIGGER IF EXISTS research_experiment_attempts_immutable ON research_experiment_attempts;
+					CREATE TRIGGER research_experiment_attempts_immutable BEFORE UPDATE OR DELETE ON research_experiment_attempts FOR EACH ROW EXECUTE FUNCTION reject_research_control_mutation();
+					DROP TRIGGER IF EXISTS research_attempt_outcomes_immutable ON research_attempt_outcomes;
+					CREATE TRIGGER research_attempt_outcomes_immutable BEFORE UPDATE OR DELETE ON research_attempt_outcomes FOR EACH ROW EXECUTE FUNCTION reject_research_control_mutation();
+					DROP TRIGGER IF EXISTS research_confirmatory_holdouts_immutable ON research_confirmatory_holdouts;
+					CREATE TRIGGER research_confirmatory_holdouts_immutable BEFORE UPDATE OR DELETE ON research_confirmatory_holdouts FOR EACH ROW EXECUTE FUNCTION reject_research_control_mutation();
+					DROP TRIGGER IF EXISTS research_confirmatory_holdout_uses_immutable ON research_confirmatory_holdout_uses;
+					CREATE TRIGGER research_confirmatory_holdout_uses_immutable BEFORE UPDATE OR DELETE ON research_confirmatory_holdout_uses FOR EACH ROW EXECUTE FUNCTION reject_research_control_mutation();
+					ALTER TABLE research_experiment_attempts ADD CONSTRAINT fk_research_attempt_family FOREIGN KEY (family_id) REFERENCES research_experiment_families(id) ON DELETE RESTRICT;
+					ALTER TABLE research_experiment_attempts ADD CONSTRAINT fk_research_attempt_experiment FOREIGN KEY (experiment_id) REFERENCES validation_experiments(id) ON DELETE RESTRICT;
+					ALTER TABLE research_attempt_outcomes ADD CONSTRAINT fk_research_outcome_attempt FOREIGN KEY (attempt_id) REFERENCES research_experiment_attempts(id) ON DELETE RESTRICT;
+					ALTER TABLE research_attempt_outcomes ADD CONSTRAINT fk_research_outcome_evidence FOREIGN KEY (evidence_id) REFERENCES validation_evidences(id) ON DELETE RESTRICT;
+					ALTER TABLE research_confirmatory_holdouts ADD CONSTRAINT fk_research_holdout_family FOREIGN KEY (family_id) REFERENCES research_experiment_families(id) ON DELETE RESTRICT;
+					ALTER TABLE research_confirmatory_holdout_uses ADD CONSTRAINT fk_research_holdout_use_holdout FOREIGN KEY (holdout_id) REFERENCES research_confirmatory_holdouts(id) ON DELETE RESTRICT;
+					ALTER TABLE research_confirmatory_holdout_uses ADD CONSTRAINT fk_research_holdout_use_experiment FOREIGN KEY (experiment_id) REFERENCES validation_experiments(id) ON DELETE RESTRICT;
+					ALTER TABLE research_attempt_outcomes ADD CONSTRAINT research_attempt_outcome_status_check CHECK (status IN ('passed','failed'));
+					ALTER TABLE research_confirmatory_holdouts ADD CONSTRAINT research_confirmatory_holdout_interval_check CHECK (end_at > start_at AND length(id)=64 AND length(content_digest)=64);
+				`).Error
+			},
+			Rollback: func(tx *gorm.DB) error {
+				return fmt.Errorf("research self-improvement audit history is intentionally retained")
 			},
 		},
 		{

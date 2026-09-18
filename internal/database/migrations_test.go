@@ -212,7 +212,11 @@ func TestStage03ShapedSchemaFailsPreciselyBeforeInstallingProjectionGuard(t *tes
 			t.Fatal(err)
 		}
 	}
-	if err := database.RunMigrations(db); err == nil || !strings.Contains(err.Error(), "cannot install positions economic guard: shaped schema is missing required columns") || !strings.Contains(err.Error(), "amount_exact") {
+	err := database.RunMigrations(db)
+	if err == nil ||
+		!strings.Contains(err.Error(), "cannot install positions economic guard: shaped schema is missing required columns") ||
+		!strings.Contains(err.Error(), "amount_exact") ||
+		strings.Contains(err.Error(), "relation \"validation_experiments\" does not exist") {
 		t.Fatalf("expected precise shaped-schema failure, got %v", err)
 	}
 	var guardCount int64
