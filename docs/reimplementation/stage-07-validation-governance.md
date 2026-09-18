@@ -89,6 +89,9 @@ authority-policy digest binds the complete runtime policy envelope.
 - [x] Compute ROC AUC, Brier score, log loss, calibration buckets, probability/return correlation, and rank monotonicity.
 - [x] Compare ML ranking against the Stage 05 non-ML baseline at equal candidate set and exposure.
 - [x] Reject promotion for severe overconfidence, near-random discrimination, non-monotonic ranking, or negative after-cost expectancy.
+- [x] Persist every model-eligible decision (accepted and rejected) under a deterministic identity bound to decision time, symbol, horizon, policy, artifact, and cost identities.
+- [x] Label the complete cohort only from point-in-time stored bars at a fixed horizon; pending/unavailable labels are explicit, retried, and excluded from calibration denominators.
+- [x] Monitor cohort coverage separately from performance, and rank drift by absolute deviation so adverse negative shifts cannot be hidden.
 
 ## Testing instructions
 
@@ -104,6 +107,7 @@ authority-policy digest binds the complete runtime policy envelope.
 
 - [x] Bootstrap artifact cannot enter paper/live authority.
 - [x] Shadow model cannot change selected orders.
+- [x] Rejected opportunities, delayed labels, duplicate retries, unavailable label sources, and both signs of feature drift have regression coverage.
 - [x] Failed gate blocks promotion.
 - [x] Human approval is required even when metrics pass.
 - [x] Rollback restores configured fallback without losing audit history.
@@ -118,6 +122,7 @@ authority-policy digest binds the complete runtime policy envelope.
 ### Cannot yet be proven
 
 - [ ] A trained model cannot be evaluated if sufficient outcomes/features do not exist.
+- [ ] Runtime labels require a complete, timely ingestion of the decision-timeframe bar series. Missing bars remain unavailable evidence and cannot be converted into losses or passing calibration.
 - [ ] Real shadow/paper stability requires elapsed market time.
 - [ ] Statistical significance cannot be manufactured when external history is incomplete.
 - [ ] Passing gates reduces risk but does not guarantee future profit.

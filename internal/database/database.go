@@ -645,6 +645,7 @@ func SeedDataWithDefaults(defaultBalance float64, defaultCurrency string) error 
 		{Key: "selection_policy_min_ev", Value: "0.001", Category: strPtr("model")},
 		{Key: "monitoring_window_days", Value: "30", Category: strPtr("model")},
 		{Key: "monitoring_min_outcomes", Value: "10", Category: strPtr("model")},
+		{Key: "model_label_horizon", Value: "24h", Category: strPtr("model")},
 		{Key: "backtest_fee_bps", Value: "10", Category: strPtr("backtest")},
 		{Key: "backtest_slippage_bps", Value: "5", Category: strPtr("backtest")},
 		{Key: "paper_fee_bps", Value: "10", Category: strPtr("trading")},

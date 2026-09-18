@@ -572,6 +572,49 @@ type PredictionLog struct {
 	UpdatedAt            time.Time  `json:"updated_at"`
 }
 
+// DecisionCohort is the immutable identity of one model-eligible opportunity.
+// It deliberately exists whether the policy accepted it or not. Outcome fields
+// are nullable because unavailable and not-yet-mature labels are evidence
+// states, never losing observations.
+type DecisionCohort struct {
+	DecisionID           string     `json:"decision_id" gorm:"primaryKey;size:64"`
+	PredictionLogID      *uint      `json:"prediction_log_id,omitempty" gorm:"uniqueIndex"`
+	FeatureSnapshotID    *uint      `json:"feature_snapshot_id,omitempty" gorm:"index"`
+	UniverseSnapshotID   *uint      `json:"universe_snapshot_id,omitempty" gorm:"index"`
+	DecisionTime         time.Time  `json:"decision_time" gorm:"not null;index:idx_decision_cohort_maturity,priority:1"`
+	Symbol               string     `json:"symbol" gorm:"size:40;not null;index"`
+	HorizonSeconds       int64      `json:"horizon_seconds" gorm:"not null"`
+	MaturityTime         time.Time  `json:"maturity_time" gorm:"not null;index:idx_decision_cohort_maturity,priority:2"`
+	ModelVersion         string     `json:"model_version" gorm:"size:100;not null;index"`
+	ModelArtifactDigest  string     `json:"model_artifact_digest" gorm:"size:64;not null;index"`
+	PolicyVersion        string     `json:"policy_version" gorm:"size:100;not null;index"`
+	CostModelVersion     string     `json:"cost_model_version" gorm:"size:100;not null"`
+	FeatureSpecVersion   string     `json:"feature_spec_version" gorm:"size:50;not null"`
+	EntryReferencePrice  float64    `json:"entry_reference_price" gorm:"not null"`
+	RoundTripCostBPS     int64      `json:"round_trip_cost_bps" gorm:"not null"`
+	PredictedProbability float64    `json:"predicted_probability" gorm:"not null"`
+	PredictedEV          float64    `json:"predicted_ev" gorm:"not null"`
+	RawScore             float64    `json:"raw_score" gorm:"not null"`
+	Rank                 int        `json:"rank" gorm:"not null"`
+	RankBucket           string     `json:"rank_bucket" gorm:"size:20;not null"`
+	ProbabilityBucket    string     `json:"probability_bucket" gorm:"size:20;not null"`
+	Accepted             bool       `json:"accepted" gorm:"not null;index"`
+	DecisionResult       string     `json:"decision_result" gorm:"size:40;not null;index"`
+	RolloutState         string     `json:"rollout_state" gorm:"size:20;not null;index"`
+	UniverseMode         string     `json:"universe_mode" gorm:"size:40"`
+	ExperimentID         *string    `json:"experiment_id,omitempty" gorm:"size:100;index"`
+	PolicyContextJSON    string     `json:"policy_context_json" gorm:"type:text;not null;default:'{}'"`
+	OutcomeStatus        string     `json:"outcome_status" gorm:"size:20;not null;index:idx_decision_cohort_maturity,priority:3"`
+	OutcomeReturn        *float64   `json:"outcome_return,omitempty"`
+	OutcomeProfitable    *bool      `json:"outcome_profitable,omitempty"`
+	OutcomePrice         *float64   `json:"outcome_price,omitempty"`
+	OutcomeRecordedAt    *time.Time `json:"outcome_recorded_at,omitempty"`
+	LabelAttempts        int        `json:"label_attempts" gorm:"not null;default:0"`
+	LastLabelError       string     `json:"last_label_error" gorm:"type:text;not null;default:''"`
+	CreatedAt            time.Time  `json:"created_at"`
+	UpdatedAt            time.Time  `json:"updated_at"`
+}
+
 type TradeLabel struct {
 	ID                uint      `json:"id" gorm:"primaryKey;autoIncrement"`
 	FeatureSnapshotID *uint     `json:"feature_snapshot_id" gorm:"index"`
@@ -654,6 +697,11 @@ type MonitoringSnapshot struct {
 	UniverseMode      string    `json:"universe_mode" gorm:"size:40;index"`
 	ExperimentID      *string   `json:"experiment_id" gorm:"size:100;index"`
 	PredictionCount   int       `json:"prediction_count"`
+	DecisionCount     int       `json:"decision_count"`
+	MaturedLabelCount int       `json:"matured_label_count"`
+	PendingLabelCount int       `json:"pending_label_count"`
+	UnavailableCount  int       `json:"unavailable_label_count"`
+	LabelCoverage     float64   `json:"label_coverage"`
 	SelectionRate     float64   `json:"selection_rate"`
 	CalibrationJSON   string    `json:"calibration_json" gorm:"type:text"`
 	RankBucketJSON    string    `json:"rank_bucket_json" gorm:"type:text"`

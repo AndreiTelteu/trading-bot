@@ -190,7 +190,7 @@ func BuildRuntimeAuthorityPolicy(settings map[string]string, rolloutState string
 		"fallback_mode": strings.TrimSpace(settings["model_fallback_mode"]), "strategy_parameters": hex.EncodeToString(settingsHash[:]),
 		"risk_policy": component(PolicyTypePortfolioRisk), "turnover_policy": strings.TrimSpace(settings["max_turnover"]), "cash_policy": strings.TrimSpace(settings["cash_reserve_percent"]),
 		"universe_policy": component(PolicyTypeUniverse), "execution_policy": component(PolicyTypeExecution),
-		"cost_policy":   strings.TrimSpace(settings["paper_fee_bps"]) + ":" + strings.TrimSpace(settings["paper_slippage_bps"]),
+		"cost_policy":   strings.TrimSpace(settings["paper_fee_bps"]) + ":" + strings.TrimSpace(settings["paper_slippage_bps"]) + ":" + strings.TrimSpace(settings["model_label_horizon"]),
 		"model_version": strings.TrimSpace(settings["active_model_version"]), "feature_schema": strings.TrimSpace(settings["model_feature_schema"]), "rollout_state": strings.TrimSpace(rolloutState),
 	}
 	return validation.NewAuthorityPolicyEnvelope(payload)
@@ -403,7 +403,7 @@ func buildPolicyPayloads(settings map[string]string) map[string]map[string]strin
 		),
 		PolicyTypeModelSelection: pickSettings(settings,
 			"active_model_version", "selection_policy_top_k", "selection_policy_min_prob", "selection_policy_min_ev",
-			"monitoring_window_days", "monitoring_min_outcomes",
+			"monitoring_window_days", "monitoring_min_outcomes", "model_label_horizon",
 		),
 		PolicyTypeEntrySelection: pickSettings(settings,
 			"auto_trade_enabled", "max_positions", "buy_only_strong", "min_confidence_to_buy", "trending_coins_to_analyze",

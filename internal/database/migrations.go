@@ -44,6 +44,7 @@ func schemaModels() []interface{} {
 		&RolloutEvent{},
 		&FeatureSnapshot{},
 		&PredictionLog{},
+		&DecisionCohort{},
 		&TradeLabel{},
 		&MonitoringSnapshot{},
 		&ValidationExperiment{},
@@ -1664,6 +1665,34 @@ func RunMigrations(db *gorm.DB) error {
 				`).Error
 			},
 			Rollback: func(tx *gorm.DB) error { return fmt.Errorf("durable close request evidence is intentionally retained") },
+		},
+		{
+			ID: "202609180102_decision_cohort_fixed_horizon_labels",
+			Migrate: func(tx *gorm.DB) error {
+				if err := tx.AutoMigrate(&DecisionCohort{}, &MonitoringSnapshot{}); err != nil {
+					return err
+				}
+				return tx.Exec(`
+					ALTER TABLE decision_cohorts DROP CONSTRAINT IF EXISTS decision_cohorts_identity_check;
+					ALTER TABLE decision_cohorts ADD CONSTRAINT decision_cohorts_identity_check CHECK (
+						decision_id ~ '^[a-f0-9]{64}$' AND horizon_seconds > 0 AND maturity_time = decision_time + horizon_seconds * interval '1 second' AND
+						model_artifact_digest ~ '^[a-f0-9]{64}$' AND length(model_version)>0 AND length(policy_version)>0 AND length(cost_model_version)>0 AND length(feature_spec_version)>0 AND entry_reference_price > 0 AND round_trip_cost_bps >= 0 AND
+						predicted_probability >= 0 AND predicted_probability <= 1 AND outcome_status IN ('pending','unavailable','labeled') AND
+						((outcome_status='labeled' AND outcome_return IS NOT NULL AND outcome_profitable IS NOT NULL AND outcome_price IS NOT NULL AND outcome_recorded_at IS NOT NULL) OR
+						 (outcome_status IN ('pending','unavailable') AND outcome_return IS NULL AND outcome_profitable IS NULL AND outcome_price IS NULL AND outcome_recorded_at IS NULL))
+					);
+					REVOKE ALL PRIVILEGES ON decision_cohorts FROM PUBLIC, trading_bot_runtime, trading_bot_ledger_writer, trading_bot_parity_writer;
+					GRANT SELECT, INSERT ON decision_cohorts TO trading_bot_runtime;
+					GRANT UPDATE (outcome_status,outcome_return,outcome_profitable,outcome_price,outcome_recorded_at,label_attempts,last_label_error,updated_at) ON decision_cohorts TO trading_bot_runtime;
+					REVOKE ALL PRIVILEGES ON feature_snapshots, prediction_logs, trade_labels, monitoring_snapshots FROM trading_bot_runtime;
+					GRANT SELECT, INSERT ON feature_snapshots, prediction_logs, monitoring_snapshots TO trading_bot_runtime;
+					GRANT SELECT ON trade_labels TO trading_bot_runtime;
+					GRANT USAGE, SELECT ON SEQUENCE feature_snapshots_id_seq, prediction_logs_id_seq, monitoring_snapshots_id_seq TO trading_bot_runtime;
+				`).Error
+			},
+			Rollback: func(tx *gorm.DB) error {
+				return fmt.Errorf("decision cohort evidence is intentionally retained; legacy prediction rows are not backfilled")
+			},
 		},
 	})
 

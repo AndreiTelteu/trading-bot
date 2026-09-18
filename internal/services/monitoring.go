@@ -2,12 +2,11 @@ package services
 
 import (
 	"encoding/json"
+	"math"
 	"sort"
 	"strings"
 	"time"
 	"trading-go/internal/database"
-
-	"gorm.io/gorm"
 )
 
 type RankBucketSelectionSummary struct {
@@ -43,6 +42,11 @@ type MonitoringSummary struct {
 	UniverseMode            string                         `json:"universe_mode"`
 	ExperimentID            string                         `json:"experiment_id,omitempty"`
 	PredictionCount         int                            `json:"prediction_count"`
+	DecisionCount           int                            `json:"decision_count"`
+	MaturedLabelCount       int                            `json:"matured_label_count"`
+	PendingLabelCount       int                            `json:"pending_label_count"`
+	UnavailableLabelCount   int                            `json:"unavailable_label_count"`
+	LabelCoverage           float64                        `json:"label_coverage"`
 	SelectionRate           float64                        `json:"selection_rate"`
 	PredictionCountsByModel map[string]int                 `json:"prediction_counts_by_model"`
 	RankBuckets             []RankBucketSelectionSummary   `json:"rank_buckets,omitempty"`
@@ -74,46 +78,49 @@ func BuildMonitoringSummary(windowDays int) (MonitoringSummary, error) {
 	}
 
 	since := time.Now().UTC().AddDate(0, 0, -windowDays)
-	var logs []database.PredictionLog
-	query := database.DB.Where("prediction_time >= ?", since).Order("prediction_time DESC")
+	var cohorts []database.DecisionCohort
+	query := database.DB.Where("decision_time >= ?", since).Order("decision_time DESC")
 	if strings.TrimSpace(context.ModelVersion) != "" {
 		query = query.Where("model_version = ?", context.ModelVersion)
 	}
-	if err := query.Limit(1000).Find(&logs).Error; err != nil {
+	if err := query.Limit(1000).Find(&cohorts).Error; err != nil {
 		return MonitoringSummary{}, err
 	}
 
 	predictionCountsByModel := make(map[string]int)
 	selectedCount := 0
+	maturedLabels, pendingLabels, unavailableLabels := 0, 0, 0
 	rankTotals := make(map[string]*bucketTotals)
 	calibrationTotals := make(map[string]*bucketTotals)
-	for _, log := range logs {
-		predictionCountsByModel[log.ModelVersion]++
-		if log.Selected {
+	for _, cohort := range cohorts {
+		predictionCountsByModel[cohort.ModelVersion]++
+		if cohort.Accepted {
 			selectedCount++
 		}
-		rankBucket := defaultString(log.RankBucket, rankBucket(log.Rank))
+		rankBucket := defaultString(cohort.RankBucket, rankBucket(cohort.Rank))
 		rankTotal := ensureBucket(rankTotals, rankBucket)
 		rankTotal.Predictions++
-		rankTotal.ProbTotal += log.PredictedProbability
-		if log.Selected {
+		rankTotal.ProbTotal += cohort.PredictedProbability
+		if cohort.Accepted {
 			rankTotal.Selected++
 		}
-		if log.OutcomeReturn != nil {
-			rankTotal.OutcomeSum += *log.OutcomeReturn
+		if cohort.OutcomeStatus == DecisionOutcomeLabeled && cohort.OutcomeReturn != nil {
+			maturedLabels++
+			rankTotal.OutcomeSum += *cohort.OutcomeReturn
 			rankTotal.OutcomeCnt++
-		}
-
-		probBucket := defaultString(log.ProbabilityBucket, probabilityBucket(log.PredictedProbability))
-		calibrationTotal := ensureBucket(calibrationTotals, probBucket)
-		calibrationTotal.Predictions++
-		calibrationTotal.ProbTotal += log.PredictedProbability
-		if log.OutcomeProfitable != nil && *log.OutcomeProfitable {
-			calibrationTotal.Selected++
-		}
-		if log.OutcomeReturn != nil {
-			calibrationTotal.OutcomeSum += *log.OutcomeReturn
+			probBucket := defaultString(cohort.ProbabilityBucket, probabilityBucket(cohort.PredictedProbability))
+			calibrationTotal := ensureBucket(calibrationTotals, probBucket)
+			calibrationTotal.Predictions++
+			calibrationTotal.ProbTotal += cohort.PredictedProbability
+			if cohort.OutcomeProfitable != nil && *cohort.OutcomeProfitable {
+				calibrationTotal.Selected++
+			}
+			calibrationTotal.OutcomeSum += *cohort.OutcomeReturn
 			calibrationTotal.OutcomeCnt++
+		} else if cohort.OutcomeStatus == DecisionOutcomeUnavailable {
+			unavailableLabels++
+		} else {
+			pendingLabels++
 		}
 	}
 
@@ -148,9 +155,10 @@ func BuildMonitoringSummary(windowDays int) (MonitoringSummary, error) {
 	featureDrift, _ := buildFeatureDriftSummary(context.ModelVersion, since)
 	regimeSummary, _ := buildRegimeSummary(since)
 
-	selectionRate := 0.0
-	if len(logs) > 0 {
-		selectionRate = float64(selectedCount) / float64(len(logs))
+	selectionRate, labelCoverage := 0.0, 0.0
+	if len(cohorts) > 0 {
+		selectionRate = float64(selectedCount) / float64(len(cohorts))
+		labelCoverage = float64(maturedLabels) / float64(len(cohorts))
 	}
 
 	return MonitoringSummary{
@@ -160,7 +168,12 @@ func BuildMonitoringSummary(windowDays int) (MonitoringSummary, error) {
 		RolloutState:            context.RolloutState,
 		UniverseMode:            context.UniverseMode,
 		ExperimentID:            context.ExperimentID,
-		PredictionCount:         len(logs),
+		PredictionCount:         len(cohorts),
+		DecisionCount:           len(cohorts),
+		MaturedLabelCount:       maturedLabels,
+		PendingLabelCount:       pendingLabels,
+		UnavailableLabelCount:   unavailableLabels,
+		LabelCoverage:           labelCoverage,
 		SelectionRate:           selectionRate,
 		PredictionCountsByModel: predictionCountsByModel,
 		RankBuckets:             rankBuckets,
@@ -186,6 +199,11 @@ func persistMonitoringSnapshot(summary MonitoringSummary) error {
 		UniverseMode:      summary.UniverseMode,
 		ExperimentID:      stringPtr(summary.ExperimentID),
 		PredictionCount:   summary.PredictionCount,
+		DecisionCount:     summary.DecisionCount,
+		MaturedLabelCount: summary.MaturedLabelCount,
+		PendingLabelCount: summary.PendingLabelCount,
+		UnavailableCount:  summary.UnavailableLabelCount,
+		LabelCoverage:     summary.LabelCoverage,
 		SelectionRate:     summary.SelectionRate,
 		CalibrationJSON:   string(calibrationJSON),
 		RankBucketJSON:    string(rankJSON),
@@ -193,82 +211,6 @@ func persistMonitoringSnapshot(summary MonitoringSummary) error {
 		RegimeSummaryJSON: string(regimeJSON),
 	}
 	return database.DB.Create(&record).Error
-}
-
-func RecordTradeOutcome(tx *gorm.DB, position database.Position) error {
-	if tx == nil {
-		return nil
-	}
-	if position.PredictionLogID == nil && strings.TrimSpace(position.ModelVersion) == "" {
-		return nil
-	}
-
-	var existing database.TradeLabel
-	if position.PredictionLogID != nil {
-		if err := tx.Where("prediction_log_id = ?", *position.PredictionLogID).First(&existing).Error; err == nil {
-			return nil
-		}
-	}
-
-	var featureSnapshotID *uint
-	if position.PredictionLogID != nil {
-		var log database.PredictionLog
-		if err := tx.First(&log, *position.PredictionLogID).Error; err == nil {
-			featureSnapshotID = log.FeatureSnapshotID
-		}
-	}
-
-	now := time.Now().UTC()
-	realizedReturn := position.PnlPercent / 100.0
-	holdBars := estimateHoldBars(position)
-	label := database.TradeLabel{
-		FeatureSnapshotID: featureSnapshotID,
-		PredictionLogID:   position.PredictionLogID,
-		Symbol:            position.Symbol,
-		ModelVersion:      position.ModelVersion,
-		PolicyVersion:     position.PolicyVersion,
-		UniverseMode:      position.UniverseMode,
-		RolloutState:      position.RolloutState,
-		ExperimentID:      position.ExperimentID,
-		PolicyContextJSON: position.DecisionContextJSON,
-		RealizedReturn:    realizedReturn,
-		Profitable:        position.Pnl > 0,
-		ExitReason:        position.CloseReason,
-		HoldBars:          holdBars,
-	}
-	if err := tx.Create(&label).Error; err != nil {
-		return err
-	}
-
-	if position.PredictionLogID != nil {
-		profitable := position.Pnl > 0
-		updates := map[string]interface{}{
-			"outcome_return":      realizedReturn,
-			"outcome_profitable":  profitable,
-			"outcome_recorded_at": now,
-		}
-		if err := tx.Model(&database.PredictionLog{}).Where("id = ?", *position.PredictionLogID).Updates(updates).Error; err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-func estimateHoldBars(position database.Position) int {
-	if position.ClosedAt == nil || position.OpenedAt.IsZero() || !position.ClosedAt.After(position.OpenedAt) {
-		return 0
-	}
-	minutes := 15
-	if strings.HasSuffix(position.DecisionTimeframe, "m") {
-		if value, err := time.ParseDuration(strings.TrimSuffix(position.DecisionTimeframe, "m") + "m"); err == nil {
-			minutes = int(value.Minutes())
-		}
-	}
-	if minutes <= 0 {
-		minutes = 15
-	}
-	return int(position.ClosedAt.Sub(position.OpenedAt).Minutes()) / minutes
 }
 
 func ensureBucket(target map[string]*bucketTotals, bucket string) *bucketTotals {
@@ -344,16 +286,21 @@ func buildFeatureDriftSummary(modelVersion string, since time.Time) ([]FeatureDr
 			ZScore:       zScore,
 		})
 	}
+	return selectLargestAbsoluteDrift(results, 8), nil
+}
+
+func selectLargestAbsoluteDrift(results []FeatureDriftMetric, limit int) []FeatureDriftMetric {
 	sort.Slice(results, func(i, j int) bool {
-		if results[i].ZScore == results[j].ZScore {
+		left, right := math.Abs(results[i].ZScore), math.Abs(results[j].ZScore)
+		if left == right {
 			return results[i].Feature < results[j].Feature
 		}
-		return results[i].ZScore > results[j].ZScore
+		return left > right
 	})
-	if len(results) > 8 {
-		results = results[:8]
+	if limit > 0 && len(results) > limit {
+		return results[:limit]
 	}
-	return results, nil
+	return results
 }
 
 func buildRegimeSummary(since time.Time) (map[string]interface{}, error) {

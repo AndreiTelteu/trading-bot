@@ -215,11 +215,9 @@ func (c *ExecutionCoordinator) applyClose(id string) (*CloseResult, error) {
 		return nil
 	})
 	if err == nil {
-		// Monitoring labels are non-economic runtime observations. They must not
-		// widen the ledger role or turn a fully committed close into a retry.
-		if result != nil && result.Closed {
-			_ = database.DB.Transaction(func(tx *gorm.DB) error { return RecordTradeOutcome(tx, result.Position) })
-		}
+		// Fixed-horizon model labels are collected by the durable cohort worker,
+		// not from a position close. A close may occur before or after its cohort
+		// horizon and must never mutate observational evidence opportunistically.
 		return result, nil
 	}
 	status := closeRequestRetryable

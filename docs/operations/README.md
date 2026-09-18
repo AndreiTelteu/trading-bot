@@ -8,6 +8,7 @@ These runbooks describe the implemented Stage 08 controls. They do not authorize
 - [Stage 04 data coverage](dataset-coverage.md)
 - [Stage 05/06 backtest reproduction](backtest-reproduction.md)
 - [Stage 07 promotion and rollback](strategy-model-promotion.md)
+- [Model decision cohorts and fixed-horizon labels](model-decision-cohorts.md)
 - [Broker and idempotency recovery](broker-idempotency-recovery.md)
 - [Backup, isolated restore, and disaster recovery](backup-restore.md)
 

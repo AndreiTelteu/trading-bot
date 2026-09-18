@@ -738,6 +738,10 @@ func AnalyzeShortlist(selection *UniverseSelectionResult, settings map[string]st
 
 	results := make([]AnalyzedCoin, 0, len(selection.Shortlist))
 	modelPolicy := GetAuthorizedModelSelectionPolicy(settings)
+	labelPolicy, labelPolicyErr := decisionLabelPolicyFromSettings(settings)
+	if labelPolicyErr != nil {
+		return nil, labelPolicyErr
+	}
 	governance, governanceErr := ResolveGovernanceContext(settings, getSettingString(settings, "universe_mode", "dynamic"))
 	if governanceErr != nil {
 		logActivity("error", "Failed to resolve governance context", governanceErr.Error())
@@ -830,9 +834,11 @@ func AnalyzeShortlist(selection *UniverseSelectionResult, settings map[string]st
 					analysis.ProbUp = float64Ptr(prediction.Probability)
 					analysis.ExpectedValue = float64Ptr(prediction.ExpectedValue)
 					analysis.ModelScore = float64Ptr(prediction.RawScore)
-					if snapshotID, snapshotErr := persistFeatureSnapshot(featureRow, candidate, prediction.ModelVersion, selection, governance); snapshotErr == nil {
-						analysis.FeatureSnapshotID = snapshotID
+					snapshotID, snapshotErr := persistFeatureSnapshot(featureRow, candidate, prediction.ModelVersion, selection, governance)
+					if snapshotErr != nil {
+						return nil, fmt.Errorf("persist point-in-time feature snapshot for %s: %w", candidate.Symbol, snapshotErr)
 					}
+					analysis.FeatureSnapshotID = snapshotID
 					rankingInputs = append(rankingInputs, ModelRankedCandidate{
 						Symbol:        candidate.Symbol,
 						Probability:   prediction.Probability,
@@ -843,6 +849,9 @@ func AnalyzeShortlist(selection *UniverseSelectionResult, settings map[string]st
 						Symbol:            candidate.Symbol,
 						FeatureSnapshotID: analysis.FeatureSnapshotID,
 						Prediction:        prediction,
+						DecisionTime:      featureRow.Timestamp,
+						EntryPrice:        featureRow.LastPrice,
+						FeatureSpec:       featureRow.SpecVersion,
 					})
 					observationIndexBySymbol[candidate.Symbol] = len(observations) - 1
 				} else {
@@ -887,14 +896,14 @@ func AnalyzeShortlist(selection *UniverseSelectionResult, settings map[string]st
 			}
 		}
 
-		if idsBySymbol, err := persistPredictionLogs(observations, selection, governance); err != nil {
-			logActivity("error", "Failed to persist model prediction logs", err.Error())
-		} else {
-			for symbol, id := range idsBySymbol {
-				if resultIndex, ok := resultIndexBySymbol[symbol]; ok {
-					logID := id
-					results[resultIndex].PredictionLogID = &logID
-				}
+		idsBySymbol, err := persistPredictionLogs(observations, selection, governance, labelPolicy)
+		if err != nil {
+			return nil, fmt.Errorf("persist decision cohort: %w", err)
+		}
+		for symbol, id := range idsBySymbol {
+			if resultIndex, ok := resultIndexBySymbol[symbol]; ok {
+				logID := id
+				results[resultIndex].PredictionLogID = &logID
 			}
 		}
 
@@ -1534,6 +1543,11 @@ func AnalyzeTrendingCoins() (*TrendingAnalysisResult, error) {
 		return nil, err
 	}
 	results, tradesOpened := ExecuteShortlistTrades(results, selection, settings)
+	if _, err := ProcessMatureDecisionCohorts(time.Now().UTC(), 100); err != nil {
+		// The cohort state is durable, so the next analysis cycle retries this
+		// failure without contaminating an outcome with a current market quote.
+		logActivity("error", "Failed to process mature model decision cohorts", err.Error())
+	}
 	if err := RefreshMonitoringSnapshot(settings); err != nil {
 		logActivity("error", "Failed to refresh monitoring snapshot", err.Error())
 	}

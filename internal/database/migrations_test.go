@@ -58,6 +58,47 @@ func TestFreshLedgerMigrationAndSeedCreatesOpeningCapital(t *testing.T) {
 	assertTrigger(t, db, "wallets_economic_guard")
 }
 
+func TestDecisionCohortMigrationHasRuntimeOnlyWriteGrant(t *testing.T) {
+	db := testutil.OpenPostgresDB(t)
+	testutil.ResetPublicSchema(t, db)
+	if err := database.RunMigrations(db); err != nil {
+		t.Fatal(err)
+	}
+	for _, check := range []struct {
+		role, privilege string
+		want            bool
+	}{
+		{"trading_bot_runtime", "SELECT", true},
+		{"trading_bot_runtime", "INSERT", true},
+		{"trading_bot_ledger_writer", "SELECT", false},
+		{"trading_bot_parity_writer", "SELECT", false},
+	} {
+		var got bool
+		if err := db.Raw("SELECT has_table_privilege(?, 'decision_cohorts', ?)", check.role, check.privilege).Scan(&got).Error; err != nil {
+			t.Fatal(err)
+		}
+		if got != check.want {
+			t.Errorf("%s decision_cohorts %s = %v, want %v", check.role, check.privilege, got, check.want)
+		}
+	}
+	for _, check := range []struct {
+		column string
+		want   bool
+	}{
+		{"outcome_status", true},
+		{"decision_time", false},
+		{"model_artifact_digest", false},
+	} {
+		var got bool
+		if err := db.Raw("SELECT has_column_privilege('trading_bot_runtime', 'decision_cohorts', ?, 'UPDATE')", check.column).Scan(&got).Error; err != nil {
+			t.Fatal(err)
+		}
+		if got != check.want {
+			t.Errorf("runtime decision_cohorts.%s UPDATE = %v, want %v", check.column, got, check.want)
+		}
+	}
+}
+
 func TestStage04AutomaticRollbackIsExplicitlyRejected(t *testing.T) {
 	err := database.Stage04RollbackError()
 	if err == nil || !strings.Contains(err.Error(), "manually remove") || !strings.Contains(err.Error(), "migration history") {
