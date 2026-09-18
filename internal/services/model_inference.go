@@ -8,14 +8,17 @@ import (
 )
 
 const (
-	DefaultActiveModelVersion = "logistic_baseline_v1"
-	ModelRolloutResearchOnly  = "research_only"
-	ModelRolloutShadow        = "shadow"
-	ModelRolloutPaper         = "paper"
-	ModelRolloutLimitedLive   = "limited_live"
-	ModelRolloutFullLive      = "full_live"
-	ModelRolloutRollback      = "rollback"
-	ModelFallbackRuleBased    = "rule_based"
+	DefaultActiveModelVersion        = "logistic_baseline_v1"
+	ModelArtifactContractFixture     = "contract_fixture"
+	ModelArtifactResearchProposal    = "research_proposal"
+	ModelArtifactPromotableCandidate = "promotable_candidate"
+	ModelRolloutResearchOnly         = "research_only"
+	ModelRolloutShadow               = "shadow"
+	ModelRolloutPaper                = "paper"
+	ModelRolloutLimitedLive          = "limited_live"
+	ModelRolloutFullLive             = "full_live"
+	ModelRolloutRollback             = "rollback"
+	ModelFallbackRuleBased           = "rule_based"
 )
 
 type ModelArtifactFeature struct {
@@ -141,11 +144,23 @@ func (artifact LogisticModelArtifact) Validate() error {
 	if strings.TrimSpace(artifact.Version) == "" {
 		return fmt.Errorf("model artifact version is required")
 	}
+	if artifact.ArtifactClass != ModelArtifactContractFixture && artifact.ArtifactClass != ModelArtifactResearchProposal && artifact.ArtifactClass != ModelArtifactPromotableCandidate {
+		return fmt.Errorf("model artifact %s has unsupported artifact class %q", artifact.Version, artifact.ArtifactClass)
+	}
+	if artifact.ModelFamily != "logistic" {
+		return fmt.Errorf("model artifact %s model family %q is not executable by the Go logistic inference contract", artifact.Version, artifact.ModelFamily)
+	}
+	if artifact.FeatureSpecVersion != ModelFeatureSpecVersion {
+		return fmt.Errorf("model artifact %s feature spec %q is not the runtime feature schema", artifact.Version, artifact.FeatureSpecVersion)
+	}
 	if len(artifact.Features) == 0 {
 		return fmt.Errorf("model artifact %s has no features", artifact.Version)
 	}
+	if len(artifact.Features) != len(modelFeatureNames) {
+		return fmt.Errorf("model artifact %s has %d features, want %d", artifact.Version, len(artifact.Features), len(modelFeatureNames))
+	}
 	seen := make(map[string]bool, len(artifact.Features))
-	for _, feature := range artifact.Features {
+	for index, feature := range artifact.Features {
 		if strings.TrimSpace(feature.Name) == "" {
 			return fmt.Errorf("model artifact %s contains unnamed feature", artifact.Version)
 		}
@@ -153,6 +168,9 @@ func (artifact LogisticModelArtifact) Validate() error {
 			return fmt.Errorf("model artifact %s contains duplicate feature %s", artifact.Version, feature.Name)
 		}
 		seen[feature.Name] = true
+		if feature.Name != modelFeatureNames[index] {
+			return fmt.Errorf("model artifact %s feature %d is %q, want %q", artifact.Version, index, feature.Name, modelFeatureNames[index])
+		}
 		if math.IsNaN(feature.Mean) || math.IsInf(feature.Mean, 0) || math.IsNaN(feature.Std) || math.IsInf(feature.Std, 0) || math.IsNaN(feature.Coefficient) || math.IsInf(feature.Coefficient, 0) {
 			return fmt.Errorf("model artifact %s contains non-finite feature metadata", artifact.Version)
 		}

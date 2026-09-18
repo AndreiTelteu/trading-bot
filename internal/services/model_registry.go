@@ -56,6 +56,9 @@ func LoadModelArtifact(version string) (*LogisticModelArtifact, error) {
 	modelArtifactCache.RLock()
 	if cached, ok := modelArtifactCache.artifacts[version]; ok {
 		modelArtifactCache.RUnlock()
+		if cached.ArtifactClass == ModelArtifactResearchProposal {
+			return nil, fmt.Errorf("model artifact %s is an offline research proposal and cannot be loaded by runtime inference", version)
+		}
 		copyArtifact := cached
 		return &copyArtifact, nil
 	}
@@ -86,6 +89,9 @@ func LoadModelArtifact(version string) (*LogisticModelArtifact, error) {
 	}
 	if err := artifact.Validate(); err != nil {
 		return nil, err
+	}
+	if artifact.ArtifactClass == ModelArtifactResearchProposal {
+		return nil, fmt.Errorf("model artifact %s is an offline research proposal and cannot be loaded by runtime inference", version)
 	}
 	if checksum == "" {
 		checksum = sha256Hex(payload)
@@ -203,7 +209,7 @@ func verifyStage07ModelAuthority(policy ModelSelectionPolicy, loaded *LogisticMo
 	if err := database.DB.Where("version = ?", policy.ActiveModelVersion).First(&artifact).Error; err != nil {
 		return err
 	}
-	if loaded == nil || loaded.ArtifactClass != "promotable_candidate" || artifact.ArtifactClass != "promotable_candidate" {
+	if loaded == nil || loaded.ArtifactClass != ModelArtifactPromotableCandidate || artifact.ArtifactClass != ModelArtifactPromotableCandidate {
 		return fmt.Errorf("model artifact %s class %s is structurally quarantined", policy.ActiveModelVersion, artifact.ArtifactClass)
 	}
 	if artifact.FeatureSpecVersion == "" || artifact.LabelSpecVersion == "" || artifact.FeatureSchemaJSON == "" || artifact.TrainingManifestID == "" || artifact.CodeRevision == "" || artifact.DatasetManifestID == "" || artifact.ModelDigest == "" || artifact.ModelDigest != artifact.ArtifactChecksum {

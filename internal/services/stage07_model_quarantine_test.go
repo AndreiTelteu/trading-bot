@@ -22,6 +22,30 @@ func TestStage07BootstrapModelCannotGainPaperAuthorityFromSettings(t *testing.T)
 	}
 }
 
+func TestResearchProposalCannotEnterRuntimeInference(t *testing.T) {
+	previousDB := database.DB
+	database.DB = nil
+	t.Cleanup(func() { database.DB = previousDB })
+	baseline, err := LoadModelArtifact(DefaultActiveModelVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proposal := *baseline
+	proposal.Version = "offline-proposal-test"
+	proposal.ArtifactClass = ModelArtifactResearchProposal
+	modelArtifactCache.Lock()
+	modelArtifactCache.artifacts[proposal.Version] = proposal
+	modelArtifactCache.Unlock()
+	t.Cleanup(func() {
+		modelArtifactCache.Lock()
+		delete(modelArtifactCache.artifacts, proposal.Version)
+		modelArtifactCache.Unlock()
+	})
+	if _, err := LoadConfiguredModel(map[string]string{"active_model_version": proposal.Version, "model_rollout_state": ModelRolloutShadow}); err == nil {
+		t.Fatal("offline research proposal entered runtime inference")
+	}
+}
+
 func TestStage07AdversarialShadowRanksCannotChangeOneSlotExecution(t *testing.T) {
 	previous := database.DB
 	database.DB = nil

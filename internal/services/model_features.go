@@ -8,6 +8,24 @@ import (
 
 const ModelFeatureSpecVersion = "learned_signal_v1"
 
+// modelFeatureNames is the canonical ordered schema used by runtime inference,
+// PostgreSQL-derived research exports, and every admissible model artifact.
+// Keep feature construction below and artifact validation bound to this list.
+var modelFeatureNames = []string{
+	"ret_15m_1", "ret_15m_4", "ret_15m_16", "ret_15m_96",
+	"price_vs_ema20", "price_vs_ema50", "ema20_slope", "breakout_20", "breakdown_20",
+	"rsi_14", "rsi_centered", "bb_percent_b", "price_zscore_20", "macd_hist", "macd_hist_slope",
+	"momentum_3", "momentum_12", "volume_ratio_20", "atr_ratio_14", "realized_vol_20",
+	"quote_volume_24h_log", "median_intraday_quote_volume_log", "relative_strength_7d",
+	"universe_rank_pct", "liquidity_rank_pct", "volatility_rank_pct", "regime_score", "breadth_ratio",
+	"btc_return_1d", "btc_trend_gap", "open_position_count", "exposure_ratio", "already_open_position",
+	"volume_acceleration", "overextension_penalty", "trend_quality", "breakout_proximity", "gap_ratio",
+}
+
+// ModelFeatureNames returns a copy so callers cannot change the runtime
+// feature schema by mutating a package-level slice.
+func ModelFeatureNames() []string { return append([]string(nil), modelFeatureNames...) }
+
 type ModelFeatureInput struct {
 	Timestamp         time.Time
 	Symbol            string

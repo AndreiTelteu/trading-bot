@@ -13,6 +13,7 @@ import (
 	"trading-go/internal/database"
 	"trading-go/internal/operations"
 	"trading-go/internal/pointintime"
+	"trading-go/internal/research"
 	"trading-go/internal/services"
 )
 
@@ -31,7 +32,7 @@ func (publicClient) FetchBars(ctx context.Context, ticker, frame string, start, 
 }
 
 func main() {
-	action := flag.String("action", "coverage", "ingest|import-metadata|build-manifest|coverage|readiness|build-universe|build-universe-range")
+	action := flag.String("action", "coverage", "ingest|import-metadata|build-manifest|coverage|readiness|build-universe|build-universe-range|export-model-dataset")
 	manifestID := flag.String("manifest-id", "", "")
 	dataset := flag.String("dataset-version", "", "")
 	symbolID := flag.String("symbol-id", "", "")
@@ -52,12 +53,16 @@ func main() {
 	metadataFile := flag.String("metadata-file", "", "JSON envelope containing assets, symbols, tradability_intervals, and constraints")
 	knowledgeCutoffText := flag.String("knowledge-cutoff", "", "deterministic retrieval cutoff (RFC3339)")
 	step := flag.Duration("step", 24*time.Hour, "snapshot range step")
+	outputDir := flag.String("output-dir", "", "new directory for an immutable offline research proposal dataset")
+	labelHorizon := flag.Duration("label-horizon", 24*time.Hour, "fixed model-label horizon for offline proposal datasets")
+	featureSpec := flag.String("feature-spec", services.ModelFeatureSpecVersion, "runtime feature specification for offline proposal datasets")
+	labelSpec := flag.String("label-spec", research.FixedHorizonAfterCostLabelSpecVersion, "fixed-horizon label specification for offline proposal datasets")
 	flag.Parse()
 	cfg, loadErr := config.LoadValidated()
 	if loadErr != nil {
 		fatal(loadErr)
 	}
-	if *action != "coverage" && cfg.Stage08Flags.PointInTime == "off" {
+	if marketdataActionWrites(*action, *dryRun) && cfg.Stage08Flags.PointInTime == "off" {
 		fatal(fmt.Errorf("Stage 04 mutation/build requires STAGE08_POINT_IN_TIME_UNIVERSE=research or authoritative"))
 	}
 	requirements := marketdataPoolRequirements(*action, *dryRun)
@@ -123,13 +128,21 @@ func main() {
 	case "build-universe-range":
 		result, err := pointintime.BuildUniverseSnapshotRange(database.DB, pointintime.UniverseRangeRequest{Start: start, End: end, Step: *step, DryRun: *dryRun, Build: pointintime.UniverseBuildRequest{ManifestID: *manifestID, PolicyVersion: *policyVersion, Policy: services.GetUniversePolicy(services.GetAllSettings()), BenchmarkSymbolID: *benchmarkID, BenchmarkAssetID: *benchmarkAsset}})
 		output(result, err)
+	case "export-model-dataset":
+		dataset, err := research.BuildProposalDataset(database.DB, research.ProposalDatasetRequest{DatasetManifestID: *manifestID, Start: start, End: end, LabelHorizon: *labelHorizon, FeatureSpecVersion: *featureSpec, LabelSpecVersion: *labelSpec, PolicyVersion: *policyVersion})
+		if err != nil {
+			output(nil, err)
+			return
+		}
+		manifest, err := research.WriteProposalDataset(*outputDir, dataset)
+		output(manifest, err)
 	default:
 		fatal(fmt.Errorf("unknown action %q", *action))
 	}
 }
 
 func marketdataActionWrites(action string, dryRun bool) bool {
-	return action != "coverage" && action != "readiness" && !(action == "ingest" && dryRun)
+	return action != "coverage" && action != "readiness" && action != "export-model-dataset" && !(action == "ingest" && dryRun)
 }
 
 func marketdataPoolRequirements(action string, dryRun bool) database.CommandPoolRequirements {

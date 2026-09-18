@@ -11,6 +11,12 @@ POST /api/validation/transitions
 
 Do not copy request fields from an LLM or mutable settings without matching them to the stored manifest/evidence. Bootstrap and contract-fixture artifacts cannot be promoted. Paper/live authority requires exact implementation, configuration, run-manifest, artifact, policy, dataset/universe, evidence, approval, elapsed-monitoring, and deployment digests. These digest classes are not interchangeable: an implementation digest cannot stand in for governed configuration or a replay manifest.
 
+Offline Python files tagged `research_proposal` are not artifacts in this
+workflow. They are rejected by runtime loading and cannot be registered as
+evidence. If one forms a hypothesis, recreate it with the shared Go contracts
+and create a Stage 07 experiment. SQLite and `trading.db` are not supported
+research sources.
+
 Before treating runtime model monitoring as promotion evidence, inspect the
 decision-cohort label coverage and pending/unavailable counts. Calibration uses
 only matured fixed-horizon labels; missing bars or unmatured horizons are

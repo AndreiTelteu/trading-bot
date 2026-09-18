@@ -1,66 +1,54 @@
-# Learned Signal Model — Offline Training Pipeline
+# Offline learned-model proposals
 
-Python research tools for training, evaluating, and exporting learned signal models for the trading bot.
+This directory is not a trading, backtest, validation, or promotion subsystem.
+Go/PostgreSQL is authoritative for dataset construction, point-in-time
+constraints, fold evaluation, portfolio simulation, costs, manifests,
+promotion evidence, and runtime inference.
 
-## Prerequisites
+Python is retained only for optional offline sklearn logistic experimentation.
+It cannot connect to `trading.db`, SQLite, or PostgreSQL; it accepts only a
+Go-exported, hash-bound dataset. Its `research_proposal` output is explicitly
+rejected by Go runtime loading and cannot grant paper/live authority.
 
-- Python 3.10+
-- `pip install -r requirements.txt`
+## Export a proposal dataset
 
-## Scripts
+Build the complete Stage 04 manifest and matching universe snapshots, then
+export fixed-horizon, after-cost labeled decision cohorts:
 
-| Script | Purpose |
-|--------|---------|
-| `build_dataset.py` | Extract features and labels from the SQLite database into partitioned CSV files |
-| `train_logistic.py` | Train a regularized logistic regression with Platt-calibrated probabilities |
-| `train_gbdt.py` | Train a LightGBM gradient-boosted tree classifier |
-| `evaluate_walkforward.py` | Purged walk-forward evaluation with per-window and aggregate metrics |
-| `export_artifact.py` | Export a trained model to the Go-compatible JSON artifact format |
-| `test_feature_parity.py` | Verify Python indicator calculations match the Go `BuildModelFeatureRow` |
-
-## Workflow
-
-```
-1. Build dataset from database
-   python build_dataset.py --db-path ../../trading.db --output-dir datasets/v1 \
-       --start 2024-01-01 --end 2025-01-01
-
-2. Train logistic baseline
-   python train_logistic.py --dataset-dir datasets/v1 \
-       --output-path models/logistic_v2.json
-
-3. (Optional) Train GBDT and compare
-   python train_gbdt.py --dataset-dir datasets/v1 \
-       --output-path models/gbdt_v1.json \
-       --baseline-path models/logistic_v2.json
-
-4. Walk-forward evaluation
-   python evaluate_walkforward.py --dataset-dir datasets/v1 \
-       --model-type logistic --train-months 6 --test-months 1 \
-       --output-path results/walkforward_logistic.json
-
-5. Export artifact for Go deployment
-   python export_artifact.py --model-path models/logistic_v2.json \
-       --output-path ../../internal/services/model_artifacts/logistic_v2.json \
-       --version logistic_v2
-
-6. Verify feature parity
-   python test_feature_parity.py
+```bash
+go run ./cmd/marketdata -action export-model-dataset \
+  -manifest-id <64-hex-stage04-manifest> \
+  -policy-version <governed-composite-policy-version> \
+  -start 2026-01-01T00:00:00Z -end 2026-06-01T00:00:00Z \
+  -label-horizon 24h -output-dir /controlled/research/export-2026-06
 ```
 
-## Feature Spec
+The new output directory contains `dataset.jsonl` and
+`dataset.manifest.json`. The exporter fails closed unless each row is a labeled
+cohort with a feature snapshot bound through its universe snapshot to the
+supplied immutable dataset manifest. It rejects missing labels, feature quality
+flags, schema drift, non-finite values, incomplete coverage, and reused output
+directories.
 
-All models use feature spec version `learned_signal_v1` with 38 features computed by `BuildModelFeatureRow` in Go (`internal/services/model_features.go`). The Python implementations in `test_feature_parity.py` mirror the Go math exactly.
+## Generate a proposal
 
-## Artifact Format
+```bash
+python -m pip install -r research/learned_model/requirements.txt
+python research/learned_model/train_logistic.py \
+  --dataset-dir /controlled/research/export-2026-06 \
+  --train-end 2026-04-01T00:00:00Z \
+  --validation-end 2026-05-01T00:00:00Z \
+  --version logistic-proposal-2026-06 \
+  --output-path /controlled/research/proposals/logistic-proposal-2026-06.json
+```
 
-The exported JSON artifact matches the Go `LogisticModelArtifact` struct in `internal/services/model_inference.go`. Key fields:
+The output uses `calibration_method: unvalidated_identity`; its exploratory
+classification diagnostics are not calibration, portfolio, cost, or promotion
+evidence. Recreate a candidate under the shared Go contracts and use Stage 07
+for any research result that needs evaluation or promotion.
 
-- `version`: unique model identifier
-- `features[]`: ordered list with `name`, `mean`, `std`, `coefficient`
-- `intercept`: logistic regression bias term
-- `calibration.a`, `calibration.b`: Platt scaling parameters
-- `avg_gain`, `avg_loss`: for expected-value computation
-- `metrics`: training/validation/test metrics
+Run the optional boundary check:
 
-See `internal/services/model_artifacts/logistic_baseline_v1.json` for the reference format.
+```bash
+cd research/learned_model && python test_proposal_contract.py
+```

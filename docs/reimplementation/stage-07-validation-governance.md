@@ -92,6 +92,7 @@ authority-policy digest binds the complete runtime policy envelope.
 - [x] Persist every model-eligible decision (accepted and rejected) under a deterministic identity bound to decision time, symbol, horizon, policy, artifact, and cost identities.
 - [x] Label the complete cohort only from point-in-time stored bars at a fixed horizon; pending/unavailable labels are explicit, retried, and excluded from calibration denominators.
 - [x] Monitor cohort coverage separately from performance, and rank drift by absolute deviation so adverse negative shifts cannot be hidden.
+- [x] Quarantine offline Python to hash-verified PostgreSQL-derived proposal datasets; Go rejects proposal artifacts and remains authoritative for evaluation and promotion evidence.
 
 ## Testing instructions
 
@@ -143,5 +144,5 @@ authority-policy digest binds the complete runtime policy envelope.
 - Adversarial coverage includes shadow-order isolation, immutable policy envelopes, ML-baseline promotion gates, fold isolation, trusted Stage 04/05/06 sources, confirmatory approvals, monitoring-evidence rollback, primitive reconciliation, database integrity, strategy authority, roles, idempotency, and historical upgrades.
 - Isolated PostgreSQL full suite passed serially with `go test -p 1 -count=1 ./...`.
 - Relevant PostgreSQL race suites, including validation and governance, passed serially; `go vet ./...` and `git diff --check` passed.
-- Research Python was not touched; its conditional test requirement is therefore not applicable to this implementation.
+- The former SQLite/Python evaluator was removed in ADR 0006. The retained optional Python proposal utility verifies a Go-exported immutable dataset and has a tamper regression check; it cannot emit runtime authority or Stage 07 evidence.
 - The four external claims above remain deliberately unresolved.
