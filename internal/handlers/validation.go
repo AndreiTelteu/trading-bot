@@ -100,7 +100,7 @@ func RunValidationExperiment(c *fiber.Ctx) error {
 		now := time.Now().UTC()
 		stage08Context := "{}"
 		if flags, active := cutover.Active(); active {
-			stage08Context = flags.ObservationContext("stage07_validation", map[string]string{"strategy": manifest.Spec.Candidate.ID + "@" + manifest.Spec.Candidate.Version, "model": manifest.Spec.Model.Version, "policy": manifest.Spec.Policies.Composite, "dataset": manifest.Spec.DatasetManifestID, "universe": manifest.Spec.UniversePolicy})
+			stage08Context = validation.Stage08ObservationContext(flags, manifest)
 		}
 		job = database.BacktestJob{Status: "queued", JobType: "stage07_validation", Progress: 0, RequestKey: &key, SemanticID: manifest.ID, DatasetManifestID: &manifest.Spec.DatasetManifestID, Stage08ContextJSON: stage08Context, CreatedAt: now, UpdatedAt: now}
 		return tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "request_key"}}, DoNothing: true}).Create(&job).Error

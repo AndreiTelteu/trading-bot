@@ -17,6 +17,24 @@ const MaxEvidenceBytes = 2 << 20
 
 type Repository struct{ DB *gorm.DB }
 
+// Stage08ObservationContext is the immutable observation envelope shared by
+// experiment registration and execution-job creation.  A rule-only candidate
+// has no learned model; record that fact explicitly instead of dereferencing a
+// nil optional model or silently omitting the version from the audit context.
+func Stage08ObservationContext(flags cutover.Flags, manifest ExperimentManifest) string {
+	modelVersion := "none"
+	if manifest.Spec.Model != nil {
+		modelVersion = manifest.Spec.Model.Version
+	}
+	return flags.ObservationContext("stage07_validation", map[string]string{
+		"strategy": manifest.Spec.Candidate.ID + "@" + manifest.Spec.Candidate.Version,
+		"model":    modelVersion,
+		"policy":   manifest.Spec.Policies.Composite,
+		"dataset":  manifest.Spec.DatasetManifestID,
+		"universe": manifest.Spec.UniversePolicy,
+	})
+}
+
 func (r Repository) CreateManifest(manifest ExperimentManifest, backtestJobID *uint, comparisonDigest *string) (ExperimentManifest, error) {
 	return r.CreateManifestAuthenticated(manifest, backtestJobID, comparisonDigest, "system", "")
 }
@@ -45,7 +63,7 @@ func (r Repository) CreateManifestAuthenticated(manifest ExperimentManifest, bac
 	}
 	stage08Context := "{}"
 	if flags, active := cutover.Active(); active {
-		stage08Context = flags.ObservationContext("stage07_validation", map[string]string{"strategy": manifest.Spec.Candidate.ID + "@" + manifest.Spec.Candidate.Version, "model": manifest.Spec.Model.Version, "policy": manifest.Spec.Policies.Composite, "dataset": manifest.Spec.DatasetManifestID, "universe": manifest.Spec.UniversePolicy})
+		stage08Context = Stage08ObservationContext(flags, manifest)
 	}
 	row := database.ValidationExperiment{ID: manifest.ID, ContentID: manifest.ContentID, SchemaVersion: manifest.Spec.SchemaVersion, ContentJSON: string(content), ContentDigest: manifest.ContentDigest, CreatedAt: manifest.CreatedAt, BacktestJobID: backtestJobID, ComparisonDigest: comparisonDigest, AuthorityPolicyDigest: manifest.Spec.AuthorityPolicy.Digest, Stage08ContextJSON: stage08Context, CreatedBy: creator, IdempotencyKey: key}
 	err = r.DB.Transaction(func(tx *gorm.DB) error {

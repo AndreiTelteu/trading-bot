@@ -36,6 +36,9 @@ Move from legacy paths to the reimplemented core without silent behavior changes
 - [x] Expose backtest coverage failures distinctly from strategy zero trades.
 - [x] Expose parity divergence counts during dual-run.
 - [x] Expose validation/promotion state and failed gates.
+- [x] Bind every accepted parity transition to its immutable context
+  population, and report that population plus verified Stage 07 gate failures
+  in operational status.
 - [x] Alert/log on reconciliation breaks, missing benchmark/universe data, governance bypass attempts, and repeated broker idempotency conflicts.
 
 ## Cutover sequence

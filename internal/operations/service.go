@@ -14,6 +14,7 @@ import (
 	"trading-go/internal/database"
 	stage07 "trading-go/internal/governance"
 	"trading-go/internal/ledger"
+	"trading-go/internal/validation"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -292,6 +293,9 @@ func (s Service) loadPersistedAuthority(ctx context.Context) (database.CutoverSt
 	if transition.ID != state.TransitionID || transition.ContentDigest != transition.ID || transition.ToStage != state.Stage || transition.ToAuthority != state.Authority || transition.FlagSnapshotID != row.ID || transition.FlagSnapshotDigest != row.ContentDigest || transition.TargetEnvelopeDigest != state.AuthorityDigest || !canonicalJSONEqual(transition.TargetEnvelopeJSON, state.AuthorityJSON) {
 		return state, row, cutover.Flags{}, fmt.Errorf("persisted cutover state does not match immutable transition authority")
 	}
+	if err := verifyParityAcceptanceInAuthorityChain(s.DB.WithContext(ctx), transition); err != nil {
+		return state, row, cutover.Flags{}, err
+	}
 	return state, row, flags, nil
 }
 func (s Service) DeclareFlagSnapshot(ctx context.Context, flags cutover.Flags, principal string) (database.Stage08FlagSnapshot, error) {
@@ -325,8 +329,75 @@ func (s Service) reconcileCutoverStartup(flagID string) error {
 		if err := s.DB.First(&transition, "id=?", state.TransitionID).Error; err != nil || transition.ToStage != state.Stage || transition.ToAuthority != state.Authority || transition.FlagSnapshotID != state.FlagSnapshotID || transition.TargetEnvelopeDigest != state.AuthorityDigest {
 			return fmt.Errorf("cutover state does not match immutable transition")
 		}
+		if err := verifyParityAcceptanceInAuthorityChain(s.DB, transition); err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+// verifyTransitionParityBinding makes the accepted dual-run denominator part
+// of the durable cutover record. Without this link, an operator can see a
+// policy and aggregate but cannot reproduce which immutable contexts justified
+// the parity transition.
+func verifyTransitionParityBinding(db *gorm.DB, transition database.CutoverTransition) error {
+	if transition.ToStage != "parity_accepted" {
+		return nil
+	}
+	if transition.ParityPopulationID == "" || transition.ParityPolicyID == "" {
+		return fmt.Errorf("cutover parity acceptance is missing its immutable population binding")
+	}
+	var population database.ParityPopulation
+	if err := db.First(&population, "id=?", transition.ParityPopulationID).Error; err != nil {
+		return fmt.Errorf("cutover parity population missing: %w", err)
+	}
+	if err := verifyParityPopulation(db, population); err != nil {
+		return fmt.Errorf("cutover parity population is invalid: %w", err)
+	}
+	if population.PolicyID != transition.ParityPolicyID || population.FlagSnapshotID != transition.FlagSnapshotID {
+		return fmt.Errorf("cutover parity population does not match accepted policy or flags")
+	}
+	var source database.CutoverTransition
+	if err := db.First(&source, "id=?", population.CutoverAttemptID).Error; err != nil {
+		return fmt.Errorf("cutover parity population source transition missing: %w", err)
+	}
+	if source.TargetEnvelopeDigest != transition.SourceEnvelopeDigest || !canonicalJSONEqual(source.TargetEnvelopeJSON, transition.SourceEnvelopeJSON) {
+		return fmt.Errorf("cutover parity population is not bound to the accepted source authority")
+	}
+	return nil
+}
+
+// verifyParityAcceptanceInAuthorityChain prevents a later paper/live stage
+// from hiding a missing parity denominator on its immediate source stage. Each
+// authority envelope identifies the one transition that produced it, so the
+// walk is deterministic and bounded by the legal Stage 08 sequence.
+func verifyParityAcceptanceInAuthorityChain(db *gorm.DB, current database.CutoverTransition) error {
+	if stageIndex(current.ToStage) < stageIndex("parity_accepted") {
+		return nil
+	}
+	for steps := 0; steps <= len(stages); steps++ {
+		if current.ToStage == "parity_accepted" {
+			return verifyTransitionParityBinding(db, current)
+		}
+		var source struct {
+			Stage string `json:"stage"`
+		}
+		if err := json.Unmarshal([]byte(current.SourceEnvelopeJSON), &source); err != nil || stageIndex(source.Stage) < 0 {
+			return fmt.Errorf("cutover source authority envelope is corrupt")
+		}
+		if source.Stage == "schema_legacy" {
+			return fmt.Errorf("cutover authority chain skipped required parity acceptance")
+		}
+		var previous []database.CutoverTransition
+		if err := db.Where("to_stage=? AND target_envelope_digest=?", source.Stage, current.SourceEnvelopeDigest).Limit(2).Find(&previous).Error; err != nil {
+			return err
+		}
+		if len(previous) != 1 || !canonicalJSONEqual(previous[0].TargetEnvelopeJSON, current.SourceEnvelopeJSON) {
+			return fmt.Errorf("cutover authority chain is missing or ambiguous")
+		}
+		current = previous[0]
+	}
+	return fmt.Errorf("cutover authority chain exceeds legal stage depth")
 }
 
 func mustFlagDigest(f cutover.Flags) string { _, d, _ := f.Canonical(); return d }
@@ -1186,7 +1257,7 @@ func (s Service) TransitionCutover(ctx context.Context, r TransitionRequest) (da
 		targetJSON, targetDigest := authorityEnvelope(r.ToStage, authority, targetSnapshot.ID, targetSnapshot.ContentDigest, targetFlags.Stage07Context, "")
 		evidenceDigest, _, _ := hash(r.EvidenceIDs)
 		digest := requestDigest
-		result = database.CutoverTransition{ID: digest, IdempotencyKey: r.IdempotencyKey, FromStage: state.Stage, ToStage: r.ToStage, FromAuthority: state.Authority, ToAuthority: authority, FlagSnapshotID: r.FlagSnapshotID, FlagSnapshotDigest: targetSnapshot.ContentDigest, SourceStateVersion: state.Version, SourceEnvelopeJSON: sourceJSON, SourceEnvelopeDigest: sourceDigest, TargetEnvelopeJSON: targetJSON, TargetEnvelopeDigest: targetDigest, RequestDigest: requestDigest, ParityPolicyID: r.ParityPolicyID, EvidenceDigest: evidenceDigest, Principal: r.Principal, Reason: r.Reason, PrerequisitesJSON: string(prereq), Stage07ContextKey: r.Stage07ContextKey, ContentDigest: digest, CreatedAt: now}
+		result = database.CutoverTransition{ID: digest, IdempotencyKey: r.IdempotencyKey, FromStage: state.Stage, ToStage: r.ToStage, FromAuthority: state.Authority, ToAuthority: authority, FlagSnapshotID: r.FlagSnapshotID, FlagSnapshotDigest: targetSnapshot.ContentDigest, SourceStateVersion: state.Version, SourceEnvelopeJSON: sourceJSON, SourceEnvelopeDigest: sourceDigest, TargetEnvelopeJSON: targetJSON, TargetEnvelopeDigest: targetDigest, RequestDigest: requestDigest, ParityPolicyID: r.ParityPolicyID, ParityPopulationID: r.ParityPopulationID, EvidenceDigest: evidenceDigest, Principal: r.Principal, Reason: r.Reason, PrerequisitesJSON: string(prereq), Stage07ContextKey: r.Stage07ContextKey, ContentDigest: digest, CreatedAt: now}
 		if r.Rollback {
 			previous := state.TransitionID
 			result.RollbackOf = &previous
@@ -1515,6 +1586,7 @@ type Status struct {
 	Backtest       any                            `json:"backtest"`
 	Parity         any                            `json:"parity"`
 	Governance     any                            `json:"governance"`
+	Validation     any                            `json:"validation"`
 	Data           any                            `json:"data"`
 	Backup         any                            `json:"backup"`
 	Incidents      []database.OperationalIncident `json:"incidents"`
@@ -1574,15 +1646,30 @@ func (s Service) Status(ctx context.Context) Status {
 		}
 		out.Backtest = map[string]any{"job_id": job.ID, "status": job.Status, "classification": classification, "coverage_failed": classification == "coverage_failed", "zero_trades": classification == "strategy_zero_trades" || classification == "gating_zero_trades", "dataset_manifest_id": job.DatasetManifestID}
 	}
+	parityQuery := s.DB.Where("flag_snapshot_id=? AND cutover_attempt_id=?", state.FlagSnapshotID, state.TransitionID)
+	parityPopulationID := ""
+	if state.TransitionID != "" && state.TransitionID != bootstrapTransitionID {
+		var transition database.CutoverTransition
+		if err := s.DB.First(&transition, "id=?", state.TransitionID).Error; err != nil {
+			out.Diagnostics = append(out.Diagnostics, "cutover_transition_missing")
+		} else if transition.ParityPopulationID != "" {
+			if err := verifyTransitionParityBinding(s.DB, transition); err != nil {
+				out.Diagnostics = append(out.Diagnostics, "parity_population_binding_invalid")
+			} else {
+				parityPopulationID = transition.ParityPopulationID
+				parityQuery = s.DB.Where("population_id=?", parityPopulationID)
+			}
+		}
+	}
 	var parityRows []database.ParityObservation
-	if err := s.DB.Where("flag_snapshot_id=? AND cutover_attempt_id=?", state.FlagSnapshotID, state.TransitionID).Order("observed_at desc").Limit(20).Find(&parityRows).Error; err != nil {
+	if err := parityQuery.Order("observed_at desc").Limit(20).Find(&parityRows).Error; err != nil {
 		out.Diagnostics = append(out.Diagnostics, "parity_query_failed")
 	}
 	var parityTotal, parityUnexplained int64
-	if err := s.DB.Model(&database.ParityObservation{}).Where("flag_snapshot_id=? AND cutover_attempt_id=?", state.FlagSnapshotID, state.TransitionID).Count(&parityTotal).Error; err != nil {
+	if err := parityQuery.Session(&gorm.Session{}).Model(&database.ParityObservation{}).Count(&parityTotal).Error; err != nil {
 		out.Diagnostics = append(out.Diagnostics, "parity_count_failed")
 	}
-	if err := s.DB.Model(&database.ParityObservation{}).Where("flag_snapshot_id=? AND cutover_attempt_id=? AND classification=?", state.FlagSnapshotID, state.TransitionID, "unexplained").Count(&parityUnexplained).Error; err != nil {
+	if err := parityQuery.Session(&gorm.Session{}).Model(&database.ParityObservation{}).Where("classification=?", "unexplained").Count(&parityUnexplained).Error; err != nil {
 		out.Diagnostics = append(out.Diagnostics, "parity_unexplained_count_failed")
 	}
 	unexplainedSamples := []database.ParityObservation{}
@@ -1591,7 +1678,7 @@ func (s Service) Status(ctx context.Context) Status {
 			unexplainedSamples = append(unexplainedSamples, row)
 		}
 	}
-	out.Parity = map[string]any{"total": parityTotal, "unexplained": parityUnexplained, "bounded_unexplained_samples": unexplainedSamples}
+	out.Parity = map[string]any{"population_id": parityPopulationID, "total": parityTotal, "unexplained": parityUnexplained, "bounded_unexplained_samples": unexplainedSamples}
 	if s.Flags.DualRun == "observe" && parityTotal == 0 {
 		out.Diagnostics = append(out.Diagnostics, "parity_evidence_missing")
 	}
@@ -1658,6 +1745,11 @@ func (s Service) Status(ctx context.Context) Status {
 			return []string{}
 		}()}
 	}
+	validationStatus, validationBlocked := s.validationStatus(ctx, state)
+	out.Validation = validationStatus
+	if stageIndex(state.Stage) >= stageIndex("new_paper") {
+		out.Diagnostics = append(out.Diagnostics, validationBlocked...)
+	}
 	var backup database.BackupVerification
 	if err := s.DB.Where("flag_snapshot_id=? AND cutover_transition_id=? AND status=?", state.FlagSnapshotID, state.TransitionID, "verified").Order("verified_at desc").First(&backup).Error; err != nil {
 		out.Backup = map[string]any{"status": "unverified"}
@@ -1683,4 +1775,84 @@ func (s Service) Status(ctx context.Context) Status {
 	}
 	sort.Strings(out.Diagnostics)
 	return out
+}
+
+// validationStatus reads the immutable experiment/evidence pair instead of
+// trusting a mutable job summary. It gives operators the same named gate or
+// diagnostic that keeps a research result from becoming authority.
+func (s Service) validationStatus(ctx context.Context, state database.CutoverState) (map[string]any, []string) {
+	out := map[string]any{"status": "missing", "blocked_gates": []string{"validation_evidence_missing"}}
+	if state.FlagSnapshotID == "" {
+		return out, []string{"validation_evidence_missing"}
+	}
+	var row database.ValidationEvidence
+	query := s.DB.WithContext(ctx).Table("validation_evidences AS evidence").Select("evidence.*")
+	if s.Flags.Stage07Context != "" {
+		var deployment database.GovernanceDeployment
+		if err := s.DB.WithContext(ctx).First(&deployment, "context_key=?", s.Flags.Stage07Context).Error; err != nil {
+			out = map[string]any{"status": "missing", "blocked_gates": []string{"governance_deployment_missing"}}
+			return out, []string{"governance_deployment_missing"}
+		}
+		query = query.Where("evidence.id=? AND evidence.experiment_id=?", deployment.EvidenceID, deployment.ExperimentID)
+	} else {
+		query = query.Joins("JOIN validation_experiments AS experiment ON experiment.id = evidence.experiment_id").
+			Where("experiment.stage08_context_json->>'flag_snapshot_id' = ?", state.FlagSnapshotID).
+			Order("evidence.created_at DESC")
+	}
+	err := query.First(&row).Error
+	if err == gorm.ErrRecordNotFound {
+		return out, []string{"validation_evidence_missing"}
+	}
+	if err != nil {
+		out = map[string]any{"status": "unavailable", "blocked_gates": []string{"validation_evidence_query_failed"}}
+		return out, []string{"validation_evidence_query_failed"}
+	}
+	repo := validation.Repository{DB: s.DB.WithContext(ctx)}
+	evidence, err := repo.LoadEvidence(row.ID)
+	if err != nil {
+		out = map[string]any{"experiment_id": row.ExperimentID, "evidence_id": row.ID, "status": "invalid", "blocked_gates": []string{"validation_evidence_integrity_failure"}}
+		return out, []string{"validation_evidence_integrity_failure"}
+	}
+	manifest, err := repo.LoadManifest(evidence.ExperimentID)
+	if err != nil {
+		out = map[string]any{"experiment_id": evidence.ExperimentID, "evidence_id": evidence.ID, "status": "invalid", "blocked_gates": []string{"validation_manifest_integrity_failure"}}
+		return out, []string{"validation_manifest_integrity_failure"}
+	}
+	blocked := []string{}
+	if evidence.Status != "passed" {
+		if evidence.Failure != nil {
+			blocked = append(blocked, string(evidence.Failure.Code))
+		} else {
+			blocked = append(blocked, "validation_evidence_failed")
+		}
+	}
+	if evidence.Result == nil {
+		if evidence.Status == "passed" {
+			blocked = append(blocked, "validation_result_missing")
+		}
+	} else {
+		for _, gate := range evidence.Result.Aggregate.Gates {
+			if !gate.Passed {
+				blocked = append(blocked, gate.Metric)
+			}
+		}
+		if !evidence.Result.Aggregate.Passed && len(blocked) == 0 {
+			blocked = append(blocked, "validation_aggregate_not_passed")
+		}
+	}
+	sort.Strings(blocked)
+	status := "passed"
+	if len(blocked) > 0 {
+		status = "blocked"
+	}
+	out = map[string]any{"experiment_id": evidence.ExperimentID, "evidence_id": evidence.ID, "status": status, "evidence_status": evidence.Status, "study_type": manifest.Spec.StudyType, "blocked_gates": blocked}
+	return out, prefixDiagnostics("validation_gate_blocked:", blocked)
+}
+
+func prefixDiagnostics(prefix string, values []string) []string {
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		result = append(result, prefix+value)
+	}
+	return result
 }

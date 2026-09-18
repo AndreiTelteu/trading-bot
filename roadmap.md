@@ -150,6 +150,15 @@ Detailed plan: [`docs/reimplementation/stage-08-migration-cutover.md`](docs/reim
 - [x] Confirm repository clean and pushed
 - [x] Record final limitations that require real market history or elapsed shadow time
 
+### Post-audit governed-loop integration
+
+The final integration ADR is [`0007`](docs/adr/0007-governed-self-improvement-integration.md).
+It preserves the existing unchecked operational claims: it binds parity
+acceptance to the exact immutable population and makes status expose verified
+Stage 07 blocked gates, but it does not claim data coverage, elapsed
+shadow/paper evidence, backup restore equivalence, exchange behavior, or
+profitability.
+
 ## Global definition of done
 
 - [x] `go test ./...` passes using the repository Go toolchain

@@ -1,11 +1,30 @@
 package validation
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
+	"trading-go/internal/cutover"
 	"trading-go/internal/database"
 	"trading-go/internal/testutil"
 )
+
+func TestStage08ObservationContextRecordsRuleOnlyModelExplicitly(t *testing.T) {
+	manifest := manifestFixture(t)
+	if manifest.Spec.Model != nil {
+		t.Fatal("rule-only fixture unexpectedly has a model")
+	}
+	context := Stage08ObservationContext(cutover.SafeFlags(), manifest)
+	var decoded struct {
+		Versions map[string]string `json:"versions"`
+	}
+	if err := json.Unmarshal([]byte(context), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Versions["model"] != "none" {
+		t.Fatalf("rule-only model context=%q", decoded.Versions["model"])
+	}
+}
 
 func TestResearchFamilyRetainsFailedAttemptsAndLocksConfirmatoryHoldout(t *testing.T) {
 	db := testutil.SetupPostgresDB(t)

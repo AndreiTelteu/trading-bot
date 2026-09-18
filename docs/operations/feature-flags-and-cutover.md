@@ -30,3 +30,11 @@ curl -b cookie.jar -H 'Content-Type: application/json' \
 ```
 
 Rollback uses the same route with `"rollback":true` and an earlier stage. It atomically changes authority and appends immutable history; it does not delete fills/events. Restore the matching safe environment flags and restart after the audited transition. `legacy_removal_eligible` is deliberately rejected: legacy removal needs a separate future irreversible approval after the rollback window.
+
+Parity acceptance persists the exact server-derived `ParityPopulationID` on
+the immutable cutover transition. `/api/operations/status` reports that ID and
+uses it, rather than the later authority transition ID, when showing parity
+totals. If startup reports a missing or invalid parity-population binding for
+an accepted parity transition, fail closed: roll back to the safe prior stage
+and repeat the bounded observation/acceptance procedure. Do not substitute an
+aggregate count or create a retrospective population.

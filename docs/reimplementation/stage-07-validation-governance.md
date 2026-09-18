@@ -95,6 +95,13 @@ missing, substituted, or conflated. Deployment additionally binds the approved
 implementation digest to the local registry; the separately persisted
 authority-policy digest binds the complete runtime policy envelope.
 
+Operational status verifies the immutable manifest/evidence pair for the
+active Stage 08 snapshot and names every failing validation metric or
+diagnostic. It does not infer readiness from a mutable asynchronous job
+summary. Rule-only candidates record model version `none` in that snapshot;
+the absence of a learned model is explicit provenance, not an error or an
+implicit authority bypass.
+
 ## ML quarantine and evaluation
 
 - [x] Mark bootstrap/contract fixtures with an artifact class that cannot be promoted.

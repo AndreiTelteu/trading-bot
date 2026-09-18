@@ -1000,30 +1000,33 @@ type CutoverState struct {
 }
 
 type CutoverTransition struct {
-	ID                   string    `json:"id" gorm:"primaryKey;size:64"`
-	IdempotencyKey       string    `json:"idempotency_key" gorm:"size:160;not null;uniqueIndex"`
-	FromStage            string    `json:"from_stage" gorm:"size:60;not null"`
-	ToStage              string    `json:"to_stage" gorm:"size:60;not null"`
-	FromAuthority        string    `json:"from_authority" gorm:"size:40;not null"`
-	ToAuthority          string    `json:"to_authority" gorm:"size:40;not null"`
-	FlagSnapshotID       string    `json:"flag_snapshot_id" gorm:"size:64;not null"`
-	FlagSnapshotDigest   string    `json:"flag_snapshot_digest" gorm:"size:64;not null;default:''"`
-	SourceStateVersion   int64     `json:"source_state_version" gorm:"not null;default:0"`
-	SourceEnvelopeJSON   string    `json:"source_envelope" gorm:"column:source_envelope_json;type:jsonb;not null;default:'{}'"`
-	SourceEnvelopeDigest string    `json:"source_envelope_digest" gorm:"size:64;not null;default:''"`
-	TargetEnvelopeJSON   string    `json:"target_envelope" gorm:"column:target_envelope_json;type:jsonb;not null;default:'{}'"`
-	TargetEnvelopeDigest string    `json:"target_envelope_digest" gorm:"size:64;not null;default:''"`
-	RequestDigest        string    `json:"request_digest" gorm:"size:64;not null;default:''"`
-	ParityPolicyID       string    `json:"parity_policy_id,omitempty" gorm:"size:64"`
-	EvidenceDigest       string    `json:"evidence_digest,omitempty" gorm:"size:64"`
-	Principal            string    `json:"principal" gorm:"size:200;not null"`
-	Reason               string    `json:"reason" gorm:"size:1000;not null"`
-	PrerequisitesJSON    string    `json:"prerequisites" gorm:"column:prerequisites_json;type:jsonb;not null"`
-	Stage07ContextKey    string    `json:"stage07_context_key,omitempty" gorm:"size:120"`
-	Stage07Transition    string    `json:"stage07_transition,omitempty" gorm:"size:64"`
-	RollbackOf           *string   `json:"rollback_of,omitempty" gorm:"size:64;index"`
-	ContentDigest        string    `json:"content_digest" gorm:"size:64;not null"`
-	CreatedAt            time.Time `json:"created_at" gorm:"not null;index"`
+	ID                   string `json:"id" gorm:"primaryKey;size:64"`
+	IdempotencyKey       string `json:"idempotency_key" gorm:"size:160;not null;uniqueIndex"`
+	FromStage            string `json:"from_stage" gorm:"size:60;not null"`
+	ToStage              string `json:"to_stage" gorm:"size:60;not null"`
+	FromAuthority        string `json:"from_authority" gorm:"size:40;not null"`
+	ToAuthority          string `json:"to_authority" gorm:"size:40;not null"`
+	FlagSnapshotID       string `json:"flag_snapshot_id" gorm:"size:64;not null"`
+	FlagSnapshotDigest   string `json:"flag_snapshot_digest" gorm:"size:64;not null;default:''"`
+	SourceStateVersion   int64  `json:"source_state_version" gorm:"not null;default:0"`
+	SourceEnvelopeJSON   string `json:"source_envelope" gorm:"column:source_envelope_json;type:jsonb;not null;default:'{}'"`
+	SourceEnvelopeDigest string `json:"source_envelope_digest" gorm:"size:64;not null;default:''"`
+	TargetEnvelopeJSON   string `json:"target_envelope" gorm:"column:target_envelope_json;type:jsonb;not null;default:'{}'"`
+	TargetEnvelopeDigest string `json:"target_envelope_digest" gorm:"size:64;not null;default:''"`
+	RequestDigest        string `json:"request_digest" gorm:"size:64;not null;default:''"`
+	ParityPolicyID       string `json:"parity_policy_id,omitempty" gorm:"size:64"`
+	// ParityPopulationID preserves the exact immutable denominator accepted for
+	// a parity cutover. Policy/rate summaries alone are not replay evidence.
+	ParityPopulationID string    `json:"parity_population_id,omitempty" gorm:"size:64;index"`
+	EvidenceDigest     string    `json:"evidence_digest,omitempty" gorm:"size:64"`
+	Principal          string    `json:"principal" gorm:"size:200;not null"`
+	Reason             string    `json:"reason" gorm:"size:1000;not null"`
+	PrerequisitesJSON  string    `json:"prerequisites" gorm:"column:prerequisites_json;type:jsonb;not null"`
+	Stage07ContextKey  string    `json:"stage07_context_key,omitempty" gorm:"size:120"`
+	Stage07Transition  string    `json:"stage07_transition,omitempty" gorm:"size:64"`
+	RollbackOf         *string   `json:"rollback_of,omitempty" gorm:"size:64;index"`
+	ContentDigest      string    `json:"content_digest" gorm:"size:64;not null"`
+	CreatedAt          time.Time `json:"created_at" gorm:"not null;index"`
 }
 
 type BackfillPlan struct {

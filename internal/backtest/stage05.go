@@ -1104,7 +1104,11 @@ func runStage05Target(ledger *backtestMemoryLedger, config BacktestConfig, strat
 		if mark <= 0 {
 			mark = held.EntryPrice
 		}
-		portfolioPositions = append(portfolioPositions, tradingcore.Position{ID: mustPositionID(heldSymbol), Instrument: heldInstrument, Quantity: mustQuantity(held.Size), AveragePrice: mustPrice(held.EntryPrice), MarkPrice: mustPrice(mark), OpenedAt: held.EntryTime, RealizedPnL: mustAmount(0)})
+		// Stage 05's float adapter may retain a binary residue after a prior
+		// exact fill. Reconstruct the position with its documented adapter
+		// precision before passing it to the shared exact risk engine, so a
+		// one-lot exit is not compared against a sub-lot residue.
+		portfolioPositions = append(portfolioPositions, tradingcore.Position{ID: mustPositionID(heldSymbol), Instrument: heldInstrument, Quantity: mustQuantity(stage05EconomicFloat(held.Size)), AveragePrice: mustPrice(held.EntryPrice), MarkPrice: mustPrice(mark), OpenedAt: held.EntryTime, RealizedPnL: mustAmount(0)})
 	}
 	sort.Slice(portfolioPositions, func(i, j int) bool {
 		return portfolioPositions[i].Instrument.ID.String() < portfolioPositions[j].Instrument.ID.String()

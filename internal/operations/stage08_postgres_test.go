@@ -335,6 +335,51 @@ func TestParityPersistenceThresholdsAndBounds(t *testing.T) {
 	}
 }
 
+func TestParityAcceptancePersistsAndReusesExactPopulationBinding(t *testing.T) {
+	service, safeFlagID := stage08DB(t)
+	policy, err := service.DeclareParityPolicy(context.Background(), DeclareParityPolicyRequest{Name: "bound-acceptance", MinimumSamples: 1, MinimumCoverageBPS: 10000}, "operator")
+	if err != nil {
+		t.Fatal(err)
+	}
+	enterResearchIngestion(t, service)
+	if _, err := service.TransitionCutover(context.Background(), TransitionRequest{IdempotencyKey: "bound-ledger-compare", ToStage: "ledger_compare", Principal: "operator", Reason: "return to safe comparison authority", FlagSnapshotID: safeFlagID}); err != nil {
+		t.Fatal(err)
+	}
+	shadowFlags := cutover.SafeFlags()
+	shadowFlags.LedgerAuthority, shadowFlags.SharedEngine, shadowFlags.DualRun = "compare", "shadow", "observe"
+	shadow, err := service.DeclareFlagSnapshot(context.Background(), shadowFlags, "operator")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.TransitionCutover(context.Background(), TransitionRequest{IdempotencyKey: "bound-shared-shadow", ToStage: "shared_shadow", Principal: "operator", Reason: "begin bounded observation", FlagSnapshotID: shadow.ID, ParityPolicyID: policy.ID}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	captured := parityContext("bound-asset", now.Add(-time.Second))
+	population, comparisonPolicy, err := service.BeginParityPopulation(context.Background(), "legacy:shared", policy.ID, shadow.ID, []cutover.DecisionContext{captured}, now.Add(-time.Minute), now, "dataset-v1", "universe-v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.PersistParityBound(context.Background(), ParityBinding{PopulationID: population.ID}, genuineParity(t, captured, comparisonPolicy), now); err != nil {
+		t.Fatal(err)
+	}
+	accepted, err := service.TransitionCutover(context.Background(), TransitionRequest{IdempotencyKey: "bound-parity-accepted", ToStage: "parity_accepted", Principal: "operator", Reason: "approved bounded parity evidence", FlagSnapshotID: shadow.ID, ParityPolicyID: policy.ID, ParityPopulationID: population.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if accepted.ParityPopulationID != population.ID {
+		t.Fatalf("accepted population=%q want %q", accepted.ParityPopulationID, population.ID)
+	}
+	if _, err := New(service.DB, shadowFlags).Initialize(context.Background()); err != nil {
+		t.Fatalf("persisted parity acceptance did not verify exact population: %v", err)
+	}
+	status := New(service.DB, shadowFlags).Status(context.Background())
+	parity, ok := status.Parity.(map[string]any)
+	if !ok || parity["population_id"] != population.ID || parity["total"] != int64(1) {
+		t.Fatalf("status did not retain accepted parity denominator: %#v", status.Parity)
+	}
+}
+
 func TestParityPopulationRejectsForgedPolicyDigest(t *testing.T) {
 	service, flagID := stage08DB(t)
 	forged := database.ParityAcceptancePolicy{ID: strings.Repeat("f", 64), SchemaVersion: cutover.ParitySchemaVersion, Name: "forged", MinimumSamples: 1, MinimumCoverageBPS: 1, ExpectedReasonsJSON: "[]", ContentDigest: strings.Repeat("f", 64), DeclaredBy: "attacker", DeclaredAt: time.Now().UTC()}
