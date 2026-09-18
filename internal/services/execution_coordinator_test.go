@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -125,5 +126,80 @@ func TestPositionMonitorDuplicateTicksClosePositionOnce(t *testing.T) {
 	}
 	if closingFill.StrategyVersion != openingStrategy {
 		t.Fatalf("close fill strategy=%q want opening identity %q", closingFill.StrategyVersion, openingStrategy)
+	}
+}
+
+func TestCloseReservationSurvivesRestartAndAppliesExactlyOnce(t *testing.T) {
+	testutil.SetupPostgresDB(t)
+	if err := database.SeedData(); err != nil {
+		t.Fatal(err)
+	}
+	opened, err := ledgerpkg.New(database.LedgerWriter()).ApplyFill(context.Background(), ledgerpkg.FillCommand{IdempotencyKey: "restart-close-open", Symbol: "RESTART", Side: "buy", Quantity: accounting.MustParse("2"), RequestedPrice: accounting.MustParse("10"), FillPrice: accounting.MustParse("10"), Fee: accounting.Zero(), FeeType: ledgerpkg.EventTradingFee, Currency: "USDT", ExecutionMode: ExecutionModePaper, Actor: "test", Reason: "fixture", OccurredAt: time.Now().Add(-time.Minute)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	coordinator := NewExecutionCoordinator(nil)
+	reservation, duplicate, err := coordinator.reserveClose(CloseRequest{PositionID: opened.Position.ID, Reason: "restart_fixture", RequestedPrice: 11, TriggeredAt: time.Now(), Source: "test"})
+	if err != nil || duplicate || reservation.Status != closeRequestPending {
+		t.Fatalf("reservation=%+v duplicate=%v err=%v", reservation, duplicate, err)
+	}
+
+	// Simulate a process crash after the runtime reservation committed and before
+	// the isolated writer performed the economic transaction.
+	recovered, err := NewExecutionCoordinator(nil).RecoverPendingCloses(context.Background())
+	if err != nil || recovered != 1 {
+		t.Fatalf("recovered=%d err=%v", recovered, err)
+	}
+	if _, err := coordinator.RecoverPendingCloses(context.Background()); err != nil {
+		t.Fatalf("idempotent second recovery: %v", err)
+	}
+	var request database.CloseRequest
+	if err := database.DB.First(&request, "id = ?", reservation.ID).Error; err != nil || request.Status != closeRequestApplied {
+		t.Fatalf("request status=%s err=%v", request.Status, err)
+	}
+	// Model a client losing the writer's commit acknowledgement: its stale
+	// failure path must not turn a committed close back into retryable work.
+	if err := coordinator.recordCloseFailure(reservation.ID, closeRequestRetryable, errors.New("lost commit acknowledgement")); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.DB.First(&request, "id = ?", reservation.ID).Error; err != nil || request.Status != closeRequestApplied {
+		t.Fatalf("stale failure overwrote applied close: status=%s err=%v", request.Status, err)
+	}
+	var sells, fills, events int64
+	database.DB.Model(&database.Order{}).Where("client_order_id = ?", reservation.ID).Count(&sells)
+	database.DB.Model(&database.Fill{}).Where("ledger_batch_id = ?", reservation.ID).Count(&fills)
+	database.DB.Model(&database.LedgerEvent{}).Where("ledger_batch_id = ?", reservation.ID).Count(&events)
+	if sells != 1 || fills != 1 || events != 2 {
+		t.Fatalf("restart recovery duplicated/stranded close: orders=%d fills=%d events=%d", sells, fills, events)
+	}
+	var position database.Position
+	if err := database.DB.First(&position, opened.Position.ID).Error; err != nil || position.Status != "closed" || position.ExitPending {
+		t.Fatalf("position after recovery=%+v err=%v", position, err)
+	}
+}
+
+func TestDuplicateCloseRequestsReuseOneDurableIdentity(t *testing.T) {
+	testutil.SetupPostgresDB(t)
+	if err := database.SeedData(); err != nil {
+		t.Fatal(err)
+	}
+	opened, err := ledgerpkg.New(database.LedgerWriter()).ApplyFill(context.Background(), ledgerpkg.FillCommand{IdempotencyKey: "duplicate-close-open", Symbol: "DUP", Side: "buy", Quantity: accounting.MustParse("1"), RequestedPrice: accounting.MustParse("10"), FillPrice: accounting.MustParse("10"), Fee: accounting.Zero(), FeeType: ledgerpkg.EventTradingFee, Currency: "USDT", ExecutionMode: ExecutionModePaper, Actor: "test", Reason: "fixture", OccurredAt: time.Now().Add(-time.Minute)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	coordinator := NewExecutionCoordinator(nil)
+	first, err := coordinator.RequestClose(CloseRequest{PositionID: opened.Position.ID, Reason: "manual", RequestedPrice: 11, TriggeredAt: time.Now(), Source: "test"})
+	if err != nil || !first.Closed || first.Duplicate {
+		t.Fatalf("first=%+v err=%v", first, err)
+	}
+	second, err := coordinator.RequestClose(CloseRequest{PositionID: opened.Position.ID, Reason: "different_later_reason", RequestedPrice: 1, TriggeredAt: time.Now().Add(time.Second), Source: "test"})
+	if err != nil || !second.Duplicate || !second.Closed || second.Order.ID != first.Order.ID {
+		t.Fatalf("second=%+v first=%+v err=%v", second, first, err)
+	}
+	var requests, sells int64
+	database.DB.Model(&database.CloseRequest{}).Count(&requests)
+	database.DB.Model(&database.Order{}).Where("symbol = ? AND order_type = ?", "DUP", "sell").Count(&sells)
+	if requests != 1 || sells != 1 {
+		t.Fatalf("duplicate close produced requests=%d sells=%d", requests, sells)
 	}
 }

@@ -65,18 +65,28 @@ func (s *Service) CheckReady(ctx context.Context, account string) error {
 	if account == "" {
 		account = DefaultAccountID
 	}
-	var state database.LedgerMigrationState
-	if err := s.DB.WithContext(ctx).First(&state, "account_id = ?", account).Error; err != nil || state.Status != "ready" {
+	if s.DB == nil {
 		return ErrUnreconciledLegacyState
 	}
-	var wallet database.Wallet
-	if err := s.DB.WithContext(ctx).Where("account_id = ?", account).First(&wallet).Error; err != nil {
-		return err
-	}
-	if wallet.BalanceExact == nil {
-		return ErrProjectionUnavailable
-	}
-	return nil
+	// The ledger service login is deliberately NOINHERIT. A readiness probe
+	// must enter the writer role before it reads protected migration state.
+	return s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := allowLedgerProjectionWrites(tx); err != nil {
+			return ErrUnreconciledLegacyState
+		}
+		var state database.LedgerMigrationState
+		if err := tx.First(&state, "account_id = ?", account).Error; err != nil || state.Status != "ready" {
+			return ErrUnreconciledLegacyState
+		}
+		var wallet database.Wallet
+		if err := tx.Where("account_id = ?", account).First(&wallet).Error; err != nil {
+			return err
+		}
+		if wallet.BalanceExact == nil {
+			return ErrProjectionUnavailable
+		}
+		return nil
+	})
 }
 
 type FillCommand struct {
@@ -89,6 +99,7 @@ type FillCommand struct {
 	FeeCurrency                                                 string
 	OrderStatus                                                 string
 	ExistingOrderID                                             uint
+	ClientOrderID                                               string
 	OccurredAt                                                  time.Time
 	Actor, Reason                                               string
 	StrategyVersion, PolicyVersion                              string
@@ -422,6 +433,9 @@ func upsertFilledOrder(tx *gorm.DB, command FillCommand, position database.Posit
 	} else {
 		batch := command.IdempotencyKey
 		order = database.Order{AccountID: command.AccountID, LedgerBatchID: &batch, OrderType: command.Side, Symbol: command.Symbol, ExecutedAt: command.OccurredAt}
+		if command.ClientOrderID != "" {
+			order.ClientOrderID = stringPtrOrNil(command.ClientOrderID)
+		}
 	}
 	totalQuantity, totalGross, totalFee := command.Quantity, gross, command.Fee
 	if order.AmountCryptoExact != nil && order.AmountUsdtExact != nil && order.FeeExact != nil {

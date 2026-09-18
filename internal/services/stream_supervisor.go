@@ -1,6 +1,8 @@
 package services
 
 import (
+	"context"
+	"fmt"
 	"log"
 	"sync"
 	"time"
@@ -18,6 +20,11 @@ var streamSupervisor *StreamSupervisor
 
 func StartExecutionRuntime() error {
 	InitExecutionCoordinator(GetExchange())
+	// Resolve durable close reservations before any monitor can produce a new
+	// automated decision. A failed recovery stops the runtime fail-closed.
+	if _, err := GetExecutionCoordinator().RecoverPendingCloses(context.Background()); err != nil {
+		return fmt.Errorf("recover pending closes: %w", err)
+	}
 	streamSupervisor = &StreamSupervisor{
 		monitor: NewPositionMonitor(NewBinanceTickerStream(), GetExecutionCoordinator(), 90*time.Second),
 	}

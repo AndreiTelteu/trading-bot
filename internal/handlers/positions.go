@@ -280,32 +280,21 @@ func ExecuteCloseTrade(c *fiber.Ctx) error {
 		}
 	}
 
-	if position.AmountExact == nil {
-		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": ledgerpkg.ErrProjectionUnavailable.Error()})
-	}
 	if requestedExact.Sign() <= 0 {
 		return c.Status(400).JSON(fiber.Map{"error": "Invalid price"})
 	}
-	feeBPS, slippageBPS := paperCostBPS()
-	fillExact, feeExact, costErr := ledgerpkg.CostedPaperFill("sell", *position.AmountExact, requestedExact, feeBPS, slippageBPS)
-	if costErr != nil {
-		return c.Status(500).JSON(fiber.Map{"error": costErr.Error()})
-	}
 	now := time.Now().UTC()
-	key := req.IdempotencyKey
-	if key == "" {
-		key = fmt.Sprintf("paper-close-%d-%d", position.ID, now.UnixNano())
-	}
-	fillResult, err := ledgerpkg.New(database.LedgerWriter()).ApplyFill(c.UserContext(), ledgerpkg.FillCommand{IdempotencyKey: key, Symbol: position.Symbol, Side: "sell", Quantity: *position.AmountExact, RequestedPrice: requestedExact, FillPrice: fillExact, Fee: feeExact, FeeType: ledgerpkg.EventTradingFee, Currency: wallet.Currency, ExecutionMode: services.ExecutionModePaper, OccurredAt: now, Actor: "paper_trade_api", Reason: req.CloseReason, Metadata: map[string]interface{}{"fee_bps": feeBPS, "slippage_bps": slippageBPS}})
+	// The API idempotency value is not used as an economic key. The coordinator
+	// derives one stable client-order identity from this position lifecycle and
+	// uses it for the durable reservation, order, fill, and ledger batch.
+	result, err := services.GetExecutionCoordinator().RequestClose(services.CloseRequest{PositionID: position.ID, Reason: req.CloseReason, RequestedPrice: requestedExact.Float64(), TriggeredAt: now, Source: "paper_trade_api"})
 	if err != nil {
 		return writeLedgerError(c, err)
 	}
-	wallet, position = fillResult.Wallet, fillResult.Position
-	price := fillExact.Float64()
-	closedQuantity := fillResult.Fill.Quantity.Float64()
-	totalValue := position.Amount * price
-	// Amount is zero after a full close; use the immutable fill gross instead.
-	totalValue = fillResult.Fill.GrossAmount.Float64()
+	wallet, position = result.Wallet, result.Position
+	price := result.Price
+	closedQuantity := result.Order.AmountCrypto
+	totalValue := result.Order.AmountUsdt
 	pnl := position.Pnl
 	pnlPercent := position.PnlPercent
 
@@ -357,7 +346,7 @@ func ExecuteCloseTrade(c *fiber.Ctx) error {
 
 	return c.JSON(fiber.Map{
 		"success":     true,
-		"order_id":    fillResult.Order.ID,
+		"order_id":    result.Order.ID,
 		"symbol":      position.Symbol,
 		"amount":      closedQuantity,
 		"price":       price,

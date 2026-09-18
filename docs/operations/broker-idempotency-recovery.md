@@ -10,3 +10,14 @@ Live exchange submission remains fenced in this repository unless exact governed
 6. Resume only after the outcome is terminal, reconciliation is balanced, and the incident has an acknowledged/resolved audit reason.
 
 External exchange state and fee samples require provider/testnet evidence. An HTTP error alone does not prove an order was not accepted.
+
+## Paper close recovery
+
+Manual and protective paper exits first persist a `close_requests` reservation
+whose ID is also the client-order and ledger idempotency identity. If the server
+stops after that reservation commits, startup retries every `pending` or
+`retryable` reservation before starting automated execution. Do not clear
+`exit_pending`, edit the reservation, or submit a replacement order: the
+captured price and fee/slippage policy make the original reservation the only
+recoverable close authority. A `rejected` reservation indicates the fenced
+exchange path and leaves no paper order submitted.

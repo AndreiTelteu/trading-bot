@@ -14,6 +14,7 @@ func schemaModels() []interface{} {
 		&Wallet{},
 		&Position{},
 		&Order{},
+		&CloseRequest{},
 		&LedgerBatch{},
 		&BrokerOutcomeIngestion{},
 		&Fill{},
@@ -1635,6 +1636,34 @@ func RunMigrations(db *gorm.DB) error {
 			Rollback: func(tx *gorm.DB) error {
 				return Stage04RollbackError()
 			},
+		},
+		{
+			ID: "202609180100_durable_close_request_outbox",
+			Migrate: func(tx *gorm.DB) error {
+				if err := tx.AutoMigrate(&CloseRequest{}); err != nil {
+					return err
+				}
+				return tx.Exec(`
+					REVOKE ALL PRIVILEGES ON close_requests FROM PUBLIC, trading_bot_runtime, trading_bot_ledger_writer, trading_bot_parity_writer;
+					GRANT SELECT, INSERT, UPDATE ON close_requests TO trading_bot_runtime;
+					GRANT SELECT, UPDATE (status, attempts, last_error, applied_at, updated_at) ON close_requests TO trading_bot_ledger_writer;
+					REVOKE ALL PRIVILEGES ON close_requests FROM trading_bot_parity_writer;
+				`).Error
+			},
+			Rollback: func(tx *gorm.DB) error { return fmt.Errorf("durable close request evidence is intentionally retained") },
+		},
+		{
+			// Correct databases that received the initial outbox migration before
+			// settlement currency was captured in the immutable retry payload.
+			ID: "202609180101_close_request_currency_reservation",
+			Migrate: func(tx *gorm.DB) error {
+				return tx.Exec(`
+					ALTER TABLE close_requests ADD COLUMN IF NOT EXISTS currency varchar(20) NOT NULL DEFAULT 'USDT';
+					UPDATE close_requests request SET currency=wallet.currency
+					FROM wallets wallet WHERE request.account_id=wallet.account_id AND request.currency='USDT';
+				`).Error
+			},
+			Rollback: func(tx *gorm.DB) error { return fmt.Errorf("durable close request evidence is intentionally retained") },
 		},
 	})
 

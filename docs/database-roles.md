@@ -28,6 +28,14 @@ insert immutable populations and observations and maintain only the mutable
 parity aggregate; it cannot update immutable evidence or write ledger/projection
 tables.
 
+Protective/manual paper close coordination uses a runtime-owned `close_requests`
+reservation. Runtime may create and retry that non-economic reservation and set
+`exit_pending`; it cannot create the corresponding order. The NOINHERIT ledger
+login first enters `trading_bot_ledger_writer`, then atomically records the
+stable-client-ID order, fill, ledger events, projections, and reservation
+completion. A pending/retryable reservation is recovered at server startup;
+its captured trigger price and cost policy are never replaced by a retry.
+
 For the isolated backup/restore workflow, runtime has no direct `INSERT`,
 `SELECT`, `UPDATE`, or `DELETE` authority on `backup_verifications`. It records
 evidence only by executing the pinned `SECURITY DEFINER` function

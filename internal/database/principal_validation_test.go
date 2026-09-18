@@ -13,6 +13,7 @@ import (
 	"trading-go/internal/config"
 	"trading-go/internal/database"
 	ledgerpkg "trading-go/internal/ledger"
+	"trading-go/internal/services"
 	"trading-go/internal/testutil"
 
 	"gorm.io/driver/postgres"
@@ -83,6 +84,28 @@ func TestRealLoginRolesEnforceRuntimeLifecycleAndWriterBoundary(t *testing.T) {
 		t.Fatalf("ledger update through genuine writer login failed: %v", err)
 	}
 	position := opened.Position
+	// The writer login is NOINHERIT. Readiness must explicitly SET LOCAL ROLE
+	// before it reads ledger_migration_states, otherwise protective exits fail
+	// before their durable reservation is recorded.
+	if err := ledgerpkg.New(writer).CheckReady(context.Background(), ""); err != nil {
+		t.Fatalf("NOINHERIT ledger readiness probe failed: %v", err)
+	}
+	// Runtime may reserve the close, while only the writer creates its order and
+	// ledger effects using the reservation's stable client order identity.
+	database.DB = runtime
+	database.ConfigureWriterPoolsForTest(writer, parity)
+	closed, err := services.NewExecutionCoordinator(nil).RequestClose(services.CloseRequest{PositionID: position.ID, Reason: "role_boundary_close", RequestedPrice: 2, TriggeredAt: time.Now().UTC(), Source: "test"})
+	if err != nil || !closed.Closed {
+		t.Fatalf("durable close through runtime/writer split failed: result=%+v err=%v", closed, err)
+	}
+	var closeRequest database.CloseRequest
+	if err := runtime.First(&closeRequest, "position_id = ?", position.ID).Error; err != nil || closeRequest.Status != "applied" {
+		t.Fatalf("runtime reservation not applied: %+v err=%v", closeRequest, err)
+	}
+	var sellOrders int64
+	if err := runtime.Model(&database.Order{}).Where("client_order_id = ?", closeRequest.ID).Count(&sellOrders).Error; err != nil || sellOrders != 1 {
+		t.Fatalf("writer did not create exactly one close order: count=%d err=%v", sellOrders, err)
+	}
 
 	if err := runtime.Exec("UPDATE positions SET exit_pending=true WHERE id=?", position.ID).Error; err != nil {
 		t.Fatalf("runtime close claim denied: %v", err)

@@ -46,6 +46,14 @@ func cloneStringMap(values map[string]string) map[string]string {
 }
 
 func executeShortlistTradesShared(analyses []AnalyzedCoin, universe *UniverseSelectionResult, settings map[string]string, mode tradingcore.ExecutionMode) ([]AnalyzedCoin, int, error) {
+	// A paper broker is deterministic and external-side-effect free, but its
+	// outcome is still an economic action at ledger ingestion. Refuse before
+	// decision/broker work while ledger authority is not proven ready.
+	if mode == tradingcore.ExecutionPaper {
+		if err := ledgerpkg.New(database.LedgerWriter()).CheckReady(context.Background(), ""); err != nil {
+			return analyses, 0, err
+		}
+	}
 	identity, strategy, err := buildDeploymentStrategy(settings)
 	if err != nil {
 		return analyses, 0, err

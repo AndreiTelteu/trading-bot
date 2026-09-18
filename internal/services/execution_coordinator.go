@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -14,108 +15,110 @@ import (
 	"gorm.io/gorm/clause"
 )
 
+// ExchangeOrderExecutor remains for the fenced exchange adapter contract. No
+// close path is allowed to call it until durable broker recovery exists.
 type ExchangeOrderExecutor interface {
 	ExecuteSell(symbol string, quantity float64, price float64) (*OrderResponse, error)
 }
 
 type CloseRequest struct {
 	PositionID     uint
-	Symbol         string
-	Reason         string
+	Symbol, Reason string
 	RequestedPrice float64
 	TriggeredAt    time.Time
 	Source         string
 }
-
 type CloseResult struct {
-	Closed    bool
-	Duplicate bool
-	Position  database.Position
-	Order     database.Order
-	Wallet    database.Wallet
-	Reason    string
-	Price     float64
+	Closed, Duplicate bool
+	Position          database.Position
+	Order             database.Order
+	Wallet            database.Wallet
+	Reason            string
+	Price             float64
 }
-
-type ExecutionCoordinator struct {
-	exchange ExchangeOrderExecutor
-}
+type ExecutionCoordinator struct{ exchange ExchangeOrderExecutor }
 
 var executionCoordinator *ExecutionCoordinator
 
 func InitExecutionCoordinator(ex ExchangeOrderExecutor) {
 	executionCoordinator = NewExecutionCoordinator(ex)
 }
-
 func GetExecutionCoordinator() *ExecutionCoordinator {
 	if executionCoordinator == nil {
 		executionCoordinator = NewExecutionCoordinator(GetExchange())
 	}
 	return executionCoordinator
 }
-
 func NewExecutionCoordinator(ex ExchangeOrderExecutor) *ExecutionCoordinator {
 	return &ExecutionCoordinator{exchange: ex}
 }
 
+const (
+	closeRequestPending   = "pending"
+	closeRequestRetryable = "retryable"
+	closeRequestApplied   = "applied"
+	closeRequestRejected  = "rejected"
+)
+
+// RequestClose first persists a runtime-owned reservation, then the isolated
+// ledger writer atomically creates the order/fill/events and marks it applied.
+// Retries retain the exact same request ID, price, and cost policy.
 func (c *ExecutionCoordinator) RequestClose(req CloseRequest) (*CloseResult, error) {
 	if req.TriggeredAt.IsZero() {
-		req.TriggeredAt = time.Now()
+		req.TriggeredAt = time.Now().UTC()
 	}
 	if err := ledgerpkg.New(database.LedgerWriter()).CheckReady(context.Background(), ""); err != nil {
 		return nil, err
 	}
-
-	position, order, err := c.markExitPending(req)
+	reservation, duplicate, err := c.reserveClose(req)
 	if err != nil {
 		return nil, err
 	}
-	if order == nil {
-		return &CloseResult{Duplicate: true, Position: position}, nil
+	if duplicate && reservation.ID == "" {
+		var position database.Position
+		if err := database.DB.First(&position, reservation.PositionID).Error; err != nil {
+			return nil, err
+		}
+		return &CloseResult{Duplicate: true, Closed: position.Status == "closed", Position: position}, nil
 	}
-
-	fillPrice := req.RequestedPrice
-	status := OrderStatusFilled
-	var exchangeOrderID *string
-	var executedQty *float64
-
-	if normalizeExecutionMode(position.ExecutionMode) == ExecutionModeExchange {
-		return nil, c.failClose(position.ID, order.ID, ledgerpkg.ErrExchangeExecutionFenced)
+	if duplicate && reservation.Status == closeRequestApplied {
+		result, err := c.loadAppliedClose(reservation)
+		if err != nil {
+			return nil, err
+		}
+		result.Duplicate = true
+		return result, nil
 	}
-
-	if fillPrice <= 0 {
-		fillPrice = positionPriceForExecution(position)
-	}
-	if executedQty == nil {
-		qty := position.Amount
-		executedQty = &qty
-	}
-
-	result, err := c.completeClose(position, *order, fillPrice, status, exchangeOrderID, executedQty, req)
+	result, err := c.applyClose(reservation.ID)
 	if err != nil {
-		return nil, c.failClose(position.ID, order.ID, err)
+		return nil, err
 	}
-
-	filledQuantity := position.Amount
-	if executedQty != nil && *executedQty > 0 {
-		filledQuantity = *executedQty
+	result.Duplicate = duplicate
+	if !result.Duplicate {
+		websocket.BroadcastTradeExecuted("sell", result.Position.Symbol, result.Order.AmountCrypto, result.Price, result.Wallet.Balance)
+		broadcastTradeUpdates()
+		NotifyPositionChanged()
 	}
-	websocket.BroadcastTradeExecuted("sell", result.Position.Symbol, filledQuantity, result.Price, result.Wallet.Balance)
-	broadcastTradeUpdates()
-	NotifyPositionChanged()
-
 	return result, nil
 }
 
-func (c *ExecutionCoordinator) markExitPending(req CloseRequest) (database.Position, *database.Order, error) {
-	var position database.Position
-	var order database.Order
+func closeCycleID(position database.Position) string {
+	return fmt.Sprintf("%d", position.OpenedAt.UTC().UnixNano())
+}
+func closeRequestID(position database.Position) string {
+	return fmt.Sprintf("close:%d:%s", position.ID, closeCycleID(position))
+}
+
+func (c *ExecutionCoordinator) reserveClose(req CloseRequest) (database.CloseRequest, bool, error) {
+	var reservation database.CloseRequest
+	duplicate := false
 	err := database.DB.Transaction(func(tx *gorm.DB) error {
+		var position database.Position
 		query := tx.Clauses(clause.Locking{Strength: "UPDATE"})
 		switch {
 		case req.PositionID > 0:
 			query = query.First(&position, req.PositionID)
-		case req.Symbol != "":
+		case strings.TrimSpace(req.Symbol) != "":
 			query = query.Where("symbol = ?", req.Symbol).First(&position)
 		default:
 			return fmt.Errorf("missing position identifier")
@@ -123,159 +126,193 @@ func (c *ExecutionCoordinator) markExitPending(req CloseRequest) (database.Posit
 		if query.Error != nil {
 			return query.Error
 		}
-
-		if position.Status != "open" || position.ExitPending {
+		if position.Status != "open" {
+			duplicate = true
+			if err := tx.First(&reservation, "id = ?", closeRequestID(position)).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+				return err
+			}
+			if reservation.ID == "" {
+				reservation.PositionID = position.ID
+			}
 			return nil
 		}
-
-		price := req.RequestedPrice
-		if price <= 0 {
-			price = positionPriceForExecution(position)
+		id := closeRequestID(position)
+		err := tx.First(&reservation, "id = ?", id).Error
+		if err == nil {
+			duplicate = true
+			if reservation.Status == closeRequestRejected {
+				return ledgerpkg.ErrExchangeExecutionFenced
+			}
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		} else {
+			var wallet database.Wallet
+			if err := tx.Where("account_id = ?", position.AccountID).First(&wallet).Error; err != nil {
+				return err
+			}
+			if strings.TrimSpace(wallet.Currency) == "" {
+				return ledgerpkg.ErrProjectionUnavailable
+			}
+			price := req.RequestedPrice
+			if price <= 0 {
+				price = positionPriceForExecution(position)
+			}
+			if price <= 0 {
+				return fmt.Errorf("close request requires a positive executable mark")
+			}
+			settings := GetAllSettings()
+			reservation = database.CloseRequest{ID: id, PositionID: position.ID, CycleID: closeCycleID(position), AccountID: position.AccountID, Currency: wallet.Currency, Symbol: position.Symbol, Reason: nonemptySource(req.Reason), Source: nonemptySource(req.Source), Price: price, FeeBPS: int64(getSettingInt(settings, "paper_fee_bps", 10)), SlippageBPS: int64(getSettingInt(settings, "paper_slippage_bps", 5)), Status: closeRequestPending, TriggeredAt: req.TriggeredAt.UTC()}
+			if err := tx.Create(&reservation).Error; err != nil {
+				return err
+			}
 		}
-		triggeredAt := req.TriggeredAt
-		updates := map[string]interface{}{"exit_pending": true, "last_mark_at": triggeredAt}
-		if price > 0 {
-			updates["current_price"] = price
-			updates["last_mark_price"] = price
-		}
-		result := tx.Model(&database.Position{}).Where("id = ? AND status = ? AND exit_pending = ?", position.ID, "open", false).Updates(updates)
-		if result.Error != nil {
-			return result.Error
-		}
-		if result.RowsAffected != 1 {
-			return nil
-		}
-		position.ExitPending = true
-		position.LastMarkAt = &triggeredAt
-		if price > 0 {
-			position.CurrentPrice = floatPtr(price)
-			position.LastMarkPrice = floatPtr(price)
-		}
-		if position.AmountExact == nil {
-			return ledgerpkg.ErrProjectionUnavailable
-		}
-		if position.AmountExact.Sign() <= 0 {
-			return ledgerpkg.ErrInsufficientAsset
-		}
-		priceExact, priceErr := accounting.FromFloat(price)
-		if priceErr != nil {
-			return priceErr
-		}
-		amountExact := *position.AmountExact
-		grossExact := amountExact.Mul(priceExact)
-		zero := accounting.Zero()
-
-		requestedPrice := price
-		clientOrderID := clientOrderID(position.Symbol, req.TriggeredAt)
-		order = database.Order{
-			AccountID:              position.AccountID,
-			OrderType:              "sell",
-			Symbol:                 position.Symbol,
-			AmountCrypto:           amountExact.Float64(),
-			AmountUsdt:             grossExact.Float64(),
-			AmountCryptoExact:      &zero,
-			RequestedQuantityExact: &amountExact,
-			ExecutedQuantityExact:  &zero,
-			RemainingQuantityExact: &amountExact,
-			AmountUsdtExact:        &zero,
-			FeeExact:               &zero,
-			Price:                  price,
-			Status:                 OrderStatusPending,
-			ExecutionMode:          normalizeExecutionMode(position.ExecutionMode),
-			TriggerReason:          stringPtr(req.Reason),
-			RequestedPrice:         &requestedPrice,
-			ClientOrderID:          &clientOrderID,
-			SubmittedAt:            &triggeredAt,
-			ExecutedAt:             triggeredAt,
-		}
-		return tx.Create(&order).Error
+		return tx.Model(&database.Position{}).Where("id = ? AND status = 'open'", position.ID).Updates(map[string]interface{}{"exit_pending": true, "last_mark_at": req.TriggeredAt.UTC()}).Error
 	})
-	if err != nil {
-		return database.Position{}, nil, err
-	}
-
-	if order.ID == 0 {
-		return position, nil, nil
-	}
-	return position, &order, nil
+	return reservation, duplicate, err
 }
 
-func (c *ExecutionCoordinator) completeClose(position database.Position, order database.Order, fillPrice float64, status string, exchangeOrderID *string, executedQty *float64, req CloseRequest) (*CloseResult, error) {
-	if position.AmountExact == nil {
-		return nil, ledgerpkg.ErrProjectionUnavailable
-	}
-	quantityExact := *position.AmountExact
-	var qErr error
-	if executedQty != nil && *executedQty > 0 {
-		quantityExact, qErr = accounting.FromFloat(*executedQty)
-	}
-	requestedExact, pErr := accounting.FromFloat(order.Price)
-	fillExact, fErr := accounting.FromFloat(fillPrice)
-	if qErr != nil || pErr != nil || fErr != nil {
-		return nil, fmt.Errorf("invalid close fill precision")
-	}
-	providerID := ""
-	if exchangeOrderID != nil {
-		providerID = *exchangeOrderID
-	}
-	key := fmt.Sprintf("coordinated-close-order-%d", order.ID)
-	if order.ClientOrderID != nil {
-		key = *order.ClientOrderID
-	}
-	mode := normalizeExecutionMode(position.ExecutionMode)
-	if mode == ExecutionModeShadow {
-		return nil, fmt.Errorf("shadow position close requires a separate shadow account ledger adapter")
-	}
-	var settlement database.Wallet
-	if err := database.DB.First(&settlement).Error; err != nil {
-		return nil, err
-	}
-	fee := accounting.Zero()
-	feeType := ledgerpkg.EventExchangeFee
-	metadata := map[string]interface{}{"exchange_fee_status": "unavailable_from_order_response", "broker_status": status}
-	if mode == ExecutionModePaper {
-		settings := GetAllSettings()
-		feeBPS := int64(getSettingInt(settings, "paper_fee_bps", 10))
-		slippageBPS := int64(getSettingInt(settings, "paper_slippage_bps", 5))
-		costedFill, costedFee, costErr := ledgerpkg.CostedPaperFill("sell", quantityExact, requestedExact, feeBPS, slippageBPS)
-		if costErr != nil {
-			return nil, costErr
-		}
-		fillExact, fee, feeType = costedFill, costedFee, ledgerpkg.EventTradingFee
-		metadata = map[string]interface{}{"fee_bps": feeBPS, "slippage_bps": slippageBPS, "broker_status": status}
-	}
-	fillResult, err := ledgerpkg.New(database.LedgerWriter()).ApplyFill(context.Background(), ledgerpkg.FillCommand{IdempotencyKey: key, AccountID: position.AccountID, Symbol: position.Symbol, Side: "sell", Quantity: quantityExact, RequestedPrice: requestedExact, FillPrice: fillExact, Fee: fee, FeeType: feeType, Currency: settlement.Currency, ExecutionMode: mode, ProviderFillID: providerID, ProviderOrderID: providerID, OrderStatus: status, ExistingOrderID: order.ID, OccurredAt: req.TriggeredAt, Actor: nonemptySource(req.Source), Reason: req.Reason, StrategyVersion: position.StrategyVersion, PolicyVersion: position.PolicyVersion, Metadata: metadata})
-	if err != nil {
-		return nil, err
-	}
-	if fillResult.Position.Status == "closed" {
-		_ = database.DB.Transaction(func(tx *gorm.DB) error { return RecordTradeOutcome(tx, fillResult.Position) })
-	}
-	return &CloseResult{Closed: fillResult.Position.Status == "closed", Position: fillResult.Position, Order: fillResult.Order, Wallet: fillResult.Wallet, Reason: req.Reason, Price: fillExact.Float64()}, nil
-}
-
-func nonemptySource(source string) string {
-	if strings.TrimSpace(source) == "" {
-		return "execution_coordinator"
-	}
-	return source
-}
-
-func (c *ExecutionCoordinator) failClose(positionID uint, orderID uint, closeErr error) error {
-	rollbackErr := database.DB.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Model(&database.Position{}).
-			Where("id = ?", positionID).
-			Updates(map[string]interface{}{"exit_pending": false}).Error; err != nil {
+func (c *ExecutionCoordinator) applyClose(id string) (*CloseResult, error) {
+	var result *CloseResult
+	err := database.LedgerWriter().Transaction(func(tx *gorm.DB) error {
+		if err := tx.Exec("SET LOCAL ROLE trading_bot_ledger_writer").Error; err != nil {
 			return err
 		}
-		return tx.Model(&database.Order{}).
-			Where("id = ?", orderID).
-			Updates(map[string]interface{}{"status": OrderStatusFailed}).Error
+		var request database.CloseRequest
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&request, "id = ?", id).Error; err != nil {
+			return err
+		}
+		if request.Status == closeRequestApplied {
+			loaded, err := c.loadAppliedCloseWith(tx, request)
+			result = loaded
+			return err
+		}
+		if request.Status == closeRequestRejected {
+			return ledgerpkg.ErrExchangeExecutionFenced
+		}
+		var position database.Position
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&position, request.PositionID).Error; err != nil {
+			return err
+		}
+		if position.Status != "open" || closeCycleID(position) != request.CycleID {
+			return fmt.Errorf("close request %s no longer matches an open position lifecycle", request.ID)
+		}
+		if normalizeExecutionMode(position.ExecutionMode) == ExecutionModeExchange {
+			return ledgerpkg.ErrExchangeExecutionFenced
+		}
+		command, err := closeFillCommand(position, request)
+		if err != nil {
+			return err
+		}
+		fill, err := ledgerpkg.New(tx).ApplyFill(context.Background(), command)
+		if err != nil {
+			return err
+		}
+		now := time.Now().UTC()
+		if err := tx.Model(&database.CloseRequest{}).Where("id = ?", request.ID).Updates(map[string]interface{}{"status": closeRequestApplied, "attempts": request.Attempts + 1, "last_error": "", "applied_at": now}).Error; err != nil {
+			return err
+		}
+		result = &CloseResult{Closed: fill.Position.Status == "closed", Position: fill.Position, Order: fill.Order, Wallet: fill.Wallet, Reason: request.Reason, Price: command.FillPrice.Float64()}
+		return nil
 	})
-	if rollbackErr != nil {
-		return fmt.Errorf("close failed: %w (rollback error: %v)", closeErr, rollbackErr)
+	if err == nil {
+		// Monitoring labels are non-economic runtime observations. They must not
+		// widen the ledger role or turn a fully committed close into a retry.
+		if result != nil && result.Closed {
+			_ = database.DB.Transaction(func(tx *gorm.DB) error { return RecordTradeOutcome(tx, result.Position) })
+		}
+		return result, nil
 	}
-	return closeErr
+	status := closeRequestRetryable
+	if errors.Is(err, ledgerpkg.ErrExchangeExecutionFenced) {
+		status = closeRequestRejected
+	}
+	if recordErr := c.recordCloseFailure(id, status, err); recordErr != nil {
+		return nil, fmt.Errorf("close failed: %w (could not persist recovery state: %v)", err, recordErr)
+	}
+	return nil, err
+}
+
+func closeFillCommand(position database.Position, request database.CloseRequest) (ledgerpkg.FillCommand, error) {
+	if position.AmountExact == nil || position.AmountExact.Sign() <= 0 {
+		return ledgerpkg.FillCommand{}, ledgerpkg.ErrProjectionUnavailable
+	}
+	price, err := accounting.FromFloat(request.Price)
+	if err != nil {
+		return ledgerpkg.FillCommand{}, err
+	}
+	fillPrice, fee, err := ledgerpkg.CostedPaperFill("sell", *position.AmountExact, price, request.FeeBPS, request.SlippageBPS)
+	if err != nil {
+		return ledgerpkg.FillCommand{}, err
+	}
+	metadata := map[string]interface{}{"fee_bps": request.FeeBPS, "slippage_bps": request.SlippageBPS, "close_request_id": request.ID, "close_source": request.Source}
+	return ledgerpkg.FillCommand{IdempotencyKey: request.ID, ClientOrderID: request.ID, AccountID: position.AccountID, Symbol: position.Symbol, Side: "sell", Quantity: *position.AmountExact, RequestedPrice: price, FillPrice: fillPrice, Fee: fee, FeeType: ledgerpkg.EventTradingFee, Currency: request.Currency, ExecutionMode: normalizeExecutionMode(position.ExecutionMode), OrderStatus: OrderStatusFilled, OccurredAt: request.TriggeredAt, Actor: request.Source, Reason: request.Reason, StrategyVersion: position.StrategyVersion, PolicyVersion: position.PolicyVersion, CostModelVersion: "paper-cost-v1", Metadata: metadata}, nil
+}
+
+func (c *ExecutionCoordinator) recordCloseFailure(id, status string, closeErr error) error {
+	message := closeErr.Error()
+	if len(message) > 2000 {
+		message = message[:2000]
+	}
+	return database.DB.Transaction(func(tx *gorm.DB) error {
+		var request database.CloseRequest
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&request, "id = ?", id).Error; err != nil {
+			return err
+		}
+		// A connection can fail after PostgreSQL committed the coupled fill and
+		// reservation completion. Never overwrite that durable applied state with
+		// a stale client-side error classification.
+		if request.Status == closeRequestApplied {
+			return nil
+		}
+		if err := tx.Model(&database.CloseRequest{}).Where("id = ?", id).Updates(map[string]interface{}{"status": status, "last_error": message, "attempts": gorm.Expr("attempts + 1")}).Error; err != nil {
+			return err
+		}
+		if status == closeRequestRejected {
+			return tx.Model(&database.Position{}).Where("id = (SELECT position_id FROM close_requests WHERE id = ?)", id).Update("exit_pending", false).Error
+		}
+		return nil
+	})
+}
+
+func (c *ExecutionCoordinator) loadAppliedClose(request database.CloseRequest) (*CloseResult, error) {
+	return c.loadAppliedCloseWith(database.LedgerWriter(), request)
+}
+func (c *ExecutionCoordinator) loadAppliedCloseWith(db *gorm.DB, request database.CloseRequest) (*CloseResult, error) {
+	var order database.Order
+	if err := db.Where("client_order_id = ?", request.ID).First(&order).Error; err != nil {
+		return nil, err
+	}
+	var position database.Position
+	if err := db.First(&position, request.PositionID).Error; err != nil {
+		return nil, err
+	}
+	var wallet database.Wallet
+	if err := db.Where("account_id = ?", request.AccountID).First(&wallet).Error; err != nil {
+		return nil, err
+	}
+	price := request.Price
+	if order.FillPrice != nil {
+		price = *order.FillPrice
+	}
+	return &CloseResult{Closed: position.Status == "closed", Position: position, Order: order, Wallet: wallet, Reason: request.Reason, Price: price}, nil
+}
+
+// RecoverPendingCloses runs before the stream supervisor begins: persisted
+// non-terminal reservations are retried with their original payload.
+func (c *ExecutionCoordinator) RecoverPendingCloses(ctx context.Context) (int, error) {
+	if err := ledgerpkg.New(database.LedgerWriter()).CheckReady(ctx, ""); err != nil {
+		return 0, err
+	}
+	var requests []database.CloseRequest
+	if err := database.DB.Where("status IN ?", []string{closeRequestPending, closeRequestRetryable}).Order("created_at,id").Find(&requests).Error; err != nil {
+		return 0, err
+	}
+	for index := range requests {
+		if _, err := c.applyClose(requests[index].ID); err != nil {
+			return index, err
+		}
+	}
+	return len(requests), nil
 }
 
 func normalizeExecutionMode(mode string) string {
@@ -288,19 +325,12 @@ func normalizeExecutionMode(mode string) string {
 		return ExecutionModePaper
 	}
 }
-
-func normalizeOrderStatus(status string) string {
-	if strings.TrimSpace(status) == "" {
-		return OrderStatusFilled
+func nonemptySource(source string) string {
+	if strings.TrimSpace(source) == "" {
+		return "execution_coordinator"
 	}
-	return strings.ToLower(status)
+	return source
 }
-
-func clientOrderID(symbol string, when time.Time) string {
-	clean := strings.ToLower(strings.ReplaceAll(symbol, " ", ""))
-	return fmt.Sprintf("%s-%d", clean, when.UnixMilli())
-}
-
 func PositionPairSymbol(symbol, settlementCurrency string) string {
 	pair := strings.ToUpper(strings.ReplaceAll(strings.TrimSpace(symbol), "/", ""))
 	quote := strings.ToUpper(strings.TrimSpace(settlementCurrency))
@@ -309,7 +339,6 @@ func PositionPairSymbol(symbol, settlementCurrency string) string {
 	}
 	return pair
 }
-
 func positionPriceForExecution(position database.Position) float64 {
 	if position.LastMarkPrice != nil && *position.LastMarkPrice > 0 {
 		return *position.LastMarkPrice
@@ -322,7 +351,6 @@ func positionPriceForExecution(position database.Position) float64 {
 	}
 	return position.AvgPrice
 }
-
 func stringPtr(v string) *string {
 	if strings.TrimSpace(v) == "" {
 		return nil

@@ -93,6 +93,30 @@ type Order struct {
 	ExecutedAt             time.Time           `json:"executed_at" gorm:"index"`
 }
 
+// CloseRequest is a runtime-owned, non-economic reservation for one position
+// lifecycle. It is the durable hand-off to the ledger writer, which alone
+// creates orders, fills, and economic projections.
+type CloseRequest struct {
+	ID          string     `json:"id" gorm:"primaryKey;size:140"`
+	PositionID  uint       `json:"position_id" gorm:"not null;uniqueIndex:idx_close_requests_position_cycle,priority:1;index"`
+	CycleID     string     `json:"cycle_id" gorm:"size:80;not null;uniqueIndex:idx_close_requests_position_cycle,priority:2"`
+	AccountID   string     `json:"account_id" gorm:"size:100;not null;index"`
+	Currency    string     `json:"currency" gorm:"size:20;not null"`
+	Symbol      string     `json:"symbol" gorm:"size:30;not null;index"`
+	Reason      string     `json:"reason" gorm:"size:500;not null"`
+	Source      string     `json:"source" gorm:"size:100;not null"`
+	Price       float64    `json:"price" gorm:"not null"`
+	FeeBPS      int64      `json:"fee_bps" gorm:"not null"`
+	SlippageBPS int64      `json:"slippage_bps" gorm:"not null"`
+	Status      string     `json:"status" gorm:"size:30;not null;index"`
+	Attempts    int        `json:"attempts" gorm:"not null;default:0"`
+	LastError   string     `json:"last_error" gorm:"type:text"`
+	TriggeredAt time.Time  `json:"triggered_at" gorm:"not null"`
+	AppliedAt   *time.Time `json:"applied_at,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
+}
+
 // LedgerBatch is the idempotency boundary for one atomic economic command.
 // PayloadHash prevents accidental reuse of a key for different economics.
 type LedgerBatch struct {
