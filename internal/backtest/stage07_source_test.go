@@ -12,7 +12,7 @@ func TestStage07PrimitivesAttributeActualFillCostsPerTrade(t *testing.T) {
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	entry, exit := base.Add(time.Minute), base.Add(2*time.Minute)
 	candidate := Stage05StrategyResult{
-		Metrics: ComparableMetrics{StartingCapital: "100"},
+		Metrics: ComparableMetrics{StartingCapital: "100", AverageGrossExposure: availableMetric(.5), TurnoverRatio: availableMetric(.11)},
 		Equity:  []EquityPoint{{Time: base, Value: 100}, {Time: exit, Value: 110}},
 		Trades:  []Trade{{Symbol: "AAA", EntryTime: entry, ExitTime: exit, EntryPrice: 11, ExitPrice: 14, Size: 1, Pnl: 10, RegimeState: "risk_on"}},
 		Artifacts: BacktestArtifacts{Fills: []FillArtifact{
@@ -20,8 +20,8 @@ func TestStage07PrimitivesAttributeActualFillCostsPerTrade(t *testing.T) {
 			{FillAt: exit.Format(time.RFC3339Nano), Symbol: "AAA", Fee: "2", Price: "14", Quantity: "1"},
 		}},
 	}
-	baseline := Stage05StrategyResult{Equity: []EquityPoint{{Time: base, Value: 100}, {Time: exit, Value: 100}}}
-	series := map[string][]services.OHLCV{"AAA": {{OpenTime: entry.UnixMilli(), Open: 10, Close: 10}, {OpenTime: exit.UnixMilli(), Open: 15, Close: 15}}}
+	baseline := Stage05StrategyResult{Metrics: ComparableMetrics{AverageGrossExposure: availableMetric(.5), TurnoverRatio: availableMetric(.11)}, Equity: []EquityPoint{{Time: base, Value: 100}, {Time: exit, Value: 100}}}
+	series := map[string][]services.OHLCV{"AAA": {{OpenTime: entry.UnixMilli(), Open: 10, Close: 10, Volume: 100}, {OpenTime: exit.UnixMilli(), Open: 15, Close: 15, Volume: 100}}}
 	primitives, err := stage07Primitives(candidate, baseline, 0, 4, series)
 	if err != nil {
 		t.Fatal(err)

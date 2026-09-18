@@ -23,6 +23,7 @@ func manifestFixture(t *testing.T) ExperimentManifest {
 		GovernancePolicy: GovernancePolicyVersion, AuthorityPolicy: authority,
 		DatasetManifestID: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", DatasetManifestHash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", DatasetDigest: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", UniversePolicy: "universe-v1",
 		Interval: Interval{base, base.Add(18 * 24 * time.Hour)}, DecisionClock: "4h-close", ExecutionClock: "next-1m-open", Seed: 42, ExecutionSemantics: map[string]string{"fee_bps": "10", "slippage_bps": "5", "timing": "next-open", "liquidity": "closed-bar"},
+		CapacityStress: CapacityStressPolicy{MaxParticipation: .1, ImpactBpsAtMax: 10, StressMultiplier: 2},
 		Folds: []Fold{
 			{Index: 0, Train: Interval{base, base.Add(3 * 24 * time.Hour)}, Validation: Interval{base.Add(3 * 24 * time.Hour), base.Add(5 * 24 * time.Hour)}, Test: Interval{base.Add(5 * 24 * time.Hour), base.Add(7 * 24 * time.Hour)}},
 			{Index: 1, Train: Interval{base.Add(4 * 24 * time.Hour), base.Add(8 * 24 * time.Hour)}, Validation: Interval{base.Add(8 * 24 * time.Hour), base.Add(10 * 24 * time.Hour)}, Test: Interval{base.Add(10 * 24 * time.Hour), base.Add(12 * 24 * time.Hour)}},
@@ -37,6 +38,20 @@ func manifestFixture(t *testing.T) ExperimentManifest {
 		Artifacts:       ArtifactLinks{Metrics: "metrics.json", Trades: "trades.parquet", Curves: "curves.parquet", Cohorts: "cohorts.json", Factors: "factors.json", Coverage: "coverage.json", Comparison: "comparison.json"},
 		Reproduce:       ReproductionInvocation{Command: "trading-bot", Args: []string{"validate", "--manifest", "manifest.json"}},
 	}
+	// Family identity is stable across all candidate attempts. The holdout is
+	// then locked before the confirmatory manifest is constructed.
+	spec.StudyType, spec.Exploratory = "exploratory", true
+	pre, err := NewManifest(spec, base.Add(20*24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec.StudyType, spec.Exploratory = "confirmatory", false
+	spec.FamilyID = pre.Spec.FamilyID
+	holdout, err := NewConfirmatoryHoldoutContract(spec.FamilyID, spec.DatasetDigest, spec.Interval)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec.ConfirmatoryHoldout = &holdout
 	manifest, err := NewManifest(spec, base.Add(20*24*time.Hour))
 	if err != nil {
 		t.Fatal(err)
@@ -469,8 +484,9 @@ func healthyPrimitives(f Fold, value float64) FoldPrimitives {
 	pnl := start * value
 	at := f.Test.Start.Add(time.Hour)
 	return FoldPrimitives{StartingCapital: start, ExpectedObservations: 10, ObservedObservations: 10,
-		Trades: []TradePrimitive{{ID: "a", Symbol: "A", Regime: "risk_on", OpenedAt: at, ClosedAt: at.Add(time.Minute), Notional: 50, GrossPnL: pnl/4 + .1, Cost: .1, NetPnL: pnl / 4}, {ID: "b", Symbol: "A", Regime: "risk_off", OpenedAt: at.Add(2 * time.Minute), ClosedAt: at.Add(3 * time.Minute), Notional: 50, GrossPnL: pnl/4 + .1, Cost: .1, NetPnL: pnl / 4}, {ID: "c", Symbol: "B", Regime: "risk_on", OpenedAt: at.Add(4 * time.Minute), ClosedAt: at.Add(5 * time.Minute), Notional: 50, GrossPnL: pnl/4 + .1, Cost: .1, NetPnL: pnl / 4}, {ID: "d", Symbol: "B", Regime: "risk_off", OpenedAt: at.Add(6 * time.Minute), ClosedAt: at.Add(7 * time.Minute), Notional: 50, GrossPnL: pnl/4 + .1, Cost: .1, NetPnL: pnl / 4}},
-		Curve:  []CurvePrimitive{{At: at, Equity: start, Benchmark: start, GrossExposure: .5, NetExposure: .5}, {At: at.Add(time.Hour), Equity: start + pnl, Benchmark: start + pnl/2, GrossExposure: .5, NetExposure: .5}}}
+		Trades:                []TradePrimitive{{ID: "a", Symbol: "A", Regime: "risk_on", OpenedAt: at, ClosedAt: at.Add(time.Minute), Notional: 50, AvailableLiquidity: 1000, GrossPnL: pnl/4 + .1, Cost: .1, NetPnL: pnl / 4}, {ID: "b", Symbol: "A", Regime: "risk_off", OpenedAt: at.Add(2 * time.Minute), ClosedAt: at.Add(3 * time.Minute), Notional: 50, AvailableLiquidity: 1000, GrossPnL: pnl/4 + .1, Cost: .1, NetPnL: pnl / 4}, {ID: "c", Symbol: "B", Regime: "risk_on", OpenedAt: at.Add(4 * time.Minute), ClosedAt: at.Add(5 * time.Minute), Notional: 50, AvailableLiquidity: 1000, GrossPnL: pnl/4 + .1, Cost: .1, NetPnL: pnl / 4}, {ID: "d", Symbol: "B", Regime: "risk_off", OpenedAt: at.Add(6 * time.Minute), ClosedAt: at.Add(7 * time.Minute), Notional: 50, AvailableLiquidity: 1000, GrossPnL: pnl/4 + .1, Cost: .1, NetPnL: pnl / 4}},
+		BaselineGrossExposure: .5, BaselineTurnover: .2,
+		Curve: []CurvePrimitive{{At: at, Equity: start, Benchmark: start, GrossExposure: .5, NetExposure: .5}, {At: at.Add(time.Hour), Equity: start + pnl, Benchmark: start + pnl/2, GrossExposure: .5, NetExposure: .5}}}
 }
 func samplesForManifest(m ExperimentManifest) []Sample {
 	result := []Sample{}

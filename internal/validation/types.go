@@ -35,6 +35,8 @@ const (
 	DiagnosticDominated                DiagnosticCode = "performance_dominated"
 	DiagnosticBaselineMismatch         DiagnosticCode = "baseline_candidate_or_exposure_mismatch"
 	DiagnosticInvalidProbability       DiagnosticCode = "invalid_probability"
+	DiagnosticHoldoutReuse             DiagnosticCode = "confirmatory_holdout_reused"
+	DiagnosticCapacity                 DiagnosticCode = "capacity_or_liquidity_failure"
 )
 
 type DiagnosticError struct {
@@ -122,44 +124,62 @@ type ReproductionInvocation struct {
 	Env     map[string]string `json:"env,omitempty"`
 }
 
+// ConfirmatoryHoldoutContract is declared before the confirmatory run. Its
+// identity binds the point-in-time dataset and half-open interval; repository
+// persistence turns it into a single-use, immutable database contract.
+type ConfirmatoryHoldoutContract struct {
+	ID            string        `json:"id"`
+	DatasetDigest DatasetDigest `json:"dataset_digest"`
+	Interval      Interval      `json:"interval"`
+}
+
+type CapacityStressPolicy struct {
+	MaxParticipation float64 `json:"max_participation"`
+	ImpactBpsAtMax   float64 `json:"impact_bps_at_max_participation"`
+	StressMultiplier float64 `json:"stress_multiplier"`
+}
+
 type ManifestSpec struct {
-	SchemaVersion       string                   `json:"schema_version"`
-	StudyType           string                   `json:"study_type"`
-	Exploratory         bool                     `json:"exploratory"`
-	CodeRevision        string                   `json:"code_revision"`
-	Candidate           VersionRef               `json:"candidate"`
-	Baseline            VersionRef               `json:"baseline"`
-	Model               *ModelAuthority          `json:"model,omitempty"`
-	MLRequirements      *MLRequirements          `json:"ml_requirements,omitempty"`
-	Policies            PolicyBundle             `json:"policies"`
-	GovernancePolicy    string                   `json:"governance_policy"`
-	AuthorityPolicy     AuthorityPolicyEnvelope  `json:"authority_policy"`
-	DatasetManifestID   string                   `json:"dataset_manifest_id"`
-	DatasetManifestHash string                   `json:"dataset_manifest_hash"`
-	DatasetDigest       DatasetDigest            `json:"dataset_digest"`
-	UniversePolicy      string                   `json:"universe_policy"`
-	Interval            Interval                 `json:"interval"`
-	DecisionClock       string                   `json:"decision_clock"`
-	ExecutionClock      string                   `json:"execution_clock"`
-	Seed                int64                    `json:"seed"`
-	ExecutionSemantics  map[string]string        `json:"execution_semantics"`
-	Folds               []Fold                   `json:"folds"`
-	FoldSourceJobIDs    []uint                   `json:"fold_source_job_ids"`
-	FeatureHorizon      time.Duration            `json:"feature_horizon"`
-	LabelHorizon        time.Duration            `json:"label_horizon"`
-	Purge               time.Duration            `json:"purge"`
-	Embargo             time.Duration            `json:"embargo"`
-	AllowedTuning       map[string][]string      `json:"allowed_tuning"`
-	Metrics             []string                 `json:"metrics"`
-	StatisticalUnit     string                   `json:"statistical_unit"`
-	BootstrapIterations int                      `json:"bootstrap_iterations"`
-	Samples             SampleRequirements       `json:"sample_requirements"`
-	PromotionThresholds []Threshold              `json:"promotion_thresholds"`
-	RollbackThresholds  []Threshold              `json:"rollback_thresholds"`
-	RequiredElapsed     map[string]time.Duration `json:"required_elapsed"`
-	Artifacts           ArtifactLinks            `json:"artifacts"`
-	Reproduce           ReproductionInvocation   `json:"reproduce"`
-	ResearchOverride    *ResearchOverride        `json:"research_override,omitempty"`
+	SchemaVersion       string                       `json:"schema_version"`
+	StudyType           string                       `json:"study_type"`
+	Exploratory         bool                         `json:"exploratory"`
+	FamilyID            string                       `json:"family_id"`
+	ConfirmatoryHoldout *ConfirmatoryHoldoutContract `json:"confirmatory_holdout,omitempty"`
+	CodeRevision        string                       `json:"code_revision"`
+	Candidate           VersionRef                   `json:"candidate"`
+	Baseline            VersionRef                   `json:"baseline"`
+	Model               *ModelAuthority              `json:"model,omitempty"`
+	MLRequirements      *MLRequirements              `json:"ml_requirements,omitempty"`
+	Policies            PolicyBundle                 `json:"policies"`
+	GovernancePolicy    string                       `json:"governance_policy"`
+	AuthorityPolicy     AuthorityPolicyEnvelope      `json:"authority_policy"`
+	DatasetManifestID   string                       `json:"dataset_manifest_id"`
+	DatasetManifestHash string                       `json:"dataset_manifest_hash"`
+	DatasetDigest       DatasetDigest                `json:"dataset_digest"`
+	UniversePolicy      string                       `json:"universe_policy"`
+	Interval            Interval                     `json:"interval"`
+	DecisionClock       string                       `json:"decision_clock"`
+	ExecutionClock      string                       `json:"execution_clock"`
+	Seed                int64                        `json:"seed"`
+	ExecutionSemantics  map[string]string            `json:"execution_semantics"`
+	CapacityStress      CapacityStressPolicy         `json:"capacity_stress"`
+	Folds               []Fold                       `json:"folds"`
+	FoldSourceJobIDs    []uint                       `json:"fold_source_job_ids"`
+	FeatureHorizon      time.Duration                `json:"feature_horizon"`
+	LabelHorizon        time.Duration                `json:"label_horizon"`
+	Purge               time.Duration                `json:"purge"`
+	Embargo             time.Duration                `json:"embargo"`
+	AllowedTuning       map[string][]string          `json:"allowed_tuning"`
+	Metrics             []string                     `json:"metrics"`
+	StatisticalUnit     string                       `json:"statistical_unit"`
+	BootstrapIterations int                          `json:"bootstrap_iterations"`
+	Samples             SampleRequirements           `json:"sample_requirements"`
+	PromotionThresholds []Threshold                  `json:"promotion_thresholds"`
+	RollbackThresholds  []Threshold                  `json:"rollback_thresholds"`
+	RequiredElapsed     map[string]time.Duration     `json:"required_elapsed"`
+	Artifacts           ArtifactLinks                `json:"artifacts"`
+	Reproduce           ReproductionInvocation       `json:"reproduce"`
+	ResearchOverride    *ResearchOverride            `json:"research_override,omitempty"`
 }
 
 type AuthorityPolicyEnvelope struct {

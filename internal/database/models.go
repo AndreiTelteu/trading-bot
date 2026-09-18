@@ -730,6 +730,60 @@ type ValidationExperiment struct {
 	IdempotencyKey        *string   `json:"idempotency_key,omitempty" gorm:"size:120;uniqueIndex"`
 }
 
+// ResearchExperimentFamily is the immutable multiple-testing population for a
+// single research hypothesis. It deliberately has no mutable counter: the
+// denominator is the count of immutable attempt rows, including failures.
+type ResearchExperimentFamily struct {
+	ID            string    `json:"id" gorm:"primaryKey;size:64"`
+	ContentJSON   string    `json:"content" gorm:"column:content_json;type:jsonb;not null"`
+	ContentDigest string    `json:"content_digest" gorm:"size:64;not null"`
+	CreatedAt     time.Time `json:"created_at" gorm:"not null;index"`
+}
+
+// ResearchExperimentAttempt records a candidate before it is evaluated. A
+// failed run therefore remains part of the family denominator forever.
+type ResearchExperimentAttempt struct {
+	ID              string    `json:"id" gorm:"primaryKey;size:64"`
+	FamilyID        string    `json:"family_id" gorm:"size:64;not null;index;uniqueIndex:idx_research_attempt_experiment"`
+	ExperimentID    string    `json:"experiment_id" gorm:"size:64;not null;uniqueIndex:idx_research_attempt_experiment"`
+	CandidateDigest string    `json:"candidate_digest" gorm:"size:64;not null;index"`
+	ContentDigest   string    `json:"content_digest" gorm:"size:64;not null"`
+	CreatedAt       time.Time `json:"created_at" gorm:"not null;index"`
+}
+
+// ResearchAttemptOutcome is a separate immutable event instead of a mutable
+// attempt status. Its presence is explicit evidence that a run passed or
+// failed; absence is an unfinished attempt, never a passing result.
+type ResearchAttemptOutcome struct {
+	ID            string    `json:"id" gorm:"primaryKey;size:64"`
+	AttemptID     string    `json:"attempt_id" gorm:"size:64;not null;uniqueIndex"`
+	ExperimentID  string    `json:"experiment_id" gorm:"size:64;not null;index"`
+	EvidenceID    string    `json:"evidence_id" gorm:"size:64;not null;uniqueIndex"`
+	Status        string    `json:"status" gorm:"size:16;not null;index"`
+	ContentDigest string    `json:"content_digest" gorm:"size:64;not null"`
+	CreatedAt     time.Time `json:"created_at" gorm:"not null;index"`
+}
+
+// ResearchConfirmatoryHoldout is a single-use locked contract. A family has
+// one contract and a contract has one immutable use, preventing re-testing a
+// conveniently selected holdout after tuning has seen its result.
+type ResearchConfirmatoryHoldout struct {
+	ID            string    `json:"id" gorm:"primaryKey;size:64"`
+	FamilyID      string    `json:"family_id" gorm:"size:64;not null;uniqueIndex"`
+	DatasetDigest string    `json:"dataset_digest" gorm:"size:64;not null"`
+	StartAt       time.Time `json:"start_at" gorm:"not null"`
+	EndAt         time.Time `json:"end_at" gorm:"not null"`
+	ContentDigest string    `json:"content_digest" gorm:"size:64;not null"`
+	LockedAt      time.Time `json:"locked_at" gorm:"not null;index"`
+}
+
+type ResearchConfirmatoryHoldoutUse struct {
+	ID           string    `json:"id" gorm:"primaryKey;size:64"`
+	HoldoutID    string    `json:"holdout_id" gorm:"size:64;not null;uniqueIndex"`
+	ExperimentID string    `json:"experiment_id" gorm:"size:64;not null;uniqueIndex"`
+	CreatedAt    time.Time `json:"created_at" gorm:"not null;index"`
+}
+
 type ValidationFoldEvidence struct {
 	ID             uint      `json:"id" gorm:"primaryKey;autoIncrement"`
 	ExperimentID   string    `json:"experiment_id" gorm:"size:64;not null;index;uniqueIndex:idx_validation_fold_identity,priority:1"`

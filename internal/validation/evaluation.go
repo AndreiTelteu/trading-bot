@@ -16,14 +16,19 @@ type ConfidenceInterval struct {
 }
 
 type MetricSummary struct {
-	AfterCostExpectancy     ConfidenceInterval `json:"after_cost_expectancy"`
-	AfterCostReturn         ConfidenceInterval `json:"after_cost_return"`
-	BenchmarkRelativeReturn ConfidenceInterval `json:"benchmark_relative_return"`
-	MaxDrawdown             ConfidenceInterval `json:"max_drawdown"`
-	Turnover                ConfidenceInterval `json:"turnover"`
-	GrossExposure           ConfidenceInterval `json:"gross_exposure"`
-	NetExposure             ConfidenceInterval `json:"net_exposure"`
-	Coverage                ConfidenceInterval `json:"coverage"`
+	AfterCostExpectancy       ConfidenceInterval `json:"after_cost_expectancy"`
+	AfterCostReturn           ConfidenceInterval `json:"after_cost_return"`
+	BenchmarkRelativeReturn   ConfidenceInterval `json:"benchmark_relative_return"`
+	MaxDrawdown               ConfidenceInterval `json:"max_drawdown"`
+	Turnover                  ConfidenceInterval `json:"turnover"`
+	GrossExposure             ConfidenceInterval `json:"gross_exposure"`
+	NetExposure               ConfidenceInterval `json:"net_exposure"`
+	Coverage                  ConfidenceInterval `json:"coverage"`
+	DownsideDeviation         ConfidenceInterval `json:"downside_deviation"`
+	ExpectedShortfall95       ConfidenceInterval `json:"expected_shortfall_95"`
+	MaxLiquidityParticipation ConfidenceInterval `json:"max_liquidity_participation"`
+	StressedAfterCostReturn   ConfidenceInterval `json:"stressed_after_cost_return"`
+	DeflatedSharpe            ConfidenceInterval `json:"deflated_sharpe"`
 }
 
 type Domination struct {
@@ -101,7 +106,7 @@ func ValidateFoldMetrics(metrics FoldMetrics, requirements SampleRequirements) e
 			return &DiagnosticError{Code: DiagnosticManifestIntegrity, Details: label + " contributions do not reconcile to after-cost return"}
 		}
 	}
-	values := []float64{metrics.AfterCostExpectancy, metrics.AfterCostReturn, metrics.BenchmarkRelativeReturn, metrics.MaxDrawdown, metrics.Turnover, metrics.GrossExposure, metrics.NetExposure, metrics.Coverage}
+	values := []float64{metrics.AfterCostExpectancy, metrics.AfterCostReturn, metrics.BenchmarkRelativeReturn, metrics.MaxDrawdown, metrics.Turnover, metrics.GrossExposure, metrics.NetExposure, metrics.Coverage, metrics.DownsideDeviation, metrics.ExpectedShortfall95, metrics.MaxLiquidityParticipation, metrics.Sharpe}
 	for _, value := range values {
 		if !finite(value) {
 			return &DiagnosticError{Code: DiagnosticNonFinite}
@@ -177,6 +182,37 @@ func Evaluate(folds []FoldResult, spec ManifestSpec) (Evaluation, error) {
 	if err != nil {
 		return Evaluation{}, err
 	}
+	downside, err := metric(func(v FoldMetrics) float64 { return v.DownsideDeviation }, windowWeight)
+	if err != nil {
+		return Evaluation{}, err
+	}
+	es, err := metric(func(v FoldMetrics) float64 { return v.ExpectedShortfall95 }, windowWeight)
+	if err != nil {
+		return Evaluation{}, err
+	}
+	participation, err := metric(func(v FoldMetrics) float64 { return v.MaxLiquidityParticipation }, windowWeight)
+	if err != nil {
+		return Evaluation{}, err
+	}
+	stressedValues, stressedWeights := make([]float64, len(folds)), make([]float64, len(folds))
+	for i := range folds {
+		stressedValues[i], stressedWeights[i] = folds[i].Metrics.AfterCostReturn, capitalWeight(folds[i])
+		if stressedWeights[i] <= 0 || !finite(stressedWeights[i]) {
+			stressedWeights[i] = 1
+		}
+		if len(folds[i].Primitives.Curve) >= 2 {
+			stressedValues[i] = stressedReturn(folds[i].Primitives, spec.CapacityStress)
+		}
+	}
+	stressed, err := bootstrapWeighted(stressedValues, stressedWeights, spec.Seed, spec.BootstrapIterations)
+	if err != nil {
+		return Evaluation{}, err
+	}
+	deflated, err := metric(func(v FoldMetrics) float64 { return v.Sharpe }, windowWeight)
+	if err != nil {
+		return Evaluation{}, err
+	}
+	deflated.Mean, deflated.Lower, deflated.Upper = deflateSharpe(deflated.Mean, deflated.Lower, deflated.Upper, len(folds), tuningChoices(spec.AllowedTuning))
 	worstWindow := 0
 	for i := 1; i < len(folds); i++ {
 		if folds[i].Metrics.AfterCostReturn < folds[worstWindow].Metrics.AfterCostReturn {
@@ -210,7 +246,7 @@ func Evaluate(folds []FoldResult, spec ManifestSpec) (Evaluation, error) {
 	if domination.Dominated {
 		return Evaluation{}, &DiagnosticError{Code: DiagnosticDominated, Details: fmt.Sprintf("trade=%.4f symbol=%.4f window=%.4f", domination.TradeFraction, domination.SymbolFraction, domination.WindowFraction)}
 	}
-	summary := MetricSummary{expectancy, returns, relative, drawdown, turnover, gross, net, coverage}
+	summary := MetricSummary{expectancy, returns, relative, drawdown, turnover, gross, net, coverage, downside, es, participation, stressed, deflated}
 	gates := evaluateThresholds(spec.PromotionThresholds, summary)
 	passed := true
 	for _, gate := range gates {
@@ -299,7 +335,7 @@ func weightedMean(values, weights []float64) float64 {
 }
 
 func evaluateThresholds(thresholds []Threshold, metrics MetricSummary) []GateResult {
-	lookup := map[string]float64{"after_cost_expectancy": metrics.AfterCostExpectancy.Lower, "after_cost_return": metrics.AfterCostReturn.Lower, "benchmark_relative_return": metrics.BenchmarkRelativeReturn.Lower, "max_drawdown": metrics.MaxDrawdown.Upper, "turnover": metrics.Turnover.Upper, "gross_exposure": metrics.GrossExposure.Upper, "net_exposure": metrics.NetExposure.Upper, "coverage": metrics.Coverage.Lower}
+	lookup := map[string]float64{"after_cost_expectancy": metrics.AfterCostExpectancy.Lower, "after_cost_return": metrics.AfterCostReturn.Lower, "benchmark_relative_return": metrics.BenchmarkRelativeReturn.Lower, "max_drawdown": metrics.MaxDrawdown.Upper, "turnover": metrics.Turnover.Upper, "gross_exposure": metrics.GrossExposure.Upper, "net_exposure": metrics.NetExposure.Upper, "coverage": metrics.Coverage.Lower, "downside_deviation": metrics.DownsideDeviation.Upper, "expected_shortfall_95": metrics.ExpectedShortfall95.Upper, "max_liquidity_participation": metrics.MaxLiquidityParticipation.Upper, "stressed_after_cost_return": metrics.StressedAfterCostReturn.Lower, "deflated_sharpe": metrics.DeflatedSharpe.Lower}
 	result := make([]GateResult, 0, len(thresholds))
 	for _, threshold := range thresholds {
 		observed, ok := lookup[threshold.Metric]
@@ -307,6 +343,38 @@ func evaluateThresholds(thresholds []Threshold, metrics MetricSummary) []GateRes
 		result = append(result, GateResult{threshold.Metric, threshold.Op, threshold.Value, observed, passed})
 	}
 	return result
+}
+
+func stressedReturn(p FoldPrimitives, policy CapacityStressPolicy) float64 {
+	penalty := 0.0
+	for _, trade := range p.Trades {
+		participation := trade.Notional / trade.AvailableLiquidity
+		impact := (policy.ImpactBpsAtMax / 10000) * (participation / policy.MaxParticipation) * policy.StressMultiplier
+		penalty += trade.Notional / p.StartingCapital * impact
+	}
+	return p.Curve[len(p.Curve)-1].Equity/p.StartingCapital - 1 - penalty
+}
+
+// deflateSharpe is a deliberately conservative, deterministic approximation:
+// it deducts a multiple-testing penalty from the window-level return signal.
+// It is not a substitute for independent data or a full PBO calculation.
+func deflateSharpe(mean, lower, upper float64, units, trials int) (float64, float64, float64) {
+	if units < 2 || trials < 1 {
+		return 0, 0, 0
+	}
+	penalty := math.Sqrt(2*math.Log(float64(trials))) / math.Sqrt(float64(units))
+	return mean - penalty, lower - penalty, upper - penalty
+}
+
+func tuningChoices(allowed map[string][]string) int {
+	n := 1
+	for _, choices := range allowed {
+		if len(choices) == 0 || n > 1000000/len(choices) {
+			return 1000000
+		}
+		n *= len(choices)
+	}
+	return n
 }
 
 func compare(value float64, op string, threshold float64) bool {

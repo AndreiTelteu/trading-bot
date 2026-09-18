@@ -99,22 +99,26 @@ func (f FrozenDecision) Digest() (string, error) {
 }
 
 type FoldMetrics struct {
-	Observations            int                `json:"observations"`
-	Trades                  int                `json:"trades"`
-	BenchmarkPresent        bool               `json:"benchmark_present"`
-	CoverageComplete        bool               `json:"coverage_complete"`
-	Regimes                 map[string]int     `json:"regimes"`
-	RegimeContributions     map[string]float64 `json:"regime_contributions"`
-	AfterCostExpectancy     float64            `json:"after_cost_expectancy"`
-	AfterCostReturn         float64            `json:"after_cost_return"`
-	BenchmarkRelativeReturn float64            `json:"benchmark_relative_return"`
-	MaxDrawdown             float64            `json:"max_drawdown"`
-	Turnover                float64            `json:"turnover"`
-	GrossExposure           float64            `json:"gross_exposure"`
-	NetExposure             float64            `json:"net_exposure"`
-	Coverage                float64            `json:"coverage"`
-	TradeContributions      map[string]float64 `json:"trade_contributions,omitempty"`
-	SymbolContributions     map[string]float64 `json:"symbol_contributions,omitempty"`
+	Observations              int                `json:"observations"`
+	Trades                    int                `json:"trades"`
+	BenchmarkPresent          bool               `json:"benchmark_present"`
+	CoverageComplete          bool               `json:"coverage_complete"`
+	Regimes                   map[string]int     `json:"regimes"`
+	RegimeContributions       map[string]float64 `json:"regime_contributions"`
+	AfterCostExpectancy       float64            `json:"after_cost_expectancy"`
+	AfterCostReturn           float64            `json:"after_cost_return"`
+	BenchmarkRelativeReturn   float64            `json:"benchmark_relative_return"`
+	MaxDrawdown               float64            `json:"max_drawdown"`
+	Turnover                  float64            `json:"turnover"`
+	GrossExposure             float64            `json:"gross_exposure"`
+	NetExposure               float64            `json:"net_exposure"`
+	Coverage                  float64            `json:"coverage"`
+	DownsideDeviation         float64            `json:"downside_deviation"`
+	ExpectedShortfall95       float64            `json:"expected_shortfall_95"`
+	MaxLiquidityParticipation float64            `json:"max_liquidity_participation"`
+	Sharpe                    float64            `json:"sharpe"`
+	TradeContributions        map[string]float64 `json:"trade_contributions,omitempty"`
+	SymbolContributions       map[string]float64 `json:"symbol_contributions,omitempty"`
 }
 
 type FoldResult struct {
@@ -139,15 +143,16 @@ type FoldFit struct {
 }
 
 type TradePrimitive struct {
-	ID       string    `json:"id"`
-	Symbol   string    `json:"symbol"`
-	Regime   string    `json:"regime"`
-	OpenedAt time.Time `json:"opened_at"`
-	ClosedAt time.Time `json:"closed_at"`
-	Notional float64   `json:"notional"`
-	GrossPnL float64   `json:"gross_pnl"`
-	Cost     float64   `json:"cost"`
-	NetPnL   float64   `json:"net_pnl"`
+	ID                 string    `json:"id"`
+	Symbol             string    `json:"symbol"`
+	Regime             string    `json:"regime"`
+	OpenedAt           time.Time `json:"opened_at"`
+	ClosedAt           time.Time `json:"closed_at"`
+	Notional           float64   `json:"notional"`
+	GrossPnL           float64   `json:"gross_pnl"`
+	Cost               float64   `json:"cost"`
+	NetPnL             float64   `json:"net_pnl"`
+	AvailableLiquidity float64   `json:"available_liquidity"`
 }
 
 type CurvePrimitive struct {
@@ -159,11 +164,13 @@ type CurvePrimitive struct {
 }
 
 type FoldPrimitives struct {
-	StartingCapital      float64          `json:"starting_capital"`
-	ExpectedObservations int              `json:"expected_observations"`
-	ObservedObservations int              `json:"observed_observations"`
-	Trades               []TradePrimitive `json:"trades"`
-	Curve                []CurvePrimitive `json:"curve"`
+	StartingCapital       float64          `json:"starting_capital"`
+	ExpectedObservations  int              `json:"expected_observations"`
+	ObservedObservations  int              `json:"observed_observations"`
+	Trades                []TradePrimitive `json:"trades"`
+	Curve                 []CurvePrimitive `json:"curve"`
+	BaselineGrossExposure float64          `json:"baseline_gross_exposure"`
+	BaselineTurnover      float64          `json:"baseline_turnover"`
 }
 
 // FoldRunner is one fresh, isolated fold instance. Fit returns complete immutable

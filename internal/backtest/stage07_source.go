@@ -251,9 +251,27 @@ func stage07Primitives(candidate, baseline Stage05StrategyResult, fold, observat
 		if err != nil {
 			return validation.FoldPrimitives{}, err
 		}
-		trades[i] = validation.TradePrimitive{ID: fmt.Sprintf("%d:%d:%s:%s", fold, i, t.Symbol, t.EntryTime.UTC().Format(time.RFC3339Nano)), Symbol: t.Symbol, Regime: regime, OpenedAt: t.EntryTime.UTC(), ClosedAt: t.ExitTime.UTC(), Notional: math.Abs(t.EntryPrice * t.Size), GrossPnL: t.Pnl + cost, Cost: cost, NetPnL: t.Pnl}
+		liquidity := stage07TradeLiquidity(series, t.Symbol, t.EntryTime, t.EntryPrice)
+		if liquidity <= 0 {
+			return validation.FoldPrimitives{}, &validation.DiagnosticError{Code: validation.DiagnosticCapacity, Details: "point-in-time entry liquidity unavailable"}
+		}
+		trades[i] = validation.TradePrimitive{ID: fmt.Sprintf("%d:%d:%s:%s", fold, i, t.Symbol, t.EntryTime.UTC().Format(time.RFC3339Nano)), Symbol: t.Symbol, Regime: regime, OpenedAt: t.EntryTime.UTC(), ClosedAt: t.ExitTime.UTC(), Notional: math.Abs(t.EntryPrice * t.Size), AvailableLiquidity: liquidity, GrossPnL: t.Pnl + cost, Cost: cost, NetPnL: t.Pnl}
 	}
-	return validation.FoldPrimitives{StartingCapital: start, ExpectedObservations: observations, ObservedObservations: observations, Trades: trades, Curve: curve}, nil
+	baselineGross, baselineTurnover := metricValue(baseline.Metrics.AverageGrossExposure), metricValue(baseline.Metrics.TurnoverRatio)
+	candidateTurnover := metricValue(candidate.Metrics.TurnoverRatio)
+	if math.Abs(baselineGross-gross) > 1e-10 || math.Abs(baselineTurnover-candidateTurnover) > 1e-10 {
+		return validation.FoldPrimitives{}, &validation.DiagnosticError{Code: validation.DiagnosticBaselineMismatch, Details: "Stage 05 baseline is not exposure/turnover matched"}
+	}
+	return validation.FoldPrimitives{StartingCapital: start, ExpectedObservations: observations, ObservedObservations: observations, Trades: trades, Curve: curve, BaselineGrossExposure: baselineGross, BaselineTurnover: candidateTurnover}, nil
+}
+
+func stage07TradeLiquidity(series map[string][]services.OHLCV, symbol string, at time.Time, price float64) float64 {
+	for _, bar := range series[symbol] {
+		if time.UnixMilli(bar.OpenTime).UTC().Equal(at.UTC()) && bar.Volume > 0 {
+			return bar.Volume * price
+		}
+	}
+	return 0
 }
 func metricValue(v OptionalMetric) float64 {
 	if v.Available {

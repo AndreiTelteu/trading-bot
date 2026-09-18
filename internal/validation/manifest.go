@@ -77,6 +77,28 @@ func CanonicalManifestSpec(spec ManifestSpec) ([]byte, ManifestSpec, error) {
 	if spec.Exploratory != (spec.StudyType == "exploratory") {
 		return nil, ManifestSpec{}, &DiagnosticError{Code: DiagnosticInvalidManifest, Field: "exploratory", Details: "study label is inconsistent"}
 	}
+	if spec.FamilyID == "" {
+		familyBytes, _ := json.Marshal(struct {
+			Candidate      string               `json:"candidate"`
+			Implementation ImplementationDigest `json:"implementation"`
+			Dataset        DatasetDigest        `json:"dataset"`
+			Policy         string               `json:"policy"`
+		}{spec.Candidate.ID, spec.Candidate.ImplementationDigest, spec.DatasetDigest, spec.Policies.Composite})
+		spec.FamilyID = digest(familyBytes)
+	}
+	if !exactDigest(spec.FamilyID) {
+		return nil, ManifestSpec{}, &DiagnosticError{Code: DiagnosticInvalidManifest, Field: "family_id", Details: "immutable research family identity is required"}
+	}
+	if spec.StudyType == "confirmatory" {
+		if err := validateConfirmatoryHoldout(spec); err != nil {
+			return nil, ManifestSpec{}, err
+		}
+	} else if spec.ConfirmatoryHoldout != nil {
+		return nil, ManifestSpec{}, &DiagnosticError{Code: DiagnosticInvalidManifest, Field: "confirmatory_holdout", Details: "exploratory attempts cannot consume a confirmatory holdout"}
+	}
+	if !finite(spec.CapacityStress.MaxParticipation) || !finite(spec.CapacityStress.ImpactBpsAtMax) || !finite(spec.CapacityStress.StressMultiplier) || spec.CapacityStress.MaxParticipation <= 0 || spec.CapacityStress.MaxParticipation > 1 || spec.CapacityStress.ImpactBpsAtMax < 0 || spec.CapacityStress.StressMultiplier < 1 {
+		return nil, ManifestSpec{}, &DiagnosticError{Code: DiagnosticInvalidManifest, Field: "capacity_stress", Details: "bounded participation, nonnegative impact, and conservative multiplier are required"}
+	}
 	if spec.FeatureHorizon < 0 || spec.LabelHorizon <= 0 || spec.Purge < 0 || spec.Embargo < 0 {
 		return nil, ManifestSpec{}, &DiagnosticError{Code: DiagnosticInvalidManifest, Field: "horizons", Details: "label horizon must be positive and purge/embargo cannot be negative"}
 	}
@@ -215,6 +237,35 @@ func CanonicalManifestSpec(spec ManifestSpec) ([]byte, ManifestSpec, error) {
 		return nil, ManifestSpec{}, &DiagnosticError{Code: DiagnosticInvalidManifest, Details: "manifest exceeds 1 MiB canonical limit"}
 	}
 	return encoded, spec, nil
+}
+
+func validateConfirmatoryHoldout(spec ManifestSpec) error {
+	h := spec.ConfirmatoryHoldout
+	if h == nil || !exactDigest(h.ID) || !h.Interval.Valid() || h.DatasetDigest != spec.DatasetDigest || !h.Interval.Start.Equal(spec.Interval.Start) || !h.Interval.End.Equal(spec.Interval.End) {
+		return &DiagnosticError{Code: DiagnosticInvalidManifest, Field: "confirmatory_holdout", Details: "locked holdout must exactly bind family dataset and confirmatory interval"}
+	}
+	encoded, _ := json.Marshal(struct {
+		FamilyID string        `json:"family_id"`
+		Dataset  DatasetDigest `json:"dataset_digest"`
+		Interval Interval      `json:"interval"`
+	}{spec.FamilyID, h.DatasetDigest, h.Interval})
+	if h.ID != digest(encoded) {
+		return &DiagnosticError{Code: DiagnosticManifestIntegrity, Field: "confirmatory_holdout.id", Details: "holdout identity does not bind its declared scope"}
+	}
+	return nil
+}
+
+func NewConfirmatoryHoldoutContract(familyID string, dataset DatasetDigest, interval Interval) (ConfirmatoryHoldoutContract, error) {
+	if !exactDigest(familyID) || !exactDigest(string(dataset)) || !interval.Valid() {
+		return ConfirmatoryHoldoutContract{}, &DiagnosticError{Code: DiagnosticInvalidManifest, Field: "confirmatory_holdout"}
+	}
+	interval.Start, interval.End = interval.Start.UTC(), interval.End.UTC()
+	encoded, _ := json.Marshal(struct {
+		FamilyID string        `json:"family_id"`
+		Dataset  DatasetDigest `json:"dataset_digest"`
+		Interval Interval      `json:"interval"`
+	}{familyID, dataset, interval})
+	return ConfirmatoryHoldoutContract{ID: digest(encoded), DatasetDigest: dataset, Interval: interval}, nil
 }
 
 func exactDigest(value string) bool {

@@ -64,7 +64,14 @@ func (r Repository) CreateManifestAuthenticated(manifest ExperimentManifest, bac
 				return e
 			}
 		}
-		return tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "id"}}, DoNothing: true}).Create(&row).Error
+		created := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "id"}}, DoNothing: true}).Create(&row)
+		if e := created.Error; e != nil {
+			return e
+		}
+		if created.RowsAffected == 0 {
+			return nil
+		}
+		return r.registerResearchAttempt(tx, manifest)
 	})
 	if err != nil {
 		return ExperimentManifest{}, err
@@ -212,12 +219,114 @@ func (r Repository) PersistEvidence(manifestID string, result *WalkForwardResult
 				return &DiagnosticError{Code: DiagnosticManifestIntegrity, Details: "experiment already has different immutable evidence"}
 			}
 		}
+		var attempt database.ResearchExperimentAttempt
+		if e := tx.Where("experiment_id=?", manifest.ID).First(&attempt).Error; e != nil {
+			return e
+		}
+		outcomePayload := struct {
+			AttemptID  string `json:"attempt_id"`
+			EvidenceID string `json:"evidence_id"`
+			Status     string `json:"status"`
+		}{attempt.ID, id, status}
+		outcomeBytes, e := json.Marshal(outcomePayload)
+		if e != nil {
+			return e
+		}
+		outcome := database.ResearchAttemptOutcome{ID: digest([]byte(attempt.ID + "\n" + id)), AttemptID: attempt.ID, ExperimentID: manifest.ID, EvidenceID: id, Status: status, ContentDigest: digest(outcomeBytes), CreatedAt: createdAt}
+		res = tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "attempt_id"}}, DoNothing: true}).Create(&outcome)
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			var existing database.ResearchAttemptOutcome
+			if e := tx.Where("attempt_id=?", attempt.ID).First(&existing).Error; e != nil {
+				return e
+			}
+			if existing.EvidenceID != id || existing.Status != status {
+				return &DiagnosticError{Code: DiagnosticManifestIntegrity, Details: "attempt outcome was replaced"}
+			}
+		}
 		return nil
 	})
 	if err != nil {
 		return PersistedEvidence{}, err
 	}
 	return r.LoadEvidence(id)
+}
+
+func (r Repository) registerResearchAttempt(tx *gorm.DB, manifest ExperimentManifest) error {
+	familyContent, err := json.Marshal(struct {
+		Candidate      string               `json:"candidate"`
+		Implementation ImplementationDigest `json:"implementation"`
+		Dataset        DatasetDigest        `json:"dataset"`
+		Policy         string               `json:"policy"`
+	}{manifest.Spec.Candidate.ID, manifest.Spec.Candidate.ImplementationDigest, manifest.Spec.DatasetDigest, manifest.Spec.Policies.Composite})
+	if err != nil {
+		return err
+	}
+	familyDigest := digest(familyContent)
+	family := database.ResearchExperimentFamily{ID: manifest.Spec.FamilyID, ContentJSON: string(familyContent), ContentDigest: familyDigest, CreatedAt: manifest.CreatedAt}
+	res := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&family)
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		var existing database.ResearchExperimentFamily
+		if err := tx.Where("id=?", family.ID).First(&existing).Error; err != nil {
+			return err
+		}
+		if existing.ContentDigest != familyDigest {
+			return &DiagnosticError{Code: DiagnosticManifestIntegrity, Details: "research family scope differs"}
+		}
+	}
+	candidateBytes, _ := json.Marshal(manifest.Spec.Candidate)
+	attempt := database.ResearchExperimentAttempt{ID: digest([]byte(manifest.Spec.FamilyID + "\n" + manifest.ID)), FamilyID: manifest.Spec.FamilyID, ExperimentID: manifest.ID, CandidateDigest: digest(candidateBytes), ContentDigest: manifest.ContentDigest, CreatedAt: manifest.CreatedAt}
+	res = tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&attempt)
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		var existing database.ResearchExperimentAttempt
+		if err := tx.Where("experiment_id=?", manifest.ID).First(&existing).Error; err != nil {
+			return err
+		}
+		if existing.ID != attempt.ID || existing.FamilyID != attempt.FamilyID || existing.ContentDigest != attempt.ContentDigest {
+			return &DiagnosticError{Code: DiagnosticManifestIntegrity, Details: "attempt identity differs on retry"}
+		}
+	}
+	if manifest.Spec.StudyType != "confirmatory" {
+		return nil
+	}
+	h := manifest.Spec.ConfirmatoryHoldout
+	holdout := database.ResearchConfirmatoryHoldout{ID: h.ID, FamilyID: manifest.Spec.FamilyID, DatasetDigest: string(h.DatasetDigest), StartAt: h.Interval.Start.UTC(), EndAt: h.Interval.End.UTC(), ContentDigest: h.ID, LockedAt: manifest.CreatedAt}
+	res = tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&holdout)
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		var existing database.ResearchConfirmatoryHoldout
+		if err := tx.Where("family_id=?", holdout.FamilyID).First(&existing).Error; err != nil {
+			return err
+		}
+		if existing.ID != holdout.ID || existing.DatasetDigest != holdout.DatasetDigest || !existing.StartAt.Equal(holdout.StartAt) || !existing.EndAt.Equal(holdout.EndAt) {
+			return &DiagnosticError{Code: DiagnosticHoldoutReuse, Details: "family has a different locked confirmatory holdout"}
+		}
+	}
+	use := database.ResearchConfirmatoryHoldoutUse{ID: digest([]byte(h.ID + "\n" + manifest.ID)), HoldoutID: h.ID, ExperimentID: manifest.ID, CreatedAt: manifest.CreatedAt}
+	res = tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&use)
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		var existing database.ResearchConfirmatoryHoldoutUse
+		if err := tx.Where("holdout_id=?", h.ID).First(&existing).Error; err != nil {
+			return err
+		}
+		if existing.ExperimentID != manifest.ID {
+			return &DiagnosticError{Code: DiagnosticHoldoutReuse, Details: "locked confirmatory holdout has already been consumed"}
+		}
+	}
+	return nil
 }
 
 func (r Repository) LoadEvidence(id string) (PersistedEvidence, error) {

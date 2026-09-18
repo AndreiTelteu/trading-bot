@@ -23,6 +23,29 @@ only matured fixed-horizon labels; missing bars or unmatured horizons are
 insufficient evidence, never losses. See [model decision cohorts and
 fixed-horizon labels](model-decision-cohorts.md).
 
+## Research families and confirmatory holdouts
+
+Every validation manifest is registered as an immutable attempt in a research
+family. The denominator is the count of attempts, not only completed or
+successful evidence. Failed loads, coverage failures, and rejected candidates
+remain auditable. Do not create a new family merely to omit prior tuning; a
+family is bound to the candidate implementation, dataset, and governed policy
+scope.
+
+A confirmatory manifest must carry a locked holdout contract whose dataset
+digest and half-open interval exactly match the manifest. Creating it consumes
+the family’s single contract before the replay runs. Retry the same manifest
+with the same idempotency identity if interrupted; do not submit another
+confirmatory manifest or alter its interval. A reuse error means the holdout
+has been seen and may not be reused as fresh evidence.
+
+Promotion evidence includes downside deviation, 95% expected shortfall,
+maximum liquidity participation, an explicit capacity/impact stress return,
+and a conservative deflated-Sharpe-style adjustment for the predeclared
+tuning space. Confirm that candidate and baseline exposure and turnover are
+matched. These are fail-closed gates, not profit forecasts. Actual venue
+impact and queue position still require conservative paper/shadow observation.
+
 For new Stage 07 runs, source jobs must expose a `stage07-source-artifact-v2`
 replay-settings digest. Older Stage 05 source envelopes are intentionally
 rejected: rerun the canonical comparison against the same immutable Stage 04

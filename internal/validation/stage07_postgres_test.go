@@ -47,6 +47,7 @@ func TestStage07PostgresManifestEvidenceIntegrityIdempotencyAndFailure(t *testin
 	}
 	other := manifestFixture(t)
 	other.Spec.Seed++
+	other.Spec.StudyType, other.Spec.Exploratory, other.Spec.ConfirmatoryHoldout = "exploratory", true, nil
 	other, err = NewManifest(other.Spec, other.CreatedAt.Add(time.Second))
 	if err != nil {
 		t.Fatal(err)

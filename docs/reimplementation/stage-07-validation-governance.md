@@ -12,6 +12,12 @@ Require statistically meaningful, reproducible evidence before a strategy or mod
 - [x] Predeclared metrics and promotion/rollback thresholds.
 - [x] Links to compact metrics, trades, curves, cohorts, and coverage diagnostics.
 - [x] Reproduction command or machine-readable invocation.
+- [x] Immutable experiment-family and per-candidate attempt records, including
+  failed/unfinished outcomes, so the multiple-testing population cannot be
+  reduced by deleting an unfavorable tuning run.
+- [x] One locked, single-use confirmatory holdout per family. Its exact
+  point-in-time dataset digest and interval are bound before execution; a
+  second confirmatory manifest fails closed.
 
 ## Walk-forward validation
 
@@ -58,6 +64,14 @@ fold; aggregate Stage 05 costs are never divided across trades.
 - [x] Include worst-window, worst-regime, and worst-symbol behavior.
 - [x] Detect performance dominated by one trade/symbol/window.
 - [x] Correctly label exploratory versus confirmatory results.
+- [x] Report deterministic downside deviation and 95% expected shortfall from
+  chronological equity changes, maximum entry-liquidity participation, and a
+  conservative capacity/impact-stressed after-cost return.
+- [x] Require source-baseline exposure and turnover matching; comparability is
+  rejected rather than adjusted after the fact.
+- [x] Report a conservative deflated-Sharpe-style multiple-testing adjustment
+  based on the predeclared tuning-space size. It is a screening gate, not a
+  claim of a fully specified probability of backtest overfitting.
 
 ## Governance
 
@@ -127,6 +141,13 @@ authority-policy digest binds the complete runtime policy envelope.
 - [ ] Real shadow/paper stability requires elapsed market time.
 - [ ] Statistical significance cannot be manufactured when external history is incomplete.
 - [ ] Passing gates reduces risk but does not guarantee future profit.
+- [ ] The deterministic impact stress is a transparent scenario based on
+  point-in-time bar liquidity. It cannot establish actual exchange queue
+  position, hidden liquidity, or future market impact; an operator must retain
+  conservative participation limits and paper/shadow evidence.
+- [ ] The deflated-Sharpe approximation does not replace an independently
+  designed PBO study when candidate correlations and selection paths warrant
+  one. The immutable family denominator makes that later analysis auditable.
 
 ## Acceptance criteria
 

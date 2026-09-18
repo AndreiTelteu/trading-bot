@@ -11,7 +11,7 @@ import (
 
 const AuthorityPolicySchemaVersion = "authority-policy-envelope-v1"
 
-var RequiredConfirmatoryMetrics = []string{"after_cost_expectancy", "after_cost_return", "benchmark_relative_return", "coverage", "gross_exposure", "max_drawdown", "net_exposure", "turnover"}
+var RequiredConfirmatoryMetrics = []string{"after_cost_expectancy", "after_cost_return", "benchmark_relative_return", "coverage", "gross_exposure", "max_drawdown", "net_exposure", "turnover", "downside_deviation", "expected_shortfall_95", "max_liquidity_participation", "stressed_after_cost_return", "deflated_sharpe"}
 
 func NewAuthorityPolicyEnvelope(payload map[string]string) (AuthorityPolicyEnvelope, error) {
 	if len(payload) == 0 || len(payload) > 256 {
