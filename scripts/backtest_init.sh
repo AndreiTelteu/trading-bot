@@ -16,6 +16,8 @@ DATASET_VERSION="${BACKTEST_INIT_DATASET_VERSION:-binance-spot-15m-2024h2-2025-v
 POLICY_VERSION="${BACKTEST_INIT_POLICY_VERSION:-research-universe-v1}"
 SYMBOLS_CSV="${BACKTEST_INIT_SYMBOLS:-BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT}"
 TIMEFRAME="${BACKTEST_INIT_TIMEFRAME:-15m}"
+EXECUTION_TIMEFRAME="${BACKTEST_INIT_EXECUTION_TIMEFRAME:-1m}"
+REQUIRE_RESEARCH_READINESS="${BACKTEST_INIT_REQUIRE_RESEARCH_READINESS:-0}"
 RATE_LIMIT="${BACKTEST_INIT_RATE_LIMIT:-300ms}"
 WARMUP_DAYS="${BACKTEST_INIT_WARMUP_DAYS:-35}"
 FEE_BPS="${BACKTEST_INIT_FEE_BPS:-10}"
@@ -214,7 +216,7 @@ if [[ "$PIT_AUTHORITY" != "research" && "$PIT_AUTHORITY" != "authoritative" ]]; 
 fi
 
 status "Run directory: $RUN_DIR"
-status "Dataset=$DATASET_VERSION evaluation=[$START,$END) warmup=[$WARMUP_START,$START) timeframe=$TIMEFRAME symbols=$SYMBOLS_CSV"
+status "Dataset=$DATASET_VERSION evaluation=[$START,$END) warmup=[$WARMUP_START,$START) decision=$TIMEFRAME execution=$EXECUTION_TIMEFRAME symbols=$SYMBOLS_CSV"
 status "Validation=train:${VALIDATION_TRAIN_MONTHS}m test:${VALIDATION_TEST_MONTHS}m bootstrap:${VALIDATION_BOOTSTRAP_ITERATIONS}"
 if ! validation_error="$(validate_walk_forward_interval 2>&1)"; then
   die "Validation preflight failed: $validation_error"
@@ -304,12 +306,29 @@ run_marketdata() {
   docker compose run --rm --no-deps bootstrap -c "go run ./cmd/marketdata $*"
 }
 
-status "Importing metadata (skipped if already present)"
-ASSET_COUNT="$(docker compose exec -T postgres psql -U postgres -d trading_bot -Atqc "SELECT count(*) FROM assets;")"
-if [[ "$ASSET_COUNT" -ge 1 ]]; then
-  status "Metadata already present ($ASSET_COUNT assets), skipping import"
-else
+status "Importing metadata identities not already present"
+EXISTING_ASSET_IDS="$(docker compose exec -T postgres psql -U postgres -d trading_bot -Atqc "SELECT string_agg(id, ',') FROM assets;")"
+EXISTING_SYMBOL_IDS="$(docker compose exec -T postgres psql -U postgres -d trading_bot -Atqc "SELECT string_agg(id, ',') FROM exchange_symbols;")"
+python3 - "$METADATA" "$EXISTING_ASSET_IDS" "$EXISTING_SYMBOL_IDS" <<'PY'
+from pathlib import Path
+import json, sys
+
+path = Path(sys.argv[1])
+payload = json.loads(path.read_text())
+existing_assets = {v for v in sys.argv[2].split(',') if v}
+existing_symbols = {v for v in sys.argv[3].split(',') if v}
+payload['assets'] = [v for v in payload['assets'] if v['id'] not in existing_assets]
+payload['symbols'] = [v for v in payload['symbols'] if v['id'] not in existing_symbols]
+payload['tradability_intervals'] = [v for v in payload['tradability_intervals'] if v['exchange_symbol_id'] not in existing_symbols]
+payload['constraints'] = [v for v in payload['constraints'] if v['exchange_symbol_id'] not in existing_symbols]
+path.write_text(json.dumps(payload, indent=2, sort_keys=True) + '\n')
+print(len(payload['symbols']))
+PY
+MISSING_SYMBOL_COUNT="$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["symbols"]))' "$METADATA")"
+if [[ "$MISSING_SYMBOL_COUNT" -gt 0 ]]; then
   run_marketdata -action import-metadata -metadata-file "$CONTAINER_METADATA" -start "$WARMUP_START" -end "$END" -dry-run=false
+else
+  status "All requested metadata identities already exist; skipping import"
 fi
 
 symbol_id() { printf 'binance-%s-v1\n' "$(tr '[:upper:]' '[:lower:]' <<<"$1")"; }
@@ -324,7 +343,7 @@ import sys
 start = datetime.fromisoformat(sys.argv[1].replace('Z', '+00:00')).astimezone(timezone.utc)
 end = datetime.fromisoformat(sys.argv[2].replace('Z', '+00:00')).astimezone(timezone.utc)
 tf = sys.argv[3]
-seconds = {'15m': 15 * 60, '1h': 60 * 60, '1d': 24 * 60 * 60}[tf]
+seconds = {'1m': 60, '15m': 15 * 60, '1h': 60 * 60, '1d': 24 * 60 * 60}[tf]
 print(max(0, int((end - start).total_seconds() // seconds)))
 PY
 }
@@ -353,6 +372,7 @@ for symbol in "${SYMBOLS[@]}"; do
   symbol="$(tr -d '[:space:]' <<<"$symbol")"
   [[ -n "$symbol" ]] || continue
   ensure_bars "decision bars for $symbol ($TIMEFRAME)" "$symbol" "$(symbol_id "$symbol")" "$TIMEFRAME" decision
+  ensure_bars "execution bars for $symbol ($EXECUTION_TIMEFRAME)" "$symbol" "$(symbol_id "$symbol")" "$EXECUTION_TIMEFRAME" execution
 done
 
 ensure_bars "independent BTCUSDT benchmark bars ($TIMEFRAME)" BTCUSDT "$(symbol_id BTCUSDT)" "$TIMEFRAME" benchmark
@@ -452,6 +472,11 @@ fi
 
 status "Validating exact coverage"
 run_marketdata -action coverage -manifest-id "$MANIFEST_ID" -symbols "$(IFS=,; echo "${SYMBOLS[*]}")" -start "$START" -end "$END" -timeframe "$TIMEFRAME" -role decision
+run_marketdata -action coverage -manifest-id "$MANIFEST_ID" -symbols "$(IFS=,; echo "${SYMBOLS[*]}")" -start "$START" -end "$END" -timeframe "$EXECUTION_TIMEFRAME" -role execution
+if [[ "$REQUIRE_RESEARCH_READINESS" == "1" ]]; then
+  status "Running promotion-quality research-readiness preflight"
+  run_marketdata -action readiness -manifest-id "$MANIFEST_ID" -symbols "$(IFS=,; echo "${SYMBOLS[*]}")" -benchmark-symbol BTCUSDT -timeframe "$TIMEFRAME" -start "$START" -end "$END" | tee "$RUN_DIR/readiness.json"
+fi
 
 # The command-line backtest reads this value from persisted settings. This is a
 # local Compose operator script; use the bootstrap admin inside postgres only
@@ -463,6 +488,7 @@ status "Binding covered manifest to the local research backtest configuration"
 docker compose exec -T postgres psql -U postgres -d trading_bot -v ON_ERROR_STOP=1 <<SQL
 INSERT INTO settings(key,value,category,updated_at) VALUES
   ('backtest_dataset_manifest_id','$MANIFEST_ID','backtest',CURRENT_TIMESTAMP),
+  ('backtest_execution_1m','true','backtest',CURRENT_TIMESTAMP),
   ('universe_rebalance_interval','$UNIVERSE_STEP','universe',CURRENT_TIMESTAMP)
 ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=CURRENT_TIMESTAMP;
 UPDATE universe_snapshots
