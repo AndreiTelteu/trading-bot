@@ -7,6 +7,7 @@ import (
 
 	"trading-go/internal/database"
 	"trading-go/internal/pointintime"
+	"trading-go/internal/services"
 
 	"github.com/gofiber/fiber/v2"
 )
@@ -38,6 +39,39 @@ func GetDatasetManifest(c *fiber.Ctx) error {
 		}
 	}
 	return c.JSON(manifest)
+}
+
+// InspectResearchReadiness exposes the read-only Stage 04 evidence gate to the
+// authenticated operator UI. A failed evidence gate is a valid report (HTTP
+// 200), not a transport failure; malformed requests and repository errors keep
+// their normal non-2xx semantics.
+func InspectResearchReadiness(c *fiber.Ctx) error {
+	start, err := parseOptionalRFC3339(c.Query("start"))
+	if err != nil || start.IsZero() {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "valid start is required"})
+	}
+	end, err := parseOptionalRFC3339(c.Query("end"))
+	if err != nil || end.IsZero() || !end.After(start) {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "valid end after start is required"})
+	}
+	request := pointintime.ResearchReadinessRequest{
+		ManifestID:         strings.TrimSpace(c.Query("manifest_id")),
+		Start:              start,
+		End:                end,
+		Symbols:            splitNonEmpty(c.Query("symbols")),
+		Benchmark:          strings.ToUpper(strings.TrimSpace(c.Query("benchmark", "BTCUSDT"))),
+		DecisionTimeframe:  strings.TrimSpace(c.Query("timeframe", "15m")),
+		ExecutionTimeframe: "1m",
+		Policy:             pointintime.ResearchReadinessPolicyFromSettings(services.GetAllSettings()),
+	}
+	if request.ManifestID == "" || len(request.Symbols) == 0 {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "manifest_id and symbols are required"})
+	}
+	report, readinessErr := pointintime.PreflightResearchReadiness(database.DB, request)
+	if readinessErr != nil && !pointintime.IsResearchReadinessError(readinessErr) {
+		return c.Status(fiber.StatusUnprocessableEntity).JSON(fiber.Map{"error": readinessErr.Error()})
+	}
+	return c.JSON(report)
 }
 
 func ListHistoricalBars(c *fiber.Ctx) error {

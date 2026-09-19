@@ -37,6 +37,20 @@ days for invalidly repeated dataset verification.
 
 Copy the exact `reproduce` invocation from the immutable Stage 07 manifest when validating promotion evidence. Compare artifact/manifest digests and classifications. `coverage_failed`, `gating_zero_trades`, and `strategy_zero_trades` have different meanings and are exposed separately by operational status. A completed command is not evidence of profitability or promotion eligibility.
 
+## Self Improvement operator interface
+
+The authenticated `/self-improvement` route is the guided research surface for
+dataset readiness, registered candidate configuration, Stage 05/06 jobs,
+baseline-relative results, proposal generation, and rollout visibility. Its
+readiness panel calls the read-only `GET /api/market-data/readiness` gate. A
+failed evidence gate is returned as a machine-readable report and disables new
+candidate submission; it is not converted into an empty or successful run.
+
+The interface never receives migration credentials, ingests historical data,
+changes authority-affecting settings, or promotes a candidate. Data expansion
+remains a bootstrap/operator workflow, and shadow/paper/live transitions remain
+separate authenticated governance actions backed by immutable evidence.
+
 ## Monitor a file-backed CLI run
 
 The monitor discovers runs under `instance/backtest-init`, prefers the newest active run, follows its initialization log and later engine telemetry, and refreshes an ASCII progress bar and ETA once per second:

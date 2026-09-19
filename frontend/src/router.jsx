@@ -15,6 +15,7 @@ import SettingsPanel from './components/SettingsPanel'
 import AIProposal from './components/AIProposal'
 import LLMConfig from './components/LLMConfig'
 import LoginPage from './components/LoginPage'
+import SelfImprovement from './components/SelfImprovement'
 
 function RootLayout() {
   return (
@@ -165,6 +166,12 @@ const llmRoute = createRoute({
   component: LLMConfig,
 })
 
+const selfImprovementRoute = createRoute({
+  getParentRoute: () => protectedRoute,
+  path: 'self-improvement',
+  component: SelfImprovement,
+})
+
 settingsRoute.addChildren([
   settingsIndexRoute,
   settingsTradingRoute,
@@ -183,6 +190,7 @@ protectedRoute.addChildren([
   settingsRoute,
   aiRoute,
   llmRoute,
+  selfImprovementRoute,
 ])
 
 const routeTree = rootRoute.addChildren([

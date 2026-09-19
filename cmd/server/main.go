@@ -193,6 +193,7 @@ func setupRoutes(app *fiber.App, cfg *config.Config, authManager *middleware.Aut
 	universe.Get("/symbols", handlers.GetUniverseSymbols)
 	marketData := api.Group("/market-data")
 	marketData.Get("/coverage", handlers.InspectDatasetCoverage)
+	marketData.Get("/readiness", handlers.InspectResearchReadiness)
 	marketData.Get("/manifests/:id", handlers.GetDatasetManifest)
 	marketData.Get("/bars", handlers.ListHistoricalBars)
 

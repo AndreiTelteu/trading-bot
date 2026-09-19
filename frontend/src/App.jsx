@@ -182,6 +182,7 @@ function App() {
           <Link to="/settings" className="nav-link" activeProps={{ className: 'active' }}>Settings</Link>
           <Link to="/ai" className="nav-link" activeProps={{ className: 'active' }}>AI Proposals</Link>
           <Link to="/llm" className="nav-link" activeProps={{ className: 'active' }}>LLM Config</Link>
+          <Link to="/self-improvement" className="nav-link" activeProps={{ className: 'active' }}>Self Improvement</Link>
         </nav>
 
         <div className={`main ${showActivity ? 'with-sidebar' : ''}`}>

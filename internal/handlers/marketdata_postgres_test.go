@@ -37,6 +37,7 @@ func TestCoverageAPIIsMachineReadableAndSchemaChecked(t *testing.T) {
 	}
 	app := fiber.New()
 	app.Get("/coverage", InspectDatasetCoverage)
+	app.Get("/readiness", InspectResearchReadiness)
 	app.Get("/bars", ListHistoricalBars)
 	req := httptest.NewRequest("GET", "/coverage?manifest_id="+manifest.ID+"&start=2024-01-01T00:00:00Z&end=2024-01-01T01:00:00Z&symbols=AAAUSDT&roles=decision:15m", nil)
 	response, err := app.Test(req)
@@ -100,5 +101,25 @@ func TestCoverageAPIIsMachineReadableAndSchemaChecked(t *testing.T) {
 	response.Body.Close()
 	if response.StatusCode != 400 {
 		t.Fatalf("malformed limit status=%d", response.StatusCode)
+	}
+	response, err = app.Test(httptest.NewRequest("GET", "/readiness?manifest_id="+manifest.ID+"&start=2024-01-01T00:00:00Z&end=2024-01-01T01:00:00Z&symbols=AAAUSDT", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var readiness pointintime.ResearchReadinessReport
+	if err := json.NewDecoder(response.Body).Decode(&readiness); err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != 200 || readiness.SchemaVersion != "research-readiness-report-v1" || readiness.Passed || len(readiness.Failures) == 0 {
+		t.Fatalf("readiness=%+v status=%d", readiness, response.StatusCode)
+	}
+	response, err = app.Test(httptest.NewRequest("GET", "/readiness?manifest_id="+manifest.ID+"&start=bad&end=2024-01-01T01:00:00Z&symbols=AAAUSDT", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != 400 {
+		t.Fatalf("malformed readiness status=%d", response.StatusCode)
 	}
 }
