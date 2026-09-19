@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"runtime"
 	"strconv"
@@ -16,6 +17,7 @@ import (
 // ProgressUpdate is operator telemetry only. It must never influence control
 // flow, decisions, fills, digests, or any deterministic backtest output.
 type ProgressUpdate struct {
+	EmittedAt   string  `json:"emitted_at,omitempty"`
 	Phase       string  `json:"phase"`
 	Lane        string  `json:"lane,omitempty"`
 	BarIndex    int     `json:"bar_index,omitempty"`
@@ -86,16 +88,20 @@ func RateLimitedProgress(minInterval time.Duration, next ProgressFunc) ProgressF
 
 // StderrProgressWriter writes one JSON object per line to stderr.
 func StderrProgressWriter() ProgressFunc {
+	return progressWriter(os.Stderr, time.Now)
+}
+
+func progressWriter(out io.Writer, now func() time.Time) ProgressFunc {
 	return func(update ProgressUpdate) {
-		if update.ElapsedMS == 0 {
-			// leave zero; callers may set it
+		if update.EmittedAt == "" {
+			update.EmittedAt = now().UTC().Format(time.RFC3339Nano)
 		}
 		payload, err := json.Marshal(update)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "backtest progress: phase=%s lane=%s bars=%d/%d\n", update.Phase, update.Lane, update.BarIndex, update.BarTotal)
+			fmt.Fprintf(out, "[%s] backtest progress: phase=%s lane=%s bars=%d/%d\n", update.EmittedAt, update.Phase, update.Lane, update.BarIndex, update.BarTotal)
 			return
 		}
-		fmt.Fprintf(os.Stderr, "backtest_progress %s\n", payload)
+		fmt.Fprintf(out, "backtest_progress %s\n", payload)
 	}
 }
 

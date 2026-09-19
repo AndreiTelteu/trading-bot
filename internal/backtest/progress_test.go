@@ -1,6 +1,8 @@
 package backtest
 
 import (
+	"bytes"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -18,6 +20,16 @@ func TestEngineProgressEveryBounds(t *testing.T) {
 	}
 	if got := engineProgressEvery(1_000_000); got != 2048 {
 		t.Fatalf("huge timeline every = %d want 2048", got)
+	}
+}
+
+func TestProgressWriterAddsMachineReadableTimestamp(t *testing.T) {
+	var out bytes.Buffer
+	at := time.Date(2026, 9, 19, 12, 34, 56, 123, time.UTC)
+	progressWriter(&out, func() time.Time { return at })(ProgressUpdate{Phase: "engine", Fraction: .5})
+	line := out.String()
+	if !strings.Contains(line, `"emitted_at":"2026-09-19T12:34:56.000000123Z"`) {
+		t.Fatalf("timestamped progress line = %q", line)
 	}
 }
 

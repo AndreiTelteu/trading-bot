@@ -28,6 +28,7 @@ const (
 )
 
 type progressUpdate struct {
+	EmittedAt   string  `json:"emitted_at,omitempty"`
 	Phase       string  `json:"phase"`
 	Lane        string  `json:"lane,omitempty"`
 	BarIndex    int     `json:"bar_index,omitempty"`
@@ -180,9 +181,9 @@ func inspectLog(path string, modified time.Time) (string, *progressSample, error
 	for scanner.Scan() {
 		line := scanner.Text()
 		if update, ok := parseProgress(line); ok {
-			last = &progressSample{Update: update, At: modified}
+			last = newProgressSample(update, modified)
 		} else if update, ok := parseInitializationStatus(line); ok {
-			last = &progressSample{Update: update, At: modified}
+			last = newProgressSample(update, modified)
 		}
 		if terminalState(line) != "" {
 			state = terminalState(line)
@@ -230,9 +231,9 @@ func monitor(ctx context.Context, run runInfo, width int, out io.Writer) error {
 	defer file.Close()
 
 	state := monitorState{}
-	// Existing telemetry establishes only the baseline. ETA intentionally stays
-	// unavailable until this monitor observes a newer update in real time.
-	if err := consume(file, &state, run.Modified, false); err != nil {
+	// Timestamped historical telemetry establishes an ETA immediately. Legacy
+	// logs fall back to elapsed_ms deltas and then to live observation time.
+	if err := consume(file, &state, time.Now()); err != nil {
 		return err
 	}
 	if state.last == nil && run.Last != nil {
@@ -251,7 +252,7 @@ func monitor(ctx context.Context, run runInfo, width int, out io.Writer) error {
 			fmt.Fprintln(out)
 			return ctx.Err()
 		case now := <-ticker.C:
-			if err := consume(file, &state, now, true); err != nil {
+			if err := consume(file, &state, now); err != nil {
 				fmt.Fprintln(out)
 				return err
 			}
@@ -267,7 +268,7 @@ func monitor(ctx context.Context, run runInfo, width int, out io.Writer) error {
 	}
 }
 
-func consume(file *os.File, state *monitorState, observedAt time.Time, estimate bool) error {
+func consume(file *os.File, state *monitorState, observedAt time.Time) error {
 	scanner := bufio.NewScanner(file)
 	buffer := make([]byte, 64*1024)
 	scanner.Buffer(buffer, 1024*1024)
@@ -278,13 +279,18 @@ func consume(file *os.File, state *monitorState, observedAt time.Time, estimate 
 			update, ok = parseInitializationStatus(line)
 		}
 		if ok {
-			sample := &progressSample{Update: update, At: observedAt}
-			if estimate && state.last != nil && sameTrack(state.last.Update, update) && update.Fraction > state.last.Update.Fraction {
-				delta := observedAt.Sub(state.last.At).Seconds()
+			sample := newProgressSample(update, observedAt)
+			if state.last != nil && sameTrack(state.last.Update, update) && update.Fraction > state.last.Update.Fraction {
+				delta := progressDeltaSeconds(*state.last, *sample)
 				if delta > 0 {
-					// Use only progress observed by this monitor. Do not infer a rate
-					// from elapsed_ms or historical lines read at startup.
-					state.rate = (update.Fraction - state.last.Update.Fraction) / delta
+					instant := (update.Fraction - state.last.Update.Fraction) / delta
+					if state.rate <= 0 {
+						state.rate = instant
+					} else {
+						// Smooth short scheduling spikes while adapting quickly when a
+						// phase becomes faster or slower.
+						state.rate = .35*instant + .65*state.rate
+					}
 				}
 			} else if state.last != nil && !sameTrack(state.last.Update, update) {
 				state.rate = 0
@@ -309,14 +315,35 @@ func parseInitializationStatus(line string) (progressUpdate, bool) {
 	if separator <= 1 || separator+2 >= len(line) {
 		return progressUpdate{}, false
 	}
-	if _, err := time.Parse(time.RFC3339, line[1:separator]); err != nil {
+	emittedAt, err := time.Parse(time.RFC3339, line[1:separator])
+	if err != nil {
 		return progressUpdate{}, false
 	}
 	message := strings.TrimSpace(line[separator+2:])
 	if message == "" {
 		return progressUpdate{}, false
 	}
-	return progressUpdate{Phase: "initialization", Message: message}, true
+	return progressUpdate{EmittedAt: emittedAt.UTC().Format(time.RFC3339Nano), Phase: "initialization", Message: message}, true
+}
+
+func newProgressSample(update progressUpdate, fallback time.Time) *progressSample {
+	at := fallback
+	if parsed, err := time.Parse(time.RFC3339Nano, update.EmittedAt); err == nil {
+		at = parsed
+	}
+	return &progressSample{Update: update, At: at}
+}
+
+func progressDeltaSeconds(previous, current progressSample) float64 {
+	if previous.Update.EmittedAt != "" && current.Update.EmittedAt != "" {
+		if delta := current.At.Sub(previous.At).Seconds(); delta > 0 {
+			return delta
+		}
+	}
+	if previous.Update.ElapsedMS > 0 && current.Update.ElapsedMS > previous.Update.ElapsedMS {
+		return float64(current.Update.ElapsedMS-previous.Update.ElapsedMS) / 1000
+	}
+	return current.At.Sub(previous.At).Seconds()
 }
 
 func parseProgress(line string) (progressUpdate, bool) {

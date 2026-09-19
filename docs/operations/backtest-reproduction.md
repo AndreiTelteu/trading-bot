@@ -59,4 +59,12 @@ List discovered active, stale, failed, and completed runs without following one:
 podman exec trading-backend go run ./cmd/backtest-monitor list
 ```
 
-The default stale threshold is 30 minutes and can be changed with `-stale-after`. The ETA is observational. It starts as `n/a` and is calculated only after the running monitor observes the next progress update, using the measured wall-clock interval and progress delta between those two updates. It counts down every second and is recalculated on subsequent updates; phase/lane changes reset it to `n/a`. Monitoring only reads run artifacts and does not affect deterministic execution or evidence.
+The default stale threshold is 30 minutes and can be changed with
+`-stale-after`. Each telemetry record contains an RFC3339-nanosecond
+`emitted_at` timestamp. The monitor reconstructs an ETA immediately from
+existing timestamped records, exponentially smooths subsequent throughput
+samples, and counts down between updates. Pre-timestamp logs remain supported
+through their monotonic `elapsed_ms` values. Phase/lane changes reset the rate;
+`n/a` is expected only until two increasing samples exist for the current
+track. Monitoring only reads run artifacts and does not affect deterministic
+execution or evidence.
