@@ -66,5 +66,7 @@ existing timestamped records, exponentially smooths subsequent throughput
 samples, and counts down between updates. Pre-timestamp logs remain supported
 through their monotonic `elapsed_ms` values. Phase/lane changes reset the rate;
 `n/a` is expected only until two increasing samples exist for the current
-track. Monitoring only reads run artifacts and does not affect deterministic
+track. Engine telemetry is rate-limited to roughly ten seconds, so a new run
+normally acquires its first ETA quickly without producing per-bar log noise.
+Monitoring only reads run artifacts and does not affect deterministic
 execution or evidence.

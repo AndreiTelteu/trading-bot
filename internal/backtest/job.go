@@ -289,7 +289,7 @@ func runBacktestJob(jobID uint) {
 	updateBacktestJob(jobID, "running", 0.35, "Running baseline + vol sizing backtests")
 	emitProgress(StderrProgressWriter(), ProgressUpdate{Phase: "lanes", Message: "dual_lane_start", Fraction: 0.35, ElapsedMS: totalClock.ms(), RSSBytes: currentRSSBytes()})
 
-	jobProgress := RateLimitedProgress(30*time.Second, func(update ProgressUpdate) {
+	jobProgress := RateLimitedProgress(operatorProgressInterval, func(update ProgressUpdate) {
 		// Map engine bar fraction into the dual-lane progress band [0.35, 0.70).
 		fraction := 0.35
 		if update.BarTotal > 0 {
@@ -346,7 +346,7 @@ func runBacktestJob(jobID uint) {
 
 	updateBacktestJob(jobID, "running", 0.7, "Running validation")
 	emitProgress(StderrProgressWriter(), ProgressUpdate{Phase: "validation", Message: "validation_start", Fraction: 0.7, ElapsedMS: totalClock.ms(), RSSBytes: currentRSSBytes()})
-	validationProgress := RateLimitedProgress(30*time.Second, func(update ProgressUpdate) {
+	validationProgress := RateLimitedProgress(operatorProgressInterval, func(update ProgressUpdate) {
 		fraction := 0.7
 		if update.WindowTotal > 0 {
 			fraction = 0.7 + 0.25*(float64(update.WindowIndex)/float64(update.WindowTotal))
@@ -422,7 +422,7 @@ func RunBacktestSyncWithOverrides(overrides map[string]string) (BacktestRunSumma
 	totalClock := startPhaseClock()
 	var timers PhaseTimers
 	startedAt := time.Now()
-	progress := RateLimitedProgress(30*time.Second, StderrProgressWriter())
+	progress := RateLimitedProgress(operatorProgressInterval, StderrProgressWriter())
 	emitProgress(progress, ProgressUpdate{Phase: "prep", Message: "loading_settings", Fraction: 0.02, RSSBytes: currentRSSBytes()})
 
 	prepClock := startPhaseClock()

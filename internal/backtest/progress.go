@@ -14,6 +14,8 @@ import (
 	"time"
 )
 
+const operatorProgressInterval = 10 * time.Second
+
 // ProgressUpdate is operator telemetry only. It must never influence control
 // flow, decisions, fills, digests, or any deterministic backtest output.
 type ProgressUpdate struct {
@@ -66,7 +68,7 @@ func RateLimitedProgress(minInterval time.Duration, next ProgressFunc) ProgressF
 		return nil
 	}
 	if minInterval <= 0 {
-		minInterval = 30 * time.Second
+		minInterval = operatorProgressInterval
 	}
 	var mu sync.Mutex
 	var last time.Time
