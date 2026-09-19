@@ -485,7 +485,35 @@ docker compose run --rm --no-deps \
   -e "BACKTEST_CODE_REVISION=$CODE_REVISION" \
   -e "GORM_LOG_LEVEL=silent" \
   bootstrap -c "go run ./cmd/backtest -symbols '$SYMBOLS_CSV' -start '$START' -end '$END' -fee-bps '$FEE_BPS' -slippage-bps '$SLIPPAGE_BPS' -universe-mode dynamic_replay -validation-train-months '$VALIDATION_TRAIN_MONTHS' -validation-test-months '$VALIDATION_TEST_MONTHS' -validation-bootstrap-iterations '$VALIDATION_BOOTSTRAP_ITERATIONS'" 2>&1 | tee "$BACKTEST_JSON.raw"
-grep '^{' "$BACKTEST_JSON.raw" | tail -1 > "$BACKTEST_JSON"
+python3 - "$BACKTEST_JSON.raw" "$BACKTEST_JSON" <<'PY'
+from pathlib import Path
+import json, re, sys
+
+raw_path, output_path = map(Path, sys.argv[1:])
+text = raw_path.read_text(errors='replace').replace('\r', '')
+text = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', text)
+decoder = json.JSONDecoder()
+summary = None
+for match in reversed(list(re.finditer(r'(?m)^\{$', text))):
+    try:
+        candidate, _ = decoder.raw_decode(text[match.start():])
+    except json.JSONDecodeError:
+        continue
+    if isinstance(candidate, dict) and all(key in candidate for key in ('baseline', 'vol_sizing', 'validation', 'phase_timers')):
+        summary = candidate
+        break
+if summary is None:
+    raise SystemExit('backtest command output did not contain a complete summary object')
+target = output_path.with_suffix(output_path.suffix + '.tmp')
+target.write_text(json.dumps(summary, indent=2, sort_keys=True) + '\n')
+target.replace(output_path)
+PY
+python3 - "$BACKTEST_JSON" <<'PY'
+import json, sys
+payload = json.load(open(sys.argv[1]))
+if not isinstance(payload.get('baseline'), dict) or not isinstance(payload.get('vol_sizing'), dict) or not isinstance(payload.get('validation'), dict):
+    raise SystemExit('persisted backtest summary is incomplete')
+PY
 rm -f "$BACKTEST_JSON.raw"
 
 status "SUCCESS: manifest-backed backtest initialized"
