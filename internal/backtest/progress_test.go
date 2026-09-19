@@ -33,3 +33,19 @@ func TestRateLimitedProgressEmitsFirstAndCompletion(t *testing.T) {
 		t.Fatalf("emits = %d want 2 (first + completion)", got)
 	}
 }
+
+func TestAggregateEngineLaneProgressReportsSlowestLane(t *testing.T) {
+	var updates []ProgressUpdate
+	fn := AggregateEngineLaneProgress(func(update ProgressUpdate) {
+		updates = append(updates, update)
+	})
+	fn(ProgressUpdate{Phase: "engine", Lane: string(StrategyBaseline), BarIndex: 80, BarTotal: 100, Fraction: .8})
+	fn(ProgressUpdate{Phase: "engine", Lane: string(StrategyVolSizing), BarIndex: 30, BarTotal: 100, Fraction: .3})
+	fn(ProgressUpdate{Phase: "engine", Lane: string(StrategyBaseline), BarIndex: 100, BarTotal: 100, Fraction: 1})
+
+	for i, want := range []float64{0, .3, .3} {
+		if updates[i].Lane != "dual" || updates[i].Fraction != want || updates[i].BarIndex != int(want*100) {
+			t.Fatalf("update %d = %+v, want dual fraction %v", i, updates[i], want)
+		}
+	}
+}

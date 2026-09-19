@@ -309,7 +309,7 @@ func runBacktestJob(jobID uint) {
 		updateBacktestJob(jobID, "running", fraction, msg)
 		emitProgress(StderrProgressWriter(), update)
 	})
-	config.Progress = jobProgress
+	config.Progress = AggregateEngineLaneProgress(jobProgress)
 
 	var baselineResult, volResult BacktestResult
 	var baselineErr, volErr error
@@ -441,7 +441,7 @@ func RunBacktestSyncWithOverrides(overrides map[string]string) (BacktestRunSumma
 	if err := ValidateValidationWindow(config); err != nil {
 		return BacktestRunSummary{}, err
 	}
-	config.Progress = progress
+	config.Progress = AggregateEngineLaneProgress(progress)
 	emitProgress(progress, ProgressUpdate{Phase: "lanes", Message: "dual_lane_start", Fraction: 0.35, ElapsedMS: totalClock.ms(), RSSBytes: currentRSSBytes()})
 
 	var baselineResult, volResult BacktestResult

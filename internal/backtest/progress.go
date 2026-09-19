@@ -1,10 +1,13 @@
 package backtest
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"os"
 	"runtime"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -13,16 +16,16 @@ import (
 // ProgressUpdate is operator telemetry only. It must never influence control
 // flow, decisions, fills, digests, or any deterministic backtest output.
 type ProgressUpdate struct {
-	Phase        string  `json:"phase"`
-	Lane         string  `json:"lane,omitempty"`
-	BarIndex     int     `json:"bar_index,omitempty"`
-	BarTotal     int     `json:"bar_total,omitempty"`
-	WindowIndex  int     `json:"window_index,omitempty"`
-	WindowTotal  int     `json:"window_total,omitempty"`
-	Fraction     float64 `json:"fraction,omitempty"`
-	Message      string  `json:"message,omitempty"`
-	ElapsedMS    int64   `json:"elapsed_ms,omitempty"`
-	RSSBytes     uint64  `json:"rss_bytes,omitempty"`
+	Phase       string  `json:"phase"`
+	Lane        string  `json:"lane,omitempty"`
+	BarIndex    int     `json:"bar_index,omitempty"`
+	BarTotal    int     `json:"bar_total,omitempty"`
+	WindowIndex int     `json:"window_index,omitempty"`
+	WindowTotal int     `json:"window_total,omitempty"`
+	Fraction    float64 `json:"fraction,omitempty"`
+	Message     string  `json:"message,omitempty"`
+	ElapsedMS   int64   `json:"elapsed_ms,omitempty"`
+	RSSBytes    uint64  `json:"rss_bytes,omitempty"`
 }
 
 // ProgressFunc receives non-deterministic telemetry. Callers may drop updates.
@@ -31,12 +34,12 @@ type ProgressFunc func(update ProgressUpdate)
 // PhaseTimers records wall-clock phase durations for operator diagnosis.
 // Values are observational and must not be fed back into trading logic.
 type PhaseTimers struct {
-	PrepMS              int64   `json:"prep_ms"`
-	LaneBaselineMS      int64   `json:"lane_baseline_ms"`
-	LaneVolMS           int64   `json:"lane_vol_ms"`
-	ValidationMS        int64   `json:"validation_ms"`
-	ValidationWindowMS  []int64 `json:"validation_window_ms,omitempty"`
-	TotalMS             int64   `json:"total_ms"`
+	PrepMS             int64   `json:"prep_ms"`
+	LaneBaselineMS     int64   `json:"lane_baseline_ms"`
+	LaneVolMS          int64   `json:"lane_vol_ms"`
+	ValidationMS       int64   `json:"validation_ms"`
+	ValidationWindowMS []int64 `json:"validation_window_ms,omitempty"`
+	TotalMS            int64   `json:"total_ms"`
 }
 
 type phaseClock struct {
@@ -117,6 +120,38 @@ func MergeProgress(fns ...ProgressFunc) ProgressFunc {
 	}
 }
 
+// AggregateEngineLaneProgress reports the slowest engine lane so operator
+// progress cannot reach 100% while the paired lane is still running. It also
+// prevents a fast lane from monopolizing a shared rate limiter.
+func AggregateEngineLaneProgress(next ProgressFunc) ProgressFunc {
+	if next == nil {
+		return nil
+	}
+	var mu sync.Mutex
+	fractions := map[string]float64{string(StrategyBaseline): 0, string(StrategyVolSizing): 0}
+	return func(update ProgressUpdate) {
+		if update.Phase != "engine" || update.Lane == "" {
+			next(update)
+			return
+		}
+		mu.Lock()
+		fractions[update.Lane] = update.Fraction
+		fraction := fractions[string(StrategyBaseline)]
+		if candidate := fractions[string(StrategyVolSizing)]; candidate < fraction {
+			fraction = candidate
+		}
+		aggregated := update
+		aggregated.Lane = "dual"
+		aggregated.Fraction = fraction
+		if aggregated.BarTotal > 0 {
+			aggregated.BarIndex = int(fraction * float64(aggregated.BarTotal))
+		}
+		aggregated.Message = "engine_bar_slowest_lane"
+		mu.Unlock()
+		next(aggregated)
+	}
+}
+
 func emitProgress(fn ProgressFunc, update ProgressUpdate) {
 	if fn == nil {
 		return
@@ -142,6 +177,19 @@ func engineProgressEvery(totalBars int) int {
 }
 
 func currentRSSBytes() uint64 {
+	file, err := os.Open("/proc/self/statm")
+	if err == nil {
+		defer file.Close()
+		scanner := bufio.NewScanner(file)
+		if scanner.Scan() {
+			fields := strings.Fields(scanner.Text())
+			if len(fields) >= 2 {
+				if pages, parseErr := strconv.ParseUint(fields[1], 10, 64); parseErr == nil {
+					return pages * uint64(os.Getpagesize())
+				}
+			}
+		}
+	}
 	var stats runtime.MemStats
 	runtime.ReadMemStats(&stats)
 	return stats.Sys
