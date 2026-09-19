@@ -6,6 +6,7 @@ import (
 	"gorm.io/gorm"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 	"trading-go/internal/database"
 	"trading-go/internal/operations"
@@ -59,6 +60,16 @@ type symbolState struct {
 	lastIndex    int
 	lastPrice    float64
 	currentIndex int
+}
+
+func advanceBenchmarkState(state *symbolState, currentTime time.Time) {
+	if state == nil {
+		return
+	}
+	for state.lastIndex+1 < len(state.series) && state.series[state.lastIndex+1].CloseTime <= currentTime.UnixMilli() {
+		state.lastIndex++
+		state.lastPrice = state.series[state.lastIndex].Close
+	}
 }
 
 type executionSymbolState struct {
@@ -205,13 +216,13 @@ func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (Bac
 		laneLabel = "engine"
 	}
 	emitProgress(config.Progress, ProgressUpdate{
-		Phase:    "engine",
-		Lane:     laneLabel,
-		BarTotal: len(timeline),
-		Fraction: 0,
-		Message:  "engine_start",
+		Phase:     "engine",
+		Lane:      laneLabel,
+		BarTotal:  len(timeline),
+		Fraction:  0,
+		Message:   "engine_start",
 		ElapsedMS: 0,
-		RSSBytes: currentRSSBytes(),
+		RSSBytes:  currentRSSBytes(),
 	})
 
 	for barIdx, ts := range timeline {
@@ -233,23 +244,16 @@ func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (Bac
 			if idx < lookback {
 				continue
 			}
-			window := buildCandles(state.series, idx, lookback)
-			rating, signal := services.AnalyzeCandlesWithConfig(window, indicatorConfig, indicatorWeights)
-			contexts[symbol] = barContext{Rating: rating, Signal: signal, Atr: computeAtr(window, config)}
+			if cached, ok := config.precomputedContexts[symbol][ts]; ok {
+				contexts[symbol] = cached
+			} else {
+				window := buildCandles(state.series, idx, lookback)
+				rating, signal := services.AnalyzeCandlesWithConfig(window, indicatorConfig, indicatorWeights)
+				contexts[symbol] = barContext{Rating: rating, Signal: signal, Atr: computeAtr(window, config)}
+			}
 		}
 		if benchmarkState != nil {
-			availableAt := int64(0)
-			for i, candidate := range benchmarkState.series {
-				if candidate.CloseTime <= currentTime.UnixMilli() {
-					availableAt = int64(i + 1)
-				} else {
-					break
-				}
-			}
-			if availableAt > 0 {
-				benchmarkState.lastIndex = int(availableAt - 1)
-				benchmarkState.lastPrice = benchmarkState.series[benchmarkState.lastIndex].Close
-			}
+			advanceBenchmarkState(benchmarkState, currentTime)
 		}
 
 		switch config.UniverseMode {
@@ -1059,6 +1063,48 @@ func buildCandles(series []services.OHLCV, idx int, lookback int) []services.Can
 	}
 	window := series[start : idx+1]
 	return candlesFromOHLCV(window)
+}
+
+// precomputeBarContexts calculates market-only signal inputs once, in parallel
+// by symbol. Baseline, volatility-sizing, and walk-forward lanes can then reuse
+// identical immutable values while their portfolio/execution state remains
+// independently chronological.
+func precomputeBarContexts(config BacktestConfig, series map[string][]services.OHLCV) map[string]map[int64]barContext {
+	symbols := sortedSymbols(series)
+	resultByIndex := make([]map[int64]barContext, len(symbols))
+	lookback := computeSignalLookback(config)
+	indicatorConfig := config.IndicatorConfig
+	if indicatorConfig == (services.IndicatorConfig{}) {
+		indicatorConfig = services.GetIndicatorSettings()
+	}
+	indicatorWeights := config.IndicatorWeights
+	if len(indicatorWeights) == 0 {
+		indicatorWeights = services.GetIndicatorWeights()
+	}
+
+	var wg sync.WaitGroup
+	for i, symbol := range symbols {
+		i, bars := i, series[symbol]
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			contexts := make(map[int64]barContext, maxInt(0, len(bars)-lookback))
+			candles := candlesFromOHLCV(bars)
+			for index := lookback; index < len(bars); index++ {
+				start := index - lookback + 1
+				window := candles[start : index+1]
+				rating, signal := services.AnalyzeCandlesWithConfig(window, indicatorConfig, indicatorWeights)
+				contexts[bars[index].OpenTime] = barContext{Rating: rating, Signal: signal, Atr: computeAtr(window, config)}
+			}
+			resultByIndex[i] = contexts
+		}()
+	}
+	wg.Wait()
+	result := make(map[string]map[int64]barContext, len(symbols))
+	for i, symbol := range symbols {
+		result[symbol] = resultByIndex[i]
+	}
+	return result
 }
 
 func candlesFromOHLCV(series []services.OHLCV) []services.Candle {

@@ -109,6 +109,7 @@ type BacktestConfig struct {
 	ValidationTrainMonths                  int
 	ValidationTestMonths                   int
 	ValidationBootstrapIterations          int
+	precomputedContexts                    map[string]map[int64]barContext
 	// Progress is optional operator telemetry. It must never affect decisions,
 	// fills, digests, or any deterministic backtest output.
 	Progress ProgressFunc `json:"-"`

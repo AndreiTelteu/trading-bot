@@ -9,7 +9,7 @@ set -Eeuo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-GO_BIN="${GO_BIN:-/home/andrei/.local/opt/go-v1.26.1/bin/go}"
+GO_BIN="${GO_BIN:-$(command -v go || true)}"
 START="${BACKTEST_INIT_START:-2024-07-01T00:00:00Z}"
 END="${BACKTEST_INIT_END:-2026-01-01T00:00:00Z}"
 DATASET_VERSION="${BACKTEST_INIT_DATASET_VERSION:-binance-spot-15m-2024h2-2025-v1}"

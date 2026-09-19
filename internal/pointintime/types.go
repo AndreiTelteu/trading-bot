@@ -148,11 +148,12 @@ type Bar struct {
 }
 
 type Constraint struct {
-	ExchangeSymbolID string    `json:"exchange_symbol_id"`
-	EffectiveFrom    time.Time `json:"effective_from"`
-	AvailableAt      time.Time `json:"available_at"`
-	QuantityStep     float64   `json:"quantity_step"`
-	PriceTick        float64   `json:"price_tick"`
-	MinQuantity      float64   `json:"min_quantity"`
-	MinNotional      float64   `json:"min_notional"`
+	ExchangeSymbolID string     `json:"exchange_symbol_id"`
+	EffectiveFrom    time.Time  `json:"effective_from"`
+	EffectiveTo      *time.Time `json:"effective_to,omitempty"`
+	AvailableAt      time.Time  `json:"available_at"`
+	QuantityStep     float64    `json:"quantity_step"`
+	PriceTick        float64    `json:"price_tick"`
+	MinQuantity      float64    `json:"min_quantity"`
+	MinNotional      float64    `json:"min_notional"`
 }

@@ -28,6 +28,13 @@ report is not a zero-trade result and cannot be bypassed with generic settings.
 
 For performance investigation, set `BACKTEST_PPROF_ADDR` on a controlled, non-public listener and collect CPU/heap profiles from the standard Go `/debug/pprof/` endpoints. Profiling is operator telemetry only and must not change run inputs or be presented as strategy evidence.
 
+After the engine starts, a manifest-backed replay must not generate a
+sustained stream of `historical_bars` or `symbol_constraint_versions` queries.
+Constraints and market-only signal contexts are loaded or computed once before
+the chronological replay. Sustained database reads during `engine/*` indicate
+a performance regression; stop and investigate the run rather than waiting
+days for invalidly repeated dataset verification.
+
 Copy the exact `reproduce` invocation from the immutable Stage 07 manifest when validating promotion evidence. Compare artifact/manifest digests and classifications. `coverage_failed`, `gating_zero_trades`, and `strategy_zero_trades` have different meanings and are exposed separately by operational status. A completed command is not evidence of profitability or promotion eligibility.
 
 ## Monitor a file-backed CLI run

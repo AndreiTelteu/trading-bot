@@ -43,6 +43,21 @@ Turn the backtest into an explicit simulation of information availability and ex
 - [x] Keep run summaries compact; store large curves/trades in dedicated files/tables rather than duplicating them in giant JSON blobs.
 - [x] Version artifact schemas and validate readers against them.
 
+## Replay performance without semantic shortcuts
+
+- Manifest content and historical constraint timelines are verified before
+  replay, then immutable constraint rows are resolved in memory. The per-bar
+  order path must never re-read or re-hash the complete PostgreSQL dataset.
+- Market-only indicator/ATR contexts are precomputed once in parallel by
+  symbol and shared read-only by baseline, candidate, and walk-forward lanes.
+  Portfolio, risk, order, fill, and ledger state remain independent and
+  chronological in every lane.
+- Benchmark availability advances with a monotonic cursor. Re-scanning the
+  benchmark from its first bar on every decision bar is prohibited.
+- Performance optimizations must preserve exact decisions, fills, metrics,
+  point-in-time availability, and deterministic artifacts; reduced-fidelity
+  "fast" modes are not accepted as validation evidence.
+
 ## Testing instructions
 
 ### Coverage tests

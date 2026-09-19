@@ -165,8 +165,71 @@ func (r Repository) constraintAsOf(symbolID string, asOf, cutoff time.Time) (Con
 	if err := query.Order("effective_from DESC,id DESC").First(&row).Error; err != nil {
 		return Constraint{}, err
 	}
+	return constraintFromRow(row), nil
+}
+
+// ConstraintTimelineForValidatedManifest loads the immutable constraint rows
+// once for an already validated manifest. Backtest callers use the returned
+// timeline in memory; they must not revalidate and rehash the complete dataset
+// for every simulated order.
+func (r Repository) ConstraintTimelineForValidatedManifest(manifest Manifest, symbolID string) ([]Constraint, error) {
+	if manifest.ID == "" || symbolID == "" {
+		return nil, fmt.Errorf("manifest and exchange symbol are required")
+	}
+	start, end := mustTime(manifest.RequestedStart), mustTime(manifest.RequestedEnd)
+	var expected *SeriesCoverage
+	for i := range manifest.Series {
+		series := &manifest.Series[i]
+		if series.ExchangeSymbolID != symbolID || series.Role != RoleDecision || series.Timeframe != "15m" {
+			continue
+		}
+		expected = series
+		if listed := mustTime(series.ListedAt); listed.After(start) {
+			start = listed
+		}
+		if series.DelistedAt != "" {
+			if delisted := mustTime(series.DelistedAt); delisted.Before(end) {
+				end = delisted
+			}
+		}
+		break
+	}
+	if expected == nil {
+		return nil, fmt.Errorf("manifest %s has no decision:15m series for %s", manifest.ID, symbolID)
+	}
+	rows, err := constraintRowsAtCutoff(r.DB, symbolID, start, end, mustTime(manifest.KnowledgeCutoff))
+	if err != nil {
+		return nil, err
+	}
+	if len(rows) != expected.ConstraintRows || digestConstraints(rows) != expected.ConstraintHash {
+		return nil, fmt.Errorf("constraints %s immutable row count/digest differs", symbolID)
+	}
+	result := make([]Constraint, len(rows))
+	for i := range rows {
+		result[i] = constraintFromRow(rows[i])
+	}
+	return result, nil
+}
+
+// ConstraintAt resolves a point-in-time value from a prevalidated immutable
+// timeline without database access.
+func ConstraintAt(timeline []Constraint, asOf time.Time) (Constraint, error) {
+	for i := len(timeline) - 1; i >= 0; i-- {
+		row := timeline[i]
+		if row.EffectiveFrom.After(asOf) || row.AvailableAt.After(asOf) {
+			continue
+		}
+		if row.EffectiveTo != nil && !row.EffectiveTo.After(asOf) {
+			continue
+		}
+		return row, nil
+	}
+	return Constraint{}, gorm.ErrRecordNotFound
+}
+
+func constraintFromRow(row database.SymbolConstraintVersion) Constraint {
 	parse := func(v string) float64 { f, _ := strconv.ParseFloat(v, 64); return f }
-	return Constraint{ExchangeSymbolID: row.ExchangeSymbolID, EffectiveFrom: row.EffectiveFrom, AvailableAt: row.AvailableAt, QuantityStep: parse(row.QuantityStep), PriceTick: parse(row.PriceTick), MinQuantity: parse(row.MinQuantity), MinNotional: parse(row.MinNotional)}, nil
+	return Constraint{ExchangeSymbolID: row.ExchangeSymbolID, EffectiveFrom: row.EffectiveFrom, EffectiveTo: row.EffectiveTo, AvailableAt: row.AvailableAt, QuantityStep: parse(row.QuantityStep), PriceTick: parse(row.PriceTick), MinQuantity: parse(row.MinQuantity), MinNotional: parse(row.MinNotional)}
 }
 
 func (r Repository) ConstraintsCoverManifest(manifestID, symbolID string, start, end time.Time) bool {
