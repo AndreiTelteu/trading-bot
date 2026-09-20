@@ -28,8 +28,13 @@ report is not a zero-trade result and cannot be bypassed with generic settings.
 
 When `BACKTEST_INIT_REQUIRE_RESEARCH_READINESS=1`, the launcher also rejects
 the request before ingestion unless it contains at least eight tradable
-symbols after excluding the independent `BTCUSDT` benchmark and at least 45
-warmup days for the governed listing-age filter. The readiness gate measures
+symbols in `BACKTEST_INIT_SYMBOLS`, keeps the independent benchmark in
+`BACKTEST_INIT_BENCHMARK_SYMBOL` (default `BTCUSDT`), and has at least 45
+warmup days for the governed listing-age filter. Use a new positive
+`BACKTEST_INIT_SYMBOL_IDENTITY_VERSION` when corrected lifecycle evidence
+changes a symbol identity. The bootstrap records the earliest Binance daily
+kline as public lifecycle evidence instead of inventing the listing date from
+the requested research window. The readiness gate measures
 eligible ranked membership before intentional regime-based shortlist
 contraction; a risk-off shortlist of two is valid only when the underlying
 point-in-time universe still has the governed minimum capacity.

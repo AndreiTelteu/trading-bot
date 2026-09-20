@@ -92,6 +92,11 @@ evidence under a new dataset version and rebuild.
   -start 2024-01-01T00:00:00Z -end 2025-10-01T00:00:00Z
 ```
 
+For `scripts/backtest_init.sh`, pass those eight candidate symbols through
+`BACKTEST_INIT_SYMBOLS` and pass `BTCUSDT` separately through
+`BACKTEST_INIT_BENCHMARK_SYMBOL`. The launcher ingests benchmark decision and
+execution evidence but never places the benchmark in the tradable universe.
+
 The last command prints a machine-readable `research-readiness-report-v1` and
 exits `2` when `passed` is false. Typical failures are
 `calendar_span_insufficient`, `fold_count_insufficient`,

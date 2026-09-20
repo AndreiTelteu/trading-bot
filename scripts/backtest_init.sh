@@ -15,6 +15,8 @@ END="${BACKTEST_INIT_END:-2026-01-01T00:00:00Z}"
 DATASET_VERSION="${BACKTEST_INIT_DATASET_VERSION:-binance-spot-15m-2024h2-2025-v1}"
 POLICY_VERSION="${BACKTEST_INIT_POLICY_VERSION:-research-universe-v1}"
 SYMBOLS_CSV="${BACKTEST_INIT_SYMBOLS:-BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT}"
+BENCHMARK_SYMBOL="${BACKTEST_INIT_BENCHMARK_SYMBOL:-BTCUSDT}"
+SYMBOL_IDENTITY_VERSION="${BACKTEST_INIT_SYMBOL_IDENTITY_VERSION:-1}"
 TIMEFRAME="${BACKTEST_INIT_TIMEFRAME:-15m}"
 EXECUTION_TIMEFRAME="${BACKTEST_INIT_EXECUTION_TIMEFRAME:-1m}"
 REQUIRE_RESEARCH_READINESS="${BACKTEST_INIT_REQUIRE_RESEARCH_READINESS:-0}"
@@ -74,13 +76,21 @@ PY
 }
 
 validate_research_universe() {
-  python3 - "$SYMBOLS_CSV" "$WARMUP_DAYS" "$MIN_TRADABLE_SYMBOLS" <<'PY'
+  python3 - "$SYMBOLS_CSV" "$BENCHMARK_SYMBOL" "$WARMUP_DAYS" "$MIN_TRADABLE_SYMBOLS" "$SYMBOL_IDENTITY_VERSION" <<'PY'
 import sys
 symbols = {value.strip().upper() for value in sys.argv[1].split(',') if value.strip()}
-warmup_days = int(sys.argv[2])
-minimum = int(sys.argv[3])
-benchmark = 'BTCUSDT'
+benchmark = sys.argv[2].strip().upper()
+warmup_days = int(sys.argv[3])
+minimum = int(sys.argv[4])
+identity_version = int(sys.argv[5])
 tradable = symbols - {benchmark}
+if not benchmark:
+    raise SystemExit('an independent benchmark symbol is required')
+if benchmark in symbols:
+    raise SystemExit(
+        f'independent benchmark {benchmark} must not be included in BACKTEST_INIT_SYMBOLS; '
+        'provide tradable candidates only'
+    )
 if len(tradable) < minimum:
     raise SystemExit(
         f'universe has {len(tradable)} tradable symbols after excluding independent benchmark '
@@ -93,6 +103,8 @@ if warmup_days < 45:
         f'warmup_days={warmup_days} cannot satisfy universe_min_listing_days=45 '
         'at the first evaluation snapshot'
     )
+if identity_version <= 0:
+    raise SystemExit('symbol identity version must be positive')
 PY
 }
 
@@ -240,7 +252,7 @@ if [[ "$PIT_AUTHORITY" != "research" && "$PIT_AUTHORITY" != "authoritative" ]]; 
 fi
 
 status "Run directory: $RUN_DIR"
-status "Dataset=$DATASET_VERSION evaluation=[$START,$END) warmup=[$WARMUP_START,$START) decision=$TIMEFRAME execution=$EXECUTION_TIMEFRAME symbols=$SYMBOLS_CSV"
+status "Dataset=$DATASET_VERSION evaluation=[$START,$END) warmup=[$WARMUP_START,$START) decision=$TIMEFRAME execution=$EXECUTION_TIMEFRAME candidates=$SYMBOLS_CSV benchmark=$BENCHMARK_SYMBOL identity=v$SYMBOL_IDENTITY_VERSION"
 status "Validation=train:${VALIDATION_TRAIN_MONTHS}m test:${VALIDATION_TEST_MONTHS}m bootstrap:${VALIDATION_BOOTSTRAP_ITERATIONS}"
 if ! validation_error="$(validate_walk_forward_interval 2>&1)"; then
   die "Validation preflight failed: $validation_error"
@@ -254,13 +266,23 @@ status "Validation preflight passed before dataset ingestion and replay"
 
 METADATA="$RUN_DIR/binance_metadata.json"
 CONTAINER_METADATA="/app/${METADATA#"$ROOT"/}"
-status "Fetching current Binance exchange metadata and producing immutable import envelope"
-python3 - "$METADATA" "$WARMUP_START" "$SYMBOLS_CSV" <<'PY'
+status "Fetching Binance metadata and earliest available daily bars for lifecycle evidence"
+ALL_SYMBOLS_CSV="$(python3 - "$SYMBOLS_CSV" "$BENCHMARK_SYMBOL" <<'PY'
+import sys
+values=[]
+for raw in (sys.argv[1] + ',' + sys.argv[2]).split(','):
+    value=raw.strip().upper()
+    if value and value not in values:
+        values.append(value)
+print(','.join(values))
+PY
+)"
+python3 - "$METADATA" "$WARMUP_START" "$ALL_SYMBOLS_CSV" "$SYMBOL_IDENTITY_VERSION" <<'PY'
 from datetime import datetime, timezone
 from pathlib import Path
 import json, sys, urllib.parse, urllib.request
 
-out, start, symbols_csv = sys.argv[1:]
+out, start, symbols_csv, identity_version = sys.argv[1:]
 symbols = [s.strip().upper() for s in symbols_csv.split(',') if s.strip()]
 url = 'https://api.binance.com/api/v3/exchangeInfo?' + urllib.parse.urlencode({'symbols': json.dumps(symbols, separators=(',', ':'))})
 with urllib.request.urlopen(url, timeout=30) as response:
@@ -289,7 +311,19 @@ for ticker in symbols:
             'provenance': json.dumps({'endpoint': 'api/v3/exchangeInfo', 'symbol': ticker}, separators=(',', ':')),
             'available_at': start_at, 'retrieved_at': retrieved,
         }
-    symbol_id = f'binance-{ticker.lower()}-v1'
+    # exchangeInfo does not expose historical listing time. The earliest
+    # available Binance daily kline provides an independently fetched,
+    # conservative lifecycle lower bound and is retained in provenance.
+    kline_url = 'https://api.binance.com/api/v3/klines?' + urllib.parse.urlencode({
+        'symbol': ticker, 'interval': '1d', 'startTime': 0, 'limit': 1,
+    })
+    with urllib.request.urlopen(kline_url, timeout=30) as response:
+        earliest_rows = json.load(response)
+    if not earliest_rows:
+        raise SystemExit(f'{ticker} has no Binance daily lifecycle evidence')
+    earliest_ms = int(earliest_rows[0][0])
+    listed_at = datetime.fromtimestamp(earliest_ms / 1000, timezone.utc).isoformat().replace('+00:00', 'Z')
+    symbol_id = f'binance-{ticker.lower()}-v{identity_version}'
     filters = {item['filterType']: item for item in row.get('filters', [])}
     lot = filters.get('LOT_SIZE') or filters.get('MARKET_LOT_SIZE')
     price = filters.get('PRICE_FILTER')
@@ -297,15 +331,14 @@ for ticker in symbols:
     if not lot or not price:
         raise SystemExit(f'{ticker} has no LOT_SIZE or PRICE_FILTER')
     min_notional = notional.get('minNotional', notional.get('notional', '0'))
-    provenance = json.dumps({'endpoint': 'api/v3/exchangeInfo', 'symbol': ticker, 'filters': filters}, sort_keys=True, separators=(',', ':'))
+    provenance = json.dumps({
+        'endpoint': 'api/v3/exchangeInfo', 'symbol': ticker, 'filters': filters,
+        'lifecycle_evidence': {'endpoint': 'api/v3/klines', 'interval': '1d', 'earliest_open_time': listed_at},
+    }, sort_keys=True, separators=(',', ':'))
     exchange_symbols.append({
         'id': symbol_id, 'venue_id': 'binance', 'ticker': ticker,
         'asset_id': asset_id, 'base_asset_id': base_id, 'quote_asset_id': quote_id,
-        # ExchangeInfo does not provide trustworthy historical listing dates.
-        # Use the requested research interval boundary and preserve provenance;
-        # the subsequent manifest makes this explicit rather than pretending
-        # the asset existed before the requested study window.
-        'listed_at': start_at, 'version': 1, 'source': 'binance-exchangeInfo',
+        'listed_at': listed_at, 'version': int(identity_version), 'source': 'binance-public-lifecycle',
         'provenance': provenance, 'available_at': start_at, 'retrieved_at': retrieved,
     })
     tradability.append({
@@ -360,7 +393,7 @@ else
   status "All requested metadata identities already exist; skipping import"
 fi
 
-symbol_id() { printf 'binance-%s-v1\n' "$(tr '[:upper:]' '[:lower:]' <<<"$1")"; }
+symbol_id() { printf 'binance-%s-v%s\n' "$(tr '[:upper:]' '[:lower:]' <<<"$1")" "$SYMBOL_IDENTITY_VERSION"; }
 
 # Expected closed bars for [WARMUP_START, END). Used only as a resume shortcut:
 # if the series already has at least this many rows, skip the slow per-bar walk.
@@ -404,12 +437,13 @@ for symbol in "${SYMBOLS[@]}"; do
   ensure_bars "execution bars for $symbol ($EXECUTION_TIMEFRAME)" "$symbol" "$(symbol_id "$symbol")" "$EXECUTION_TIMEFRAME" execution
 done
 
-ensure_bars "independent BTCUSDT benchmark bars ($TIMEFRAME)" BTCUSDT "$(symbol_id BTCUSDT)" "$TIMEFRAME" benchmark
+ensure_bars "independent $BENCHMARK_SYMBOL benchmark bars ($TIMEFRAME)" "$BENCHMARK_SYMBOL" "$(symbol_id "$BENCHMARK_SYMBOL")" "$TIMEFRAME" benchmark
+ensure_bars "independent $BENCHMARK_SYMBOL execution bars ($EXECUTION_TIMEFRAME)" "$BENCHMARK_SYMBOL" "$(symbol_id "$BENCHMARK_SYMBOL")" "$EXECUTION_TIMEFRAME" execution
 
 # Universe selection requires 1d (decision/trend) and 1h (liquidity/volume) bars
 # for the benchmark and all decision symbols.
 for tf in 1d 1h; do
-  ensure_bars "BTCUSDT benchmark bars ($tf)" BTCUSDT "$(symbol_id BTCUSDT)" "$tf" benchmark
+  ensure_bars "$BENCHMARK_SYMBOL benchmark bars ($tf)" "$BENCHMARK_SYMBOL" "$(symbol_id "$BENCHMARK_SYMBOL")" "$tf" benchmark
   for symbol in "${SYMBOLS[@]}"; do
     symbol="$(tr -d '[:space:]' <<<"$symbol")"
     [[ -n "$symbol" ]] || continue
@@ -421,7 +455,7 @@ status "Building deterministic dataset manifest"
 MANIFEST_JSON="$RUN_DIR/manifest.json"
 MANIFEST_ID_FILE="$RUN_DIR/manifest.id"
 KNOWLEDGE_CUTOFF_FILE="$RUN_DIR/knowledge_cutoff.txt"
-SYMBOL_IDS="$(for symbol in "${SYMBOLS[@]}"; do symbol="$(tr -d '[:space:]' <<<"$symbol")"; [[ -n "$symbol" ]] && symbol_id "$symbol"; done | paste -sd, -)"
+SYMBOL_IDS="$(for symbol in "${SYMBOLS[@]}" "$BENCHMARK_SYMBOL"; do symbol="$(tr -d '[:space:]' <<<"$symbol")"; [[ -n "$symbol" ]] && symbol_id "$symbol"; done | awk '!seen[$0]++' | paste -sd, -)"
 
 reuse_manifest=false
 if [[ -f "$MANIFEST_JSON" && -f "$MANIFEST_ID_FILE" ]]; then
@@ -496,7 +530,7 @@ if [[ "$CP_STATUS" == "complete" ]]; then
 fi
 if [[ "$UNIVERSE_DONE" != true ]]; then
   status "Building point-in-time universe snapshots (resumable, step=$UNIVERSE_STEP)"
-  run_marketdata -action build-universe-range -manifest-id "$MANIFEST_ID" -policy-version "$POLICY_VERSION" -benchmark-symbol-id "$(symbol_id BTCUSDT)" -benchmark-asset-id asset-btc -start "$START" -end "$END" -step "$UNIVERSE_STEP" -dry-run=false
+  run_marketdata -action build-universe-range -manifest-id "$MANIFEST_ID" -policy-version "$POLICY_VERSION" -benchmark-symbol-id "$(symbol_id "$BENCHMARK_SYMBOL")" -benchmark-asset-id "asset-$(tr '[:upper:]' '[:lower:]' <<<"${BENCHMARK_SYMBOL%USDT}")" -start "$START" -end "$END" -step "$UNIVERSE_STEP" -dry-run=false
 fi
 
 status "Validating exact coverage"
@@ -504,7 +538,7 @@ run_marketdata -action coverage -manifest-id "$MANIFEST_ID" -symbols "$(IFS=,; e
 run_marketdata -action coverage -manifest-id "$MANIFEST_ID" -symbols "$(IFS=,; echo "${SYMBOLS[*]}")" -start "$START" -end "$END" -timeframe "$EXECUTION_TIMEFRAME" -role execution
 if [[ "$REQUIRE_RESEARCH_READINESS" == "1" ]]; then
   status "Running promotion-quality research-readiness preflight"
-  run_marketdata -action readiness -manifest-id "$MANIFEST_ID" -symbols "$(IFS=,; echo "${SYMBOLS[*]}")" -benchmark-symbol BTCUSDT -timeframe "$TIMEFRAME" -start "$START" -end "$END" | tee "$RUN_DIR/readiness.json"
+  run_marketdata -action readiness -manifest-id "$MANIFEST_ID" -symbols "$(IFS=,; echo "${SYMBOLS[*]}")" -benchmark-symbol "$BENCHMARK_SYMBOL" -timeframe "$TIMEFRAME" -start "$START" -end "$END" | tee "$RUN_DIR/readiness.json"
 fi
 
 # The command-line backtest reads this value from persisted settings. This is a
