@@ -28,7 +28,8 @@ The range command validates the immutable manifest once, bulk-loads only the req
 Promotion-quality research needs more than a syntactically valid manifest. The
 default immutable readiness policy requires 12 training months and three
 separate 3-month test folds (21 complete calendar months), at least eight
-point-in-time tradable symbols, `decision:15m` plus `execution:1m` evidence
+point-in-time tradable symbols **in addition to** the independent benchmark,
+`decision:15m` plus `execution:1m` evidence
 for every candidate and the independent benchmark, executable constraints,
 fresh metadata, and complete universe observations across at least two
 regimes. It also checks per-symbol row counts, universe gaps, candidate and
@@ -86,7 +87,7 @@ evidence under a new dataset version and rebuild.
   -start 2024-01-01T00:00:00Z -end 2025-10-01T00:00:00Z -step 24h -dry-run=false
 /home/andrei/.local/opt/go-v1.26.1/bin/go run ./cmd/marketdata \
   -action readiness -manifest-id MANIFEST_ID \
-  -symbols BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,XRPUSDT,ADAUSDT,DOGEUSDT,AVAXUSDT \
+  -symbols ETHUSDT,SOLUSDT,BNBUSDT,XRPUSDT,ADAUSDT,DOGEUSDT,AVAXUSDT,LINKUSDT \
   -benchmark-symbol BTCUSDT -timeframe 15m \
   -start 2024-01-01T00:00:00Z -end 2025-10-01T00:00:00Z
 ```

@@ -32,7 +32,7 @@ func TestAssessResearchReadinessRequiresExecutionUniverseAndIndependentFolds(t *
 		if i%2 == 1 {
 			regime = "neutral"
 		}
-		snapshots = append(snapshots, database.UniverseSnapshot{SnapshotTime: start.AddDate(0, i*3, 0), RegimeState: regime, CandidateCount: 2, ShortlistCount: 1})
+		snapshots = append(snapshots, database.UniverseSnapshot{SnapshotTime: start.AddDate(0, i*3, 0), RegimeState: regime, CandidateCount: 2, RankedCount: 2, ShortlistCount: 1})
 	}
 	request := ResearchReadinessRequest{ManifestID: manifest.ID, Start: start, End: end, Symbols: []string{"AAAUSDT", "BBBUSDT"}, Benchmark: "BTCUSDT", DecisionTimeframe: "15m", ExecutionTimeframe: "1m", Policy: policy}
 	report := assessResearchReadiness(manifest, snapshots, request)
@@ -50,6 +50,42 @@ func TestAssessResearchReadinessRequiresExecutionUniverseAndIndependentFolds(t *
 	report = assessResearchReadiness(manifest, snapshots, request)
 	if !hasReadinessFailure(report, "fold_count_insufficient") || !hasReadinessFailure(report, "calendar_span_insufficient") {
 		t.Fatalf("short interval did not fail explicitly: %+v", report.Failures)
+	}
+}
+
+func TestAssessResearchReadinessMeasuresAvailableMembersBeforeRegimeContraction(t *testing.T) {
+	start := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	end := start.AddDate(0, 21, 0)
+	policy := DefaultResearchReadinessPolicy()
+	policy.MinSymbols = 1
+	policy.MinDecisionRowsPerSymbol = 1
+	policy.MinExecutionRowsPerSymbol = 1
+	policy.MinUniverseCandidates = 8
+	policy.MinUniverseMembers = 3
+	policy.MinRegimeSnapshots = 1
+	policy.MaxUniverseGap = 2 * 365 * 24 * time.Hour
+	coverage := func(ticker, role, frame string) SeriesCoverage {
+		return SeriesCoverage{SeriesKey: SeriesKey{ExchangeSymbolID: ticker + "-" + role + frame, AssetID: ticker + "-asset", Ticker: ticker, Role: role, Timeframe: frame}, Rows: 10, Complete: true, ConstraintsComplete: true, SymbolRetrievedAt: end.Format(time.RFC3339), AssetRetrievedAt: end.Format(time.RFC3339)}
+	}
+	manifest := Manifest{ID: "manifest", KnowledgeCutoff: end.Format(time.RFC3339), Series: []SeriesCoverage{
+		coverage("AAAUSDT", RoleDecision, "15m"), coverage("AAAUSDT", RoleExecution, "1m"),
+		coverage("BTCUSDT", RoleBenchmark, "15m"), coverage("BTCUSDT", RoleExecution, "1m"),
+	}}
+	request := ResearchReadinessRequest{ManifestID: manifest.ID, Start: start, End: end, Symbols: []string{"AAAUSDT"}, Benchmark: "BTCUSDT", DecisionTimeframe: "15m", ExecutionTimeframe: "1m", Policy: policy}
+	snapshots := []database.UniverseSnapshot{
+		{SnapshotTime: start, RegimeState: "risk_off", CandidateCount: 8, RankedCount: 8, ShortlistCount: 2},
+		{SnapshotTime: start.AddDate(0, 3, 0), RegimeState: "risk_on", CandidateCount: 8, RankedCount: 8, ShortlistCount: 3},
+	}
+
+	report := assessResearchReadiness(manifest, snapshots, request)
+	if !report.Passed {
+		t.Fatalf("intentional risk-off shortlist contraction must not erase available universe capacity: %+v", report.Failures)
+	}
+
+	snapshots[0].RankedCount = 2
+	report = assessResearchReadiness(manifest, snapshots, request)
+	if report.Passed || !hasReadinessFailure(report, "universe_members_insufficient") {
+		t.Fatalf("insufficient eligible universe members passed: %+v", report.Failures)
 	}
 }
 

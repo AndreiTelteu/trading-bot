@@ -26,6 +26,14 @@ report is not a zero-trade result and cannot be bypassed with generic settings.
 
 `scripts/backtest_init.sh` keeps the governed defaults and exposes explicit launcher inputs through `BACKTEST_INIT_VALIDATION_TRAIN_MONTHS`, `BACKTEST_INIT_VALIDATION_TEST_MONTHS`, and `BACKTEST_INIT_VALIDATION_BOOTSTRAP_ITERATIONS`. It performs the same calendar-month interval check before market-data ingestion, universe construction, or replay, while the Go preflight remains authoritative after manifest resolution. Do not reduce the first two for promotion evidence; extend the immutable dataset instead.
 
+When `BACKTEST_INIT_REQUIRE_RESEARCH_READINESS=1`, the launcher also rejects
+the request before ingestion unless it contains at least eight tradable
+symbols after excluding the independent `BTCUSDT` benchmark and at least 45
+warmup days for the governed listing-age filter. The readiness gate measures
+eligible ranked membership before intentional regime-based shortlist
+contraction; a risk-off shortlist of two is valid only when the underlying
+point-in-time universe still has the governed minimum capacity.
+
 For performance investigation, set `BACKTEST_PPROF_ADDR` on a controlled, non-public listener and collect CPU/heap profiles from the standard Go `/debug/pprof/` endpoints. Profiling is operator telemetry only and must not change run inputs or be presented as strategy evidence.
 
 After the engine starts, a manifest-backed replay must not generate a

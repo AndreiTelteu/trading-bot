@@ -241,8 +241,14 @@ func assessResearchReadiness(manifest Manifest, snapshots []database.UniverseSna
 		if snapshot.CandidateCount < p.MinUniverseCandidates {
 			add("universe_capacity_insufficient", snapshot.SnapshotTime.UTC().Format(time.RFC3339), fmt.Sprintf("candidates=%d minimum=%d", snapshot.CandidateCount, p.MinUniverseCandidates))
 		}
-		if snapshot.ShortlistCount < p.MinUniverseMembers {
-			add("universe_members_insufficient", snapshot.SnapshotTime.UTC().Format(time.RFC3339), fmt.Sprintf("shortlist=%d minimum=%d", snapshot.ShortlistCount, p.MinUniverseMembers))
+		// ShortlistCount is a strategy/regime output, not input capacity. The
+		// canonical universe policy intentionally contracts a risk-off shortlist
+		// to two names, so requiring three shortlisted names would make every
+		// otherwise healthy risk-off observation permanently inadmissible. Use
+		// the pre-contraction ranked population to prove that enough eligible
+		// point-in-time members were available to the strategy.
+		if snapshot.RankedCount < p.MinUniverseMembers {
+			add("universe_members_insufficient", snapshot.SnapshotTime.UTC().Format(time.RFC3339), fmt.Sprintf("eligible=%d minimum=%d", snapshot.RankedCount, p.MinUniverseMembers))
 		}
 	}
 	if len(snapshots) == 0 {

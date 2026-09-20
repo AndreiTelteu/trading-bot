@@ -144,11 +144,13 @@ export default function SelfImprovement() {
   const symbols = splitSymbols(settings.backtest_symbols)
   const activeJob = jobs.find(job => ['pending', 'queued', 'running'].includes(job.status))
   const failures = readiness?.failures || []
+  const decisionRows = readiness?.decision_rows_per_symbol || readiness?.decision_rows || {}
+  const executionRows = readiness?.execution_rows_per_symbol || readiness?.execution_rows || {}
   const readinessChecks = [
     [Number(readiness?.calendar_months || 0) >= 21, 'Minimum 21 calendar months', `${readiness?.calendar_months ?? 0} available`],
     [symbols.length >= 8, 'Minimum 8 symbols', `${symbols.length} configured`],
-    [Object.values(readiness?.decision_rows || {}).length >= 8, '15m decision coverage', `${Object.values(readiness?.decision_rows || {}).length} series`],
-    [Object.values(readiness?.execution_rows || {}).length >= 8, '1m execution coverage', `${Object.values(readiness?.execution_rows || {}).length} series`],
+    [Object.values(decisionRows).length >= 8, '15m decision coverage', `${Object.values(decisionRows).length} series`],
+    [Object.values(executionRows).length >= 8, '1m execution coverage', `${Object.values(executionRows).length} series`],
     [Number(readiness?.fold_count || 0) >= 3, 'Three independent folds', `${readiness?.fold_count ?? 0} available`],
     [Number(readiness?.universe_snapshots || 0) > 0, 'Point-in-time universe', `${readiness?.universe_snapshots ?? 0} snapshots`],
     [Object.keys(readiness?.regime_snapshots || {}).length >= 2, 'Multiple regimes', `${Object.keys(readiness?.regime_snapshots || {}).length} regimes`],

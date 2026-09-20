@@ -25,6 +25,7 @@ SLIPPAGE_BPS="${BACKTEST_INIT_SLIPPAGE_BPS:-5}"
 VALIDATION_TRAIN_MONTHS="${BACKTEST_INIT_VALIDATION_TRAIN_MONTHS:-12}"
 VALIDATION_TEST_MONTHS="${BACKTEST_INIT_VALIDATION_TEST_MONTHS:-3}"
 VALIDATION_BOOTSTRAP_ITERATIONS="${BACKTEST_INIT_VALIDATION_BOOTSTRAP_ITERATIONS:-500}"
+MIN_TRADABLE_SYMBOLS="${BACKTEST_INIT_MIN_TRADABLE_SYMBOLS:-8}"
 WARMUP_START="$(python3 - "$START" "$WARMUP_DAYS" <<'PY'
 from datetime import datetime, timedelta, timezone
 import sys
@@ -68,6 +69,29 @@ if end < minimum_end:
         f'evaluation interval [{sys.argv[1]},{sys.argv[2]}) cannot fit '
         f'{train} training months plus {test} test months; '
         f'end must be at or after {minimum_end.isoformat().replace("+00:00", "Z")}'
+    )
+PY
+}
+
+validate_research_universe() {
+  python3 - "$SYMBOLS_CSV" "$WARMUP_DAYS" "$MIN_TRADABLE_SYMBOLS" <<'PY'
+import sys
+symbols = {value.strip().upper() for value in sys.argv[1].split(',') if value.strip()}
+warmup_days = int(sys.argv[2])
+minimum = int(sys.argv[3])
+benchmark = 'BTCUSDT'
+tradable = symbols - {benchmark}
+if len(tradable) < minimum:
+    raise SystemExit(
+        f'universe has {len(tradable)} tradable symbols after excluding independent benchmark '
+        f'{benchmark}; minimum is {minimum}'
+    )
+# Current bootstrap metadata uses the ingestion boundary as the conservative
+# known lifecycle boundary. The governed universe requires 45 listing days.
+if warmup_days < 45:
+    raise SystemExit(
+        f'warmup_days={warmup_days} cannot satisfy universe_min_listing_days=45 '
+        'at the first evaluation snapshot'
     )
 PY
 }
@@ -221,6 +245,11 @@ status "Validation=train:${VALIDATION_TRAIN_MONTHS}m test:${VALIDATION_TEST_MONT
 if ! validation_error="$(validate_walk_forward_interval 2>&1)"; then
   die "Validation preflight failed: $validation_error"
 fi
+if [[ "$REQUIRE_RESEARCH_READINESS" == "1" ]]; then
+  if ! universe_error="$(validate_research_universe 2>&1)"; then
+    die "Research-universe preflight failed: $universe_error"
+  fi
+fi
 status "Validation preflight passed before dataset ingestion and replay"
 
 METADATA="$RUN_DIR/binance_metadata.json"
@@ -303,7 +332,7 @@ run_marketdata() {
   # Mutating data commands need the migration/admin pool. The long-lived app
   # intentionally does not receive that secret, so use the restricted one-shot
   # bootstrap job rather than expanding app authority.
-  docker compose run --rm --no-deps bootstrap -c "go run ./cmd/marketdata $*"
+  docker compose run --rm --no-deps -e GORM_LOG_LEVEL=silent bootstrap -c "go run ./cmd/marketdata $*"
 }
 
 status "Importing metadata identities not already present"
