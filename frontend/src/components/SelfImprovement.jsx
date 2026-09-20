@@ -73,6 +73,10 @@ export default function SelfImprovement() {
   const [loading, setLoading] = useState(true)
   const [running, setRunning] = useState(false)
   const [optimizing, setOptimizing] = useState(false)
+  const [dispatching, setDispatching] = useState(false)
+  const [startingBatch, setStartingBatch] = useState(false)
+  const [draftCount, setDraftCount] = useState(4)
+  const [experimentDrafts, setExperimentDrafts] = useState([])
   const [notice, setNotice] = useState(null)
 
   const refresh = useCallback(async () => {
@@ -141,6 +145,7 @@ export default function SelfImprovement() {
 
   const selectedJob = jobs.find(job => String(job.id) === selectedJobID) || jobs[0]
   const descriptor = strategies.find(item => `${item.id}@${item.version}` === selectedStrategy)
+  const candidateBaseParameters = { ...parameters, target_gross: targetGross, max_net: maxNet, final_policy: finalPolicy, execution_intent: 'backtest' }
   const symbols = splitSymbols(settings.backtest_symbols)
   const activeJob = jobs.find(job => ['pending', 'queued', 'running'].includes(job.status))
   const failures = readiness?.failures || []
@@ -169,7 +174,7 @@ export default function SelfImprovement() {
     try {
       const response = await apiFetch(`${API_BASE}/backtest/compare`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ strategy_id: strategyID, strategy_version: strategyVersion, parameters, target_gross_exposure: targetGross, max_net_exposure: maxNet, final_policy: finalPolicy }),
+        body: JSON.stringify({ strategy_id: strategyID, strategy_version: strategyVersion, parameters: { ...parameters, execution_intent: 'backtest', max_net: maxNet }, target_gross_exposure: targetGross, max_net_exposure: maxNet, final_policy: finalPolicy }),
       })
       const data = await response.json()
       if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`)
@@ -177,6 +182,48 @@ export default function SelfImprovement() {
       setNotice({ tone: 'success', text: `Experiment job #${data.id} was accepted. The hypothesis remains operator context; all economic inputs are immutable in the job artifact.` })
     } catch (error) { setNotice({ tone: 'danger', text: `Experiment was not started: ${error.message}` }) }
     finally { setRunning(false) }
+  }
+
+  async function dispatchExperiments() {
+    if (!readiness?.passed || !hypothesis.trim()) return
+    const [strategyID, strategyVersion] = selectedStrategy.split('@')
+    const baseParameters = { ...parameters, target_gross: targetGross, max_net: maxNet, final_policy: finalPolicy, execution_intent: 'backtest' }
+    setDispatching(true); setNotice(null)
+    try {
+      const response = await apiFetch(`${API_BASE}/ai/dispatch-experiments`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ hypothesis, strategy_id: strategyID, strategy_version: strategyVersion, count: Number(draftCount), base_parameters: baseParameters }),
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`)
+      setExperimentDrafts((data.experiments || []).map((draft, index) => ({ ...draft, selected: true, local_id: `${Date.now()}-${index}` })))
+      setNotice({ tone: 'success', text: `${data.count} advisory experiment drafts generated. Review them before submitting the batch.` })
+    } catch (error) { setNotice({ tone: 'danger', text: `AI dispatch failed: ${error.message}` }) }
+    finally { setDispatching(false) }
+  }
+
+  async function startExperimentBatch() {
+    const selected = experimentDrafts.filter(draft => draft.selected)
+    if (!selected.length) return
+    const [strategyID, strategyVersion] = selectedStrategy.split('@')
+    setStartingBatch(true); setNotice(null)
+    try {
+      const response = await apiFetch(`${API_BASE}/backtest/compare/batch`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ experiments: selected.map(draft => ({
+          strategy_id: strategyID, strategy_version: strategyVersion, parameters: draft.parameters,
+          target_gross_exposure: draft.parameters.target_gross || targetGross,
+          max_net_exposure: draft.parameters.max_net || maxNet,
+          final_policy: draft.parameters.final_policy || finalPolicy,
+        })) }),
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`)
+      ;(data.jobs || []).forEach(updateJob)
+      setExperimentDrafts([]); setSection('runs')
+      setNotice({ tone: 'success', text: `${data.count} experiments queued. At most ${data.concurrency_limit} run concurrently to protect memory.` })
+    } catch (error) { setNotice({ tone: 'danger', text: `Experiment batch was not started: ${error.message}` }) }
+    finally { setStartingBatch(false) }
   }
 
   async function proposeNext() {
@@ -208,7 +255,7 @@ export default function SelfImprovement() {
 
     {section === 'data' && <div className="si-two-col si-data"><section className="glass-panel"><div className="si-panel-title"><div><span>Immutable input</span><h3>Dataset readiness</h3></div><button className="si-secondary" onClick={refresh}>Refresh evidence</button></div><div className="si-readiness-ring" style={{ '--score': `${readinessScore * 3.6}deg` }}><strong>{readinessScore}%</strong><span>{readiness?.passed ? 'READY' : 'BLOCKED'}</span></div><div className="si-data-meta"><div><span>Interval</span><strong>{settings.backtest_start || '—'} → {settings.backtest_end || '—'}</strong></div><div><span>Manifest</span><code>{settings.backtest_dataset_manifest_id ? `${settings.backtest_dataset_manifest_id.slice(0, 12)}…` : 'missing'}</code></div><div><span>Policy</span><strong>{readiness?.policy?.version || 'research-readiness-v1'}</strong></div><div><span>Folds</span><strong>{readiness?.fold_count ?? 0} / {readiness?.policy?.min_folds ?? 3}</strong></div></div></section><section className="glass-panel"><div className="si-panel-title"><div><span>Hard gates</span><h3>What must be true</h3></div><span className={`si-pill ${readiness?.passed ? 'success' : 'danger'}`}>{readiness?.passed ? 'PASSED' : 'FAIL CLOSED'}</span></div><div className="si-gates">{readinessChecks.map(([pass, label, detail]) => <Gate key={label} passed={pass} label={label} detail={detail} />)}</div>{failures.length > 0 && <details className="si-failures"><summary>{failures.length} detailed blocker(s)</summary>{failures.map((failure, i) => <div key={`${failure.code}-${i}`}><code>{failure.code}</code><span>{failure.subject || failure.details}</span></div>)}</details>}<p className="si-boundary">Data ingestion remains an operator/bootstrap workflow because the web server does not receive migration credentials.</p></section></div>}
 
-    {section === 'experiment' && <div className="si-two-col"><section className="glass-panel"><div className="si-panel-title"><div><span>Step 2</span><h3>Falsifiable hypothesis</h3></div><span className={`si-pill ${readiness?.passed ? 'success' : 'danger'}`}>{readiness?.passed ? 'DATA READY' : 'BLOCKED'}</span></div>{!readiness?.passed && <div className="si-blocker"><strong>Why this is blocked</strong><p>{failures[0]?.details || 'The immutable data-readiness gate has not passed.'}</p><button className="si-secondary" onClick={() => setSection('data')}>Review data gates</button></div>}<label className="si-field"><span>What should improve, and against which baseline?</span><textarea value={hypothesis} onChange={event => setHypothesis(event.target.value)} rows="5" /></label><div className="si-rule"><strong>Selection contract</strong><p>Tune on train/validation, freeze the decision, then evaluate untouched OOS folds. Positive nominal return alone never passes.</p></div></section><section className="glass-panel"><div className="si-panel-title"><div><span>Step 3</span><h3>Controlled candidate</h3></div></div><label className="si-field"><span>Registered strategy</span><select value={selectedStrategy} onChange={event => setSelectedStrategy(event.target.value)}>{strategies.filter(item => item.research_only).map(item => <option key={`${item.id}@${item.version}`} value={`${item.id}@${item.version}`}>{item.id}@{item.version}</option>)}</select></label><p className="si-description">{descriptor?.description}</p><div className="si-param-grid">{(descriptor?.parameters || []).filter(item => !['execution_intent', 'final_policy', 'target_gross'].includes(item.name)).map(spec => <label className="si-field" key={spec.name}><span>{spec.name}</span>{spec.enum?.length ? <select value={parameters[spec.name] || spec.default} onChange={e => setParameters(p => ({ ...p, [spec.name]: e.target.value }))}>{spec.enum.map(value => <option key={value}>{value}</option>)}</select> : <input value={parameters[spec.name] ?? spec.default ?? ''} type={spec.type === 'integer' || spec.type === 'number' ? 'number' : 'text'} min={spec.minimum} max={spec.maximum} onChange={e => setParameters(p => ({ ...p, [spec.name]: e.target.value }))} />}</label>)}</div><div className="si-param-grid compact"><label className="si-field"><span>Target gross</span><input value={targetGross} onChange={e => setTargetGross(e.target.value)} /></label><label className="si-field"><span>Maximum net</span><input value={maxNet} onChange={e => setMaxNet(e.target.value)} /></label><label className="si-field"><span>Final positions</span><select value={finalPolicy} onChange={e => setFinalPolicy(e.target.value)}><option value="liquidate">Liquidate</option><option value="mark_to_market">Mark to market</option></select></label></div><button className="si-primary si-wide" disabled={running || !readiness?.passed} onClick={startExperiment}>{running ? 'Submitting immutable experiment…' : 'Approve and start experiment'}</button></section></div>}
+    {section === 'experiment' && <div className="si-two-col"><section className="glass-panel"><div className="si-panel-title"><div><span>Step 2</span><h3>Falsifiable hypothesis</h3></div><span className={`si-pill ${readiness?.passed ? 'success' : 'danger'}`}>{readiness?.passed ? 'DATA READY' : 'BLOCKED'}</span></div>{!readiness?.passed && <div className="si-blocker"><strong>Why this is blocked</strong><p>{failures[0]?.details || 'The immutable data-readiness gate has not passed.'}</p><button className="si-secondary" onClick={() => setSection('data')}>Review data gates</button></div>}<label className="si-field"><span>What should improve, and against which baseline?</span><textarea value={hypothesis} onChange={event => setHypothesis(event.target.value)} rows="5" /></label><div className="si-rule"><strong>Selection contract</strong><p>Tune on train/validation, freeze the decision, then evaluate untouched OOS folds. Positive nominal return alone never passes.</p></div></section><section className="glass-panel"><div className="si-panel-title"><div><span>Step 3</span><h3>Controlled candidate</h3></div></div><label className="si-field"><span>Registered strategy</span><select value={selectedStrategy} onChange={event => setSelectedStrategy(event.target.value)}>{strategies.filter(item => item.research_only).map(item => <option key={`${item.id}@${item.version}`} value={`${item.id}@${item.version}`}>{item.id}@{item.version}</option>)}</select></label><p className="si-description">{descriptor?.description}</p><div className="si-param-grid">{(descriptor?.parameters || []).filter(item => !['execution_intent', 'final_policy', 'target_gross'].includes(item.name)).map(spec => <label className="si-field" key={spec.name}><span>{spec.name}</span>{spec.enum?.length ? <select value={parameters[spec.name] || spec.default} onChange={e => setParameters(p => ({ ...p, [spec.name]: e.target.value }))}>{spec.enum.map(value => <option key={value}>{value}</option>)}</select> : <input value={parameters[spec.name] ?? spec.default ?? ''} type={spec.type === 'integer' || spec.type === 'number' ? 'number' : 'text'} min={spec.minimum} max={spec.maximum} onChange={e => setParameters(p => ({ ...p, [spec.name]: e.target.value }))} />}</label>)}</div><div className="si-param-grid compact"><label className="si-field"><span>Target gross</span><input value={targetGross} onChange={e => setTargetGross(e.target.value)} /></label><label className="si-field"><span>Maximum net</span><input value={maxNet} onChange={e => setMaxNet(e.target.value)} /></label><label className="si-field"><span>Final positions</span><select value={finalPolicy} onChange={e => setFinalPolicy(e.target.value)}><option value="liquidate">Liquidate</option><option value="mark_to_market">Mark to market</option></select></label></div><div className="si-ai-dispatch"><div className="si-ai-dispatch-head"><div><span>AI experiment dispatch</span><strong>Generate a bounded set of different candidates</strong></div><label><span>Drafts</span><input type="number" min="1" max="8" value={draftCount} onChange={event => setDraftCount(Math.max(1, Math.min(8, Number(event.target.value) || 1)))} /></label></div><p>The configured LLM creates advisory research drafts only. Every parameter set is validated by the canonical strategy registry before it can run.</p><button className="si-secondary si-wide" disabled={dispatching || !readiness?.passed} onClick={dispatchExperiments}>{dispatching ? 'Asking configured LLM…' : 'Generate experiment set with AI'}</button>{experimentDrafts.length > 0 && <div className="si-draft-list">{experimentDrafts.map((draft, index) => { const changes = Object.entries(draft.parameters || {}).filter(([key, value]) => String(candidateBaseParameters[key] ?? '') !== String(value)); return <label className={`si-draft ${draft.selected ? 'selected' : ''}`} key={draft.local_id}><input type="checkbox" checked={draft.selected} onChange={event => setExperimentDrafts(current => current.map(item => item.local_id === draft.local_id ? { ...item, selected: event.target.checked } : item))} /><span><strong>{index + 1}. {draft.name}</strong><small>{draft.hypothesis}</small><small>{draft.rationale}</small><em>{changes.length ? changes.map(([key, value]) => `${key}: ${candidateBaseParameters[key] ?? '—'} → ${value}`).join(' · ') : 'No effective change'}</em></span></label>})}<button className="si-primary si-wide" disabled={startingBatch || !experimentDrafts.some(draft => draft.selected)} onClick={startExperimentBatch}>{startingBatch ? 'Queueing experiments…' : `Review complete — start ${experimentDrafts.filter(draft => draft.selected).length} selected`}</button></div>}</div><div className="si-or"><span>or run only the manually configured candidate</span></div><button className="si-primary si-wide" disabled={running || !readiness?.passed} onClick={startExperiment}>{running ? 'Submitting immutable experiment…' : 'Approve and start experiment'}</button></section></div>}
 
     {section === 'runs' && <div className="si-two-col"><section className="glass-panel"><div className="si-panel-title"><div><span>Execution center</span><h3>{activeJob ? `Active job #${activeJob.id}` : 'No active job'}</h3></div><button className="si-secondary" onClick={refresh}>Refresh</button></div>{activeJob ? <><div className="si-progress-head"><span>{activeJob.message || activeJob.job_type}</span><strong>{pct(activeJob.progress)}</strong></div><div className="si-progress"><i style={{ width: pct(activeJob.progress) }} /></div><div className="si-data-meta"><div><span>Status</span><strong>{activeJob.status}</strong></div><div><span>Started</span><strong>{dateText(activeJob.started_at || activeJob.created_at)}</strong></div><div><span>Manifest</span><code>{activeJob.dataset_manifest_id?.slice?.(0, 12) || 'pending'}</code></div><div><span>Type</span><strong>{activeJob.job_type}</strong></div></div></> : <div className="si-empty">The research queue is idle. Start only after data readiness passes.</div>}</section><section className="glass-panel"><div className="si-panel-title"><div><span>Recent queue</span><h3>Backtest jobs</h3></div></div><div className="si-job-list">{jobs.slice(0, 12).map(job => <button key={job.id} className={String(job.id) === selectedJobID ? 'selected' : ''} onClick={() => { setSelectedJobID(String(job.id)); setSection('results') }}><span className={`si-status-dot ${statusTone(job.status)}`} /><span><strong>#{job.id} · {job.job_type}</strong><small>{dateText(job.created_at)}</small></span><em>{job.status}</em></button>)}</div></section></div>}
 

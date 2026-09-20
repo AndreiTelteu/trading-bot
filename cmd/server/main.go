@@ -205,6 +205,7 @@ func setupRoutes(app *fiber.App, cfg *config.Config, authManager *middleware.Aut
 	backtest := api.Group("/backtest")
 	backtest.Post("/start", handlers.StartBacktest)
 	backtest.Post("/compare", handlers.StartStage05Comparison)
+	backtest.Post("/compare/batch", handlers.StartStage05ComparisonBatch)
 	backtest.Get("/strategies", handlers.ListBacktestStrategies)
 	backtest.Get("/jobs", handlers.ListBacktestJobs)
 	backtest.Get("/status/:id", handlers.GetBacktestStatus)
@@ -228,6 +229,7 @@ func setupRoutes(app *fiber.App, cfg *config.Config, authManager *middleware.Aut
 	ai.Get("/proposals", handlers.GetAIProposals)
 	ai.Post("/generate-proposals", handlers.GenerateProposals)
 	ai.Post("/optimize-backtest", handlers.OptimizeBacktest)
+	ai.Post("/dispatch-experiments", handlers.DispatchBacktestExperiments)
 	ai.Post("/proposals/:id/approve", handlers.ApproveProposal)
 	ai.Post("/proposals/:id/deny", handlers.DenyProposal)
 }

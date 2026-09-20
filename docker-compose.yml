@@ -78,6 +78,7 @@ services:
       STAGE08_CANDIDATE_STRATEGY: ${STAGE08_CANDIDATE_STRATEGY:-off}
       STAGE08_DUAL_RUN: ${STAGE08_DUAL_RUN:-off}
       STAGE08_STAGE07_CONTEXT: ${STAGE08_STAGE07_CONTEXT:-}
+      BACKTEST_MAX_CONCURRENT_JOBS: ${BACKTEST_MAX_CONCURRENT_JOBS:-1}
     secrets:
       - runtime_database_url
       - ledger_database_url

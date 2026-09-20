@@ -71,6 +71,19 @@ changes authority-affecting settings, or promotes a candidate. Data expansion
 remains a bootstrap/operator workflow, and shadow/paper/live transitions remain
 separate authenticated governance actions backed by immutable evidence.
 
+The Experiment Builder can ask the configured LLM for up to eight distinct
+advisory parameter sets. The server forces the non-capital `backtest` intent,
+validates every draft through the registered strategy descriptor, rejects
+duplicates, and shows the exact parameter differences before an operator may
+submit the selected set. Batch submission queues every selected experiment;
+it does not grant the LLM execution or promotion authority.
+
+Stage 05 workers are bounded by `BACKTEST_MAX_CONCURRENT_JOBS` (default `1`,
+clamped to `1..8`). Submitting a batch means "queue all", not "allocate
+unbounded memory to all". Keep the default while one job consumes multiple
+gigabytes. Increase it only after measuring p95 peak RSS and leaving sufficient
+headroom for the server, database, and Go garbage collector.
+
 ## Monitor a file-backed CLI run
 
 The monitor discovers runs under `instance/backtest-init`, prefers the newest active run, follows its initialization log and later engine telemetry, and refreshes an ASCII progress bar and ETA once per second:

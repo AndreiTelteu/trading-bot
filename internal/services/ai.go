@@ -150,6 +150,84 @@ type LLMCallResult struct {
 	FinishReason string
 }
 
+// ExperimentDraftRequest is advisory research input. It can only produce
+// drafts; the backtest strategy registry remains authoritative for validation.
+type ExperimentDraftRequest struct {
+	Hypothesis      string                    `json:"hypothesis"`
+	StrategyID      string                    `json:"strategy_id"`
+	StrategyVersion string                    `json:"strategy_version"`
+	Count           int                       `json:"count"`
+	BaseParameters  map[string]string         `json:"base_parameters"`
+	ParameterSpecs  []ExperimentParameterSpec `json:"parameter_specs"`
+}
+
+type ExperimentParameterSpec struct {
+	Name        string   `json:"name"`
+	Type        string   `json:"type"`
+	Description string   `json:"description,omitempty"`
+	Default     string   `json:"default"`
+	Enum        []string `json:"enum,omitempty"`
+	Minimum     *float64 `json:"minimum,omitempty"`
+	Maximum     *float64 `json:"maximum,omitempty"`
+}
+
+type ExperimentDraft struct {
+	Name       string            `json:"name"`
+	Hypothesis string            `json:"hypothesis"`
+	Rationale  string            `json:"rationale"`
+	Parameters map[string]string `json:"parameters"`
+}
+
+func GenerateExperimentDrafts(input ExperimentDraftRequest) ([]ExperimentDraft, error) {
+	if input.Count < 1 || input.Count > 8 || strings.TrimSpace(input.Hypothesis) == "" || strings.TrimSpace(input.StrategyID) == "" {
+		return nil, fiber.NewError(400, "hypothesis, strategy identity, and a draft count between 1 and 8 are required")
+	}
+	var llmConfig database.LLMConfig
+	if err := database.DB.First(&llmConfig).Error; err != nil {
+		return nil, fiber.NewError(500, "LLM config not found")
+	}
+	if llmConfig.APIKey == nil || strings.TrimSpace(*llmConfig.APIKey) == "" {
+		return nil, fiber.NewError(400, "LLM API key not configured")
+	}
+	prompt := fmt.Sprintf(`You are designing exploratory, falsifiable trading backtest experiments.
+Return ONLY one JSON array containing exactly %d objects with this schema:
+[{"name":"short unique name","hypothesis":"falsifiable statement","rationale":"why these changes test it","parameters":{"parameter_name":"string value"}}]
+
+Rules:
+- Strategy is %s@%s and cannot change.
+- Every object must contain a COMPLETE parameter map using only the declared parameters.
+- Stay strictly inside enum/range declarations.
+- Keep execution_intent equal to backtest and never propose paper/live/promotion authority.
+- For this long-only candidate max_net must equal max_gross, position_cap cannot exceed max_gross, and max_gross plus cash_reserve cannot exceed 1.
+- Each experiment must differ from the base and from every other experiment.
+- Prefer changing one coherent factor group per experiment so results remain attributable.
+- Do not claim profitability and do not include markdown.
+
+Operator hypothesis: %s
+Base parameters: %s
+Declared parameter schema: %s`, input.Count, input.StrategyID, input.StrategyVersion, input.Hypothesis, prettyJSON(input.BaseParameters), prettyJSON(input.ParameterSpecs))
+	result, err := callLLM(&llmConfig, prompt)
+	if err != nil {
+		return nil, fiber.NewError(502, "Failed to call LLM: "+err.Error())
+	}
+	return parseExperimentDraftResponse(result.Content, input.Count)
+}
+
+func parseExperimentDraftResponse(content string, count int) ([]ExperimentDraft, error) {
+	start, end := strings.Index(content, "["), strings.LastIndex(content, "]")
+	if start < 0 || end < start {
+		return nil, fiber.NewError(502, "LLM response did not contain an experiment array")
+	}
+	var drafts []ExperimentDraft
+	if err := json.Unmarshal([]byte(content[start:end+1]), &drafts); err != nil {
+		return nil, fiber.NewError(502, "LLM experiment array was invalid JSON")
+	}
+	if len(drafts) != count {
+		return nil, fiber.NewError(502, fmt.Sprintf("LLM returned %d experiments; exactly %d were requested", len(drafts), count))
+	}
+	return drafts, nil
+}
+
 type BacktestOptimizationPromptOptions struct {
 	Mode                string
 	MinProposals        int

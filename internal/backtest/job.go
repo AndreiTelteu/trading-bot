@@ -70,6 +70,29 @@ var loadBacktestConstraints = func(symbols []string) (map[string]SymbolConstrain
 	return result, nil
 }
 
+var stage05JobSlots = make(chan struct{}, stage05ConcurrencyLimit())
+
+func stage05ConcurrencyLimit() int {
+	value, err := strconv.Atoi(strings.TrimSpace(os.Getenv("BACKTEST_MAX_CONCURRENT_JOBS")))
+	if err != nil || value < 1 {
+		return 1
+	}
+	if value > 8 {
+		return 8
+	}
+	return value
+}
+
+func Stage05ConcurrencyLimit() int { return cap(stage05JobSlots) }
+
+func dispatchStage05ComparisonJob(jobID uint, request Stage05RunRequest, overrides map[string]string) {
+	go func() {
+		stage05JobSlots <- struct{}{}
+		defer func() { <-stage05JobSlots }()
+		runStage05ComparisonJob(jobID, request, overrides)
+	}()
+}
+
 type BacktestRunSummary struct {
 	FailedLane        string                     `json:"failed_lane,omitempty"`
 	JobID             uint                       `json:"job_id"`
@@ -128,7 +151,7 @@ func StartStage05ComparisonJob(request Stage05RunRequest, overrides map[string]s
 	if err := database.DB.Create(&job).Error; err != nil {
 		return nil, err
 	}
-	go runStage05ComparisonJob(job.ID, request, cloneStringMap(overrides))
+	dispatchStage05ComparisonJob(job.ID, request, cloneStringMap(overrides))
 	return &job, nil
 }
 
