@@ -195,7 +195,7 @@ Return ONLY one JSON array containing exactly %d objects with this schema:
 
 Rules:
 - Strategy is %s@%s and cannot change.
-- Every object must contain a COMPLETE parameter map using only the declared parameters.
+- The parameters object must contain only the 1-4 values changed from the base, using declared parameters.
 - Stay strictly inside enum/range declarations.
 - Keep execution_intent equal to backtest and never propose paper/live/promotion authority.
 - For this long-only candidate max_net must equal max_gross, position_cap cannot exceed max_gross, and max_gross plus cash_reserve cannot exceed 1.
@@ -210,7 +210,21 @@ Declared parameter schema: %s`, input.Count, input.StrategyID, input.StrategyVer
 	if err != nil {
 		return nil, fiber.NewError(502, "Failed to call LLM: "+err.Error())
 	}
-	return parseExperimentDraftResponse(result.Content, input.Count)
+	drafts, err := parseExperimentDraftResponse(result.Content, input.Count)
+	if err != nil {
+		return nil, err
+	}
+	for i := range drafts {
+		merged := maps.Clone(input.BaseParameters)
+		if merged == nil {
+			merged = map[string]string{}
+		}
+		for key, value := range drafts[i].Parameters {
+			merged[key] = value
+		}
+		drafts[i].Parameters = merged
+	}
+	return drafts, nil
 }
 
 func parseExperimentDraftResponse(content string, count int) ([]ExperimentDraft, error) {

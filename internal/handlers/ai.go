@@ -204,9 +204,7 @@ func UpdateLLMConfig(c *fiber.Ctx) error {
 	config.BaseURL = req.BaseURL
 	config.Model = req.Model
 	apiKey := strings.TrimSpace(req.APIKey)
-	if apiKey == "" {
-		config.APIKey = nil
-	} else {
+	if apiKey != "" {
 		config.APIKey = &apiKey
 	}
 
@@ -245,9 +243,7 @@ func TestLLMConfig(c *fiber.Ctx) error {
 		config.BaseURL = req.BaseURL
 		config.Model = req.Model
 		apiKey := strings.TrimSpace(req.APIKey)
-		if apiKey == "" {
-			config.APIKey = nil
-		} else {
+		if apiKey != "" {
 			config.APIKey = &apiKey
 		}
 	}
@@ -264,14 +260,11 @@ func TestLLMConfig(c *fiber.Ctx) error {
 }
 
 func llmConfigResponse(config database.LLMConfig) fiber.Map {
-	apiKey := ""
-	if config.APIKey != nil {
-		apiKey = *config.APIKey
-	}
 	return fiber.Map{
-		"provider": config.Provider,
-		"base_url": config.BaseURL,
-		"api_key":  apiKey,
-		"model":    config.Model,
+		"provider":           config.Provider,
+		"base_url":           config.BaseURL,
+		"api_key":            "",
+		"api_key_configured": config.APIKey != nil && strings.TrimSpace(*config.APIKey) != "",
+		"model":              config.Model,
 	}
 }

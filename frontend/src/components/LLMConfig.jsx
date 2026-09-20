@@ -9,6 +9,7 @@ function LLMConfig() {
     provider: 'openrouter',
     base_url: '',
     api_key: '',
+    api_key_configured: false,
     model: ''
   })
   const [loading, setLoading] = useState(true)
@@ -24,7 +25,7 @@ function LLMConfig() {
     try {
       const res = await apiFetch(`${API_BASE}/llm/config`)
       const data = await res.json()
-      setConfig(data)
+      setConfig({ ...data, api_key: '' })
     } catch (err) {
       console.error('Failed to fetch config:', err)
     }
@@ -89,8 +90,8 @@ function LLMConfig() {
     <div className="llm-config">
       <h2>LLM Configuration</h2>
       <p className="info-text">
-        Configure the LLM provider for AI analysis. The actual LLM calls are disabled - 
-        this UI is for configuration only.
+        Configure the LLM provider used for advisory analysis and experiment drafting.
+        LLM output cannot authorize trading or promotion.
       </p>
 
       <div className="config-form">
@@ -119,7 +120,7 @@ function LLMConfig() {
             type="password"
             value={config.api_key}
             onChange={e => handleChange('api_key', e.target.value)}
-            placeholder="sk-..."
+            placeholder={config.api_key_configured ? 'Configured — enter a value only to replace it' : 'sk-...'}
           />
         </div>
 
