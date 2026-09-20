@@ -194,6 +194,9 @@ func RunStage05Comparison(config BacktestConfig, series map[string][]services.OH
 	if err != nil {
 		return ComparisonArtifact{}, err
 	}
+	if candidate.Descriptor.ID == StrategyTrendMomentumCandidate {
+		config.trendMomentumHistory = prepareStage06TrendMomentumHistory(config, series)
+	}
 	ids := []string{StrategyCashID, StrategyBenchmarkHoldID, StrategyBenchmarkTrendID}
 	if strategyNeedsUniverse(candidate.Descriptor.ID) {
 		ids = append(ids, StrategyEqualWeightID, StrategyMomentumID)

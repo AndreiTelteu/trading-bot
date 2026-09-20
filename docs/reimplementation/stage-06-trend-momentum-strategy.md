@@ -102,6 +102,23 @@ weights and the immutable portfolio snapshot; it does not accept pre-populated
 `target_action` or `target_quantity` settings. Missing or stale planner input
 fails closed. Direct live submission remains fenced.
 
+### Prepared historical planning
+
+Historical Stage 05 comparisons aggregate immutable 15-minute inputs into
+complete UTC-aligned 4-hour buckets once, then use a binary-search as-of slice
+for every decision. The canonical planner logic is unchanged: the ordinary
+runtime entry point prepares its bounded input and delegates to the same
+prepared planner. Precomputed future buckets remain invisible to earlier
+decisions because selection is strictly by completed `CloseTime`.
+
+The prepared history is immutable and may be shared by concurrent experiment
+jobs only when manifest ID, evaluation window, timeframe, benchmark, and symbol
+set match exactly. A single-entry bounded cache avoids retaining datasets from
+unrelated experiment families. Fixture/unvalidated inputs never use the cache.
+Parity, future-data counterexample, concurrent-read race, and cache-identity
+tests protect this optimization. It changes implementation identity but must
+not change decisions, fills, costs, or metrics for identical inputs.
+
 ## Completion evidence
 
 - Initial implementation commit: `d1a45a6`.

@@ -3,6 +3,7 @@ package backtest
 import (
 	"time"
 	"trading-go/internal/services"
+	"trading-go/internal/tradingcore"
 )
 
 type StrategyMode string
@@ -110,6 +111,7 @@ type BacktestConfig struct {
 	ValidationTestMonths                   int
 	ValidationBootstrapIterations          int
 	precomputedContexts                    map[string]map[int64]barContext
+	trendMomentumHistory                   *tradingcore.TrendMomentumHistory
 	// Progress is optional operator telemetry. It must never affect decisions,
 	// fills, digests, or any deterministic backtest output.
 	Progress ProgressFunc `json:"-"`

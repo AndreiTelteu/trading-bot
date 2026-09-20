@@ -52,6 +52,26 @@ type TrendMomentumInput struct {
 	Parameters    map[string]string             `json:"parameters"`
 }
 
+// TrendMomentumHistory is an immutable, pre-aggregated view of complete UTC
+// 4h buckets. Its fields are intentionally private so callers cannot forge a
+// prepared history that bypasses the canonical 15m completeness checks.
+// One history may be shared safely by concurrent read-only experiment runs.
+type TrendMomentumHistory struct {
+	benchmark []TrendMomentumBar
+	series    map[string][]TrendMomentumBar
+}
+
+// PrepareTrendMomentumHistory performs the expensive 15m -> 4h aggregation
+// once. Decision-time filtering remains inside PlanTrendMomentumWithHistory,
+// so precomputing later buckets cannot expose them to an earlier decision.
+func PrepareTrendMomentumHistory(benchmark []TrendMomentumBar, series map[string][]TrendMomentumBar) *TrendMomentumHistory {
+	history := &TrendMomentumHistory{benchmark: tmAggregate4H(benchmark), series: make(map[string][]TrendMomentumBar, len(series))}
+	for symbol, bars := range series {
+		history.series[symbol] = tmAggregate4H(bars)
+	}
+	return history
+}
+
 type TrendMomentumFactor struct {
 	Symbol, AssetID, ExchangeSymbolID string
 	Momentum, Volatility, Normalized  float64
@@ -87,12 +107,22 @@ type trendMomentumScore struct{ TrendMomentumFactor }
 // It intentionally does not know about broker mode, ledger state, services,
 // or backtest types: those are adapter concerns and cannot affect alpha.
 func PlanTrendMomentum(input TrendMomentumInput) (TrendMomentumPlan, error) {
+	return PlanTrendMomentumWithHistory(input, PrepareTrendMomentumHistory(input.Benchmark, input.Series))
+}
+
+// PlanTrendMomentumWithHistory is behaviorally identical to
+// PlanTrendMomentum but reuses canonical aggregation across chronological
+// decisions and parameter variants.
+func PlanTrendMomentumWithHistory(input TrendMomentumInput, history *TrendMomentumHistory) (TrendMomentumPlan, error) {
 	p := input.Parameters
 	if input.DecisionAt.IsZero() {
 		return TrendMomentumPlan{}, fmt.Errorf("trend momentum decision time is required")
 	}
 	if p == nil {
 		return TrendMomentumPlan{}, fmt.Errorf("trend momentum parameters are required")
+	}
+	if history == nil {
+		return TrendMomentumPlan{}, fmt.Errorf("trend momentum prepared history is required")
 	}
 	if intent := p["execution_intent"]; intent == "live_submit" || intent == "promotion" {
 		return TrendMomentumPlan{}, fmt.Errorf("trend momentum execution intent %q is fenced", intent)
@@ -125,7 +155,7 @@ func PlanTrendMomentum(input TrendMomentumInput) (TrendMomentumPlan, error) {
 	}
 	// A full UTC-aligned 4h feature bucket must have closed. This is a
 	// no-lookahead decision boundary shared with replay.
-	benchmark := tmCompleted4H(input.Benchmark, input.DecisionAt)
+	benchmark := tmPreparedAsOf(history.benchmark, input.DecisionAt)
 	regimeBars := tmInt(p, "regime_bars")
 	if len(benchmark) < regimeBars {
 		return result, fmt.Errorf("completed benchmark regime warmup unavailable")
@@ -164,7 +194,7 @@ func PlanTrendMomentum(input TrendMomentumInput) (TrendMomentumPlan, error) {
 	}
 	rows := []trendMomentumScore{}
 	for symbol, member := range members {
-		bars := tmCompleted4H(input.Series[symbol], input.DecisionAt)
+		bars := tmPreparedAsOf(history.series[symbol], input.DecisionAt)
 		if len(bars) < needed {
 			result.Diagnostics = append(result.Diagnostics, symbol+":insufficient_warmup")
 			continue
@@ -292,10 +322,10 @@ func PlanTrendMomentum(input TrendMomentumInput) (TrendMomentumPlan, error) {
 	return result, nil
 }
 
-func tmCompleted4H(bars []TrendMomentumBar, at time.Time) []TrendMomentumBar {
+func tmAggregate4H(bars []TrendMomentumBar) []TrendMomentumBar {
 	buckets := map[time.Time]map[int]TrendMomentumBar{}
 	for _, bar := range bars {
-		if bar.CloseTime.After(at) || bar.Close <= 0 {
+		if bar.Close <= 0 {
 			continue
 		}
 		open := bar.OpenTime.UTC()
@@ -310,7 +340,7 @@ func tmCompleted4H(bars []TrendMomentumBar, at time.Time) []TrendMomentumBar {
 	}
 	keys := []time.Time{}
 	for key, bucket := range buckets {
-		if len(bucket) == 16 && !bucket[15].CloseTime.After(at) {
+		if len(bucket) == 16 {
 			keys = append(keys, key)
 		}
 	}
@@ -320,6 +350,11 @@ func tmCompleted4H(bars []TrendMomentumBar, at time.Time) []TrendMomentumBar {
 		result = append(result, buckets[key][15])
 	}
 	return result
+}
+
+func tmPreparedAsOf(bars []TrendMomentumBar, at time.Time) []TrendMomentumBar {
+	end := sort.Search(len(bars), func(i int) bool { return bars[i].CloseTime.After(at) })
+	return bars[:end]
 }
 func tmMean(b []TrendMomentumBar) float64 {
 	total := 0.0

@@ -313,3 +313,24 @@ func absFloat(value float64) float64 {
 	}
 	return value
 }
+
+func TestPreparedStage06HistoryIsSharedOnlyForSameImmutableDatasetWindow(t *testing.T) {
+	start := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	bars := make([]services.OHLCV, 0, 16*31)
+	for i := 0; i < 16*31; i++ {
+		open := start.Add(time.Duration(i) * 15 * time.Minute)
+		bars = append(bars, services.OHLCV{OpenTime: open.UnixMilli(), CloseTime: open.Add(15*time.Minute - time.Millisecond).UnixMilli(), Close: 100 + float64(i)/16})
+	}
+	config := BacktestConfig{DatasetManifestValidated: true, DatasetManifestID: "manifest-cache-fixture", Start: start, End: start.Add(31 * 24 * time.Hour), Timeframe: "15m", BenchmarkSymbol: "BTCUSDT", BenchmarkSeries: bars, Symbols: []string{"AAAUSDT"}}
+	series := map[string][]services.OHLCV{"AAAUSDT": bars}
+	first := prepareStage06TrendMomentumHistory(config, series)
+	second := prepareStage06TrendMomentumHistory(config, series)
+	if first != second {
+		t.Fatal("same immutable manifest/window did not reuse prepared history")
+	}
+	config.End = config.End.Add(time.Hour)
+	third := prepareStage06TrendMomentumHistory(config, series)
+	if third == first {
+		t.Fatal("different evaluation window reused stale prepared history")
+	}
+}

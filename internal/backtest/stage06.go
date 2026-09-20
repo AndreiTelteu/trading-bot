@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"trading-go/internal/services"
@@ -389,14 +390,23 @@ func (trendMomentumPlanner) Plan(context Stage05PlanningContext) (Stage05Plan, e
 		}
 		members = append(members, tradingcore.TrendMomentumMember{Symbol: member.Symbol, AssetID: member.AssetID, ExchangeSymbolID: member.ExchangeSymbolID, Eligible: eligible})
 	}
-	input := tradingcore.TrendMomentumInput{DecisionAt: context.At, LastRebalance: context.LastRebalance, Benchmark: stage06CoreBars(context.Reference), Series: map[string][]tradingcore.TrendMomentumBar{}, Members: members, LastTargets: append([]string(nil), context.LastTargets...), Parameters: cloneStringMap(p)}
-	for symbol, bars := range context.Series {
-		input.Series[symbol] = stage06CoreBars(bars)
+	input := tradingcore.TrendMomentumInput{DecisionAt: context.At, LastRebalance: context.LastRebalance, Series: map[string][]tradingcore.TrendMomentumBar{}, Members: members, LastTargets: append([]string(nil), context.LastTargets...), Parameters: cloneStringMap(p)}
+	if context.Config.trendMomentumHistory == nil {
+		input.Benchmark = stage06CoreBars(context.Reference)
+		for symbol, bars := range context.Series {
+			input.Series[symbol] = stage06CoreBars(bars)
+		}
 	}
 	for symbol := range context.Positions {
 		input.Positions = append(input.Positions, tradingcore.TrendMomentumPosition{Symbol: symbol, EntryPrice: context.PositionEntries[symbol], MarkPrice: context.Marks[symbol]})
 	}
-	plan, err := tradingcore.PlanTrendMomentum(input)
+	var plan tradingcore.TrendMomentumPlan
+	var err error
+	if context.Config.trendMomentumHistory != nil {
+		plan, err = tradingcore.PlanTrendMomentumWithHistory(input, context.Config.trendMomentumHistory)
+	} else {
+		plan, err = tradingcore.PlanTrendMomentum(input)
+	}
 	if err != nil {
 		code, field := DiagnosticManifestIncompatible, "planner"
 		if strings.Contains(err.Error(), "warmup") {
@@ -448,6 +458,42 @@ func stage06CoreBars(values []services.OHLCV) []tradingcore.TrendMomentumBar {
 		result = append(result, tradingcore.TrendMomentumBar{OpenTime: time.UnixMilli(value.OpenTime).UTC(), CloseTime: time.UnixMilli(value.CloseTime).UTC(), Close: value.Close})
 	}
 	return result
+}
+
+func prepareStage06TrendMomentumHistory(config BacktestConfig, series map[string][]services.OHLCV) *tradingcore.TrendMomentumHistory {
+	key := stage06HistoryCacheKey(config)
+	if key != "" {
+		stage06PreparedHistory.mu.Lock()
+		defer stage06PreparedHistory.mu.Unlock()
+		if stage06PreparedHistory.key == key && stage06PreparedHistory.history != nil {
+			return stage06PreparedHistory.history
+		}
+	}
+	converted := make(map[string][]tradingcore.TrendMomentumBar, len(series))
+	for symbol, bars := range series {
+		converted[symbol] = stage06CoreBars(bars)
+	}
+	benchmark := stage06CoreBars(stage05ReferenceSeries(config, series, StrategyTrendMomentumCandidate))
+	history := tradingcore.PrepareTrendMomentumHistory(benchmark, converted)
+	if key != "" {
+		stage06PreparedHistory.key, stage06PreparedHistory.history = key, history
+	}
+	return history
+}
+
+var stage06PreparedHistory struct {
+	mu      sync.Mutex
+	key     string
+	history *tradingcore.TrendMomentumHistory
+}
+
+func stage06HistoryCacheKey(config BacktestConfig) string {
+	if !config.DatasetManifestValidated || config.DatasetManifestID == "" {
+		return ""
+	}
+	symbols := append([]string(nil), config.Symbols...)
+	sort.Strings(symbols)
+	return strings.Join([]string{config.DatasetManifestID, config.Start.UTC().Format(time.RFC3339Nano), config.End.UTC().Format(time.RFC3339Nano), config.Timeframe, config.BenchmarkSymbol, strings.Join(symbols, ",")}, "|")
 }
 
 // legacyTrendMomentumPlanForCompatibility retains the old evidence adapter for
