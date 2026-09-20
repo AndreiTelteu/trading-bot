@@ -41,6 +41,13 @@ historical universe. It must contain actual symbol lifecycles, tradability
 intervals, and constraint versions; do not construct it from today's exchange
 listing.
 
+If a previous bootstrap used the requested interval boundary as an asset's
+availability time, a later envelope with earlier public lifecycle evidence may
+use `-correct-earlier-asset-availability=true`. This capability is explicit,
+accepts only a monotonic move to an earlier time for the same asset identity,
+and binds the new source/provenance into future manifests. It cannot move an
+availability boundary forward or rewrite an old manifest.
+
 ```bash
 /home/andrei/.local/opt/go-v1.26.1/bin/go run ./cmd/marketdata \
   -action import-metadata -metadata-file /secure/operator/historical-universe-v1.json \

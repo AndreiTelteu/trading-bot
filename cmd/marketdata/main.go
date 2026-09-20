@@ -51,6 +51,7 @@ func main() {
 	benchmarkAsset := flag.String("benchmark-asset-id", "", "")
 	benchmarkTicker := flag.String("benchmark-symbol", "BTCUSDT", "independent benchmark ticker for research readiness")
 	metadataFile := flag.String("metadata-file", "", "JSON envelope containing assets, symbols, tradability_intervals, and constraints")
+	correctEarlierAssets := flag.Bool("correct-earlier-asset-availability", false, "allow an explicit evidence-backed monotonic correction to existing asset availability")
 	knowledgeCutoffText := flag.String("knowledge-cutoff", "", "deterministic retrieval cutoff (RFC3339)")
 	step := flag.Duration("step", 24*time.Hour, "snapshot range step")
 	outputDir := flag.String("output-dir", "", "new directory for an immutable offline research proposal dataset")
@@ -107,7 +108,7 @@ func main() {
 		if err := json.Unmarshal(payload, &envelope); err != nil {
 			fatal(err)
 		}
-		err = pointintime.IngestMetadata(database.DB, pointintime.MetadataIngestRequest{Assets: envelope.Assets, Symbols: envelope.Symbols, Tradability: envelope.Tradability, Constraints: envelope.Constraints, Start: start, End: end, DryRun: *dryRun})
+		err = pointintime.IngestMetadata(database.DB, pointintime.MetadataIngestRequest{Assets: envelope.Assets, Symbols: envelope.Symbols, Tradability: envelope.Tradability, Constraints: envelope.Constraints, Start: start, End: end, DryRun: *dryRun, CorrectEarlierAssetAvailability: *correctEarlierAssets})
 		output(map[string]any{"schema_version": "point-in-time-metadata-import-v1", "dry_run": *dryRun, "assets": len(envelope.Assets), "symbols": len(envelope.Symbols), "tradability_intervals": len(envelope.Tradability), "constraints": len(envelope.Constraints)}, err)
 	case "coverage":
 		exact := []pointintime.SeriesKey{}

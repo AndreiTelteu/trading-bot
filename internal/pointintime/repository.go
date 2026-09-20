@@ -249,7 +249,7 @@ func (r Repository) ConstraintsCover(symbolID string, start, end time.Time) bool
 }
 
 func UpsertAssetLifecycle(db *gorm.DB, assets []database.Asset, symbols []database.ExchangeSymbol, intervals []database.TradabilityInterval, constraints []database.SymbolConstraintVersion) error {
-	return db.Transaction(func(tx *gorm.DB) error {
+	err := db.Transaction(func(tx *gorm.DB) error {
 		for i := range assets {
 			a := &assets[i]
 			a.AvailableAt, a.RetrievedAt = databaseTime(a.AvailableAt), databaseTime(a.RetrievedAt)
@@ -384,17 +384,22 @@ func UpsertAssetLifecycle(db *gorm.DB, assets []database.Asset, symbols []databa
 		}
 		return nil
 	})
+	if errors.Is(err, errDryRunRollback) {
+		return nil
+	}
+	return err
 }
 
 var errDryRunRollback = errors.New("point-in-time metadata dry-run rollback")
 
 type MetadataIngestRequest struct {
-	Assets      []database.Asset
-	Symbols     []database.ExchangeSymbol
-	Tradability []database.TradabilityInterval
-	Constraints []database.SymbolConstraintVersion
-	Start, End  time.Time
-	DryRun      bool
+	Assets                          []database.Asset
+	Symbols                         []database.ExchangeSymbol
+	Tradability                     []database.TradabilityInterval
+	Constraints                     []database.SymbolConstraintVersion
+	Start, End                      time.Time
+	DryRun                          bool
+	CorrectEarlierAssetAvailability bool
 }
 
 func IngestMetadata(db *gorm.DB, request MetadataIngestRequest) error {
@@ -422,10 +427,64 @@ func IngestMetadata(db *gorm.DB, request MetadataIngestRequest) error {
 			return fmt.Errorf("constraint %s effective time is outside metadata bounds", v.ExchangeSymbolID)
 		}
 	}
-	if request.DryRun {
-		return ValidateAssetLifecycle(db, request.Assets, request.Symbols, request.Tradability, request.Constraints)
+	return db.Transaction(func(tx *gorm.DB) error {
+		if request.CorrectEarlierAssetAvailability {
+			if err := correctEarlierAssetAvailability(tx, request.Assets); err != nil {
+				return err
+			}
+		}
+		if err := UpsertAssetLifecycle(tx, request.Assets, request.Symbols, request.Tradability, request.Constraints); err != nil {
+			return err
+		}
+		if request.DryRun {
+			return errDryRunRollback
+		}
+		return nil
+	})
+}
+
+// correctEarlierAssetAvailability applies only an evidence-backed monotonic
+// correction: a newly imported envelope may prove that an existing economic
+// asset was publicly observable earlier than a prior bootstrap boundary. It
+// never moves availability forward, changes identity, or silently accepts a
+// canonical-code mismatch. Old manifests retain the previous metadata and
+// digest; new manifests bind the corrected provenance.
+func correctEarlierAssetAvailability(db *gorm.DB, assets []database.Asset) error {
+	for i := range assets {
+		candidate := assets[i]
+		candidate.AvailableAt = databaseTime(candidate.AvailableAt)
+		candidate.RetrievedAt = databaseTime(candidate.RetrievedAt)
+		if candidate.ID == "" || candidate.CanonicalCode == "" || candidate.AvailableAt.IsZero() || candidate.RetrievedAt.IsZero() || candidate.Source == "" || candidate.ProvenanceJSON == "" {
+			return fmt.Errorf("invalid asset availability correction")
+		}
+		var existing database.Asset
+		err := db.First(&existing, "id=?", candidate.ID).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if existing.CanonicalCode != candidate.CanonicalCode || existing.Name != candidate.Name {
+			return fmt.Errorf("%w: asset identity %s", ErrMetadataConflict, candidate.ID)
+		}
+		if !candidate.AvailableAt.Before(existing.AvailableAt) {
+			continue
+		}
+		result := db.Model(&database.Asset{}).Where("id=? AND available_at>?", candidate.ID, candidate.AvailableAt).Updates(map[string]any{
+			"available_at":    candidate.AvailableAt,
+			"retrieved_at":    candidate.RetrievedAt,
+			"source":          candidate.Source,
+			"provenance_json": candidate.ProvenanceJSON,
+		})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return fmt.Errorf("asset availability correction affected %d rows for %s", result.RowsAffected, candidate.ID)
+		}
 	}
-	return UpsertAssetLifecycle(db, request.Assets, request.Symbols, request.Tradability, request.Constraints)
+	return nil
 }
 
 func ValidateAssetLifecycle(db *gorm.DB, assets []database.Asset, symbols []database.ExchangeSymbol, intervals []database.TradabilityInterval, constraints []database.SymbolConstraintVersion) error {

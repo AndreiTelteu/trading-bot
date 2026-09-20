@@ -323,6 +323,17 @@ for ticker in symbols:
         raise SystemExit(f'{ticker} has no Binance daily lifecycle evidence')
     earliest_ms = int(earliest_rows[0][0])
     listed_at = datetime.fromtimestamp(earliest_ms / 1000, timezone.utc).isoformat().replace('+00:00', 'Z')
+    lifecycle_provenance = json.dumps({
+        'endpoint': 'api/v3/klines', 'interval': '1d', 'symbol': ticker,
+        'earliest_open_time': listed_at,
+    }, sort_keys=True, separators=(',', ':'))
+    for code, identifier in ((base, base_id), (quote, quote_id)):
+        if listed_at < assets[identifier]['available_at']:
+            assets[identifier].update({
+                'available_at': listed_at,
+                'source': 'binance-public-lifecycle',
+                'provenance': lifecycle_provenance,
+            })
     symbol_id = f'binance-{ticker.lower()}-v{identity_version}'
     filters = {item['filterType']: item for item in row.get('filters', [])}
     lot = filters.get('LOT_SIZE') or filters.get('MARKET_LOT_SIZE')
@@ -396,7 +407,7 @@ MISSING_SYMBOL_COUNT="$(python3 -c 'import json,sys; print(len(json.load(open(sy
 if [[ "$MISSING_SYMBOL_COUNT" -gt 0 ]]; then
   # The bounded metadata envelope must include the historical lifecycle event,
   # which can predate the requested bar warmup by years.
-  run_marketdata -action import-metadata -metadata-file "$CONTAINER_METADATA" -start "$METADATA_IMPORT_START" -end "$END" -dry-run=false
+  run_marketdata -action import-metadata -metadata-file "$CONTAINER_METADATA" -start "$METADATA_IMPORT_START" -end "$END" -correct-earlier-asset-availability=true -dry-run=false
 else
   status "All requested metadata identities already exist; skipping import"
 fi
