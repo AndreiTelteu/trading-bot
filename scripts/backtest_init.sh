@@ -360,6 +360,12 @@ Path(out).write_text(json.dumps({
 }, indent=2, sort_keys=True) + '\n')
 print(out)
 PY
+METADATA_IMPORT_START="$(python3 - "$METADATA" <<'PY'
+import json, sys
+payload=json.load(open(sys.argv[1]))
+print(min(row['listed_at'] for row in payload['symbols']))
+PY
+)"
 
 run_marketdata() {
   # Mutating data commands need the migration/admin pool. The long-lived app
@@ -388,7 +394,9 @@ print(len(payload['symbols']))
 PY
 MISSING_SYMBOL_COUNT="$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["symbols"]))' "$METADATA")"
 if [[ "$MISSING_SYMBOL_COUNT" -gt 0 ]]; then
-  run_marketdata -action import-metadata -metadata-file "$CONTAINER_METADATA" -start "$WARMUP_START" -end "$END" -dry-run=false
+  # The bounded metadata envelope must include the historical lifecycle event,
+  # which can predate the requested bar warmup by years.
+  run_marketdata -action import-metadata -metadata-file "$CONTAINER_METADATA" -start "$METADATA_IMPORT_START" -end "$END" -dry-run=false
 else
   status "All requested metadata identities already exist; skipping import"
 fi
