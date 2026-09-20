@@ -59,3 +59,7 @@
 .si-loading { min-height: 300px; display: grid; place-items: center; color: var(--accent-primary); }
 @media (max-width: 1100px) { .si-metrics-grid { grid-template-columns: repeat(2, 1fr); }.si-two-col { grid-template-columns: 1fr; } }
 @media (max-width: 700px) { .si-hero { align-items: stretch; flex-direction: column; padding: 1.35rem; }.si-authority { min-width: 0; }.si-metrics-grid { grid-template-columns: 1fr; }.si-data-meta, .si-result-footer, .si-param-grid, .si-param-grid.compact { grid-template-columns: 1fr; }.si-actions { align-items: stretch; flex-direction: column; }.si-flow { grid-template-columns: 64px 10px 72px 10px 68px 10px 70px 10px 92px 10px 64px; }.si-panel-title { align-items: flex-start; flex-direction: column; } }
+
+.si-blocker { margin: 0 0 20px; padding: 14px 16px; border: 1px solid rgba(255, 78, 121, .28); border-left: 3px solid #ff4e79; border-radius: 10px; background: rgba(255, 78, 121, .08); }
+.si-blocker strong { color: #ff7899; }
+.si-blocker p { margin: 6px 0 12px; color: var(--text-secondary); line-height: 1.5; }

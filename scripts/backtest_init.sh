@@ -559,6 +559,9 @@ status "Binding covered manifest to the local research backtest configuration"
 docker compose exec -T postgres psql -U postgres -d trading_bot -v ON_ERROR_STOP=1 <<SQL
 INSERT INTO settings(key,value,category,updated_at) VALUES
   ('backtest_dataset_manifest_id','$MANIFEST_ID','backtest',CURRENT_TIMESTAMP),
+  ('backtest_symbols','$SYMBOLS_CSV','backtest',CURRENT_TIMESTAMP),
+  ('backtest_start','$START','backtest',CURRENT_TIMESTAMP),
+  ('backtest_end','$END','backtest',CURRENT_TIMESTAMP),
   ('backtest_execution_1m','true','backtest',CURRENT_TIMESTAMP),
   ('universe_rebalance_interval','$UNIVERSE_STEP','universe',CURRENT_TIMESTAMP)
 ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=CURRENT_TIMESTAMP;

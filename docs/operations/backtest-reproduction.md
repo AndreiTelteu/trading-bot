@@ -39,6 +39,13 @@ eligible ranked membership before intentional regime-based shortlist
 contraction; a risk-off shortlist of two is valid only when the underlying
 point-in-time universe still has the governed minimum capacity.
 
+After coverage succeeds, the launcher binds the exact evaluation start, end,
+and tradable symbol set to the research settings together with the manifest.
+These bounds deliberately exclude the manifest's warmup prefix. The web
+readiness gate must use the evaluation interval; treating the manifest's
+earlier warmup boundary as the experiment start creates a false initial-gap
+failure because universe snapshots begin at the evaluation boundary.
+
 For performance investigation, set `BACKTEST_PPROF_ADDR` on a controlled, non-public listener and collect CPU/heap profiles from the standard Go `/debug/pprof/` endpoints. Profiling is operator telemetry only and must not change run inputs or be presented as strategy evidence.
 
 After the engine starts, a manifest-backed replay must not generate a
