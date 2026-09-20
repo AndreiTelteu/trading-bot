@@ -323,17 +323,6 @@ for ticker in symbols:
         raise SystemExit(f'{ticker} has no Binance daily lifecycle evidence')
     earliest_ms = int(earliest_rows[0][0])
     listed_at = datetime.fromtimestamp(earliest_ms / 1000, timezone.utc).isoformat().replace('+00:00', 'Z')
-    lifecycle_provenance = json.dumps({
-        'endpoint': 'api/v3/klines', 'interval': '1d', 'symbol': ticker,
-        'earliest_open_time': listed_at,
-    }, sort_keys=True, separators=(',', ':'))
-    for code, identifier in ((base, base_id), (quote, quote_id)):
-        if listed_at < assets[identifier]['available_at']:
-            assets[identifier].update({
-                'available_at': listed_at,
-                'source': 'binance-public-lifecycle',
-                'provenance': lifecycle_provenance,
-            })
     symbol_id = f'binance-{ticker.lower()}-v{identity_version}'
     filters = {item['filterType']: item for item in row.get('filters', [])}
     lot = filters.get('LOT_SIZE') or filters.get('MARKET_LOT_SIZE')
@@ -386,26 +375,17 @@ run_marketdata() {
 }
 
 status "Importing metadata identities not already present"
-EXISTING_ASSETS_JSON="$(docker compose exec -T postgres psql -U postgres -d trading_bot -Atqc "SELECT COALESCE(json_object_agg(id, to_char(available_at AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"'))::text, '{}') FROM assets;")"
+EXISTING_ASSET_IDS="$(docker compose exec -T postgres psql -U postgres -d trading_bot -Atqc "SELECT string_agg(id, ',') FROM assets;")"
 EXISTING_SYMBOL_IDS="$(docker compose exec -T postgres psql -U postgres -d trading_bot -Atqc "SELECT string_agg(id, ',') FROM exchange_symbols;")"
-python3 - "$METADATA" "$EXISTING_ASSETS_JSON" "$EXISTING_SYMBOL_IDS" <<'PY'
-from datetime import datetime
+python3 - "$METADATA" "$EXISTING_ASSET_IDS" "$EXISTING_SYMBOL_IDS" <<'PY'
 from pathlib import Path
 import json, sys
 
 path = Path(sys.argv[1])
 payload = json.loads(path.read_text())
-existing_assets = json.loads(sys.argv[2] or '{}')
+existing_assets = {v for v in sys.argv[2].split(',') if v}
 existing_symbols = {v for v in sys.argv[3].split(',') if v}
-parse = lambda value: datetime.fromisoformat(value.replace('Z', '+00:00'))
-# Retain a known asset only when the new envelope proves an earlier public
-# availability boundary. Once applied, the same resume filters it out again,
-# keeping the correction idempotent despite a later retrieval timestamp.
-payload['assets'] = [
-    value for value in payload['assets']
-    if value['id'] not in existing_assets
-    or parse(value['available_at']) < parse(existing_assets[value['id']])
-]
+payload['assets'] = [v for v in payload['assets'] if v['id'] not in existing_assets]
 payload['symbols'] = [v for v in payload['symbols'] if v['id'] not in existing_symbols]
 payload['tradability_intervals'] = [v for v in payload['tradability_intervals'] if v['exchange_symbol_id'] not in existing_symbols]
 payload['constraints'] = [v for v in payload['constraints'] if v['exchange_symbol_id'] not in existing_symbols]
@@ -413,13 +393,12 @@ path.write_text(json.dumps(payload, indent=2, sort_keys=True) + '\n')
 print(len(payload['symbols']))
 PY
 MISSING_SYMBOL_COUNT="$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["symbols"]))' "$METADATA")"
-MISSING_ASSET_COUNT="$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["assets"]))' "$METADATA")"
-if [[ "$MISSING_SYMBOL_COUNT" -gt 0 || "$MISSING_ASSET_COUNT" -gt 0 ]]; then
+if [[ "$MISSING_SYMBOL_COUNT" -gt 0 ]]; then
   # The bounded metadata envelope must include the historical lifecycle event,
   # which can predate the requested bar warmup by years.
-  run_marketdata -action import-metadata -metadata-file "$CONTAINER_METADATA" -start "$METADATA_IMPORT_START" -end "$END" -correct-earlier-asset-availability=true -dry-run=false
+  run_marketdata -action import-metadata -metadata-file "$CONTAINER_METADATA" -start "$METADATA_IMPORT_START" -end "$END" -dry-run=false
 else
-  status "All requested metadata identities and lifecycle corrections already exist; skipping import"
+  status "All requested metadata identities already exist; skipping import"
 fi
 
 symbol_id() { printf 'binance-%s-v%s\n' "$(tr '[:upper:]' '[:lower:]' <<<"$1")" "$SYMBOL_IDENTITY_VERSION"; }

@@ -87,42 +87,6 @@ func TestMetadataDryRunValidatesParentsWithoutMutation(t *testing.T) {
 	}
 }
 
-func TestMetadataImportRequiresExplicitMonotonicAssetAvailabilityCorrection(t *testing.T) {
-	db := testutil.SetupPostgresDB(t)
-	oldAvailability := time.Date(2024, 11, 27, 0, 0, 0, 0, time.UTC)
-	newAvailability := time.Date(2017, 8, 17, 0, 0, 0, 0, time.UTC)
-	retrieved := time.Date(2026, 9, 20, 0, 0, 0, 0, time.UTC)
-	existing := database.Asset{ID: "asset-btc", CanonicalCode: "BTC", Name: "BTC", Source: "bootstrap-boundary", ProvenanceJSON: `{"boundary":"requested"}`, AvailableAt: oldAvailability, RetrievedAt: retrieved.Add(-time.Hour)}
-	if err := UpsertAssetLifecycle(db, []database.Asset{existing}, nil, nil, nil); err != nil {
-		t.Fatal(err)
-	}
-	corrected := database.Asset{ID: "asset-btc", CanonicalCode: "BTC", Name: "BTC", Source: "binance-public-lifecycle", ProvenanceJSON: `{"endpoint":"api/v3/klines"}`, AvailableAt: newAvailability, RetrievedAt: retrieved}
-	request := MetadataIngestRequest{Assets: []database.Asset{corrected}, Start: newAvailability, End: retrieved.Add(time.Hour)}
-	if err := IngestMetadata(db, request); !errors.Is(err, ErrMetadataConflict) {
-		t.Fatalf("silent metadata correction err=%v", err)
-	}
-	request.CorrectEarlierAssetAvailability = true
-	if err := IngestMetadata(db, request); err != nil {
-		t.Fatal(err)
-	}
-	var got database.Asset
-	if err := db.First(&got, "id=?", corrected.ID).Error; err != nil {
-		t.Fatal(err)
-	}
-	if !got.AvailableAt.Equal(newAvailability) || got.Source != corrected.Source || got.ProvenanceJSON != corrected.ProvenanceJSON {
-		t.Fatalf("correction not applied: %+v", got)
-	}
-
-	// A later envelope can never move the evidence boundary forward, even
-	// when the correction capability was explicitly requested.
-	forward := corrected
-	forward.AvailableAt = oldAvailability.Add(24 * time.Hour)
-	request.Assets = []database.Asset{forward}
-	if err := IngestMetadata(db, request); !errors.Is(err, ErrMetadataConflict) {
-		t.Fatalf("forward availability mutation err=%v", err)
-	}
-}
-
 func TestSparseResumeTickerValidationAndConcurrentInsertAreSafe(t *testing.T) {
 	db := testutil.SetupPostgresDB(t)
 	base := time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)

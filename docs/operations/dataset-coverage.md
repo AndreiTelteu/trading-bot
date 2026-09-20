@@ -21,6 +21,12 @@ After reviewing provenance/row bounds, repeat with `-dry-run=false`, build a man
 
 Build universe ranges first with `-dry-run=true`; supply the actual benchmark symbol/asset IDs and policy version. Missing benchmark, constraints, bars, or incomplete membership is a coverage failure, not an empty valid strategy result. Corrections require a new dataset version/manifest; never overwrite immutable history.
 
+A newer versioned exchange-symbol identity may provide earlier public
+lifecycle evidence for the same stable asset. Manifest construction uses the
+earliest immutable asset-or-symbol availability evidence and binds its matching
+retrieval timestamp into the new digest. It never updates the stable asset row
+or rewrites an older manifest.
+
 The range command validates the immutable manifest once, bulk-loads only the required decision/benchmark series for the bounded range plus the 90-day lookback, and reuses binary-searched in-memory windows for each snapshot. Keep operational ranges bounded to control peak memory; checkpoint resume starts loading from the first unresolved timestamp rather than repeating the completed prefix.
 
 ## Research-readiness preflight (Stage 04/05/07)
@@ -40,13 +46,6 @@ First import a saved, provenance-bearing metadata envelope for the broader
 historical universe. It must contain actual symbol lifecycles, tradability
 intervals, and constraint versions; do not construct it from today's exchange
 listing.
-
-If a previous bootstrap used the requested interval boundary as an asset's
-availability time, a later envelope with earlier public lifecycle evidence may
-use `-correct-earlier-asset-availability=true`. This capability is explicit,
-accepts only a monotonic move to an earlier time for the same asset identity,
-and binds the new source/provenance into future manifests. It cannot move an
-availability boundary forward or rewrite an old manifest.
 
 ```bash
 /home/andrei/.local/opt/go-v1.26.1/bin/go run ./cmd/marketdata \

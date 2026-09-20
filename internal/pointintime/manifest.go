@@ -129,15 +129,16 @@ func BuildManifest(db *gorm.DB, request BuildRequest) (Manifest, error) {
 			d.DelistedAt = canonicalTime(*symbol.DelistedAt)
 		}
 		d.SymbolAvailableAt = canonicalTime(symbol.AvailableAt)
-		d.AssetAvailableAt = canonicalTime(asset.AvailableAt)
+		assetAvailableAt, assetRetrievedAt := effectiveAssetIdentityEvidence(asset, symbol)
+		d.AssetAvailableAt = canonicalTime(assetAvailableAt)
 		d.SymbolRetrievedAt = canonicalTime(symbol.RetrievedAt)
-		d.AssetRetrievedAt = canonicalTime(asset.RetrievedAt)
+		d.AssetRetrievedAt = canonicalTime(assetRetrievedAt)
 		if symbol.AvailableAt.After(coverageStart) {
 			d.QualityFlags = uniqueSorted(append(d.QualityFlags, "metadata_unavailable_at_interval_start"))
 			d.Complete = false
 			d.Quality = "warning"
 		}
-		if asset.AvailableAt.After(coverageStart) {
+		if assetAvailableAt.After(coverageStart) {
 			d.QualityFlags = uniqueSorted(append(d.QualityFlags, "asset_unavailable_at_interval_start"))
 			d.Complete = false
 			d.Quality = "warning"
@@ -500,6 +501,19 @@ func constraintsCoverRows(rows []database.SymbolConstraintVersion, start, end ti
 	}
 	return false
 }
+
+// effectiveAssetIdentityEvidence treats an immutable exchange-symbol identity
+// as evidence for its referenced stable economic asset. This matters when an
+// earlier bootstrap recorded the research-window boundary as Asset.AvailableAt
+// and a later, versioned symbol supplies stronger public lifecycle evidence.
+// Neither row is mutated and old manifests retain their original digest.
+func effectiveAssetIdentityEvidence(asset database.Asset, symbol database.ExchangeSymbol) (time.Time, time.Time) {
+	if symbol.AvailableAt.Before(asset.AvailableAt) {
+		return symbol.AvailableAt, symbol.RetrievedAt
+	}
+	return asset.AvailableAt, asset.RetrievedAt
+}
+
 func sameSeries(a, b SeriesKey) bool {
 	return a.ExchangeSymbolID == b.ExchangeSymbolID && a.Role == b.Role && a.Timeframe == b.Timeframe
 }
