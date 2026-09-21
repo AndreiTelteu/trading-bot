@@ -47,6 +47,7 @@ const (
 	DiagnosticFeatureBucket         StrategyDiagnosticCode = "common_feature_bucket_missing"
 	DiagnosticAchievedAllocation    StrategyDiagnosticCode = "achieved_allocation_out_of_bounds"
 	DiagnosticAllocationReconciled  StrategyDiagnosticCode = "achieved_allocation_reconciled"
+	DiagnosticConstraintResidual    StrategyDiagnosticCode = "target_delta_below_exchange_minimum"
 	DiagnosticIntentRuntime         StrategyDiagnosticCode = "execution_intent_runtime_mismatch"
 )
 

@@ -1099,6 +1099,10 @@ func runStage05Target(ledger *backtestMemoryLedger, config BacktestConfig, strat
 		return &StrategyDiagnosticError{Code: DiagnosticInvalidCombination, Strategy: config.StrategyID, Field: symbol, Details: "executable delta quantity is zero"}
 	}
 	quantity = stage05EconomicFloat(quantity)
+	positionBefore := 0.0
+	if existing := ledger.positions[symbol]; existing != nil {
+		positionBefore = existing.Size
+	}
 	accountName := config.AccountID
 	if accountName == "" {
 		accountName = "backtest"
@@ -1239,9 +1243,37 @@ func runStage05Target(ledger *backtestMemoryLedger, config BacktestConfig, strat
 	roundingTolerance := math.Max(1e-9, lot+1e-9)
 	materiallyUnderfilled := filled <= 0 || math.Abs(filled-quantity) > roundingTolerance
 	if materiallyUnderfilled || len(result.Risk.Rejected()) > 0 || len(result.Broker.Rejected()) > 0 {
+		// A rebalance delta can legitimately fall below an exchange minimum even
+		// though the existing position remains valid. Treat that exact broker
+		// outcome as an auditable residual rather than aborting the whole
+		// multi-year comparison. Initial entries and full exits still fail closed:
+		// without an existing holding (or when trying to close it entirely), the
+		// declared target is not investable.
+		if stage05ConstraintResidual(result, side, positionBefore, quantity, roundingTolerance) {
+			ledger.allocationDiagnostics = append(ledger.allocationDiagnostics, StrategyTraceDiagnostic{
+				Code:    DiagnosticConstraintResidual,
+				Symbol:  symbol,
+				Details: fmt.Sprintf("side=%s requested=%s existing=%s provider=%s", side, decimalString(quantity), decimalString(positionBefore), diagnostic.ProviderCode),
+			})
+			return nil
+		}
 		return &StrategyDiagnosticError{Code: DiagnosticAllocationRejected, Strategy: config.StrategyID, Field: symbol, Details: "required target was rejected or materially underfilled", Execution: diagnostic}
 	}
 	return nil
+}
+
+func stage05ConstraintResidual(result tradingcore.RunResult, side tradingcore.OrderSide, existing, requested, tolerance float64) bool {
+	if existing <= 0 || len(result.Risk.Rejected()) != 0 || len(result.Broker.Accepted()) != 0 || len(result.Broker.Rejected()) != 1 {
+		return false
+	}
+	code := result.Broker.Rejected()[0].Code
+	if code != tradingcore.BelowMinimumQuantity && code != tradingcore.BelowMinimumNotional {
+		return false
+	}
+	if side == tradingcore.Buy {
+		return true
+	}
+	return side == tradingcore.Sell && requested < existing-tolerance
 }
 
 func recordStage05NoAction(ledger *backtestMemoryLedger, config BacktestConfig, strategy tradingcore.Strategy, symbol string, price float64, at time.Time, code string, marks map[string]float64) error {

@@ -69,6 +69,31 @@ func TestStage05DeltaRebalanceAvoidsUnchangedChurn(t *testing.T) {
 	}
 }
 
+func TestStage05DeltaBelowExchangeMinimumIsRecordedWithoutAborting(t *testing.T) {
+	config, series := stage05Fixture(map[string][]float64{"AAAUSDT": {10, 9.9, 9.8, 9.7, 9.6}}, []float64{100, 100, 100, 100, 100}, 0, 0)
+	config.ExecutionPolicy.Constraints["AAAUSDT"] = SymbolConstraints{QuantityStep: .00000001, PriceTick: .00000001, MinQuantity: .00000001, MinNotional: 50}
+	for i := 0; i < 4; i++ {
+		config.ReplaySnapshots = append(config.ReplaySnapshots, ReplaySnapshot{Timestamp: stage05CloseAt(config.Start, i), ObservedComplete: true, Members: replayMembers("AAAUSDT")})
+	}
+	selected, strategy, _ := DefaultStrategyRegistry.Resolve(StrategyEqualWeightID, "", map[string]string{"rebalance": "15m", "target_gross": "0.8", "final_policy": "liquidate"})
+	result, err := runStage05Strategy(config, series, selected, strategy, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, diagnostic := range result.Diagnostics {
+		if diagnostic.Code == DiagnosticConstraintResidual && diagnostic.Symbol == "AAAUSDT" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("missing exchange-minimum residual diagnostic: %+v", result.Diagnostics)
+	}
+	if len(result.Artifacts.Fills) != 2 {
+		t.Fatalf("minimum residual should leave only entry and final liquidation fills: %+v", result.Artifacts.Fills)
+	}
+}
+
 func TestStage05DeltaRebalanceTradesOnlyMemberReplacement(t *testing.T) {
 	config, series := stage05Fixture(map[string][]float64{"AAAUSDT": {10, 10, 10, 10}, "BBBUSDT": {10, 10, 10, 10}, "CCCUSDT": {10, 10, 10, 10}}, []float64{100, 100, 100, 100}, 0, 0)
 	config.ReplaySnapshots = []ReplaySnapshot{{Timestamp: stage05CloseAt(config.Start, 0), ObservedComplete: true, Members: replayMembers("AAAUSDT", "BBBUSDT")}, {Timestamp: stage05CloseAt(config.Start, 1), ObservedComplete: true, Members: replayMembers("BBBUSDT", "CCCUSDT")}, {Timestamp: stage05CloseAt(config.Start, 2), ObservedComplete: true, Members: replayMembers("BBBUSDT", "CCCUSDT")}}
