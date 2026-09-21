@@ -246,6 +246,22 @@ func TestStage05RetainedSellResidualAddsOneRiskSlot(t *testing.T) {
 	}
 }
 
+func TestStage05RetainedSellResidualRemainsExplicit(t *testing.T) {
+	ledger := &backtestMemoryLedger{
+		positions: map[string]*positionState{"DUSTUSDT": {Symbol: "DUSTUSDT", Size: .001}},
+		allocationDiagnostics: []StrategyTraceDiagnostic{{
+			Code: DiagnosticConstraintResidual, Symbol: "DUSTUSDT", Details: "side=sell requested=0.001 existing=0.001 provider=below_minimum_notional",
+		}},
+	}
+	if stage05RetainedResidualSlots(ledger) != 1 {
+		t.Fatal("risk-off dust lost its explicit residual evidence")
+	}
+	delete(ledger.positions, "DUSTUSDT")
+	if stage05RetainedResidualSlots(ledger) != 0 {
+		t.Fatal("closed residual still relaxed risk-off allocation")
+	}
+}
+
 func TestStage05DynamicRotationPositionCapIsRecordedAsNoOp(t *testing.T) {
 	config, _ := stage05Fixture(map[string][]float64{"AAAUSDT": {10, 10, 10}, "BBBUSDT": {10, 10, 10}}, []float64{100, 100, 100}, 0, 0)
 	config.StrategyID = StrategyTrendMomentumCandidate

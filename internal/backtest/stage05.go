@@ -957,6 +957,13 @@ func rebalanceStage05(ledger *backtestMemoryLedger, config BacktestConfig, strat
 	allowed := targetExposure + tolerance
 	if targetExposure == 0 {
 		allowed = 1e-10
+		// Risk-off remains strictly flat unless a sell was attempted and the
+		// exchange could not execute the remaining dust. In that evidenced case,
+		// the same pre-registered allocation tolerance bounds the unavoidable
+		// marked exposure; it does not authorize a new position.
+		if stage05RetainedResidualSlots(ledger) > 0 {
+			allowed = tolerance
+		}
 	}
 	if achievedEquity <= 0 || achievedGross/achievedEquity > allowed+1e-10 {
 		return &StrategyDiagnosticError{Code: DiagnosticAchievedAllocation, Strategy: config.StrategyID, Field: "regime_target_gross", Details: fmt.Sprintf("achieved=%s target=%s tolerance=%s", decimalString(achievedGross/achievedEquity), decimalString(targetExposure), decimalString(tolerance))}
