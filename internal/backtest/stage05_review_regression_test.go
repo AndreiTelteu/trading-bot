@@ -206,6 +206,30 @@ func TestStage05LaterNewTargetBelowMinimumIsRecorded(t *testing.T) {
 	}
 }
 
+func TestStage05FullDustLiquidationIsRetainedAndRecorded(t *testing.T) {
+	config, _ := stage05Fixture(map[string][]float64{"AAAUSDT": {10, 10, 10}}, []float64{100, 100, 100}, 0, 0)
+	config.StrategyID = StrategyEqualWeightID
+	config.StrategyVersion = "1.0.0"
+	config.StrategyParameters = map[string]string{"target_gross": "1"}
+	config.ExecutionPolicy.Constraints["AAAUSDT"] = SymbolConstraints{QuantityStep: .001, PriceTick: .01, MinQuantity: .001, MinNotional: 5}
+	ledger := newBacktestMemoryLedger(config)
+	ledger.cash = 999
+	ledger.positions["AAAUSDT"] = &positionState{Symbol: "AAAUSDT", EntryPrice: 10, Size: .1, EntryTime: config.Start}
+	ledger.events = append(ledger.events, backtestLedgerEvent{Side: "buy", Symbol: "AAAUSDT", Quantity: ".1", Price: "10", At: config.Start})
+	signalAt := config.Start.Add(15*time.Minute - time.Millisecond)
+	fillAt := config.Start.Add(15 * time.Minute)
+	err := runStage05Target(ledger, config, tradingcore.TargetAllocationStrategy{}, "AAAUSDT", tradingcore.Sell, .1, 10, 10, signalAt, fillAt, 1, 0, "final_liquidation", "unknown", map[string]float64{"AAAUSDT": 10}, nil, ExitReasonTrace{Primary: "final_liquidation"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ledger.positions["AAAUSDT"] == nil || ledger.positions["AAAUSDT"].Size != .1 {
+		t.Fatalf("unexecutable dust should remain marked: %+v", ledger.positions["AAAUSDT"])
+	}
+	if len(ledger.allocationDiagnostics) != 1 || ledger.allocationDiagnostics[0].Code != DiagnosticConstraintResidual {
+		t.Fatalf("missing final dust diagnostic: %+v", ledger.allocationDiagnostics)
+	}
+}
+
 func TestStage05DeltaRebalanceTradesOnlyMemberReplacement(t *testing.T) {
 	config, series := stage05Fixture(map[string][]float64{"AAAUSDT": {10, 10, 10, 10}, "BBBUSDT": {10, 10, 10, 10}, "CCCUSDT": {10, 10, 10, 10}}, []float64{100, 100, 100, 100}, 0, 0)
 	config.ReplaySnapshots = []ReplaySnapshot{{Timestamp: stage05CloseAt(config.Start, 0), ObservedComplete: true, Members: replayMembers("AAAUSDT", "BBBUSDT")}, {Timestamp: stage05CloseAt(config.Start, 1), ObservedComplete: true, Members: replayMembers("BBBUSDT", "CCCUSDT")}, {Timestamp: stage05CloseAt(config.Start, 2), ObservedComplete: true, Members: replayMembers("BBBUSDT", "CCCUSDT")}}

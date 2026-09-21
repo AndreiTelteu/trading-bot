@@ -443,7 +443,10 @@ func runStage05StrategyWithPlanner(config BacktestConfig, series map[string][]se
 		if err := liquidateStage05(ledger, runConfig, strategy, marks, fillPrices, signalAt, fillAt, regime); err != nil {
 			return Stage05StrategyResult{}, err
 		}
-		equity = appendEquity(equity, fillAt, ledger.cash)
+		// A full liquidation request can leave an exchange-minimum dust balance.
+		// Value that explicitly retained balance instead of temporarily reporting
+		// cash-only equity and manufacturing a drawdown at the final fill event.
+		equity = appendEquity(equity, fillAt, portfolioEquity(ledger, marksAsOf(allSeries, fillAt)))
 	}
 	endMarks := marksAsOf(allSeries, config.End.Add(-time.Nanosecond))
 	endEquity := portfolioEquity(ledger, endMarks)
@@ -1338,7 +1341,13 @@ func stage05ConstraintResidual(result tradingcore.RunResult, side tradingcore.Or
 	if side == tradingcore.Buy {
 		return true
 	}
-	return side == tradingcore.Sell && requested < existing-tolerance
+	if side != tradingcore.Sell {
+		return false
+	}
+	if requested < existing-tolerance {
+		return true
+	}
+	return hasExecutionHistory && stage05QuantityBelowExecutionMinimum(existing, executionPrice, minimumQuantity, minimumNotional, tolerance)
 }
 
 func stage05NotionalCapacityBelowExecutionMinimum(available, executionPrice, lot float64, minimumQuantity, minimumNotional string, tolerance float64) bool {
