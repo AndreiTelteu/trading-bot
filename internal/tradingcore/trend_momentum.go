@@ -332,6 +332,10 @@ func tmAggregate4H(bars []TrendMomentumBar) []TrendMomentumBar {
 		if open.Minute()%15 != 0 || open.Second() != 0 || open.Nanosecond() != 0 {
 			continue
 		}
+		closeAt := bar.CloseTime.UTC()
+		if closeAt.Before(open) || closeAt.After(open.Add(15*time.Minute)) {
+			continue
+		}
 		bucket := open.Truncate(4 * time.Hour)
 		if buckets[bucket] == nil {
 			buckets[bucket] = map[int]TrendMomentumBar{}
