@@ -1279,6 +1279,18 @@ func runStage05Target(ledger *backtestMemoryLedger, config BacktestConfig, strat
 			})
 			return nil
 		}
+		// Dynamic-universe rotation can be unable to admit a new target while an
+		// older holding remains because of turnover, lot, or dust constraints.
+		// The planner still enforces the active target cap; persist the risk no-op
+		// as constrained allocation evidence rather than invalidating the replay.
+		if stage05PositionCapacityNoOp(result, side, hasExecutionHistory, strategyNeedsUniverse(config.StrategyID)) {
+			ledger.allocationDiagnostics = append(ledger.allocationDiagnostics, StrategyTraceDiagnostic{
+				Code:    DiagnosticAllocationConstrained,
+				Symbol:  symbol,
+				Details: fmt.Sprintf("side=%s requested=%s approved=0 filled=0 policy=%s", side, decimalString(quantity), diagnostic.PolicyCode),
+			})
+			return nil
+		}
 		// The shared risk engine is explicitly allowed to remediate an order down
 		// to the remaining cash, position, or gross limit. When the broker fills
 		// that approved quantity completely, it is the actual investable outcome,
@@ -1295,6 +1307,12 @@ func runStage05Target(ledger *backtestMemoryLedger, config BacktestConfig, strat
 		return &StrategyDiagnosticError{Code: DiagnosticAllocationRejected, Strategy: config.StrategyID, Field: symbol, Details: "required target was rejected or materially underfilled", Execution: diagnostic}
 	}
 	return nil
+}
+
+func stage05PositionCapacityNoOp(result tradingcore.RunResult, side tradingcore.OrderSide, hasExecutionHistory, dynamicUniverse bool) bool {
+	return side == tradingcore.Buy && hasExecutionHistory && dynamicUniverse &&
+		len(result.Risk.Rejected()) == 1 && result.Risk.Rejected()[0].Code == tradingcore.RiskMaxPositions &&
+		len(result.Risk.Approved().Intents()) == 0 && len(result.Broker.Accepted()) == 0 && len(result.Broker.Rejected()) == 0
 }
 
 func stage05RetainedResidualSlots(ledger *backtestMemoryLedger) int {
