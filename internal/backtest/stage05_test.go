@@ -155,6 +155,9 @@ func TestStage05MomentumRotatingLeadersAndFlatAssetsDeterministic(t *testing.T) 
 		"CCCUSDT": {10, 10, 10, 10, 10, 10},
 	}
 	config, series := stage05Fixture(prices, []float64{100, 101, 102, 103, 104, 105}, 0, 0)
+	// The runtime candidate cap must not replace the momentum baseline's own
+	// top-N contract (or reserve no room for exchange-dust residues).
+	config.MaxPositions = 1
 	config.ReplaySnapshots = []ReplaySnapshot{
 		{Timestamp: stage05CloseAt(config.Start, 1), ObservedComplete: true, Members: replayMembers("AAAUSDT", "BBBUSDT", "CCCUSDT")},
 		{Timestamp: stage05CloseAt(config.Start, 3), ObservedComplete: true, Members: replayMembers("AAAUSDT", "BBBUSDT", "CCCUSDT")},
