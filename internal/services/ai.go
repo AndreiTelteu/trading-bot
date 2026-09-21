@@ -150,6 +150,10 @@ type LLMCallResult struct {
 	FinishReason string
 }
 
+type llmCallOptions struct {
+	JSONOutput bool
+}
+
 // ExperimentDraftRequest is advisory research input. It can only produce
 // drafts; the backtest strategy registry remains authoritative for validation.
 type ExperimentDraftRequest struct {
@@ -190,8 +194,8 @@ func GenerateExperimentDrafts(input ExperimentDraftRequest) ([]ExperimentDraft, 
 		return nil, fiber.NewError(400, "LLM API key not configured")
 	}
 	prompt := fmt.Sprintf(`You are designing exploratory, falsifiable trading backtest experiments.
-Return ONLY one JSON array containing exactly %d objects with this schema:
-[{"name":"short unique name","hypothesis":"falsifiable statement","rationale":"why these changes test it","parameters":{"parameter_name":"string value"}}]
+Return ONLY one JSON object containing exactly %d experiment objects with this schema:
+{"experiments":[{"name":"short unique name","hypothesis":"falsifiable statement","rationale":"why these changes test it","parameters":{"parameter_name":"string value"}}]}
 
 Rules:
 - Strategy is %s@%s and cannot change.
@@ -201,18 +205,28 @@ Rules:
 - For this long-only candidate max_net must equal max_gross, position_cap cannot exceed max_gross, and max_gross plus cash_reserve cannot exceed 1.
 - Each experiment must differ from the base and from every other experiment.
 - Prefer changing one coherent factor group per experiment so results remain attributable.
-- Do not claim profitability and do not include markdown.
+- Do not claim profitability and do not include markdown or commentary outside the JSON object.
 
 Operator hypothesis: %s
 Base parameters: %s
 Declared parameter schema: %s`, input.Count, input.StrategyID, input.StrategyVersion, input.Hypothesis, prettyJSON(input.BaseParameters), prettyJSON(input.ParameterSpecs))
-	result, err := callLLM(&llmConfig, prompt)
+	result, err := callLLMWithOptions(&llmConfig, prompt, llmCallOptions{JSONOutput: true})
 	if err != nil {
 		return nil, fiber.NewError(502, "Failed to call LLM: "+err.Error())
 	}
 	drafts, err := parseExperimentDraftResponse(result.Content, input.Count)
 	if err != nil {
-		return nil, err
+		repairPrompt := prompt + fmt.Sprintf(`
+
+Your previous response could not be accepted (%s; finish_reason=%s). Generate the complete JSON object again. Return no prose and exactly %d experiments.`, experimentDraftParseReason(err), result.FinishReason, input.Count)
+		retry, retryErr := callLLMWithOptions(&llmConfig, repairPrompt, llmCallOptions{JSONOutput: true})
+		if retryErr != nil {
+			return nil, fiber.NewError(502, "LLM experiment retry failed: "+retryErr.Error())
+		}
+		drafts, err = parseExperimentDraftResponse(retry.Content, input.Count)
+		if err != nil {
+			return nil, fiber.NewError(502, fmt.Sprintf("LLM did not return a valid experiment set after retry (%s; finish_reason=%s)", experimentDraftParseReason(err), retry.FinishReason))
+		}
 	}
 	for i := range drafts {
 		merged := maps.Clone(input.BaseParameters)
@@ -228,18 +242,88 @@ Declared parameter schema: %s`, input.Count, input.StrategyID, input.StrategyVer
 }
 
 func parseExperimentDraftResponse(content string, count int) ([]ExperimentDraft, error) {
-	start, end := strings.Index(content, "["), strings.LastIndex(content, "]")
-	if start < 0 || end < start {
-		return nil, fiber.NewError(502, "LLM response did not contain an experiment array")
+	trimmed := strings.TrimSpace(content)
+	if trimmed == "" {
+		return nil, errors.New("empty response content")
 	}
-	var drafts []ExperimentDraft
-	if err := json.Unmarshal([]byte(content[start:end+1]), &drafts); err != nil {
-		return nil, fiber.NewError(502, "LLM experiment array was invalid JSON")
+	trimmed = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(trimmed, "```json"), "```"))
+	trimmed = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(trimmed, "```"), "```"))
+
+	var rawDrafts []json.RawMessage
+	if strings.HasPrefix(trimmed, "{") {
+		var wrapper struct {
+			Experiments []json.RawMessage `json:"experiments"`
+		}
+		if err := json.Unmarshal([]byte(trimmed), &wrapper); err != nil {
+			return nil, fmt.Errorf("invalid experiment object JSON: %w", err)
+		}
+		rawDrafts = wrapper.Experiments
+		if rawDrafts == nil {
+			return nil, errors.New("response JSON object omitted experiments")
+		}
+	} else {
+		start, end := strings.Index(trimmed, "["), strings.LastIndex(trimmed, "]")
+		if start < 0 || end < start {
+			return nil, errors.New("response did not contain experiments")
+		}
+		if err := json.Unmarshal([]byte(trimmed[start:end+1]), &rawDrafts); err != nil {
+			return nil, fmt.Errorf("invalid experiment array JSON: %w", err)
+		}
 	}
-	if len(drafts) != count {
-		return nil, fiber.NewError(502, fmt.Sprintf("LLM returned %d experiments; exactly %d were requested", len(drafts), count))
+	if len(rawDrafts) != count {
+		return nil, fmt.Errorf("returned %d experiments; exactly %d were requested", len(rawDrafts), count)
+	}
+	drafts := make([]ExperimentDraft, 0, len(rawDrafts))
+	for index, raw := range rawDrafts {
+		var wire struct {
+			Name       string         `json:"name"`
+			Hypothesis string         `json:"hypothesis"`
+			Rationale  string         `json:"rationale"`
+			Parameters map[string]any `json:"parameters"`
+		}
+		if err := json.Unmarshal(raw, &wire); err != nil {
+			return nil, fmt.Errorf("experiment %d is invalid: %w", index+1, err)
+		}
+		draft := ExperimentDraft{Name: strings.TrimSpace(wire.Name), Hypothesis: strings.TrimSpace(wire.Hypothesis), Rationale: strings.TrimSpace(wire.Rationale), Parameters: map[string]string{}}
+		if draft.Name == "" || draft.Hypothesis == "" || draft.Rationale == "" || len(wire.Parameters) == 0 {
+			return nil, fmt.Errorf("experiment %d omitted a required field", index+1)
+		}
+		for key, value := range wire.Parameters {
+			normalized, ok := experimentParameterString(value)
+			if !ok {
+				return nil, fmt.Errorf("experiment %d parameter %s is not a scalar", index+1, key)
+			}
+			draft.Parameters[key] = normalized
+		}
+		drafts = append(drafts, draft)
 	}
 	return drafts, nil
+}
+
+func experimentParameterString(value any) (string, bool) {
+	switch typed := value.(type) {
+	case string:
+		return strings.TrimSpace(typed), true
+	case json.Number:
+		return typed.String(), true
+	case float64:
+		return strconv.FormatFloat(typed, 'f', -1, 64), true
+	case bool:
+		return strconv.FormatBool(typed), true
+	default:
+		return "", false
+	}
+}
+
+func experimentDraftParseReason(err error) string {
+	if err == nil {
+		return "unknown parse failure"
+	}
+	value := strings.TrimSpace(err.Error())
+	if len(value) > 180 {
+		value = value[:180]
+	}
+	return value
 }
 
 type BacktestOptimizationPromptOptions struct {
@@ -1748,6 +1832,10 @@ func prettyJSON(value interface{}) string {
 }
 
 func callLLM(config *database.LLMConfig, prompt string) (LLMCallResult, error) {
+	return callLLMWithOptions(config, prompt, llmCallOptions{})
+}
+
+func callLLMWithOptions(config *database.LLMConfig, prompt string, options llmCallOptions) (LLMCallResult, error) {
 	timeoutSeconds := 300
 	payload := map[string]interface{}{
 		"model": config.Model,
@@ -1755,6 +1843,9 @@ func callLLM(config *database.LLMConfig, prompt string) (LLMCallResult, error) {
 			{"role": "user", "content": prompt},
 		},
 		"max_tokens": 4000,
+	}
+	if options.JSONOutput {
+		payload["response_format"] = map[string]string{"type": "json_object"}
 	}
 
 	payloadBytes, err := json.Marshal(payload)
