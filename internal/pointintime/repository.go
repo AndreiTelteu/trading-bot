@@ -180,7 +180,13 @@ func (r Repository) ConstraintTimelineForValidatedManifest(manifest Manifest, sy
 	var expected *SeriesCoverage
 	for i := range manifest.Series {
 		series := &manifest.Series[i]
-		if series.ExchangeSymbolID != symbolID || series.Role != RoleDecision || series.Timeframe != "15m" {
+		if series.ExchangeSymbolID != symbolID {
+			continue
+		}
+		// Constraints are symbol-scoped rather than role-scoped. Prefer the
+		// tradable decision declaration, but permit an independently sourced
+		// benchmark series when the benchmark is intentionally not tradable.
+		if expected != nil && !(series.Role == RoleDecision && series.Timeframe == "15m") {
 			continue
 		}
 		expected = series
@@ -192,10 +198,12 @@ func (r Repository) ConstraintTimelineForValidatedManifest(manifest Manifest, sy
 				end = delisted
 			}
 		}
-		break
+		if series.Role == RoleDecision && series.Timeframe == "15m" {
+			break
+		}
 	}
 	if expected == nil {
-		return nil, fmt.Errorf("manifest %s has no decision:15m series for %s", manifest.ID, symbolID)
+		return nil, fmt.Errorf("manifest %s has no series for %s", manifest.ID, symbolID)
 	}
 	rows, err := constraintRowsAtCutoff(r.DB, symbolID, start, end, mustTime(manifest.KnowledgeCutoff))
 	if err != nil {

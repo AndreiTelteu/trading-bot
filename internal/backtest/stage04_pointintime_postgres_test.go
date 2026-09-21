@@ -29,7 +29,11 @@ func TestStage04PointInTimePreparationUsesExactSeriesRoles(t *testing.T) {
 	if err := db.Create(&symbols).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Create(&database.SymbolConstraintVersion{ExchangeSymbolID: "symbol-aaa", EffectiveFrom: base.Add(-time.Hour), QuantityStep: "0.01", PriceTick: "0.01", MinQuantity: "0.01", MinNotional: "1", Source: "fixture", AvailableAt: base.Add(-time.Hour), RetrievedAt: base}).Error; err != nil {
+	constraints := []database.SymbolConstraintVersion{
+		{ExchangeSymbolID: "symbol-aaa", EffectiveFrom: base.Add(-time.Hour), QuantityStep: "0.01", PriceTick: "0.01", MinQuantity: "0.01", MinNotional: "1", Source: "fixture", AvailableAt: base.Add(-time.Hour), RetrievedAt: base},
+		{ExchangeSymbolID: "symbol-btc", EffectiveFrom: base.Add(-time.Hour), QuantityStep: "0.00001", PriceTick: "0.01", MinQuantity: "0.00001", MinNotional: "1", Source: "fixture", AvailableAt: base.Add(-time.Hour), RetrievedAt: base},
+	}
+	if err := db.Create(&constraints).Error; err != nil {
 		t.Fatal(err)
 	}
 	for _, sample := range []struct {
@@ -73,6 +77,9 @@ func TestStage04PointInTimePreparationUsesExactSeriesRoles(t *testing.T) {
 	}
 	if config.SymbolIdentities["AAAUSDT"] != "symbol-aaa" || len(config.DatasetSeries) != 2 {
 		t.Fatalf("unmanifested ticker version escaped exact binding: identities=%v audit=%+v", config.SymbolIdentities, config.DatasetSeries)
+	}
+	if _, err := config.ConstraintResolver("BTCUSDT", base.Add(15*time.Minute-time.Millisecond)); err != nil {
+		t.Fatalf("benchmark constraints were not preloaded: %v", err)
 	}
 	runManifest := buildManifest(config, CoverageReport{SchemaVersion: CoverageSchemaVersion, Passed: true}, RunSuccessfulExecution, manifest.ID)
 	if runManifest.Dataset.ManifestID != manifest.ID || runManifest.Dataset.KnowledgeCutoff == "" || len(runManifest.Dataset.Series) != 2 || runManifest.Dataset.Series[0].ExchangeSymbolID == "symbol-aaa-unmanifested" {

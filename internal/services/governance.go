@@ -213,7 +213,13 @@ func EnsurePolicyConfigs(settings map[string]string) (PolicyVersionSet, error) {
 	}
 
 	err := database.DB.Transaction(func(tx *gorm.DB) error {
-		for policyType, payload := range payloads {
+		policyTypes := make([]string, 0, len(payloads))
+		for policyType := range payloads {
+			policyTypes = append(policyTypes, policyType)
+		}
+		sort.Strings(policyTypes)
+		for _, policyType := range policyTypes {
+			payload := payloads[policyType]
 			version := policyVersion(policyType, payload)
 			payloadBytes, err := json.Marshal(payload)
 			if err != nil {

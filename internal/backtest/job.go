@@ -1220,8 +1220,19 @@ func preparePointInTimeBacktestInputs(settings map[string]string) (BacktestConfi
 		return BacktestConfig{}, nil, err
 	}
 	policy := services.GetUniversePolicy(settings)
-	constraintTimelines := make(map[string][]pointintime.Constraint, len(symbols))
-	for _, symbol := range symbols {
+	constraintSymbols := append([]string(nil), symbols...)
+	benchmarkIncluded := false
+	for _, symbol := range constraintSymbols {
+		if strings.EqualFold(symbol, benchmark) {
+			benchmarkIncluded = true
+			break
+		}
+	}
+	if !benchmarkIncluded {
+		constraintSymbols = append(constraintSymbols, benchmark)
+	}
+	constraintTimelines := make(map[string][]pointintime.Constraint, len(constraintSymbols))
+	for _, symbol := range constraintSymbols {
 		for _, candidate := range byTicker[symbol] {
 			timeline, timelineErr := repo.ConstraintTimelineForValidatedManifest(validated, candidate.ID)
 			if timelineErr != nil {
