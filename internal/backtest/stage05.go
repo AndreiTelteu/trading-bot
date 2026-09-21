@@ -1293,11 +1293,18 @@ func stage05UnderfillIsConstraintResidual(result tradingcore.RunResult, requeste
 }
 
 func stage05ConstraintResidual(result tradingcore.RunResult, side tradingcore.OrderSide, existing, requested, tolerance float64) bool {
-	if existing <= 0 || len(result.Risk.Rejected()) != 0 || len(result.Broker.Accepted()) != 0 || len(result.Broker.Rejected()) != 1 {
+	if existing <= 0 || len(result.Broker.Accepted()) != 0 {
 		return false
 	}
-	code := result.Broker.Rejected()[0].Code
-	if code != tradingcore.BelowMinimumQuantity && code != tradingcore.BelowMinimumNotional {
+	constraintRejected := false
+	if len(result.Risk.Rejected()) == 1 && len(result.Broker.Rejected()) == 0 {
+		constraintRejected = result.Risk.Rejected()[0].Code == tradingcore.RiskQuantityBelowLot
+	}
+	if len(result.Risk.Rejected()) == 0 && len(result.Broker.Rejected()) == 1 {
+		code := result.Broker.Rejected()[0].Code
+		constraintRejected = code == tradingcore.BelowMinimumQuantity || code == tradingcore.BelowMinimumNotional
+	}
+	if !constraintRejected {
 		return false
 	}
 	if side == tradingcore.Buy {
