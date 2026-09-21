@@ -939,18 +939,30 @@ func rebalanceStage05(ledger *backtestMemoryLedger, config BacktestConfig, strat
 	}
 	achievedEquity := ledger.cash + achievedGross
 	targetExposure := gross
-	switch regime {
-	case "risk_on":
-		if value, err := strconv.ParseFloat(parameters["risk_on_gross"], 64); err == nil {
-			targetExposure = math.Min(gross, value)
+	if targetWeights != nil {
+		// The planner has already applied the candidate's component matrix and
+		// exposure regime. In particular, ablations that intentionally disable
+		// the benchmark regime can remain invested while the observed regime is
+		// risk_off. Validate against the frozen planned weights, not by applying
+		// the raw observation a second time.
+		targetExposure = 0
+		for _, value := range targetWeights {
+			targetExposure += value
 		}
-	case "neutral":
-		if value, err := strconv.ParseFloat(parameters["neutral_gross"], 64); err == nil {
-			targetExposure = math.Min(gross, value)
-		}
-	case "risk_off":
-		if value, err := strconv.ParseFloat(parameters["risk_off_gross"], 64); err == nil {
-			targetExposure = math.Min(gross, value)
+	} else {
+		switch regime {
+		case "risk_on":
+			if value, err := strconv.ParseFloat(parameters["risk_on_gross"], 64); err == nil {
+				targetExposure = math.Min(gross, value)
+			}
+		case "neutral":
+			if value, err := strconv.ParseFloat(parameters["neutral_gross"], 64); err == nil {
+				targetExposure = math.Min(gross, value)
+			}
+		case "risk_off":
+			if value, err := strconv.ParseFloat(parameters["risk_off_gross"], 64); err == nil {
+				targetExposure = math.Min(gross, value)
+			}
 		}
 	}
 	tolerance, _ := strconv.ParseFloat(parameters["allocation_tolerance"], 64)
