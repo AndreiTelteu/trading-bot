@@ -1249,7 +1249,7 @@ func runStage05Target(ledger *backtestMemoryLedger, config BacktestConfig, strat
 		// multi-year comparison. Initial entries and full exits still fail closed:
 		// without an existing holding (or when trying to close it entirely), the
 		// declared target is not investable.
-		if stage05ConstraintResidual(result, side, positionBefore, quantity, roundingTolerance) {
+		if stage05ConstraintResidual(result, side, positionBefore, quantity, executionPrice, executionMinQuantity, executionMinNotional, roundingTolerance) {
 			ledger.allocationDiagnostics = append(ledger.allocationDiagnostics, StrategyTraceDiagnostic{
 				Code:    DiagnosticConstraintResidual,
 				Symbol:  symbol,
@@ -1292,13 +1292,17 @@ func stage05UnderfillIsConstraintResidual(result tradingcore.RunResult, requeste
 	return false
 }
 
-func stage05ConstraintResidual(result tradingcore.RunResult, side tradingcore.OrderSide, existing, requested, tolerance float64) bool {
+func stage05ConstraintResidual(result tradingcore.RunResult, side tradingcore.OrderSide, existing, requested, executionPrice float64, minimumQuantity, minimumNotional string, tolerance float64) bool {
 	if existing <= 0 || len(result.Broker.Accepted()) != 0 {
 		return false
 	}
 	constraintRejected := false
 	if len(result.Risk.Rejected()) == 1 && len(result.Broker.Rejected()) == 0 {
-		constraintRejected = result.Risk.Rejected()[0].Code == tradingcore.RiskQuantityBelowLot
+		code := result.Risk.Rejected()[0].Code
+		constraintRejected = code == tradingcore.RiskQuantityBelowLot
+		if !constraintRejected && (code == tradingcore.RiskTotalExposure || code == tradingcore.RiskPositionExposure || code == tradingcore.RiskInsufficientCash) {
+			constraintRejected = stage05QuantityBelowExecutionMinimum(requested, executionPrice, minimumQuantity, minimumNotional, tolerance)
+		}
 	}
 	if len(result.Risk.Rejected()) == 0 && len(result.Broker.Rejected()) == 1 {
 		code := result.Broker.Rejected()[0].Code
@@ -1311,6 +1315,16 @@ func stage05ConstraintResidual(result tradingcore.RunResult, side tradingcore.Or
 		return true
 	}
 	return side == tradingcore.Sell && requested < existing-tolerance
+}
+
+func stage05QuantityBelowExecutionMinimum(quantity, executionPrice float64, minimumQuantity, minimumNotional string, tolerance float64) bool {
+	if minimum, err := strconv.ParseFloat(minimumQuantity, 64); err == nil && minimum > 0 && quantity < minimum+tolerance {
+		return true
+	}
+	if minimum, err := strconv.ParseFloat(minimumNotional, 64); err == nil && minimum > 0 && quantity*executionPrice < minimum+1e-9 {
+		return true
+	}
+	return false
 }
 
 func recordStage05NoAction(ledger *backtestMemoryLedger, config BacktestConfig, strategy tradingcore.Strategy, symbol string, price float64, at time.Time, code string, marks map[string]float64) error {
