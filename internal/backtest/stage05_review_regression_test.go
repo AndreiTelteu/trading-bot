@@ -94,6 +94,28 @@ func TestStage05DeltaBelowExchangeMinimumIsRecordedWithoutAborting(t *testing.T)
 	}
 }
 
+func TestStage05RiskTrimBelowExchangeMinimumIsRecordedWithoutAborting(t *testing.T) {
+	config, _ := stage05Fixture(map[string][]float64{"AAAUSDT": {10, 10, 10}}, []float64{100, 100, 100}, 10, 0)
+	config.StrategyID = StrategyEqualWeightID
+	config.StrategyVersion = "1.0.0"
+	config.StrategyParameters = map[string]string{"target_gross": "1"}
+	config.ExecutionPolicy.Constraints["AAAUSDT"] = SymbolConstraints{QuantityStep: .01, PriceTick: .01, MinQuantity: .01, MinNotional: 5}
+	ledger := newBacktestMemoryLedger(config)
+	strategy := tradingcore.TargetAllocationStrategy{}
+	signalAt := config.Start.Add(15*time.Minute - time.Millisecond)
+	fillAt := config.Start.Add(15 * time.Minute)
+	err := runStage05Target(ledger, config, strategy, "AAAUSDT", tradingcore.Buy, 100, 10, 10, signalAt, fillAt, 1, 1, "rebalance_addition", "unknown", map[string]float64{"AAAUSDT": 10}, nil, ExitReasonTrace{Primary: "rebalance_addition"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ledger.positions) != 1 || ledger.positions["AAAUSDT"].Size <= 0 || ledger.positions["AAAUSDT"].Size >= 100 {
+		t.Fatalf("expected a positive risk-trimmed position: %+v", ledger.positions["AAAUSDT"])
+	}
+	if len(ledger.allocationDiagnostics) != 1 || ledger.allocationDiagnostics[0].Code != DiagnosticConstraintResidual {
+		t.Fatalf("missing constrained-underfill diagnostic: %+v", ledger.allocationDiagnostics)
+	}
+}
+
 func TestStage05DeltaRebalanceTradesOnlyMemberReplacement(t *testing.T) {
 	config, series := stage05Fixture(map[string][]float64{"AAAUSDT": {10, 10, 10, 10}, "BBBUSDT": {10, 10, 10, 10}, "CCCUSDT": {10, 10, 10, 10}}, []float64{100, 100, 100, 100}, 0, 0)
 	config.ReplaySnapshots = []ReplaySnapshot{{Timestamp: stage05CloseAt(config.Start, 0), ObservedComplete: true, Members: replayMembers("AAAUSDT", "BBBUSDT")}, {Timestamp: stage05CloseAt(config.Start, 1), ObservedComplete: true, Members: replayMembers("BBBUSDT", "CCCUSDT")}, {Timestamp: stage05CloseAt(config.Start, 2), ObservedComplete: true, Members: replayMembers("BBBUSDT", "CCCUSDT")}}

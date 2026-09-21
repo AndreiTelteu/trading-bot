@@ -1257,9 +1257,39 @@ func runStage05Target(ledger *backtestMemoryLedger, config BacktestConfig, strat
 			})
 			return nil
 		}
+		// The shared risk engine may trim an otherwise executable order to the
+		// remaining cash/gross limit. If the unfilled remainder could not itself
+		// form a valid exchange order, the actual fill is the closest investable
+		// allocation. Preserve it and report the residual instead of discarding a
+		// valid multi-year run. Larger underfills remain hard failures.
+		if stage05UnderfillIsConstraintResidual(result, quantity, approved, filled, executionPrice, executionMinQuantity, executionMinNotional, roundingTolerance) {
+			ledger.allocationDiagnostics = append(ledger.allocationDiagnostics, StrategyTraceDiagnostic{
+				Code:    DiagnosticConstraintResidual,
+				Symbol:  symbol,
+				Details: fmt.Sprintf("side=%s requested=%s approved=%s filled=%s residual=%s", side, decimalString(quantity), decimalString(approved), decimalString(filled), decimalString(quantity-filled)),
+			})
+			return nil
+		}
 		return &StrategyDiagnosticError{Code: DiagnosticAllocationRejected, Strategy: config.StrategyID, Field: symbol, Details: "required target was rejected or materially underfilled", Execution: diagnostic}
 	}
 	return nil
+}
+
+func stage05UnderfillIsConstraintResidual(result tradingcore.RunResult, requested, approved, filled, executionPrice float64, minimumQuantity, minimumNotional string, tolerance float64) bool {
+	if len(result.Risk.Rejected()) != 0 || len(result.Broker.Rejected()) != 0 || len(result.Broker.Accepted()) == 0 || filled <= 0 || approved <= 0 || filled > requested || math.Abs(approved-filled) > tolerance {
+		return false
+	}
+	residual := requested - filled
+	if residual <= tolerance {
+		return true
+	}
+	if minimum, err := strconv.ParseFloat(minimumQuantity, 64); err == nil && minimum > 0 && residual < minimum+tolerance {
+		return true
+	}
+	if minimum, err := strconv.ParseFloat(minimumNotional, 64); err == nil && minimum > 0 && residual*executionPrice < minimum+1e-9 {
+		return true
+	}
+	return false
 }
 
 func stage05ConstraintResidual(result tradingcore.RunResult, side tradingcore.OrderSide, existing, requested, tolerance float64) bool {
