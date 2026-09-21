@@ -141,7 +141,7 @@ func (s Stage07ExperimentSource) Load(manifest validation.ExperimentManifest) ([
 	}
 	factory := &stage07Factory{folds: map[int]stage07FoldArtifact{}}
 	for i, fold := range manifest.Spec.Folds {
-		factory.folds[fold.Index] = stage07FoldArtifact{config: config, series: cloneOHLCVSeries(series), candidate: selections[i].candidate, baseline: selections[i].baseline, dataDigest: dataDigest}
+		factory.folds[fold.Index] = stage07FoldArtifact{config: config, series: sharedOHLCVSeries(series), candidate: selections[i].candidate, baseline: selections[i].baseline, dataDigest: dataDigest}
 	}
 	return samples, factory, nil
 }
@@ -414,13 +414,9 @@ func stage07TruncateSeries(values map[string][]services.OHLCV, end time.Time) ma
 	return result
 }
 func stage07TruncateBars(values []services.OHLCV, end time.Time) []services.OHLCV {
-	result := make([]services.OHLCV, 0, len(values))
-	for _, bar := range values {
-		if !time.UnixMilli(bar.OpenTime).UTC().After(end) {
-			result = append(result, bar)
-		}
-	}
-	return result
+	endMillis := end.UTC().UnixMilli()
+	index := sort.Search(len(values), func(index int) bool { return values[index].OpenTime > endMillis })
+	return values[:index:index]
 }
 func stage07BarAt(values []services.OHLCV, at time.Time) (services.OHLCV, bool) {
 	for _, bar := range values {

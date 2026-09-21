@@ -1050,11 +1050,13 @@ func preparePointInTimeBacktestInputs(settings map[string]string) (BacktestConfi
 	if fetchExecution {
 		roles[pointintime.RoleExecution] = "1m"
 	}
-	validated, report, err := pointintime.ValidateManifest(database.DB, pointintime.ManifestRequirement{ManifestID: manifestID, Start: start, End: end, Symbols: symbols, Roles: roles, RequireComplete: true})
+	repo := pointintime.Repository{DB: database.DB}
+	validatedRepo, report, err := repo.Validate(pointintime.ManifestRequirement{ManifestID: manifestID, Start: start, End: end, Symbols: symbols, Roles: roles, RequireComplete: true})
 	if err != nil {
 		operations.RecordMissingMarketData("backtest_manifest", manifestID, err)
 		return BacktestConfig{DatasetManifestID: manifestID, DatasetManifestRequired: true, DatasetLimitations: report.Limitations}, nil, err
 	}
+	validated := validatedRepo.Manifest()
 	manifestSeries := func(ticker, role, frame string) []pointintime.SeriesCoverage {
 		var result []pointintime.SeriesCoverage
 		for _, covered := range validated.Series {
@@ -1106,7 +1108,12 @@ func preparePointInTimeBacktestInputs(settings map[string]string) (BacktestConfi
 	if !report.Compatible {
 		return BacktestConfig{DatasetManifestID: manifestID, DatasetManifestRequired: true, DatasetLimitations: report.Limitations}, nil, &pointintime.CoverageError{Report: report}
 	}
-	if _, exactReport, err := pointintime.ValidateManifest(database.DB, pointintime.ManifestRequirement{ManifestID: manifestID, Start: start, End: end, Series: requiredSeries, RequireComplete: true}); err != nil {
+	// The broad validation above has already verified the complete immutable
+	// manifest. Bind the exact requirements in memory; never re-hash the same
+	// dataset here.
+	exactRequirement := pointintime.ManifestRequirement{ManifestID: manifestID, Start: start, End: end, Symbols: symbols, Roles: roles, Series: requiredSeries, RequireComplete: true}
+	if exactReport := pointintime.ValidateManifestRequirement(validated, exactRequirement); !exactReport.Compatible {
+		err := &pointintime.CoverageError{Report: exactReport}
 		operations.RecordMissingMarketData("backtest_exact_series", manifestID, err)
 		return BacktestConfig{DatasetManifestID: manifestID, DatasetManifestRequired: true, DatasetLimitations: exactReport.Limitations}, nil, err
 	}
@@ -1133,7 +1140,6 @@ func preparePointInTimeBacktestInputs(settings map[string]string) (BacktestConfi
 		byTicker[s.Ticker] = append(byTicker[s.Ticker], s)
 		byID[s.ID] = s
 	}
-	repo := pointintime.Repository{DB: database.DB}
 	series := map[string][]services.OHLCV{}
 	execution := map[string][]services.OHLCV{}
 	identities := map[string]string{}
@@ -1146,18 +1152,30 @@ func preparePointInTimeBacktestInputs(settings map[string]string) (BacktestConfi
 			if !ok {
 				return nil, fmt.Errorf("manifest-pinned exchange symbol %s was not loaded", covered.ExchangeSymbolID)
 			}
-			bars, e := repo.Bars(manifestID, s.ID, role, frame, start, end, end)
+			bars, e := validatedRepo.Bars(s.ID, role, frame, start, end, end)
 			if e != nil {
 				return nil, e
 			}
-			combined = append(combined, bars...)
+			if len(combined) == 0 {
+				// Runtime bars are immutable. Keep the cache-owned backing array
+				// for the common single-lifecycle case and cap it so append cannot
+				// overwrite adjacent cached data.
+				combined = bars[:len(bars):len(bars)]
+			} else {
+				copyOfCombined := make([]services.OHLCV, 0, len(combined)+len(bars))
+				copyOfCombined = append(copyOfCombined, combined...)
+				copyOfCombined = append(copyOfCombined, bars...)
+				combined = copyOfCombined
+			}
 			if _, exists := identities[ticker]; !exists {
 				identities[ticker] = s.ID
 				economicIdentities[ticker] = s.AssetID
 				lifecycles[ticker] = SymbolLifecycle{ListedAt: s.ListedAt, DelistedAt: s.DelistedAt}
 			}
 		}
-		sort.Slice(combined, func(i, j int) bool { return combined[i].OpenTime < combined[j].OpenTime })
+		if len(manifestSeries(ticker, role, frame)) > 1 {
+			sort.Slice(combined, func(i, j int) bool { return combined[i].OpenTime < combined[j].OpenTime })
+		}
 		return combined, nil
 	}
 	for _, symbol := range symbols {

@@ -281,16 +281,41 @@ func LoadManifest(db *gorm.DB, id string) (Manifest, error) {
 
 func ValidateManifest(db *gorm.DB, requirement ManifestRequirement) (Manifest, CoverageReport, error) {
 	manifest, err := LoadManifest(db, requirement.ManifestID)
-	report := CoverageReport{SchemaVersion: CoverageSchemaVersion, ManifestID: requirement.ManifestID, Compatible: true, Series: []SeriesCoverage{}}
 	if err != nil {
+		report := CoverageReport{SchemaVersion: CoverageSchemaVersion, ManifestID: requirement.ManifestID, Compatible: false, Series: []SeriesCoverage{}}
 		report.Compatible = false
 		report.Failures = append(report.Failures, CoverageFailure{Code: "manifest_not_found", Details: err.Error()})
 		return Manifest{}, report, &CoverageError{report}
 	}
+	report := ValidateManifestRequirement(manifest, requirement)
+	if err := VerifyManifestContent(db, manifest); err != nil {
+		report.Compatible = false
+		report.Failures = append(report.Failures, CoverageFailure{Code: "manifest_content_mismatch", Details: err.Error()})
+	}
+	sort.Slice(report.Failures, func(i, j int) bool {
+		if report.Failures[i].Code != report.Failures[j].Code {
+			return report.Failures[i].Code < report.Failures[j].Code
+		}
+		return report.Failures[i].Series < report.Failures[j].Series
+	})
+	if !report.Compatible {
+		return manifest, report, &CoverageError{report}
+	}
+	return manifest, report, nil
+}
+
+// ValidateManifestRequirement checks an already verified manifest without
+// touching PostgreSQL. It is used to bind additional exact series requirements
+// without repeating the expensive immutable-content scan.
+func ValidateManifestRequirement(manifest Manifest, requirement ManifestRequirement) CoverageReport {
+	report := CoverageReport{SchemaVersion: CoverageSchemaVersion, ManifestID: requirement.ManifestID, Compatible: true, Series: []SeriesCoverage{}}
 	report.Limitations, report.Series = manifest.Limitations, manifest.Series
 	add := func(code, series, details string) {
 		report.Compatible = false
 		report.Failures = append(report.Failures, CoverageFailure{code, series, details})
+	}
+	if requirement.ManifestID == "" || manifest.ID != requirement.ManifestID {
+		add("manifest_identity_mismatch", "", manifest.ID)
 	}
 	if len(manifest.Series) == 0 {
 		add("manifest_empty", "", "manifest contains no covered series")
@@ -346,22 +371,24 @@ func ValidateManifest(db *gorm.DB, requirement ManifestRequirement) (Manifest, C
 			add("role_timeframe_missing", role+":"+frame, "required series absent")
 		}
 	}
-	if err := VerifyManifestContent(db, manifest); err != nil {
-		add("manifest_content_mismatch", "", err.Error())
-	}
 	sort.Slice(report.Failures, func(i, j int) bool {
 		if report.Failures[i].Code != report.Failures[j].Code {
 			return report.Failures[i].Code < report.Failures[j].Code
 		}
 		return report.Failures[i].Series < report.Failures[j].Series
 	})
-	if !report.Compatible {
-		return manifest, report, &CoverageError{report}
-	}
-	return manifest, report, nil
+	return report
 }
 
 func VerifyManifestContent(db *gorm.DB, manifest Manifest) error {
+	if db == nil {
+		return fmt.Errorf("manifest verification database is unavailable")
+	}
+	key := fmt.Sprintf("%p\x00%s\x00%s\x00%s", db, manifest.ID, manifest.ContentHash, manifest.KnowledgeCutoff)
+	return verifyManifestOnce(key, func() error { return verifyManifestContentUncached(db, manifest) })
+}
+
+func verifyManifestContentUncached(db *gorm.DB, manifest Manifest) error {
 	cutoff, err := time.Parse(time.RFC3339Nano, manifest.KnowledgeCutoff)
 	if err != nil {
 		return fmt.Errorf("invalid knowledge cutoff")

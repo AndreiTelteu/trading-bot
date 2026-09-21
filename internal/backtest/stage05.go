@@ -345,9 +345,9 @@ func runStage05StrategyWithPlanner(config BacktestConfig, series map[string][]se
 	diagnostics := []StrategyTraceDiagnostic{}
 	lastTargets := []string{}
 	lastRebalance := time.Time{}
-	allSeries := cloneOHLCVSeries(series)
+	allSeries := sharedOHLCVSeries(series)
 	if _, ok := allSeries[config.BenchmarkSymbol]; !ok {
-		allSeries[config.BenchmarkSymbol] = append([]services.OHLCV(nil), config.BenchmarkSeries...)
+		allSeries[config.BenchmarkSymbol] = immutableOHLCVView(config.BenchmarkSeries)
 	}
 	finalPolicy := parameters["final_policy"]
 	if finalPolicy == "" {
@@ -542,7 +542,7 @@ func validateStrategyDataRequirements(config BacktestConfig, selected SelectedSt
 func stage05ReferenceSeries(config BacktestConfig, series map[string][]services.OHLCV, id string) []services.OHLCV {
 	// The independently sourced benchmark is the common decision/valuation
 	// clock for every lane. Candidate bars are queried only as-of those times.
-	return append([]services.OHLCV(nil), config.BenchmarkSeries...)
+	return immutableOHLCVView(config.BenchmarkSeries)
 }
 
 func loadStage05Replay(config BacktestConfig, fixture bool) ([]stage05Replay, error) {
@@ -1944,6 +1944,21 @@ func cloneOHLCVSeries(values map[string][]services.OHLCV) map[string][]services.
 		result[symbol] = append([]services.OHLCV(nil), bars...)
 	}
 	return result
+}
+
+// sharedOHLCVSeries copies only the map header. Production OHLCV inputs are
+// immutable after point-in-time loading; full slice expressions prevent an
+// append by a consumer from overwriting the cached tail.
+func sharedOHLCVSeries(values map[string][]services.OHLCV) map[string][]services.OHLCV {
+	result := make(map[string][]services.OHLCV, len(values))
+	for symbol, bars := range values {
+		result[symbol] = immutableOHLCVView(bars)
+	}
+	return result
+}
+
+func immutableOHLCVView(values []services.OHLCV) []services.OHLCV {
+	return values[:len(values):len(values)]
 }
 func containsString(values []string, wanted string) bool {
 	for _, value := range values {

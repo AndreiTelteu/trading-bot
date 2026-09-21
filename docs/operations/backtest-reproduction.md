@@ -84,6 +84,14 @@ unbounded memory to all". Keep the default while one job consumes multiple
 gigabytes. Increase it only after measuring p95 peak RSS and leaving sufficient
 headroom for the server, database, and Go garbage collector.
 
+Point-in-time runtime bars are cached read-only inside the backend process and
+shared by jobs only when manifest content identity, dataset version, knowledge
+cutoff, exact series, interval, and as-of time are identical. Concurrent cold
+requests use one loader; failed loads are never cached. Retention is bounded by
+`BACKTEST_DATASET_CACHE_MAX_BYTES` (default 4 GiB, `0` disables it), with LRU
+eviction. A backend restart intentionally starts cold. This cache is not a new
+data authority: PostgreSQL and the immutable manifest remain authoritative.
+
 ## Monitor a file-backed CLI run
 
 The monitor discovers runs under `instance/backtest-init`, prefers the newest active run, follows its initialization log and later engine telemetry, and refreshes an ASCII progress bar and ETA once per second:
