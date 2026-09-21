@@ -1261,7 +1261,7 @@ func runStage05Target(ledger *backtestMemoryLedger, config BacktestConfig, strat
 		// multi-year comparison. Initial entries and full exits still fail closed:
 		// without an existing holding (or when trying to close it entirely), the
 		// declared target is not investable.
-		if stage05ConstraintResidual(result, side, positionBefore, hasExecutionHistory, quantity, executionPrice, lot, executionMinQuantity, executionMinNotional, remainingGrossNotional, remainingPositionNotional, remainingCashNotional, roundingTolerance) {
+		if stage05ConstraintResidual(result, side, positionBefore, hasExecutionHistory, config.StrategyID == StrategyEqualWeightID, quantity, executionPrice, lot, executionMinQuantity, executionMinNotional, remainingGrossNotional, remainingPositionNotional, remainingCashNotional, roundingTolerance) {
 			ledger.allocationDiagnostics = append(ledger.allocationDiagnostics, StrategyTraceDiagnostic{
 				Code:    DiagnosticConstraintResidual,
 				Symbol:  symbol,
@@ -1304,14 +1304,14 @@ func stage05UnderfillIsConstraintResidual(result tradingcore.RunResult, requeste
 	return false
 }
 
-func stage05ConstraintResidual(result tradingcore.RunResult, side tradingcore.OrderSide, existing float64, hasExecutionHistory bool, requested, executionPrice, lot float64, minimumQuantity, minimumNotional string, remainingGross, remainingPosition, remainingCash, tolerance float64) bool {
+func stage05ConstraintResidual(result tradingcore.RunResult, side tradingcore.OrderSide, existing float64, hasExecutionHistory, allowInfeasibleUniverseMember bool, requested, executionPrice, lot float64, minimumQuantity, minimumNotional string, remainingGross, remainingPosition, remainingCash, tolerance float64) bool {
 	if len(result.Broker.Accepted()) != 0 {
 		return false
 	}
 	constraintRejected := false
 	if len(result.Risk.Rejected()) == 1 && len(result.Broker.Rejected()) == 0 {
 		code := result.Risk.Rejected()[0].Code
-		constraintRejected = (existing > 0 || hasExecutionHistory) && code == tradingcore.RiskQuantityBelowLot
+		constraintRejected = (existing > 0 || hasExecutionHistory || allowInfeasibleUniverseMember) && code == tradingcore.RiskQuantityBelowLot
 		if !constraintRejected && side == tradingcore.Buy {
 			remaining := math.Inf(1)
 			switch code {
@@ -1330,7 +1330,7 @@ func stage05ConstraintResidual(result tradingcore.RunResult, side tradingcore.Or
 	}
 	if len(result.Risk.Rejected()) == 0 && len(result.Broker.Rejected()) == 1 {
 		code := result.Broker.Rejected()[0].Code
-		constraintRejected = (existing > 0 || hasExecutionHistory) && (code == tradingcore.BelowMinimumQuantity || code == tradingcore.BelowMinimumNotional)
+		constraintRejected = (existing > 0 || hasExecutionHistory || allowInfeasibleUniverseMember) && (code == tradingcore.BelowMinimumQuantity || code == tradingcore.BelowMinimumNotional)
 	}
 	if !constraintRejected {
 		return false

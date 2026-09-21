@@ -192,7 +192,6 @@ func TestStage05LaterNewTargetBelowMinimumIsRecorded(t *testing.T) {
 	config.StrategyParameters = map[string]string{"target_gross": "1"}
 	config.ExecutionPolicy.Constraints["BBBUSDT"] = SymbolConstraints{QuantityStep: .001, PriceTick: .01, MinQuantity: .001, MinNotional: 5}
 	ledger := newBacktestMemoryLedger(config)
-	ledger.events = append(ledger.events, backtestLedgerEvent{Side: "buy", Symbol: "AAAUSDT", Quantity: "1", Price: "10", At: config.Start})
 	signalAt := config.Start.Add(15*time.Minute - time.Millisecond)
 	fillAt := config.Start.Add(15 * time.Minute)
 	err := runStage05Target(ledger, config, tradingcore.TargetAllocationStrategy{}, "BBBUSDT", tradingcore.Buy, .1, 10, 10, signalAt, fillAt, 1, .001, "rebalance_addition", "unknown", map[string]float64{"BBBUSDT": 10}, nil, ExitReasonTrace{Primary: "rebalance_addition"})
