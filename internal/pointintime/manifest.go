@@ -12,6 +12,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"hash"
 	"sort"
 	"strings"
 	"time"
@@ -365,6 +366,13 @@ func VerifyManifestContent(db *gorm.DB, manifest Manifest) error {
 	if err != nil {
 		return fmt.Errorf("invalid knowledge cutoff")
 	}
+	type auxiliaryDigest struct {
+		constraintRows  int
+		constraintHash  string
+		tradabilityRows int
+		tradabilityHash string
+	}
+	auxiliary := map[string]auxiliaryDigest{}
 	for _, series := range manifest.Series {
 		start := mustTime(manifest.RequestedStart)
 		end := mustTime(manifest.RequestedEnd)
@@ -376,31 +384,95 @@ func VerifyManifestContent(db *gorm.DB, manifest Manifest) error {
 				end = delisted
 			}
 		}
-		var rows []database.HistoricalBar
-		if end.After(start) {
-			if err := db.Where("dataset_version=? AND exchange_symbol_id=? AND role=? AND timeframe=? AND open_time>=? AND open_time<? AND retrieved_at<=?", manifest.DatasetVersion, series.ExchangeSymbolID, series.Role, series.Timeframe, start, end, cutoff).Order("open_time ASC,id ASC").Find(&rows).Error; err != nil {
-				return err
-			}
+		rows, digest, err := digestBarSeriesAtCutoff(db, manifest.DatasetVersion, series.SeriesKey, start, end, cutoff)
+		if err != nil {
+			return err
 		}
-		if len(rows) != series.Rows || digestBars(rows) != series.SeriesHash {
+		if rows != series.Rows || digest != series.SeriesHash {
 			return fmt.Errorf("series %s immutable row count/digest differs", seriesID(series.SeriesKey))
 		}
-		constraints, e := constraintRowsAtCutoff(db, series.ExchangeSymbolID, start, end, cutoff)
-		if e != nil {
-			return e
+		auxKey := series.ExchangeSymbolID + "\x00" + canonicalTime(start) + "\x00" + canonicalTime(end)
+		digests, ok := auxiliary[auxKey]
+		if !ok {
+			constraints, e := constraintRowsAtCutoff(db, series.ExchangeSymbolID, start, end, cutoff)
+			if e != nil {
+				return e
+			}
+			tradability, e := tradabilityRowsAtCutoff(db, series.ExchangeSymbolID, start, end, cutoff)
+			if e != nil {
+				return e
+			}
+			digests = auxiliaryDigest{
+				constraintRows: len(constraints), constraintHash: digestConstraints(constraints),
+				tradabilityRows: len(tradability), tradabilityHash: digestTradability(tradability),
+			}
+			auxiliary[auxKey] = digests
 		}
-		if len(constraints) != series.ConstraintRows || digestConstraints(constraints) != series.ConstraintHash {
+		if digests.constraintRows != series.ConstraintRows || digests.constraintHash != series.ConstraintHash {
 			return fmt.Errorf("constraints %s immutable row count/digest differs", series.ExchangeSymbolID)
 		}
-		tradability, e := tradabilityRowsAtCutoff(db, series.ExchangeSymbolID, start, end, cutoff)
-		if e != nil {
-			return e
-		}
-		if len(tradability) != series.TradabilityRows || digestTradability(tradability) != series.TradabilityHash {
+		if digests.tradabilityRows != series.TradabilityRows || digests.tradabilityHash != series.TradabilityHash {
 			return fmt.Errorf("tradability %s immutable row count/digest differs", series.ExchangeSymbolID)
 		}
 	}
 	return nil
+}
+
+// digestBarSeriesAtCutoff preserves the canonical JSON digest used by existing
+// manifests while streaming rows through SHA-256. It deliberately avoids the
+// previous HistoricalBar slice + canonical slice + full JSON buffer peak.
+func digestBarSeriesAtCutoff(db *gorm.DB, datasetVersion string, key SeriesKey, start, end, cutoff time.Time) (int, string, error) {
+	digest := newJSONArrayDigest()
+	if !end.After(start) {
+		return 0, digest.sum(), nil
+	}
+	rows, err := db.Model(&database.HistoricalBar{}).
+		Select("exchange_symbol_id, role, timeframe, open_time, available_at, open, high, low, close, volume, quote_volume, quality_status, source, provenance_json, content_hash, trade_count").
+		Where("dataset_version=? AND exchange_symbol_id=? AND role=? AND timeframe=? AND open_time>=? AND open_time<? AND retrieved_at<=?", datasetVersion, key.ExchangeSymbolID, key.Role, key.Timeframe, start, end, cutoff).
+		Order("open_time ASC,id ASC").Rows()
+	if err != nil {
+		return 0, "", err
+	}
+	defer rows.Close()
+	count := 0
+	for rows.Next() {
+		var row database.HistoricalBar
+		if err := db.ScanRows(rows, &row); err != nil {
+			return 0, "", err
+		}
+		digest.add(canonicalBar{row.ExchangeSymbolID, row.Role, row.Timeframe, canonicalTime(row.OpenTime), canonicalTime(row.AvailableAt), row.Open, row.High, row.Low, row.Close, row.Volume, row.QuoteVolume, row.QualityStatus, row.Source, row.ProvenanceJSON, row.ContentHash, row.TradeCount})
+		count++
+	}
+	if err := rows.Err(); err != nil {
+		return 0, "", err
+	}
+	return count, digest.sum(), nil
+}
+
+type jsonArrayDigest struct {
+	h     hash.Hash
+	first bool
+}
+
+func newJSONArrayDigest() *jsonArrayDigest {
+	h := sha256.New()
+	_, _ = h.Write([]byte{'['})
+	return &jsonArrayDigest{h: h, first: true}
+}
+
+func (d *jsonArrayDigest) add(value any) {
+	if !d.first {
+		_, _ = d.h.Write([]byte{','})
+	}
+	d.first = false
+	encoded, _ := json.Marshal(value)
+	_, _ = d.h.Write(encoded)
+}
+
+func (d *jsonArrayDigest) sum() string {
+	// sum may be requested only after all elements have been written.
+	_, _ = d.h.Write([]byte{']'})
+	return hex.EncodeToString(d.h.Sum(nil))
 }
 
 func manifestRow(m Manifest) (database.DatasetManifest, error) {
