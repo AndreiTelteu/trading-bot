@@ -286,6 +286,24 @@ func TestStage05DynamicRotationPositionCapIsRecordedAsNoOp(t *testing.T) {
 	}
 }
 
+func TestCompactStage07SourceResultsDropsReplayOnlyEvidence(t *testing.T) {
+	input := map[string]Stage05StrategyResult{"candidate": {
+		Manifest: RunManifest{SchemaVersion: "manifest-v1"},
+		Metrics:  ComparableMetrics{StartingCapital: "1000"},
+		Trades:   []Trade{{Symbol: "AAAUSDT", Size: 1}},
+		Equity:   []EquityPoint{{Value: 1000}},
+		Factors:  []FactorTrace{{Symbol: "AAAUSDT"}},
+		Rankings: []RankingArtifact{{Symbol: "AAAUSDT"}},
+	}}
+	got := compactStage07SourceResults(input)["candidate"]
+	if got.Manifest.SchemaVersion != "manifest-v1" || got.Metrics.StartingCapital != "1000" || len(got.Trades) != 1 {
+		t.Fatalf("required Stage 07 source fields were lost: %+v", got)
+	}
+	if len(got.Equity) != 0 || len(got.Factors) != 0 || len(got.Rankings) != 0 || len(got.Artifacts.Fills) != 0 {
+		t.Fatalf("replay-only evidence leaked into compact source: %+v", got)
+	}
+}
+
 func TestStage05DeltaRebalanceTradesOnlyMemberReplacement(t *testing.T) {
 	config, series := stage05Fixture(map[string][]float64{"AAAUSDT": {10, 10, 10, 10}, "BBBUSDT": {10, 10, 10, 10}, "CCCUSDT": {10, 10, 10, 10}}, []float64{100, 100, 100, 100}, 0, 0)
 	config.ReplaySnapshots = []ReplaySnapshot{{Timestamp: stage05CloseAt(config.Start, 0), ObservedComplete: true, Members: replayMembers("AAAUSDT", "BBBUSDT")}, {Timestamp: stage05CloseAt(config.Start, 1), ObservedComplete: true, Members: replayMembers("BBBUSDT", "CCCUSDT")}, {Timestamp: stage05CloseAt(config.Start, 2), ObservedComplete: true, Members: replayMembers("BBBUSDT", "CCCUSDT")}}

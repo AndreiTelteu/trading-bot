@@ -213,7 +213,7 @@ func executeAndPersistStage05ComparisonJob(jobID uint, config BacktestConfig, se
 		DatasetManifestID:    comparison.ManifestID,
 		ReplaySettings:       replaySettings,
 		ReplaySettingsDigest: stage07SettingsDigest(replaySettings),
-		Results:              comparison.Results,
+		Results:              compactStage07SourceResults(comparison.Results),
 	})
 	if err != nil || len(validationBytes) > 16<<20 {
 		return ComparisonArtifact{}, fmt.Errorf("bounded Stage 07 source artifact unavailable")
@@ -227,6 +227,20 @@ func executeAndPersistStage05ComparisonJob(jobID uint, config BacktestConfig, se
 	database.DB.Model(&database.BacktestJob{}).Where("id=?", jobID).Updates(map[string]any{"artifact_digest": comparison.ArtifactDigest, "validation_artifact_json": string(validationBytes), "validation_artifact_digest": validationDigest})
 	updateBacktestJobWithSummary(jobID, "completed", 1, message, string(encoded), string(encoded))
 	return comparison, nil
+}
+
+func compactStage07SourceResults(results map[string]Stage05StrategyResult) map[string]Stage05StrategyResult {
+	compact := make(map[string]Stage05StrategyResult, len(results))
+	for id, result := range results {
+		// Stage 07 reconstructs every fold from manifest-pinned bars. Its source
+		// envelope needs the frozen strategy manifest and, for the optional ML
+		// diagnostic path, comparable metrics and immutable trades. Equity curves,
+		// fills, rankings, factor traces, regimes, sensitivity grids and parity are
+		// canonical Stage 05 evidence but are not Stage 07 inputs; duplicating them
+		// made a normal 21-month run exceed the bounded envelope.
+		compact[id] = Stage05StrategyResult{Manifest: result.Manifest, Metrics: result.Metrics, Trades: append([]Trade(nil), result.Trades...)}
+	}
+	return compact
 }
 
 func RunStage05ComparisonSyncWithOverrides(request Stage05RunRequest, overrides map[string]string) (ComparisonArtifact, error) {
