@@ -1201,6 +1201,12 @@ func runStage05Target(ledger *backtestMemoryLedger, config BacktestConfig, strat
 	if configured, parseErr := strconv.Atoi(config.StrategyParameters["max_positions"]); parseErr == nil {
 		maxPositions = configured
 	}
+	// The planner's max_positions parameter limits active targets. A prior
+	// member that could not be fully sold because it became exchange dust is
+	// still present in the portfolio snapshot, but must not consume an active
+	// alpha slot forever. Give the risk engine one explicitly evidenced slot per
+	// retained sell residual; gross, cash, and per-position limits still apply.
+	maxPositions += stage05RetainedResidualSlots(ledger)
 	if maxPositions <= 0 {
 		maxPositions = 1
 	}
@@ -1289,6 +1295,19 @@ func runStage05Target(ledger *backtestMemoryLedger, config BacktestConfig, strat
 		return &StrategyDiagnosticError{Code: DiagnosticAllocationRejected, Strategy: config.StrategyID, Field: symbol, Details: "required target was rejected or materially underfilled", Execution: diagnostic}
 	}
 	return nil
+}
+
+func stage05RetainedResidualSlots(ledger *backtestMemoryLedger) int {
+	residuals := map[string]struct{}{}
+	for _, diagnostic := range ledger.allocationDiagnostics {
+		if diagnostic.Code != DiagnosticConstraintResidual || !strings.HasPrefix(diagnostic.Details, "side=sell ") {
+			continue
+		}
+		if position := ledger.positions[diagnostic.Symbol]; position != nil && position.Size > 0 {
+			residuals[diagnostic.Symbol] = struct{}{}
+		}
+	}
+	return len(residuals)
 }
 
 func stage05UnderfillWasFullyExecuted(result tradingcore.RunResult, requested, approved, filled, tolerance float64) bool {

@@ -230,6 +230,22 @@ func TestStage05FullDustLiquidationIsRetainedAndRecorded(t *testing.T) {
 	}
 }
 
+func TestStage05RetainedSellResidualAddsOneRiskSlot(t *testing.T) {
+	ledger := &backtestMemoryLedger{
+		positions: map[string]*positionState{
+			"DUSTUSDT": {Symbol: "DUSTUSDT", Size: .001},
+			"LIVEUSDT": {Symbol: "LIVEUSDT", Size: 1},
+		},
+		allocationDiagnostics: []StrategyTraceDiagnostic{
+			{Code: DiagnosticConstraintResidual, Symbol: "DUSTUSDT", Details: "side=sell requested=0.001 existing=0.001 provider=below_minimum_notional"},
+			{Code: DiagnosticConstraintResidual, Symbol: "LIVEUSDT", Details: "side=buy requested=0.001 existing=1 provider=below_minimum_notional"},
+		},
+	}
+	if got := stage05RetainedResidualSlots(ledger); got != 1 {
+		t.Fatalf("residual slots=%d want 1", got)
+	}
+}
+
 func TestStage05DeltaRebalanceTradesOnlyMemberReplacement(t *testing.T) {
 	config, series := stage05Fixture(map[string][]float64{"AAAUSDT": {10, 10, 10, 10}, "BBBUSDT": {10, 10, 10, 10}, "CCCUSDT": {10, 10, 10, 10}}, []float64{100, 100, 100, 100}, 0, 0)
 	config.ReplaySnapshots = []ReplaySnapshot{{Timestamp: stage05CloseAt(config.Start, 0), ObservedComplete: true, Members: replayMembers("AAAUSDT", "BBBUSDT")}, {Timestamp: stage05CloseAt(config.Start, 1), ObservedComplete: true, Members: replayMembers("BBBUSDT", "CCCUSDT")}, {Timestamp: stage05CloseAt(config.Start, 2), ObservedComplete: true, Members: replayMembers("BBBUSDT", "CCCUSDT")}}
