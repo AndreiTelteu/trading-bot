@@ -1203,6 +1203,17 @@ func runStage05Target(ledger *backtestMemoryLedger, config BacktestConfig, strat
 	if fraction, parseErr := strconv.ParseFloat(config.StrategyParameters["cash_reserve"], 64); parseErr == nil {
 		cashReserve = portfolioValue * fraction
 	}
+	currentGrossValue := 0.0
+	for heldSymbol, held := range ledger.positions {
+		mark := marks[heldSymbol]
+		if mark <= 0 {
+			mark = held.EntryPrice
+		}
+		currentGrossValue += held.Size * mark
+	}
+	remainingGrossNotional := math.Max(0, maxGrossValue-currentGrossValue)
+	remainingPositionNotional := math.Max(0, maxPositionValue-positionBefore*signalPrice)
+	remainingCashNotional := math.Max(0, ledger.cash-cashReserve)
 	_, increasingExistingPosition := ledger.positions[symbol]
 	increasingExistingPosition = increasingExistingPosition && side == tradingcore.Buy
 	policy := tradingcore.RiskPolicy{Version: backtestPolicyVersion(config), MaxPositions: maxPositions, MaxGrossExposure: maxGross, MaxPositionValue: maxPosition, MaxTurnover: mustAmount(0), CashReserve: mustAmount(stage05EconomicFloat(cashReserve)), MaxConcurrentOrders: maxPositions, PyramidingEnabled: increasingExistingPosition, MaxPyramidLayers: 0, LotSize: mustQuantity(lot), ExecutionCosts: tradingcore.ExecutionCostPolicy{Version: config.ExecutionPolicy.CostVersion, FeeBPS: int64(config.FeeBps), AdverseSlippageBPS: int64(config.SlippageBps)}}
@@ -1249,7 +1260,7 @@ func runStage05Target(ledger *backtestMemoryLedger, config BacktestConfig, strat
 		// multi-year comparison. Initial entries and full exits still fail closed:
 		// without an existing holding (or when trying to close it entirely), the
 		// declared target is not investable.
-		if stage05ConstraintResidual(result, side, positionBefore, quantity, executionPrice, executionMinQuantity, executionMinNotional, roundingTolerance) {
+		if stage05ConstraintResidual(result, side, positionBefore, quantity, executionPrice, lot, executionMinQuantity, executionMinNotional, remainingGrossNotional, remainingPositionNotional, remainingCashNotional, roundingTolerance) {
 			ledger.allocationDiagnostics = append(ledger.allocationDiagnostics, StrategyTraceDiagnostic{
 				Code:    DiagnosticConstraintResidual,
 				Symbol:  symbol,
@@ -1292,21 +1303,33 @@ func stage05UnderfillIsConstraintResidual(result tradingcore.RunResult, requeste
 	return false
 }
 
-func stage05ConstraintResidual(result tradingcore.RunResult, side tradingcore.OrderSide, existing, requested, executionPrice float64, minimumQuantity, minimumNotional string, tolerance float64) bool {
-	if existing <= 0 || len(result.Broker.Accepted()) != 0 {
+func stage05ConstraintResidual(result tradingcore.RunResult, side tradingcore.OrderSide, existing, requested, executionPrice, lot float64, minimumQuantity, minimumNotional string, remainingGross, remainingPosition, remainingCash, tolerance float64) bool {
+	if len(result.Broker.Accepted()) != 0 {
 		return false
 	}
 	constraintRejected := false
 	if len(result.Risk.Rejected()) == 1 && len(result.Broker.Rejected()) == 0 {
 		code := result.Risk.Rejected()[0].Code
-		constraintRejected = code == tradingcore.RiskQuantityBelowLot
-		if !constraintRejected && (code == tradingcore.RiskTotalExposure || code == tradingcore.RiskPositionExposure || code == tradingcore.RiskInsufficientCash) {
+		constraintRejected = existing > 0 && code == tradingcore.RiskQuantityBelowLot
+		if !constraintRejected && side == tradingcore.Buy {
+			remaining := math.Inf(1)
+			switch code {
+			case tradingcore.RiskTotalExposure:
+				remaining = remainingGross
+			case tradingcore.RiskPositionExposure:
+				remaining = remainingPosition
+			case tradingcore.RiskInsufficientCash:
+				remaining = remainingCash
+			}
+			constraintRejected = stage05NotionalCapacityBelowExecutionMinimum(remaining, executionPrice, lot, minimumQuantity, minimumNotional, tolerance)
+		}
+		if !constraintRejected && existing > 0 && (code == tradingcore.RiskTotalExposure || code == tradingcore.RiskPositionExposure || code == tradingcore.RiskInsufficientCash) {
 			constraintRejected = stage05QuantityBelowExecutionMinimum(requested, executionPrice, minimumQuantity, minimumNotional, tolerance)
 		}
 	}
 	if len(result.Risk.Rejected()) == 0 && len(result.Broker.Rejected()) == 1 {
 		code := result.Broker.Rejected()[0].Code
-		constraintRejected = code == tradingcore.BelowMinimumQuantity || code == tradingcore.BelowMinimumNotional
+		constraintRejected = existing > 0 && (code == tradingcore.BelowMinimumQuantity || code == tradingcore.BelowMinimumNotional)
 	}
 	if !constraintRejected {
 		return false
@@ -1315,6 +1338,20 @@ func stage05ConstraintResidual(result tradingcore.RunResult, side tradingcore.Or
 		return true
 	}
 	return side == tradingcore.Sell && requested < existing-tolerance
+}
+
+func stage05NotionalCapacityBelowExecutionMinimum(available, executionPrice, lot float64, minimumQuantity, minimumNotional string, tolerance float64) bool {
+	if math.IsInf(available, 1) {
+		return false
+	}
+	minimumExecutable := lot * executionPrice
+	if minimum, err := strconv.ParseFloat(minimumQuantity, 64); err == nil && minimum > 0 {
+		minimumExecutable = math.Max(minimumExecutable, minimum*executionPrice)
+	}
+	if minimum, err := strconv.ParseFloat(minimumNotional, 64); err == nil && minimum > 0 {
+		minimumExecutable = math.Max(minimumExecutable, minimum)
+	}
+	return available < minimumExecutable+math.Max(1e-9, tolerance*executionPrice)
 }
 
 func stage05QuantityBelowExecutionMinimum(quantity, executionPrice float64, minimumQuantity, minimumNotional string, tolerance float64) bool {
