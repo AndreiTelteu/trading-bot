@@ -111,7 +111,7 @@ func TestStage05RiskTrimBelowExchangeMinimumIsRecordedWithoutAborting(t *testing
 	if len(ledger.positions) != 1 || ledger.positions["AAAUSDT"].Size <= 0 || ledger.positions["AAAUSDT"].Size >= 100 {
 		t.Fatalf("expected a positive risk-trimmed position: %+v", ledger.positions["AAAUSDT"])
 	}
-	if len(ledger.allocationDiagnostics) != 1 || ledger.allocationDiagnostics[0].Code != DiagnosticConstraintResidual {
+	if len(ledger.allocationDiagnostics) != 1 || ledger.allocationDiagnostics[0].Code != DiagnosticAllocationConstrained {
 		t.Fatalf("missing constrained-underfill diagnostic: %+v", ledger.allocationDiagnostics)
 	}
 }

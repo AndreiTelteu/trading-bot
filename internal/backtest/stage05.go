@@ -1272,14 +1272,14 @@ func runStage05Target(ledger *backtestMemoryLedger, config BacktestConfig, strat
 			})
 			return nil
 		}
-		// The shared risk engine may trim an otherwise executable order to the
-		// remaining cash/gross limit. If the unfilled remainder could not itself
-		// form a valid exchange order, the actual fill is the closest investable
-		// allocation. Preserve it and report the residual instead of discarding a
-		// valid multi-year run. Larger underfills remain hard failures.
-		if stage05UnderfillIsConstraintResidual(result, quantity, approved, filled, executionPrice, executionMinQuantity, executionMinNotional, roundingTolerance) {
+		// The shared risk engine is explicitly allowed to remediate an order down
+		// to the remaining cash, position, or gross limit. When the broker fills
+		// that approved quantity completely, it is the actual investable outcome,
+		// not a failed execution. Keep the fill and expose the target shortfall as
+		// evidence; rejections and broker underfills still fail closed.
+		if stage05UnderfillWasFullyExecuted(result, quantity, approved, filled, roundingTolerance) {
 			ledger.allocationDiagnostics = append(ledger.allocationDiagnostics, StrategyTraceDiagnostic{
-				Code:    DiagnosticConstraintResidual,
+				Code:    DiagnosticAllocationConstrained,
 				Symbol:  symbol,
 				Details: fmt.Sprintf("side=%s requested=%s approved=%s filled=%s residual=%s", side, decimalString(quantity), decimalString(approved), decimalString(filled), decimalString(quantity-filled)),
 			})
@@ -1290,21 +1290,11 @@ func runStage05Target(ledger *backtestMemoryLedger, config BacktestConfig, strat
 	return nil
 }
 
-func stage05UnderfillIsConstraintResidual(result tradingcore.RunResult, requested, approved, filled, executionPrice float64, minimumQuantity, minimumNotional string, tolerance float64) bool {
+func stage05UnderfillWasFullyExecuted(result tradingcore.RunResult, requested, approved, filled, tolerance float64) bool {
 	if len(result.Risk.Rejected()) != 0 || len(result.Broker.Rejected()) != 0 || len(result.Broker.Accepted()) == 0 || filled <= 0 || approved <= 0 || filled > requested || math.Abs(approved-filled) > tolerance {
 		return false
 	}
-	residual := requested - filled
-	if residual <= tolerance {
-		return true
-	}
-	if minimum, err := strconv.ParseFloat(minimumQuantity, 64); err == nil && minimum > 0 && residual < minimum+tolerance {
-		return true
-	}
-	if minimum, err := strconv.ParseFloat(minimumNotional, 64); err == nil && minimum > 0 && residual*executionPrice < minimum+1e-9 {
-		return true
-	}
-	return false
+	return requested-filled > tolerance
 }
 
 func stage05ConstraintResidual(result tradingcore.RunResult, side tradingcore.OrderSide, existing float64, hasExecutionHistory, allowInfeasibleUniverseMember bool, requested, executionPrice, lot float64, minimumQuantity, minimumNotional string, remainingGross, remainingPosition, remainingCash, tolerance float64) bool {
