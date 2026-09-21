@@ -207,6 +207,10 @@ func TestStage05MomentumRotatingLeadersAndFlatAssetsDeterministic(t *testing.T) 
 func TestStage05EqualWeightUsesPointInTimeEntriesExitsEmptyCompleteAndCosts(t *testing.T) {
 	prices := map[string][]float64{"AAAUSDT": {10, 10, 10, 10, 10, 10}, "BBBUSDT": {20, 20, 20, 20, 20, 20}}
 	config, series := stage05Fixture(prices, []float64{100, 100, 100, 100, 100, 100}, 25, 25)
+	// Candidate limits are deliberately narrower than the equal-weight
+	// baseline universe. The baseline must still implement its declared
+	// all-eligible-members contract.
+	config.MaxPositions = 1
 	config.ReplaySnapshots = []ReplaySnapshot{
 		{Timestamp: stage05CloseAt(config.Start, 0), ObservedComplete: true, Members: replayMembers("AAAUSDT")},
 		{Timestamp: stage05CloseAt(config.Start, 1), ObservedComplete: true, Members: replayMembers("BBBUSDT")},

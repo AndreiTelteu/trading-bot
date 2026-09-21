@@ -336,6 +336,13 @@ func runStage05StrategyWithPlanner(config BacktestConfig, series map[string][]se
 	runConfig.StrategyID = selected.Descriptor.ID
 	runConfig.StrategyVersion = selected.Descriptor.Version
 	runConfig.StrategyParameters = cloneStringMap(parameters)
+	if selected.Descriptor.ID == StrategyEqualWeightID && runConfig.MaxPositions < len(series) {
+		// This baseline is defined as equal weight across every eligible
+		// point-in-time universe member. Candidate max-position settings must
+		// not silently truncate the baseline or turn its fourth target into a
+		// risk rejection; gross exposure remains normalized independently.
+		runConfig.MaxPositions = len(series)
+	}
 	ledger := newBacktestMemoryLedger(runConfig)
 	equity := []EquityPoint{{Time: config.Start.UTC(), Value: config.InitialBalance}}
 	rankings := []RankingArtifact{}
