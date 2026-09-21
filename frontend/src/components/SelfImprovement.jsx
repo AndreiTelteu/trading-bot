@@ -126,7 +126,11 @@ export default function SelfImprovement() {
   useEffect(() => {
     const descriptor = strategies.find(item => `${item.id}@${item.version}` === selectedStrategy)
     if (!descriptor) return
-    setParameters(Object.fromEntries((descriptor.parameters || []).map(item => [item.name, item.default])))
+    const defaults = Object.fromEntries((descriptor.parameters || []).map(item => [item.name, item.default]))
+    setParameters(defaults)
+    setTargetGross(String(defaults.target_gross ?? defaults.max_gross ?? '1'))
+    setMaxNet(String(defaults.max_net ?? defaults.max_gross ?? '1'))
+    setFinalPolicy(String(defaults.final_policy || 'liquidate'))
   }, [selectedStrategy, strategies])
 
   const updateJob = useCallback(data => {

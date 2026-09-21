@@ -34,6 +34,10 @@ func DispatchBacktestExperiments(c *fiber.Ctx) error {
 	if descriptor == nil {
 		return c.Status(400).JSON(fiber.Map{"error": "Only a registered research strategy can be dispatched"})
 	}
+	baseSelected, _, _, baseErr := backtest.DefaultStrategyRegistry.ResolveExecutable(request.StrategyID, request.StrategyVersion, request.BaseParameters)
+	if baseErr != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "Base candidate is invalid: " + baseErr.Error()})
+	}
 	specs := make([]services.ExperimentParameterSpec, 0, len(descriptor.Parameters))
 	for _, spec := range descriptor.Parameters {
 		specs = append(specs, services.ExperimentParameterSpec{Name: spec.Name, Type: spec.Type, Description: spec.Description, Default: spec.Default, Enum: spec.Enum, Minimum: spec.Minimum, Maximum: spec.Maximum})
@@ -46,10 +50,6 @@ func DispatchBacktestExperiments(c *fiber.Ctx) error {
 		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
 	}
 	seen := map[string]bool{}
-	baseSelected, _, _, baseErr := backtest.DefaultStrategyRegistry.ResolveExecutable(request.StrategyID, request.StrategyVersion, request.BaseParameters)
-	if baseErr != nil {
-		return c.Status(400).JSON(fiber.Map{"error": "Base candidate is invalid: " + baseErr.Error()})
-	}
 	baseCanonical, _ := json.Marshal(baseSelected.Parameters)
 	for i := range drafts {
 		// AI output is advisory. Force the non-capital backtest intent and pass every draft
