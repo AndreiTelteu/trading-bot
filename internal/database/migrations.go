@@ -1732,6 +1732,22 @@ func RunMigrations(db *gorm.DB) error {
 				return fmt.Errorf("decision cohort evidence is intentionally retained; legacy prediction rows are not backfilled")
 			},
 		},
+		{
+			ID: "202609251900_research_evidence_runtime_grants",
+			Migrate: func(tx *gorm.DB) error {
+				// These append-only research-control tables were added after the
+				// general runtime grants migration. Runtime needs only authenticated
+				// registration/read access; immutable triggers continue to reject
+				// updates and deletes.
+				return tx.Exec(`
+					REVOKE ALL PRIVILEGES ON research_experiment_families, research_experiment_attempts, research_attempt_outcomes, research_confirmatory_holdouts, research_confirmatory_holdout_uses FROM PUBLIC, trading_bot_runtime, trading_bot_ledger_writer, trading_bot_parity_writer;
+					GRANT SELECT, INSERT ON research_experiment_families, research_experiment_attempts, research_attempt_outcomes, research_confirmatory_holdouts, research_confirmatory_holdout_uses TO trading_bot_runtime;
+				`).Error
+			},
+			Rollback: func(tx *gorm.DB) error {
+				return fmt.Errorf("immutable research evidence and its least-privilege runtime grants are intentionally retained")
+			},
+		},
 	})
 
 	return m.Migrate()

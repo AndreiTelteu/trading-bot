@@ -166,7 +166,8 @@ func (r *leakRunner) FitAndSelect(f Fold, train, valid []Sample, allowed map[str
 		}
 	}
 	*r.selected = append(*r.selected, choice)
-	return FoldFit{Choice: choice, Parameters: map[string]string{"lookback": choice}, Artifact: []byte("artifact:" + choice)}, nil
+	parameters := map[string]string{"lookback": choice}
+	return FoldFit{Choice: parameterChoiceKey(parameters), Parameters: parameters, Artifact: []byte("artifact:" + choice)}, nil
 }
 func (r *leakRunner) Test(f Fold, artifact []byte, test []Sample) (FoldPrimitives, error) {
 	v := r.testReturns[f.Index]

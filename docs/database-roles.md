@@ -28,6 +28,12 @@ insert immutable populations and observations and maintain only the mutable
 parity aggregate; it cannot update immutable evidence or write ledger/projection
 tables.
 
+Runtime may append and read immutable Stage 07 research-family, attempt,
+outcome, and holdout-control evidence through authenticated validation APIs.
+It has no update or delete privileges on those tables; immutable triggers are
+an additional fail-closed boundary. This authority does not grant promotion or
+economic-write access.
+
 Protective/manual paper close coordination uses a runtime-owned `close_requests`
 reservation. Runtime may create and retry that non-economic reservation and set
 `exit_pending`; it cannot create the corresponding order. The NOINHERIT ledger

@@ -1,6 +1,9 @@
 package backtest
 
 import (
+	"crypto/sha256"
+	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -16,7 +19,7 @@ func TestStage05ComparisonPersistenceIsBoundedAndSchemaVersioned(t *testing.T) {
 	rows := []ComparisonRow{{StrategyID: StrategyCashID, StrategyVersion: "1.0.0", Baseline: true, Metrics: ComparableMetrics{SchemaVersion: EvaluationSchemaVersion, StartingCapital: "1000", EndingEquity: "1000", Reconciled: true}}, {StrategyID: "candidate", StrategyVersion: "1.0.0", Metrics: ComparableMetrics{SchemaVersion: EvaluationSchemaVersion, StartingCapital: "1000", EndingEquity: "1010", Reconciled: true}}}
 	for i := range rows {
 		rows[i].ManifestIdentity, rows[i].RunManifestDigest, rows[i].DatasetDigest = "run-"+rows[i].StrategyID, "run-"+rows[i].StrategyID, "manifest-fixture"
-		rows[i].ImplementationDigest = strategyImplementationDigest(rows[i].StrategyID)
+		rows[i].ImplementationDigest = strategyImplementationDigest(rows[i].StrategyID, rows[i].StrategyVersion)
 		rows[i].ConfigDigest = strategyConfigDigest(rows[i].StrategyID, rows[i].StrategyVersion, rows[i].Parameters)
 	}
 	comparison := ComparisonArtifact{SchemaVersion: ComparisonSchemaVersion, ManifestID: "manifest-fixture", Candidate: "candidate@1.0.0", Assumptions: NormalizedAssumptions{StartingCapital: "1000", MaxGrossExposure: "1", MaxNetExposure: "1", DatasetManifestID: "manifest-fixture", FinalPolicy: "liquidate"}, Rows: rows, Governance: GovernanceGate{SchemaVersion: GovernanceSchemaVersion, OptimizationAllowed: true, PromotionAllowed: true}}
@@ -228,6 +231,35 @@ func TestStage06CandidateRunsThroughPersistedManifestUniverseAndConstraintPath(t
 	result := comparison.Results[StrategyTrendMomentumCandidate]
 	if result.Manifest.DatasetManifestID != manifestID || len(result.Factors) == 0 || !result.Metrics.Reconciled || comparison.Governance.PromotionAllowed {
 		t.Fatalf("stage06 production evidence=%+v governance=%+v", result, comparison.Governance)
+	}
+	sourceBytes, err := json.Marshal(stage07SourceArtifact{SchemaVersion: stage07SourceArtifactSchemaVersion, ComparisonDigest: comparison.ArtifactDigest, DatasetManifestID: manifestID, ReplaySettings: map[string]string{"backtest_start": base.Format(time.RFC3339)}, Results: compactStage07SourceResults(comparison.Results)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(sourceBytes)
+	digestText, sourceText := fmt.Sprintf("%x", digest), string(sourceBytes)
+	job := database.BacktestJob{Status: "completed", JobType: "stage05_comparison", Stage08ContextJSON: "{}", ValidationArtifactJSON: &sourceText, ValidationArtifactDigest: &digestText, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	if err := db.Create(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+	var persisted database.BacktestJob
+	if err := db.First(&persisted, job.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if persisted.ValidationArtifactJSON == nil || persisted.ValidationArtifactDigest == nil {
+		t.Fatal("Stage 07 source artifact was not persisted")
+	}
+	var source stage07SourceArtifact
+	if err := json.Unmarshal([]byte(*persisted.ValidationArtifactJSON), &source); err != nil {
+		t.Fatal(err)
+	}
+	canonical, err := json.Marshal(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	roundTripDigest := sha256.Sum256(canonical)
+	if fmt.Sprintf("%x", roundTripDigest) != *persisted.ValidationArtifactDigest {
+		t.Fatal("JSONB round trip changed the canonical Stage 07 source digest")
 	}
 }
 

@@ -86,6 +86,19 @@ func TestStage05CashIsAuditableExactZeroRiskReference(t *testing.T) {
 	}
 }
 
+func TestValidateStage05RunRequestRejectsNetExposureAboveTarget(t *testing.T) {
+	err := ValidateStage05RunRequest(Stage05RunRequest{
+		StrategyID:          StrategyTrendMomentumCandidate,
+		StrategyVersion:     "1.0.0",
+		TargetGrossExposure: "0.5",
+		MaxNetExposure:      "0.75",
+		FinalPolicy:         "liquidate",
+	})
+	if !IsStrategyDiagnostic(err, DiagnosticInvalidParameter) {
+		t.Fatalf("expected invalid max net exposure, got %v", err)
+	}
+}
+
 func TestStage05RisingBenchmarkBuyHoldGoldenTimingEquityTurnover(t *testing.T) {
 	config, series := stage05Fixture(map[string][]float64{"AAAUSDT": {10, 10, 10, 10}}, []float64{100, 110, 120, 130}, 0, 0)
 	selected, strategy, _ := DefaultStrategyRegistry.Resolve(StrategyBenchmarkHoldID, "", map[string]string{"warmup_bars": "1", "target_gross": "1", "final_policy": "liquidate"})

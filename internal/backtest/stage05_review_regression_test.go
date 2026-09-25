@@ -262,6 +262,24 @@ func TestStage05RetainedSellResidualRemainsExplicit(t *testing.T) {
 	}
 }
 
+func TestTrendMomentumV11MandatoryExitRetainsOnlyExchangeDust(t *testing.T) {
+	config, _ := stage05Fixture(map[string][]float64{"AAAUSDT": {10, 10, 10}}, []float64{100, 100, 100}, 0, 0)
+	config.StrategyID, config.StrategyVersion = StrategyTrendMomentumCandidate, "1.1.0"
+	config.ExecutionPolicy.Constraints["AAAUSDT"] = SymbolConstraints{QuantityStep: .001, PriceTick: .01, MinQuantity: .001, MinNotional: 5}
+	ledger := newBacktestMemoryLedger(config)
+	ledger.positions["AAAUSDT"] = &positionState{Symbol: "AAAUSDT", EntryPrice: 10, Size: 1, EntryTime: config.Start}
+	if err := reconcileMandatoryExitResidual(ledger, config, "AAAUSDT", 1, 10, config.Start); !IsStrategyDiagnostic(err, DiagnosticAchievedAllocation) {
+		t.Fatalf("executable residual accepted: %v", err)
+	}
+	ledger.positions["AAAUSDT"].Size = .1
+	if err := reconcileMandatoryExitResidual(ledger, config, "AAAUSDT", 1, 10, config.Start); err != nil {
+		t.Fatal(err)
+	}
+	if len(ledger.allocationDiagnostics) != 1 || ledger.allocationDiagnostics[0].Code != DiagnosticConstraintResidual {
+		t.Fatalf("dust evidence=%+v", ledger.allocationDiagnostics)
+	}
+}
+
 func TestStage05DynamicRotationPositionCapIsRecordedAsNoOp(t *testing.T) {
 	config, _ := stage05Fixture(map[string][]float64{"AAAUSDT": {10, 10, 10}, "BBBUSDT": {10, 10, 10}}, []float64{100, 100, 100}, 0, 0)
 	config.StrategyID = StrategyTrendMomentumCandidate

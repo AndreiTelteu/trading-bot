@@ -99,6 +99,28 @@ func TestDecisionCohortMigrationHasRuntimeOnlyWriteGrant(t *testing.T) {
 	}
 }
 
+func TestResearchEvidenceMigrationHasAppendOnlyRuntimeGrants(t *testing.T) {
+	db := testutil.OpenPostgresDB(t)
+	testutil.ResetPublicSchema(t, db)
+	if err := database.RunMigrations(db); err != nil {
+		t.Fatal(err)
+	}
+	for _, table := range []string{"research_experiment_families", "research_experiment_attempts", "research_attempt_outcomes", "research_confirmatory_holdouts", "research_confirmatory_holdout_uses"} {
+		for _, check := range []struct {
+			privilege string
+			want      bool
+		}{{"SELECT", true}, {"INSERT", true}, {"UPDATE", false}, {"DELETE", false}} {
+			var got bool
+			if err := db.Raw("SELECT has_table_privilege('trading_bot_runtime', ?, ?)", table, check.privilege).Scan(&got).Error; err != nil {
+				t.Fatal(err)
+			}
+			if got != check.want {
+				t.Errorf("runtime %s %s = %v, want %v", table, check.privilege, got, check.want)
+			}
+		}
+	}
+}
+
 func TestStage04AutomaticRollbackIsExplicitlyRejected(t *testing.T) {
 	err := database.Stage04RollbackError()
 	if err == nil || !strings.Contains(err.Error(), "manually remove") || !strings.Contains(err.Error(), "migration history") {

@@ -87,17 +87,7 @@ func StartStage05ComparisonBatch(c *fiber.Ctx) error {
 	// Validate the complete batch before creating the first job. This prevents
 	// malformed AI drafts from producing a partially submitted experiment set.
 	for _, item := range request.Experiments {
-		parameters := make(map[string]string, len(item.Parameters)+2)
-		for key, value := range item.Parameters {
-			parameters[key] = value
-		}
-		if item.TargetGrossExposure != "" {
-			parameters["target_gross"] = item.TargetGrossExposure
-		}
-		if item.FinalPolicy != "" {
-			parameters["final_policy"] = item.FinalPolicy
-		}
-		if _, _, _, err := backtest.DefaultStrategyRegistry.ResolveExecutable(item.StrategyID, item.StrategyVersion, parameters); err != nil {
+		if err := backtest.ValidateStage05RunRequest(item.Stage05RunRequest); err != nil {
 			return c.Status(400).JSON(fiber.Map{"error": err.Error()})
 		}
 	}

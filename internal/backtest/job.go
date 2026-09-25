@@ -134,17 +134,7 @@ func StartBacktestJob() (*database.BacktestJob, error) {
 // persists only the compact machine-readable comparison, never the unbounded
 // per-strategy curves/artifacts.
 func StartStage05ComparisonJob(request Stage05RunRequest, overrides map[string]string) (*database.BacktestJob, error) {
-	if strings.TrimSpace(request.StrategyID) == "" {
-		return nil, &StrategyDiagnosticError{Code: DiagnosticUnknownStrategy, Details: "candidate strategy id is required"}
-	}
-	parameters := cloneStringMap(request.Parameters)
-	if request.TargetGrossExposure != "" {
-		parameters["target_gross"] = request.TargetGrossExposure
-	}
-	if request.FinalPolicy != "" {
-		parameters["final_policy"] = request.FinalPolicy
-	}
-	if _, _, _, err := DefaultStrategyRegistry.ResolveExecutable(request.StrategyID, request.StrategyVersion, parameters); err != nil {
+	if err := ValidateStage05RunRequest(request); err != nil {
 		return nil, err
 	}
 	job := database.BacktestJob{Status: "pending", JobType: "stage05_comparison", Progress: 0, CreatedAt: time.Now(), UpdatedAt: time.Now(), Stage08ContextJSON: backtestStage08Context("stage05_comparison", map[string]string{"strategy": request.StrategyID + "@" + request.StrategyVersion})}

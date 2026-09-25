@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 	"trading-go/internal/accounting"
@@ -234,7 +235,7 @@ func closeFillCommand(position database.Position, request database.CloseRequest)
 	if position.AmountExact == nil || position.AmountExact.Sign() <= 0 {
 		return ledgerpkg.FillCommand{}, ledgerpkg.ErrProjectionUnavailable
 	}
-	price, err := accounting.FromFloat(request.Price)
+	price, err := closeRequestPrice(request.Price)
 	if err != nil {
 		return ledgerpkg.FillCommand{}, err
 	}
@@ -244,6 +245,12 @@ func closeFillCommand(position database.Position, request database.CloseRequest)
 	}
 	metadata := map[string]interface{}{"fee_bps": request.FeeBPS, "slippage_bps": request.SlippageBPS, "close_request_id": request.ID, "close_source": request.Source}
 	return ledgerpkg.FillCommand{IdempotencyKey: request.ID, ClientOrderID: request.ID, AccountID: position.AccountID, Symbol: position.Symbol, Side: "sell", Quantity: *position.AmountExact, RequestedPrice: price, FillPrice: fillPrice, Fee: fee, FeeType: ledgerpkg.EventTradingFee, Currency: request.Currency, ExecutionMode: normalizeExecutionMode(position.ExecutionMode), OrderStatus: OrderStatusFilled, OccurredAt: request.TriggeredAt, Actor: request.Source, Reason: request.Reason, StrategyVersion: position.StrategyVersion, PolicyVersion: position.PolicyVersion, CostModelVersion: "paper-cost-v1", Metadata: metadata}, nil
+}
+
+func closeRequestPrice(value float64) (accounting.Decimal, error) {
+	// Close requests are a legacy float boundary backed by numeric(38,18).
+	// Round once to the accounting scale before all exact economic arithmetic.
+	return accounting.Parse(strconv.FormatFloat(value, 'f', accounting.Scale, 64))
 }
 
 func (c *ExecutionCoordinator) recordCloseFailure(id, status string, closeErr error) error {

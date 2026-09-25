@@ -89,12 +89,19 @@ func (s Stage07ExperimentSource) Load(manifest validation.ExperimentManifest) ([
 			return nil, nil, &validation.DiagnosticError{Code: validation.DiagnosticIncompleteCoverage, Details: "Stage 05 job lacks primitive validation artifact"}
 		}
 		raw := []byte(*job.ValidationArtifactJSON)
-		sum := sha256.Sum256(raw)
+		var artifact stage07SourceArtifact
+		if json.Unmarshal(raw, &artifact) != nil {
+			return nil, nil, &validation.DiagnosticError{Code: validation.DiagnosticManifestIntegrity, Details: "Stage 05 primitive artifact is invalid JSON"}
+		}
+		canonical, marshalErr := json.Marshal(artifact)
+		if marshalErr != nil {
+			return nil, nil, &validation.DiagnosticError{Code: validation.DiagnosticManifestIntegrity, Details: "Stage 05 primitive artifact canonicalization failed"}
+		}
+		sum := sha256.Sum256(canonical)
 		if fmt.Sprintf("%x", sum) != *job.ValidationArtifactDigest {
 			return nil, nil, &validation.DiagnosticError{Code: validation.DiagnosticManifestIntegrity, Details: "Stage 05 primitive artifact digest mismatch"}
 		}
-		var artifact stage07SourceArtifact
-		if json.Unmarshal(raw, &artifact) != nil || artifact.SchemaVersion != stage07SourceArtifactSchemaVersion || artifact.ComparisonDigest != ref.ArtifactDigest || artifact.DatasetManifestID != manifest.Spec.DatasetManifestID || artifact.ReplaySettingsDigest == "" || artifact.ReplaySettingsDigest != stage07SettingsDigest(artifact.ReplaySettings) {
+		if artifact.SchemaVersion != stage07SourceArtifactSchemaVersion || artifact.ComparisonDigest != ref.ArtifactDigest || artifact.DatasetManifestID != manifest.Spec.DatasetManifestID || artifact.ReplaySettingsDigest == "" || artifact.ReplaySettingsDigest != stage07SettingsDigest(artifact.ReplaySettings) {
 			return nil, nil, &validation.DiagnosticError{Code: validation.DiagnosticManifestIntegrity, Details: "Stage 05 primitive artifact envelope mismatch"}
 		}
 		candidate, ok := artifact.Results[manifest.Spec.Candidate.ID]
@@ -230,16 +237,24 @@ func stage07Primitives(candidate, baseline Stage05StrategyResult, fold, observat
 	if err != nil || start <= 0 {
 		return validation.FoldPrimitives{}, &validation.DiagnosticError{Code: validation.DiagnosticNonFinite, Details: "invalid starting capital"}
 	}
-	if len(candidate.Equity) != len(baseline.Equity) || len(candidate.Equity) < 2 {
+	if len(candidate.Equity) < 2 || len(baseline.Equity) < 2 {
 		return validation.FoldPrimitives{}, &validation.DiagnosticError{Code: validation.DiagnosticMissingBenchmark, Details: "candidate/baseline curves are not aligned"}
 	}
 	curve := make([]validation.CurvePrimitive, len(candidate.Equity))
 	gross, net := metricValue(candidate.Metrics.AverageGrossExposure), metricValue(candidate.Metrics.AverageNetExposure)
+	baselineIndex := 0
 	for i := range curve {
-		if !candidate.Equity[i].Time.Equal(baseline.Equity[i].Time) {
-			return validation.FoldPrimitives{}, &validation.DiagnosticError{Code: validation.DiagnosticMissingBenchmark, Details: "curve clocks differ"}
+		at := candidate.Equity[i].Time
+		for baselineIndex+1 < len(baseline.Equity) && !baseline.Equity[baselineIndex+1].Time.After(at) {
+			baselineIndex++
 		}
-		curve[i] = validation.CurvePrimitive{At: candidate.Equity[i].Time.UTC(), Equity: candidate.Equity[i].Value, Benchmark: baseline.Equity[i].Value, GrossExposure: gross, NetExposure: net}
+		if baseline.Equity[baselineIndex].Time.After(at) {
+			return validation.FoldPrimitives{}, &validation.DiagnosticError{Code: validation.DiagnosticMissingBenchmark, Details: "benchmark curve starts after candidate"}
+		}
+		curve[i] = validation.CurvePrimitive{At: at.UTC(), Equity: candidate.Equity[i].Value, Benchmark: baseline.Equity[baselineIndex].Value, GrossExposure: gross, NetExposure: net}
+	}
+	if baseline.Equity[len(baseline.Equity)-1].Time.Before(candidate.Equity[len(candidate.Equity)-1].Time) {
+		return validation.FoldPrimitives{}, &validation.DiagnosticError{Code: validation.DiagnosticMissingBenchmark, Details: "benchmark curve ends before candidate"}
 	}
 	trades := make([]validation.TradePrimitive, len(candidate.Trades))
 	for i, t := range candidate.Trades {
@@ -632,7 +647,7 @@ func LoadStage07ComparisonReference(db *gorm.DB, jobID uint) (Stage07ComparisonR
 	if artifact.ArtifactDigest != *job.ArtifactDigest {
 		return Stage07ComparisonReference{}, &validation.DiagnosticError{Code: validation.DiagnosticManifestIntegrity, Details: "Stage 05 job digest differs from canonical artifact"}
 	}
-	if artifact.CandidateEvidence == nil && artifact.Candidate == StrategyTrendMomentumCandidate+"@1.0.0" {
+	if artifact.CandidateEvidence == nil && strings.HasPrefix(artifact.Candidate, StrategyTrendMomentumCandidate+"@") {
 		return Stage07ComparisonReference{}, fmt.Errorf("Stage 06 candidate evidence is missing")
 	}
 	strategies := map[string]Stage07StrategyRef{}

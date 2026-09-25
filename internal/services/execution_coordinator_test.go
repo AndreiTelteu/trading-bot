@@ -178,6 +178,16 @@ func TestCloseReservationSurvivesRestartAndAppliesExactlyOnce(t *testing.T) {
 	}
 }
 
+func TestCloseRequestPriceRoundsLegacyFloatToAccountingScale(t *testing.T) {
+	price, err := closeRequestPrice(0.000004742870249999999)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if price.String() != "0.00000474287025" {
+		t.Fatalf("price=%s", price.String())
+	}
+}
+
 func TestDuplicateCloseRequestsReuseOneDurableIdentity(t *testing.T) {
 	testutil.SetupPostgresDB(t)
 	if err := database.SeedData(); err != nil {

@@ -119,6 +119,7 @@ func setupTestRoutes(app *fiber.App, cfg *config.Config) {
 	backtest.Get("/status/:id", handlers.GetBacktestStatus)
 	backtest.Get("/strategies", handlers.ListBacktestStrategies)
 	backtest.Post("/compare", handlers.StartStage05Comparison)
+	backtest.Post("/compare/batch", handlers.StartStage05ComparisonBatch)
 
 	ai := api.Group("/ai")
 	ai.Get("/proposals", handlers.GetAIProposals)
@@ -575,6 +576,39 @@ func TestStage05AuthenticatedStrategyAndComparisonValidationEndpoints(t *testing
 	response, err = app.Test(request)
 	if err != nil || response.StatusCode != http.StatusBadRequest {
 		t.Fatalf("invalid comparison status=%v err=%v", response.StatusCode, err)
+	}
+}
+
+func TestStage05BatchRejectsInvalidExposureBeforeCreatingJobs(t *testing.T) {
+	SetupTestDB(t)
+	app := SetupTestApp()
+	cookie := loginCookie(t, app)
+
+	var before int64
+	if err := database.DB.Model(&database.BacktestJob{}).Count(&before).Error; err != nil {
+		t.Fatal(err)
+	}
+	body := `{"experiments":[
+		{"strategy_id":"trend_momentum_candidate","strategy_version":"1.0.0","target_gross_exposure":"0.75","max_net_exposure":"0.75","final_policy":"liquidate"},
+		{"strategy_id":"trend_momentum_candidate","strategy_version":"1.0.0","target_gross_exposure":"0.5","max_net_exposure":"0.75","final_policy":"liquidate"}
+	]}`
+	request := httptest.NewRequest(http.MethodPost, "/api/backtest/compare/batch", bytes.NewBufferString(body))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Cookie", cookie)
+	response, err := app.Test(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusBadRequest {
+		payload, _ := io.ReadAll(response.Body)
+		t.Fatalf("expected status 400, got %d: %s", response.StatusCode, payload)
+	}
+	var after int64
+	if err := database.DB.Model(&database.BacktestJob{}).Count(&after).Error; err != nil {
+		t.Fatal(err)
+	}
+	if after != before {
+		t.Fatalf("invalid batch created jobs: before=%d after=%d", before, after)
 	}
 }
 

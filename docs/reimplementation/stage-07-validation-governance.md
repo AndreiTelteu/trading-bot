@@ -28,6 +28,9 @@ Require statistically meaningful, reproducible evidence before a strategy or mod
 - [x] Select/tune only from allowed training/validation evidence.
 - [x] Aggregate untouched test windows after decisions are frozen.
 - [x] Reject validation when windows, observations, trades, or regimes are insufficient.
+- [x] Distinguish Stage 07 evidence that has not been run from validation that
+  ran and failed; pending evidence remains non-promotable without being
+  mislabeled as a failed walk-forward result.
 - [x] Resolve and preflight the effective walk-forward policy before launching either replay lane; the governed default remains 12 training months plus 3 test months, and warmup does not count toward the validation interval.
 - [x] Persist the effective train/test/bootstrap policy in the versioned backtest run manifest.
 - [x] Require the independent `research-readiness-v1` preflight for Stage 05/06

@@ -462,6 +462,10 @@ func newDefaultStrategyRegistry() *StrategyRegistry {
 			{Name: "final_policy", Type: "enum", Description: "Final valuation policy.", Default: "liquidate", Enum: []string{"mark_to_market", "liquidate"}},
 		}},
 	}
+	candidateV11 := cloneStrategyDescriptor(definitions[len(definitions)-1])
+	candidateV11.Version = "1.1.0"
+	candidateV11.Description += " Mandatory exits retain only explicitly evidenced exchange dust."
+	definitions = append(definitions, candidateV11)
 	for _, descriptor := range definitions {
 		if descriptor.ID == StrategyEqualWeightID || descriptor.ID == StrategyMomentumID {
 			descriptor.Parameters = append(descriptor.Parameters, StrategyParameterSpec{Name: "include_shortlist", Type: "enum", Description: "Whether persisted shortlist members join active members in the tradable baseline universe.", Default: "true", Enum: []string{"false", "true"}})

@@ -20,7 +20,19 @@ export GOOS=linux
 if [ -z "${BACKTEST_CODE_REVISION:-}" ] && [ -f .git/HEAD ]; then
     git_head="$(cat .git/HEAD)"
     case "$git_head" in
-        "ref: "*) git_ref="${git_head#ref: }"; [ -f ".git/$git_ref" ] && BACKTEST_CODE_REVISION="$(cat ".git/$git_ref")" ;;
+        "ref: "*)
+            git_ref="${git_head#ref: }"
+            if [ -f ".git/$git_ref" ]; then
+                BACKTEST_CODE_REVISION="$(cat ".git/$git_ref")"
+            elif [ -f .git/packed-refs ]; then
+                while read -r packed_revision packed_ref; do
+                    if [ "$packed_ref" = "$git_ref" ]; then
+                        BACKTEST_CODE_REVISION="$packed_revision"
+                        break
+                    fi
+                done < .git/packed-refs
+            fi
+            ;;
         *) BACKTEST_CODE_REVISION="$git_head" ;;
     esac
 fi

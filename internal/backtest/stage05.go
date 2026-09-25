@@ -162,33 +162,12 @@ type ComparisonArtifact struct {
 }
 
 func RunStage05Comparison(config BacktestConfig, series map[string][]services.OHLCV, request Stage05RunRequest) (ComparisonArtifact, error) {
-	if request.StrategyID == "" {
-		return ComparisonArtifact{}, &StrategyDiagnosticError{Code: DiagnosticUnknownStrategy, Details: "candidate strategy id is required"}
-	}
-	if request.TargetGrossExposure == "" {
-		request.TargetGrossExposure = "1"
-	}
-	if request.MaxNetExposure == "" {
-		request.MaxNetExposure = request.TargetGrossExposure
-	}
-	if request.FinalPolicy == "" {
-		request.FinalPolicy = "liquidate"
-	}
-	candidateParameters := cloneStringMap(request.Parameters)
-	if request.StrategyID == StrategyTrendMomentumCandidate {
-		intent := candidateParameters["execution_intent"]
-		if intent == "" {
-			candidateParameters["execution_intent"] = "backtest"
-		} else if intent != "backtest" {
-			return ComparisonArtifact{}, &StrategyDiagnosticError{Code: DiagnosticIntentRuntime, Strategy: request.StrategyID, Field: "execution_intent", Details: "comparison jobs require backtest simulation; use a Stage 06 preview surface for non-capital observation modes"}
-		}
+	request, candidateParameters, err := normalizeStage05RunRequest(request)
+	if err != nil {
+		return ComparisonArtifact{}, err
 	}
 	if err := validateComparableInputs(config, series, request); err != nil {
 		return ComparisonArtifact{}, err
-	}
-	candidateParameters["target_gross"] = request.TargetGrossExposure
-	if _, ok := candidateParameters["final_policy"]; ok || request.StrategyID != StrategyCashID {
-		candidateParameters["final_policy"] = request.FinalPolicy
 	}
 	candidate, _, _, err := DefaultStrategyRegistry.ResolveExecutable(request.StrategyID, request.StrategyVersion, candidateParameters)
 	if err != nil {
@@ -236,6 +215,60 @@ func RunStage05Comparison(config BacktestConfig, series map[string][]services.OH
 	}
 	comparison := buildStage05Comparison(config, request, candidate, results)
 	return comparison, nil
+}
+
+// ValidateStage05RunRequest performs the request-only checks used before a job
+// is persisted. Dataset and replay checks remain part of RunStage05Comparison.
+func ValidateStage05RunRequest(request Stage05RunRequest) error {
+	_, _, err := normalizeStage05RunRequest(request)
+	return err
+}
+
+func normalizeStage05RunRequest(request Stage05RunRequest) (Stage05RunRequest, map[string]string, error) {
+	if request.StrategyID == "" {
+		return request, nil, &StrategyDiagnosticError{Code: DiagnosticUnknownStrategy, Details: "candidate strategy id is required"}
+	}
+	if request.TargetGrossExposure == "" {
+		request.TargetGrossExposure = "1"
+	}
+	if request.MaxNetExposure == "" {
+		request.MaxNetExposure = request.TargetGrossExposure
+	}
+	if request.FinalPolicy == "" {
+		request.FinalPolicy = "liquidate"
+	}
+	candidateParameters := cloneStringMap(request.Parameters)
+	if request.StrategyID == StrategyTrendMomentumCandidate {
+		intent := candidateParameters["execution_intent"]
+		if intent == "" {
+			candidateParameters["execution_intent"] = "backtest"
+		} else if intent != "backtest" {
+			return request, nil, &StrategyDiagnosticError{Code: DiagnosticIntentRuntime, Strategy: request.StrategyID, Field: "execution_intent", Details: "comparison jobs require backtest simulation; use a Stage 06 preview surface for non-capital observation modes"}
+		}
+	}
+	if request.FinalPolicy != "liquidate" && request.FinalPolicy != "mark_to_market" {
+		return request, nil, invalidParameter(request.StrategyID, "final_policy", "must be liquidate or mark_to_market")
+	}
+	gross, err := tradingcore.ParseDecimal(request.TargetGrossExposure)
+	if err != nil || gross.Sign() <= 0 || gross.Float64() > 1 {
+		return request, nil, invalidParameter(request.StrategyID, "target_gross_exposure", "must be an exact decimal in (0,1]")
+	}
+	net, err := tradingcore.ParseDecimal(request.MaxNetExposure)
+	if err != nil || net.Sign() <= 0 || net.Float64() > gross.Float64() {
+		return request, nil, invalidParameter(request.StrategyID, "max_net_exposure", "must be an exact decimal in (0,target gross]")
+	}
+	if math.Abs(net.Float64()-gross.Float64()) > 1e-12 {
+		return request, nil, &StrategyDiagnosticError{Code: DiagnosticInvalidCombination, Strategy: request.StrategyID, Details: "long-only Stage 05 strategies require max net exposure to equal target gross exposure"}
+	}
+	candidateParameters["target_gross"] = request.TargetGrossExposure
+	if _, ok := candidateParameters["final_policy"]; ok || request.StrategyID != StrategyCashID {
+		candidateParameters["final_policy"] = request.FinalPolicy
+	}
+	_, _, _, err = DefaultStrategyRegistry.ResolveExecutable(request.StrategyID, request.StrategyVersion, candidateParameters)
+	if err != nil {
+		return request, nil, err
+	}
+	return request, candidateParameters, nil
 }
 
 func validateComparableInputs(config BacktestConfig, series map[string][]services.OHLCV, request Stage05RunRequest) error {
@@ -891,6 +924,11 @@ func rebalanceStage05(ledger *backtestMemoryLedger, config BacktestConfig, strat
 				}
 				return err
 			}
+			if mandatory && desired <= 1e-10 && config.StrategyVersion == "1.1.0" {
+				if err := reconcileMandatoryExitResidual(ledger, config, symbol, delta, fills[symbol], fillAt); err != nil {
+					return err
+				}
+			}
 			if !mandatory {
 				remainingBudget -= notional
 			}
@@ -982,6 +1020,22 @@ func rebalanceStage05(ledger *backtestMemoryLedger, config BacktestConfig, strat
 	}
 	achieved := achievedGross / achievedEquity
 	ledger.allocationDiagnostics = append(ledger.allocationDiagnostics, StrategyTraceDiagnostic{Code: DiagnosticAllocationReconciled, Details: fmt.Sprintf("regime=%s achieved=%s target=%s shortfall=%s overshoot=%s tolerance=%s", regime, decimalString(achieved), decimalString(targetExposure), decimalString(math.Max(0, targetExposure-achieved)), decimalString(math.Max(0, achieved-targetExposure)), decimalString(tolerance))})
+	return nil
+}
+
+func reconcileMandatoryExitResidual(ledger *backtestMemoryLedger, config BacktestConfig, symbol string, requested, executionPrice float64, at time.Time) error {
+	remaining := ledger.positions[symbol]
+	if remaining == nil || remaining.Size <= 1e-10 {
+		return nil
+	}
+	_, _, minimumQuantity, minimumNotional, err := constraintValues(config, symbol, at)
+	if err != nil {
+		return err
+	}
+	if !stage05QuantityBelowExecutionMinimum(remaining.Size, executionPrice, minimumQuantity, minimumNotional, 1e-9) {
+		return &StrategyDiagnosticError{Code: DiagnosticAchievedAllocation, Strategy: config.StrategyID, Field: symbol, Details: "mandatory exit retained executable quantity=" + decimalString(remaining.Size)}
+	}
+	ledger.allocationDiagnostics = append(ledger.allocationDiagnostics, StrategyTraceDiagnostic{Code: DiagnosticConstraintResidual, Symbol: symbol, Details: fmt.Sprintf("side=sell requested=%s existing=%s provider=post_fill_below_minimum", decimalString(requested), decimalString(remaining.Size))})
 	return nil
 }
 
@@ -1934,7 +1988,7 @@ func buildStage05Comparison(config BacktestConfig, request Stage05RunRequest, ca
 		normalized := NormalizedRunManifest{SchemaVersion: "normalized-run-manifest-v1", DatasetManifestID: config.DatasetManifestID, StrategyID: id, StrategyVersion: result.Manifest.Strategy.Descriptor.Version, Parameters: cloneStringMap(result.Manifest.Strategy.Parameters), Assumptions: assumptions}
 		encodedManifest, _ := json.Marshal(normalized)
 		runDigest := fmt.Sprintf("%x", sha256.Sum256(encodedManifest))
-		implementationDigest := strategyImplementationDigest(id)
+		implementationDigest := strategyImplementationDigest(id, result.Manifest.Strategy.Descriptor.Version)
 		configDigest := strategyConfigDigest(id, result.Manifest.Strategy.Descriptor.Version, result.Manifest.Strategy.Parameters)
 		row := ComparisonRow{StrategyID: id, StrategyVersion: result.Manifest.Strategy.Descriptor.Version, Descriptor: cloneStrategyDescriptor(result.Manifest.Strategy.Descriptor), Parameters: cloneStringMap(result.Manifest.Strategy.Parameters), ManifestIdentity: runDigest, ImplementationDigest: implementationDigest, ConfigDigest: configDigest, RunManifestDigest: runDigest, DatasetDigest: result.Manifest.DatasetManifestID, DatasetManifestID: result.Manifest.DatasetManifestID, NormalizedRunManifest: normalized, Baseline: result.Manifest.Strategy.Descriptor.Baseline, Metrics: result.Metrics, Reasons: []string{}}
 		if result.Metrics.TotalReturn.Available && cashReturn.Available {
@@ -2024,7 +2078,7 @@ func buildStage05Comparison(config BacktestConfig, request Stage05RunRequest, ca
 	return artifact
 }
 
-func strategyImplementationDigest(id string) string {
+func strategyImplementationDigest(id, version string) string {
 	// Stage 06 is the only deployable candidate and its digest covers the
 	// shared planner, target conversion and shared execution contracts. The
 	// Stage 05 baselines use the same target interpreter but remain distinct
@@ -2032,7 +2086,12 @@ func strategyImplementationDigest(id string) string {
 	if id == StrategyLegacyCompatibility {
 		return tradingcore.StrategyArtifactDigest("legacy")
 	}
-	return tradingcore.StrategyArtifactDigest("target")
+	base := tradingcore.StrategyArtifactDigest("target")
+	if id == StrategyTrendMomentumCandidate && version == "1.1.0" {
+		sum := sha256.Sum256([]byte(base + "\x00mandatory-exit-residual-v1"))
+		return fmt.Sprintf("%x", sum)
+	}
+	return base
 }
 
 func strategyConfigDigest(id, version string, parameters map[string]string) string {
@@ -2103,7 +2162,7 @@ func UnmarshalComparisonArtifact(data []byte) (ComparisonArtifact, error) {
 
 func validateComparisonIdentities(value ComparisonArtifact) error {
 	for _, row := range value.Rows {
-		if row.ImplementationDigest == "" || row.ConfigDigest == "" || row.RunManifestDigest == "" || row.DatasetDigest == "" || row.DatasetDigest != value.ManifestID || row.RunManifestDigest != row.ManifestIdentity || row.ConfigDigest != strategyConfigDigest(row.StrategyID, row.StrategyVersion, row.Parameters) || row.ImplementationDigest != strategyImplementationDigest(row.StrategyID) {
+		if row.ImplementationDigest == "" || row.ConfigDigest == "" || row.RunManifestDigest == "" || row.DatasetDigest == "" || row.DatasetDigest != value.ManifestID || row.RunManifestDigest != row.ManifestIdentity || row.ConfigDigest != strategyConfigDigest(row.StrategyID, row.StrategyVersion, row.Parameters) || row.ImplementationDigest != strategyImplementationDigest(row.StrategyID, row.StrategyVersion) {
 			return fmt.Errorf("comparison row has mismatched typed identities: %s", row.StrategyID)
 		}
 	}

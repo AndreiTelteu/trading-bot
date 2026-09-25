@@ -49,6 +49,10 @@ Establish minimal, understandable baselines before introducing a production cand
 - [x] Report drawdown, Sharpe/Sortino where sample size permits, profit factor, expectancy, turnover, exposure time, and trade count.
 - [x] Report concentration by symbol, period, and regime.
 - [x] Report whether apparent outperformance comes from leverage or exposure differences.
+- [x] Render available zero-valued metrics as `0` in the operator UI while
+  preserving the digest-bound v1 artifact encoding used by existing runs.
+- [x] Validate complete batch-level exposure constraints before persisting any
+  job, so one malformed experiment cannot create a partially runnable batch.
 
 ## Testing instructions
 

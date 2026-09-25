@@ -31,6 +31,23 @@ func TestStage07PrimitivesAttributeActualFillCostsPerTrade(t *testing.T) {
 	}
 }
 
+func TestStage07PrimitivesCausallyAlignBenchmarkAsOfCandidateClock(t *testing.T) {
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	candidate := Stage05StrategyResult{Metrics: ComparableMetrics{StartingCapital: "100", AverageGrossExposure: availableMetric(.5), TurnoverRatio: availableMetric(.1)}, Equity: []EquityPoint{{Time: base, Value: 100}, {Time: base.Add(2 * time.Hour), Value: 102}}}
+	baseline := Stage05StrategyResult{Metrics: ComparableMetrics{AverageGrossExposure: availableMetric(.5), TurnoverRatio: availableMetric(.1)}, Equity: []EquityPoint{{Time: base, Value: 100}, {Time: base.Add(time.Hour), Value: 101}, {Time: base.Add(2 * time.Hour), Value: 103}}}
+	primitives, err := stage07Primitives(candidate, baseline, 0, 2, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(primitives.Curve) != 2 || primitives.Curve[0].Benchmark != 100 || primitives.Curve[1].Benchmark != 103 {
+		t.Fatalf("curve=%+v", primitives.Curve)
+	}
+	baseline.Equity = baseline.Equity[:2]
+	if _, err := stage07Primitives(candidate, baseline, 0, 2, nil); err == nil {
+		t.Fatal("benchmark ending before the candidate was accepted")
+	}
+}
+
 func TestStage07RunnerRejectsMutatedPartitionSample(t *testing.T) {
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	interval := validation.Interval{Start: base, End: base.Add(time.Hour)}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -323,7 +324,6 @@ func validateFit(fit FoldFit, allowed map[string][]string) error {
 	if len(fit.Parameters) != len(allowed) {
 		return &DiagnosticError{Code: DiagnosticInvalidManifest, Field: "fold_fit.parameters", Details: "complete predeclared parameter set is required"}
 	}
-	choiceAllowed := false
 	for key, value := range fit.Parameters {
 		choices, ok := allowed[key]
 		if !ok {
@@ -334,18 +334,28 @@ func validateFit(fit FoldFit, allowed map[string][]string) error {
 			if value == candidate {
 				found = true
 			}
-			if fit.Choice == candidate {
-				choiceAllowed = true
-			}
 		}
 		if !found {
 			return &DiagnosticError{Code: DiagnosticInvalidManifest, Field: "fold_fit.parameters", Details: "out-of-list value: " + key + "=" + value}
 		}
 	}
-	if !choiceAllowed {
-		return &DiagnosticError{Code: DiagnosticInvalidManifest, Field: "fold_fit.choice", Details: "choice was not predeclared"}
+	if fit.Choice != parameterChoiceKey(fit.Parameters) {
+		return &DiagnosticError{Code: DiagnosticInvalidManifest, Field: "fold_fit.choice", Details: "choice does not bind the complete predeclared parameter set"}
 	}
 	return nil
+}
+
+func parameterChoiceKey(parameters map[string]string) string {
+	keys := make([]string, 0, len(parameters))
+	for key := range parameters {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		parts = append(parts, key+"="+parameters[key])
+	}
+	return strings.Join(parts, ";")
 }
 
 func sampleDigest(samples []Sample) (string, error)        { return canonicalDigest(cloneSamples(samples)) }
