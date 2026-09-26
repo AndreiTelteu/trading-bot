@@ -25,17 +25,29 @@ var builtinArtifactPaths = map[string]string{
 
 var modelArtifactCache = struct {
 	sync.RWMutex
-	artifacts map[string]LogisticModelArtifact
+	artifacts        map[string]LogisticModelArtifact
+	readOnlyBuiltins map[string]bool
 }{
-	artifacts: make(map[string]LogisticModelArtifact),
+	artifacts:        make(map[string]LogisticModelArtifact),
+	readOnlyBuiltins: make(map[string]bool),
 }
 
 func LoadConfiguredModel(settings map[string]string) (*LogisticModelArtifact, error) {
+	return loadConfiguredModel(settings, true)
+}
+
+// LoadBacktestConfiguredModel uses the same selection and authority checks as
+// runtime without registering an embedded model in model_artifacts.
+func LoadBacktestConfiguredModel(settings map[string]string) (*LogisticModelArtifact, error) {
+	return loadConfiguredModel(settings, false)
+}
+
+func loadConfiguredModel(settings map[string]string, registerBuiltin bool) (*LogisticModelArtifact, error) {
 	policy := GetAuthorizedModelSelectionPolicy(settings)
 	if !policy.Enabled() {
 		return nil, nil
 	}
-	artifact, err := LoadModelArtifact(policy.ActiveModelVersion)
+	artifact, err := loadModelArtifact(policy.ActiveModelVersion, registerBuiltin)
 	if err != nil {
 		return nil, err
 	}
@@ -48,6 +60,10 @@ func LoadConfiguredModel(settings map[string]string) (*LogisticModelArtifact, er
 }
 
 func LoadModelArtifact(version string) (*LogisticModelArtifact, error) {
+	return loadModelArtifact(version, true)
+}
+
+func loadModelArtifact(version string, registerBuiltin bool) (*LogisticModelArtifact, error) {
 	version = strings.TrimSpace(version)
 	if version == "" {
 		return nil, nil
@@ -55,9 +71,13 @@ func LoadModelArtifact(version string) (*LogisticModelArtifact, error) {
 
 	modelArtifactCache.RLock()
 	if cached, ok := modelArtifactCache.artifacts[version]; ok {
+		pending := modelArtifactCache.readOnlyBuiltins[version]
 		modelArtifactCache.RUnlock()
 		if cached.ArtifactClass == ModelArtifactResearchProposal {
 			return nil, fmt.Errorf("model artifact %s is an offline research proposal and cannot be loaded by runtime inference", version)
+		}
+		if registerBuiltin && pending {
+			registerCachedBuiltin(version)
 		}
 		copyArtifact := cached
 		return &copyArtifact, nil
@@ -65,9 +85,10 @@ func LoadModelArtifact(version string) (*LogisticModelArtifact, error) {
 	modelArtifactCache.RUnlock()
 
 	var (
-		payload  []byte
-		checksum string
-		err      error
+		payload    []byte
+		checksum   string
+		err        error
+		registered bool
 	)
 
 	if builtinPath, ok := builtinArtifactPaths[version]; ok {
@@ -75,7 +96,9 @@ func LoadModelArtifact(version string) (*LogisticModelArtifact, error) {
 		if err != nil {
 			return nil, err
 		}
-		_ = ensureBuiltinModelArtifactRecord(version, builtinPath, checksum, payload)
+		if registerBuiltin && database.DB != nil {
+			registered = ensureBuiltinModelArtifactRecord(version, builtinPath, checksum, payload) == nil
+		}
 	} else {
 		payload, checksum, err = loadArtifactPayloadFromDatabase(version)
 		if err != nil {
@@ -98,11 +121,36 @@ func LoadModelArtifact(version string) (*LogisticModelArtifact, error) {
 	}
 
 	modelArtifactCache.Lock()
-	modelArtifactCache.artifacts[version] = artifact
+	if _, exists := modelArtifactCache.artifacts[version]; !exists {
+		modelArtifactCache.artifacts[version] = artifact
+		if _, builtin := builtinArtifactPaths[version]; builtin && !registered {
+			modelArtifactCache.readOnlyBuiltins[version] = true
+		}
+	}
+	if registered {
+		delete(modelArtifactCache.readOnlyBuiltins, version)
+	}
 	modelArtifactCache.Unlock()
 
 	copyArtifact := artifact
 	return &copyArtifact, nil
+}
+
+func registerCachedBuiltin(version string) {
+	if database.DB == nil {
+		return
+	}
+	builtinPath, ok := builtinArtifactPaths[version]
+	if !ok {
+		return
+	}
+	payload, checksum, err := readEmbeddedArtifact(builtinPath)
+	if err != nil || ensureBuiltinModelArtifactRecord(version, builtinPath, checksum, payload) != nil {
+		return
+	}
+	modelArtifactCache.Lock()
+	delete(modelArtifactCache.readOnlyBuiltins, version)
+	modelArtifactCache.Unlock()
 }
 
 func readEmbeddedArtifact(path string) ([]byte, string, error) {

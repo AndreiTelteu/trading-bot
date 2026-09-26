@@ -20,6 +20,9 @@ governed deployment, manifest, authority policy, and model artifact when
 resolving context. Runtime governance synchronization continues to maintain
 active policy config rows. A read-only database transaction can therefore
 resolve a backtest context without changing runtime policy authority.
+The first builtin model load in backtest also reads and validates its embedded
+artifact without registering it in `model_artifacts`. A later runtime load
+performs the normal registration even when backtest populated the model cache.
 
 The command runs a fail-closed validation-window preflight after the manifest-backed interval is resolved and before either baseline or volatility-sizing lane starts. The interval must contain at least one complete walk-forward window. With the governed `12` training months plus `3` test months policy, `2025-01-01T00:00:00Z` requires an end at or after `2026-04-01T00:00:00Z`; warmup history does not count toward this validation interval. The CLI flags above override only the run snapshot, and the effective train/test/bootstrap policy is included in the versioned run manifest.
 

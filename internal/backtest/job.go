@@ -943,7 +943,7 @@ func prepareBacktestInputsWithSettings(settings map[string]string) (BacktestConf
 	if err != nil {
 		return BacktestConfig{}, nil, err
 	}
-	modelArtifact, err := services.LoadConfiguredModel(settings)
+	modelArtifact, err := services.LoadBacktestConfiguredModel(settings)
 	if err != nil {
 		return BacktestConfig{}, nil, err
 	}
@@ -1219,7 +1219,7 @@ func preparePointInTimeBacktestInputs(settings map[string]string) (BacktestConfi
 	if err != nil {
 		return BacktestConfig{}, nil, err
 	}
-	modelArtifact, err := services.LoadConfiguredModel(settings)
+	modelArtifact, err := services.LoadBacktestConfiguredModel(settings)
 	if err != nil {
 		return BacktestConfig{}, nil, err
 	}
