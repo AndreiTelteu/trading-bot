@@ -97,10 +97,20 @@ func ValidateFoldMetrics(metrics FoldMetrics, requirements SampleRequirements) e
 	if len(metrics.TradeContributions) != metrics.Trades || len(metrics.SymbolContributions) == 0 {
 		return &DiagnosticError{Code: DiagnosticManifestIntegrity, Details: "trade and symbol contributions must be complete"}
 	}
+	openTotal := 0.0
+	for symbol, value := range metrics.OpenPositionContributions {
+		if symbol == "" || !finite(value) {
+			return &DiagnosticError{Code: DiagnosticNonFinite, Field: "open_position_contributions"}
+		}
+		openTotal += value
+	}
 	for label, values := range map[string]map[string]float64{"trade": metrics.TradeContributions, "symbol": metrics.SymbolContributions, "regime": metrics.RegimeContributions} {
 		total := 0.0
 		for _, value := range values {
 			total += value
+		}
+		if label != "symbol" {
+			total += openTotal
 		}
 		if math.Abs(total-metrics.AfterCostReturn) > tolerance(math.Max(1, math.Abs(metrics.AfterCostReturn))) {
 			return &DiagnosticError{Code: DiagnosticManifestIntegrity, Details: label + " contributions do not reconcile to after-cost return"}
@@ -112,7 +122,7 @@ func ValidateFoldMetrics(metrics FoldMetrics, requirements SampleRequirements) e
 			return &DiagnosticError{Code: DiagnosticNonFinite}
 		}
 	}
-	for _, values := range []map[string]float64{metrics.RegimeContributions, metrics.TradeContributions, metrics.SymbolContributions} {
+	for _, values := range []map[string]float64{metrics.RegimeContributions, metrics.TradeContributions, metrics.OpenPositionContributions, metrics.SymbolContributions} {
 		for _, value := range values {
 			if !finite(value) {
 				return &DiagnosticError{Code: DiagnosticNonFinite}

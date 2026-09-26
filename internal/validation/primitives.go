@@ -80,6 +80,23 @@ func DeriveFoldMetrics(p FoldPrimitives) (FoldMetrics, error) {
 	if len(p.Trades) > 0 && len(p.Fills) == 0 {
 		return FoldMetrics{}, &DiagnosticError{Code: DiagnosticManifestIntegrity, Field: "fills", Details: "trades require economic fill evidence"}
 	}
+	closedPnL := netPnL
+	openContrib := map[string]float64{}
+	for _, position := range p.ResidualPositions {
+		if position.Symbol == "" || position.MarkedAt.IsZero() || position.MarkedAt.After(p.Curve[len(p.Curve)-1].At) {
+			return FoldMetrics{}, &DiagnosticError{Code: DiagnosticManifestIntegrity, Field: "residual_position", Details: "final marked inventory must identify its symbol and valuation time"}
+		}
+		if _, duplicate := openContrib[position.Symbol]; duplicate {
+			return FoldMetrics{}, &DiagnosticError{Code: DiagnosticManifestIntegrity, Field: "residual_position.symbol", Details: "duplicate final position"}
+		}
+		if !finite(position.Quantity) || position.Quantity <= 0 || !finite(position.CostBasis) || position.CostBasis <= 0 || !finite(position.EntryFee) || position.EntryFee < 0 || !finite(position.MarkPrice) || position.MarkPrice <= 0 || !finite(position.MarkValue) || position.MarkValue <= 0 || !finite(position.UnrealizedPnL) || math.Abs(position.Quantity*position.MarkPrice-position.MarkValue) > tolerance(p.StartingCapital) || math.Abs(position.MarkValue-position.CostBasis-position.EntryFee-position.UnrealizedPnL) > tolerance(p.StartingCapital) {
+			return FoldMetrics{}, &DiagnosticError{Code: DiagnosticManifestIntegrity, Field: "residual_position.pnl", Details: "marked value, basis, fees and unrealized PnL do not reconcile"}
+		}
+		contribution := position.UnrealizedPnL / p.StartingCapital
+		openContrib[position.Symbol] = contribution
+		symbolContrib[position.Symbol] += contribution
+		netPnL += position.UnrealizedPnL
+	}
 	if !finite(p.BaselineGrossExposure) || !finite(p.BaselineTurnover) || p.BaselineTurnover < 0 || math.Abs(p.BaselineGrossExposure-grossExposure/float64(len(p.Curve))) > tolerance(1) || math.Abs(p.BaselineTurnover-turnover) > tolerance(math.Max(1, turnover)) {
 		return FoldMetrics{}, &DiagnosticError{Code: DiagnosticBaselineMismatch, Details: "baseline must be exposure and turnover matched"}
 	}
@@ -92,7 +109,7 @@ func DeriveFoldMetrics(p FoldPrimitives) (FoldMetrics, error) {
 	afterCostReturn := netPnL / p.StartingCapital
 	expectancy := 0.0
 	if len(p.Trades) > 0 {
-		expectancy = afterCostReturn / float64(len(p.Trades))
+		expectancy = closedPnL / p.StartingCapital / float64(len(p.Trades))
 	}
 	downside, tail := downsideAndExpectedShortfall(periodReturns)
 	sharpe := periodSharpe(periodReturns)
@@ -102,7 +119,7 @@ func DeriveFoldMetrics(p FoldPrimitives) (FoldMetrics, error) {
 		RegimeContributions: regimeContrib, AfterCostExpectancy: expectancy, AfterCostReturn: afterCostReturn,
 		BenchmarkRelativeReturn: afterCostReturn - benchmarkReturn, MaxDrawdown: drawdown, Turnover: turnover,
 		GrossExposure: grossExposure / float64(len(p.Curve)), NetExposure: netExposure / float64(len(p.Curve)),
-		Coverage: float64(p.ObservedObservations) / float64(p.ExpectedObservations), DownsideDeviation: downside, ExpectedShortfall95: tail, MaxLiquidityParticipation: maxParticipation, Sharpe: sharpe, TradeContributions: tradeContrib, SymbolContributions: symbolContrib,
+		Coverage: float64(p.ObservedObservations) / float64(p.ExpectedObservations), DownsideDeviation: downside, ExpectedShortfall95: tail, MaxLiquidityParticipation: maxParticipation, Sharpe: sharpe, TradeContributions: tradeContrib, OpenPositionContributions: openContrib, SymbolContributions: symbolContrib,
 	}, nil
 }
 

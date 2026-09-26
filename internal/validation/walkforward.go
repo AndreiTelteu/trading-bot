@@ -119,6 +119,7 @@ type FoldMetrics struct {
 	MaxLiquidityParticipation float64            `json:"max_liquidity_participation"`
 	Sharpe                    float64            `json:"sharpe"`
 	TradeContributions        map[string]float64 `json:"trade_contributions,omitempty"`
+	OpenPositionContributions map[string]float64 `json:"open_position_contributions,omitempty"`
 	SymbolContributions       map[string]float64 `json:"symbol_contributions,omitempty"`
 }
 
@@ -175,15 +176,30 @@ type CurvePrimitive struct {
 	NetExposure   float64   `json:"net_exposure"`
 }
 
+// ResidualPositionPrimitive records final marked inventory that could not be
+// closed by the replay's executable liquidation policy. It is separate from a
+// closed trade and is included in the immutable fold artifact digest.
+type ResidualPositionPrimitive struct {
+	Symbol        string    `json:"symbol"`
+	MarkedAt      time.Time `json:"marked_at"`
+	Quantity      float64   `json:"quantity"`
+	CostBasis     float64   `json:"cost_basis"`
+	EntryFee      float64   `json:"entry_fee"`
+	MarkPrice     float64   `json:"mark_price"`
+	MarkValue     float64   `json:"mark_value"`
+	UnrealizedPnL float64   `json:"unrealized_pnl"`
+}
+
 type FoldPrimitives struct {
-	StartingCapital       float64          `json:"starting_capital"`
-	ExpectedObservations  int              `json:"expected_observations"`
-	ObservedObservations  int              `json:"observed_observations"`
-	Trades                []TradePrimitive `json:"trades"`
-	Fills                 []FillPrimitive  `json:"fills,omitempty"`
-	Curve                 []CurvePrimitive `json:"curve"`
-	BaselineGrossExposure float64          `json:"baseline_gross_exposure"`
-	BaselineTurnover      float64          `json:"baseline_turnover"`
+	StartingCapital       float64                     `json:"starting_capital"`
+	ExpectedObservations  int                         `json:"expected_observations"`
+	ObservedObservations  int                         `json:"observed_observations"`
+	Trades                []TradePrimitive            `json:"trades"`
+	Fills                 []FillPrimitive             `json:"fills,omitempty"`
+	ResidualPositions     []ResidualPositionPrimitive `json:"residual_positions,omitempty"`
+	Curve                 []CurvePrimitive            `json:"curve"`
+	BaselineGrossExposure float64                     `json:"baseline_gross_exposure"`
+	BaselineTurnover      float64                     `json:"baseline_turnover"`
 }
 
 // FoldRunner is one fresh, isolated fold instance. Fit returns complete immutable

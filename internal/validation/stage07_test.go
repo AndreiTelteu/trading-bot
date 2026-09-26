@@ -371,6 +371,58 @@ func TestPrimitiveReconciliationAndCapitalWeightedAggregation(t *testing.T) {
 	}
 }
 
+func TestResidualPositionReconcilesEquityWithoutCreatingAClosedTrade(t *testing.T) {
+	m := manifestFixture(t)
+	p := healthyPrimitives(m.Spec.Folds[0], .01)
+	last := len(p.Curve) - 1
+	p.Curve[last].Equity += .9
+	p.ResidualPositions = []ResidualPositionPrimitive{{Symbol: "DUST", MarkedAt: p.Curve[last].At, Quantity: 1, CostBasis: 10, EntryFee: .1, MarkPrice: 11, MarkValue: 11, UnrealizedPnL: .9}}
+	metrics, err := DeriveFoldMetrics(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metrics.Trades != len(p.Trades) || math.Abs(metrics.AfterCostReturn-.0109) > 1e-12 || math.Abs(metrics.AfterCostExpectancy-.0025) > 1e-12 || math.Abs(metrics.OpenPositionContributions["DUST"]-.0009) > 1e-12 {
+		t.Fatalf("marked inventory was misclassified: %+v", metrics)
+	}
+	if err := ValidateFoldMetrics(metrics, m.Spec.Samples); err != nil {
+		t.Fatal(err)
+	}
+	before, err := FoldResultsDigest([]FoldResult{{Primitives: p, Metrics: metrics}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bad := p
+	bad.ResidualPositions = append([]ResidualPositionPrimitive(nil), p.ResidualPositions...)
+	bad.ResidualPositions[0].EntryFee = .2
+	if _, err := DeriveFoldMetrics(bad); err == nil {
+		t.Fatal("unbalanced residual fee was accepted")
+	}
+	bad.ResidualPositions[0] = p.ResidualPositions[0]
+	bad.ResidualPositions[0].MarkPrice = 12
+	if _, err := DeriveFoldMetrics(bad); err == nil {
+		t.Fatal("unbalanced mark was accepted")
+	}
+	bad.ResidualPositions[0] = p.ResidualPositions[0]
+	bad.ResidualPositions[0].Quantity = math.NaN()
+	if _, err := DeriveFoldMetrics(bad); err == nil {
+		t.Fatal("nonfinite residual was accepted")
+	}
+	bad.ResidualPositions[0] = p.ResidualPositions[0]
+	bad.ResidualPositions[0].UnrealizedPnL = .8
+	if _, err := DeriveFoldMetrics(bad); err == nil {
+		t.Fatal("balancing PnL was accepted")
+	}
+	bad.ResidualPositions[0] = p.ResidualPositions[0]
+	bad.ResidualPositions[0].Symbol = "OTHER"
+	after, err := FoldResultsDigest([]FoldResult{{Primitives: bad, Metrics: metrics}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before == after {
+		t.Fatal("residual position was absent from the fold digest")
+	}
+}
+
 func TestMLGoldenAndEdgeCases(t *testing.T) {
 	values := []MLOutcome{}
 	for i, p := range []float64{.1, .2, .3, .4, .6, .7, .8, .9} {
