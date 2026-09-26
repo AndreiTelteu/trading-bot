@@ -139,13 +139,15 @@ flags, DB, queues, and cache are untouched.
    source DB fingerprint, dump checksum, restore checksum, manifest row, and
    timestamp. Restrict files to mode `0600`. The observed host had about
    25 GiB available RAM and 395 GiB free disk; remeasure before cloning.
-2. Configure a separate research server process with isolated runtime,
-   ledger, and parity DSN files; keep the migration DSN out of the server.
-   Bootstrap the isolated clone only if required by its schema state, using
-   the isolated migration DSN. Bind the server to a private loopback port,
-   use a distinct instance directory, `STAGE08_NEW_BACKTEST=research`, and
-   `BACKTEST_MAX_CONCURRENT_JOBS=1`. Authenticate with a research-capable
-   principal. Do not start a second Compose stack using the paper app's
+2. Use the isolated `cmd/researchlab` CLI with the clone's runtime-only DSN
+   file, a private database marker file, `STAGE08_NEW_BACKTEST=research`, and
+   `BACKTEST_MAX_CONCURRENT_JOBS=1`. The CLI verifies the loopback port,
+   database, restricted login, marker, locked Stage 08 flags, clean committed
+   code identity, exact frozen request, and append-only attempt ledger before
+   submitting a job. It opens no migration, ledger, or parity pool and starts
+   no app scheduler or HTTP server. Bootstrap the clone only if required by
+   its schema state, using the isolated migration DSN in an explicit operator
+   workflow. Do not start a second Compose stack using the paper app's
    volumes, ports, secrets, or project name.
 3. Before submitting, run the read-only CLI against the clone's runtime DSN:
 
@@ -166,16 +168,18 @@ flags, DB, queues, and cache are untouched.
    also have enough memory for one replay; keep concurrency at one.
 4. **Currently blocked.** Once a new unfilled-order policy has been reviewed,
    implemented, tested, committed, and assigned a new execution-policy
-   version, submit one candidate comparison through the isolated authenticated
-   API only after preflight passes. The request's `strategy_id`,
-   `strategy_version`, full `parameters`, `target_gross_exposure=0.75`,
+   version, submit one candidate comparison through the isolated CLI only
+   after preflight passes. The request's `strategy_id`,
+   `strategy_version`, `execution_policy_version=backtest-execution-v3`, full
+   `parameters`, `target_gross_exposure=0.75`,
    `max_net_exposure=0.75`, `final_policy=liquidate`, and `overrides` must pin
    the manifest ID, interval, symbol list, fee 10 bps, slippage 5 bps, and
    `backtest_execution_1m=true`. Capture the exact JSON request, response
    job ID, result digest, code revision, implementation/config digests,
    replay-settings digest, dataset digest, execution-policy version, and
-   failure diagnostic in a local attempt ledger. `POST` is not a dry-run;
-   never send it to production. Any invalid/missing volume or unexplained
+   failure diagnostic in a local attempt ledger. A CLI submission is not a
+   dry-run; never point it at production. Any invalid/missing volume or
+   unexplained
    unfilled-order state stops the entire matrix and Stage 07; do not
    reinterpret it as zero trades. Do not reuse v2's identifier for new
    economic semantics.
@@ -186,9 +190,10 @@ flags, DB, queues, and cache are untouched.
    provenance, not three independent observations. Create a **new exploratory**
    Stage 07 manifest using those source IDs. Copy the old three fold
    intervals and strict gates, bind the new code and source digests, set
-   `study_type=exploratory`, `exploratory=true`, and leave
-   `confirmatory_holdout` absent. Use a fresh idempotency key. The API
-   validates server-derived source provenance. Execute only in the clone,
+   `study_type=exploratory`, `exploratory=true`, and
+   `execution_semantics.execution_policy_version=backtest-execution-v3`;
+   leave `confirmatory_holdout` absent. Use a fresh idempotency key. The
+   Stage 07 path validates server-derived source provenance. Execute only in the clone,
    then inspect fold cash + marked inventory, closed + residual P&L, fees,
    slippage, all-fill turnover/participation, stress, regime and symbol
    cohorts, and the explicit gate result. No outcome is promotion evidence
