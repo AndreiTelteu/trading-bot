@@ -64,6 +64,14 @@ Establish minimal, understandable baselines before introducing a production cand
   is re-evaluated only at the next normal decision, without latching. Final
   `liquidate` fails on a no-fill exit; `mark_to_market` retains marked inventory.
   Positive-volume v3 economics match v2; v1/v2 remain reproducible.
+- [x] Replay floating-point reductions over held positions, exposure, and
+  target weights use economic symbol order. This fixes last-bit drift from Go
+  map iteration without rounding metrics or relaxing canonical artifact digests.
+  Point-in-time config construction records the v3 no-fill rule in both job
+  paths, so a fold replays the same execution-policy identity. Target-weight
+  normalization and redistribution can change executable order quantities at
+  exact thresholds; this source revision is a new executable identity and
+  earlier source evidence must not be relabeled as reproducible under it.
 - [x] Report absolute and benchmark-relative return.
 - [x] Report drawdown, Sharpe/Sortino where sample size permits, profit factor, expectancy, turnover, exposure time, and trade count.
 - [x] Report concentration by symbol, period, and regime.

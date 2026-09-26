@@ -859,7 +859,8 @@ func transitionEconomicPositions(ledger *backtestMemoryLedger, targets []string,
 		}
 	}
 	sort.Strings(candidates)
-	for held, position := range ledger.positions {
+	for _, held := range sortedPositionSymbolsByIdentity(ledger.positions, config) {
+		position := ledger.positions[held]
 		assetID := config.EconomicAssetIdentities[held]
 		if assetID == "" {
 			continue
@@ -884,7 +885,8 @@ func rebalanceStage05(ledger *backtestMemoryLedger, config BacktestConfig, strat
 	// Alpha weights and submitted quantities are fixed exclusively from causal
 	// decision marks. The later executable open belongs only to broker fills.
 	decisionEquity := ledger.cash
-	for symbol, position := range ledger.positions {
+	for _, symbol := range sortedPositionSymbolsByIdentity(ledger.positions, config) {
+		position := ledger.positions[symbol]
 		valuationPrice := marks[symbol]
 		if !usesTrendMomentumEconomics(config.StrategyID) && fills[symbol] > 0 {
 			valuationPrice = fills[symbol]
@@ -1035,7 +1037,8 @@ func rebalanceStage05(ledger *backtestMemoryLedger, config BacktestConfig, strat
 		return nil
 	}
 	achievedGross := 0.0
-	for symbol, position := range ledger.positions {
+	for _, symbol := range sortedPositionSymbolsByIdentity(ledger.positions, config) {
+		position := ledger.positions[symbol]
 		achievedGross += position.Size * fills[symbol]
 	}
 	achievedEquity := ledger.cash + achievedGross
@@ -1047,8 +1050,8 @@ func rebalanceStage05(ledger *backtestMemoryLedger, config BacktestConfig, strat
 		// risk_off. Validate against the frozen planned weights, not by applying
 		// the raw observation a second time.
 		targetExposure = 0
-		for _, value := range targetWeights {
-			targetExposure += value
+		for _, symbol := range sortedFloatSymbolsByIdentity(targetWeights, config) {
+			targetExposure += targetWeights[symbol]
 		}
 	} else {
 		switch regime {
@@ -1202,6 +1205,15 @@ func sortedPositionSymbolsByIdentity(positions map[string]*positionState, config
 	return result
 }
 
+func sortedFloatSymbolsByIdentity(values map[string]float64, config BacktestConfig) []string {
+	result := make([]string, 0, len(values))
+	for symbol := range values {
+		result = append(result, symbol)
+	}
+	sort.Slice(result, func(i, j int) bool { return economicSymbolLess(config, result[i], result[j]) })
+	return result
+}
+
 func economicSymbolLess(config BacktestConfig, left, right string) bool {
 	leftAsset, rightAsset := config.EconomicAssetIdentities[left], config.EconomicAssetIdentities[right]
 	if leftAsset == "" {
@@ -1272,7 +1284,8 @@ func runStage05Target(ledger *backtestMemoryLedger, config BacktestConfig, strat
 	}
 	account, _ := tradingcore.NewAccountID(accountName)
 	portfolioPositions := make([]tradingcore.Position, 0, len(ledger.positions))
-	for heldSymbol, held := range ledger.positions {
+	for _, heldSymbol := range sortedPositionSymbolsByIdentity(ledger.positions, config) {
+		held := ledger.positions[heldSymbol]
 		heldInstrument, conversionErr := backtestInstrument(config, heldSymbol)
 		if conversionErr != nil {
 			return conversionErr
@@ -1373,7 +1386,8 @@ func runStage05Target(ledger *backtestMemoryLedger, config BacktestConfig, strat
 		cashReserve = portfolioValue * fraction
 	}
 	currentGrossValue := 0.0
-	for heldSymbol, held := range ledger.positions {
+	for _, heldSymbol := range sortedPositionSymbolsByIdentity(ledger.positions, config) {
+		held := ledger.positions[heldSymbol]
 		mark := marks[heldSymbol]
 		if mark <= 0 {
 			mark = held.EntryPrice
@@ -1750,7 +1764,8 @@ func barsAvailableAsOf(bars []services.OHLCV, at time.Time) []services.OHLCV {
 
 func portfolioEquity(ledger *backtestMemoryLedger, marks map[string]float64) float64 {
 	value := ledger.cash
-	for symbol, position := range ledger.positions {
+	for _, symbol := range sortedPositionSymbolsByIdentity(ledger.positions, ledger.config) {
+		position := ledger.positions[symbol]
 		mark := marks[symbol]
 		if mark <= 0 {
 			mark = position.EntryPrice
@@ -1868,8 +1883,8 @@ func computeComparableMetrics(config BacktestConfig, ledger *backtestMemoryLedge
 		}
 		pointMarks := marksAsOf(series, point.Time)
 		gross := 0.0
-		for symbol, quantity := range quantities {
-			gross += math.Abs(quantity * pointMarks[symbol])
+		for _, symbol := range sortedFloatSymbolsByIdentity(quantities, config) {
+			gross += math.Abs(quantities[symbol] * pointMarks[symbol])
 		}
 		if point.Value > 0 {
 			gross /= point.Value
@@ -1953,7 +1968,8 @@ func reconcileStage05Ledger(initial float64, ledger *backtestMemoryLedger) bool 
 	}
 	for identity, quantity := range quantities {
 		held := 0.0
-		for symbol, position := range ledger.positions {
+		for _, symbol := range sortedPositionSymbolsByIdentity(ledger.positions, ledger.config) {
+			position := ledger.positions[symbol]
 			assetID := ledger.config.EconomicAssetIdentities[symbol]
 			if assetID == "" {
 				assetID = symbol
@@ -2063,7 +2079,8 @@ func stage05EconomicFloat(value float64) float64 {
 
 func stage05RiskState(ledger *backtestMemoryLedger, marks map[string]float64) tradingcore.RiskState {
 	gross := 0.0
-	for symbol, position := range ledger.positions {
+	for _, symbol := range sortedPositionSymbolsByIdentity(ledger.positions, ledger.config) {
+		position := ledger.positions[symbol]
 		mark := marks[symbol]
 		if mark <= 0 {
 			mark = position.EntryPrice

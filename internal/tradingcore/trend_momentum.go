@@ -241,14 +241,30 @@ func PlanTrendMomentumWithHistory(input TrendMomentumInput, history *TrendMoment
 		result.TargetWeights[rows[i].Symbol] = v
 		denom += v
 	}
+	weightSymbols := make([]string, 0, len(result.TargetWeights))
+	for symbol := range result.TargetWeights {
+		weightSymbols = append(weightSymbols, symbol)
+	}
+	sort.Slice(weightSymbols, func(i, j int) bool {
+		a, b := members[weightSymbols[i]], members[weightSymbols[j]]
+		if a.AssetID != b.AssetID {
+			return a.AssetID < b.AssetID
+		}
+		if a.ExchangeSymbolID != b.ExchangeSymbolID {
+			return a.ExchangeSymbolID < b.ExchangeSymbolID
+		}
+		return weightSymbols[i] < weightSymbols[j]
+	})
 	if denom > 0 {
-		for symbol, weight := range result.TargetWeights {
+		for _, symbol := range weightSymbols {
+			weight := result.TargetWeights[symbol]
 			result.TargetWeights[symbol] = math.Min(tmFloat(p, "position_cap"), result.TargetGross*weight/denom)
 		}
 	}
 	for pass := 0; pass < len(result.TargetWeights); pass++ {
 		total, open := 0.0, 0
-		for _, weight := range result.TargetWeights {
+		for _, symbol := range weightSymbols {
+			weight := result.TargetWeights[symbol]
 			total += weight
 			if weight < tmFloat(p, "position_cap")-1e-12 {
 				open++
@@ -258,7 +274,8 @@ func PlanTrendMomentumWithHistory(input TrendMomentumInput, history *TrendMoment
 			break
 		}
 		add := (result.TargetGross - total) / float64(open)
-		for symbol, weight := range result.TargetWeights {
+		for _, symbol := range weightSymbols {
+			weight := result.TargetWeights[symbol]
 			if weight < tmFloat(p, "position_cap")-1e-12 {
 				result.TargetWeights[symbol] = math.Min(tmFloat(p, "position_cap"), weight+add)
 			}
@@ -277,15 +294,16 @@ func PlanTrendMomentumWithHistory(input TrendMomentumInput, history *TrendMoment
 		}
 		result.Factors = append(result.Factors, rows[i].TrendMomentumFactor)
 	}
-	for symbol := range result.TargetWeights {
-		result.Targets = append(result.Targets, symbol)
-	}
+	result.Targets = append(result.Targets, weightSymbols...)
 	sort.Slice(result.Targets, func(i, j int) bool {
 		a, b := members[result.Targets[i]], members[result.Targets[j]]
 		if a.AssetID != b.AssetID {
 			return a.AssetID < b.AssetID
 		}
-		return a.ExchangeSymbolID < b.ExchangeSymbolID
+		if a.ExchangeSymbolID != b.ExchangeSymbolID {
+			return a.ExchangeSymbolID < b.ExchangeSymbolID
+		}
+		return result.Targets[i] < result.Targets[j]
 	})
 	bySymbol := map[string]trendMomentumScore{}
 	for _, row := range rows {

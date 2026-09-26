@@ -181,6 +181,17 @@ func TestStage05V3ReplaySettingsPreserveExplicitPolicy(t *testing.T) {
 	}
 }
 
+func TestStage05V3ConstructedPITPolicyCarriesNoFillRule(t *testing.T) {
+	v3 := configuredBacktestExecutionPolicy(map[string]string{"backtest_execution_policy_version": "backtest-execution-v3"}, nil)
+	if v3.Version != "backtest-execution-v3" || v3.NoFillRule != "selected_zero_base_volume_cancel_at_bar_close_v1" {
+		t.Fatalf("PIT constructor policy lost v3 no-fill identity: %+v", v3)
+	}
+	v2 := configuredBacktestExecutionPolicy(nil, nil)
+	if v2.Version != "backtest-execution-v2" || v2.NoFillRule != "" {
+		t.Fatalf("default constructor policy changed v2: %+v", v2)
+	}
+}
+
 func TestStage05V3MixedSymbolsDoNotRedistribute(t *testing.T) {
 	config, series := stage05Fixture(map[string][]float64{"AAAUSDT": {10, 10, 10, 10}, "BBBUSDT": {10, 10, 10, 10}}, []float64{100, 100, 100, 100}, 0, 0)
 	config.ExecutionPolicy.Version = "backtest-execution-v3"

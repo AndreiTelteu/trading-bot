@@ -4,12 +4,50 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"reflect"
 	"testing"
 	"time"
 
 	"trading-go/internal/tradingcore"
 )
+
+func TestTrendMomentumWeightAllocationStableAcrossRepeatedPlans(t *testing.T) {
+	input := trendMomentumInputFixture(t, "AAAUSDT")
+	input.DecisionAt = input.Benchmark[len(input.Benchmark)-1].CloseTime
+	input.Parameters["top_n"] = "3"
+	input.Parameters["max_positions"] = "3"
+	input.Parameters["position_cap"] = "0.3"
+	input.Parameters["vol_floor"] = "0.0000001"
+	for index, symbol := range []string{"BBBUSDT", "CCCUSDT"} {
+		bars := append([]tradingcore.TrendMomentumBar(nil), input.Benchmark...)
+		for i := range bars {
+			bars[i].Close = 100 + float64(i)/float64(11+index) + math.Sin(float64(i)*float64(index+1))*0.1
+		}
+		input.Series[symbol] = bars
+		input.Members = append(input.Members, tradingcore.TrendMomentumMember{Symbol: symbol, AssetID: symbol, ExchangeSymbolID: symbol, Eligible: true})
+	}
+	history := tradingcore.PrepareTrendMomentumHistory(input.Benchmark, input.Series)
+	var first []byte
+	for attempt := 0; attempt < 512; attempt++ {
+		plan, err := tradingcore.PlanTrendMomentumWithHistory(input, history)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(plan.TargetWeights) != 3 {
+			t.Fatalf("fixture did not select three targets: %+v", plan.TargetWeights)
+		}
+		encoded, err := json.Marshal(plan.TargetWeights)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if attempt == 0 {
+			first = encoded
+		} else if string(encoded) != string(first) {
+			t.Fatalf("same causal inputs produced different target weights: first=%s attempt=%d got=%s", first, attempt, encoded)
+		}
+	}
+}
 
 // This is adapter parity at the actual executable-strategy boundary: a single
 // canonical point-in-time payload must yield the same exact intents regardless
