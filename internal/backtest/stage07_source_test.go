@@ -48,6 +48,20 @@ func TestStage07PrimitivesCausallyAlignBenchmarkAsOfCandidateClock(t *testing.T)
 	}
 }
 
+func TestStage07PrimitivesUsePredeclaredComparabilityTolerances(t *testing.T) {
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	candidate := Stage05StrategyResult{Metrics: ComparableMetrics{StartingCapital: "100", AverageGrossExposure: availableMetric(.10), AverageNetExposure: availableMetric(.10), TurnoverRatio: availableMetric(.20)}, Equity: []EquityPoint{{Time: base, Value: 100}, {Time: base.Add(time.Hour), Value: 101}}}
+	baseline := Stage05StrategyResult{Metrics: ComparableMetrics{AverageGrossExposure: availableMetric(.12), TurnoverRatio: availableMetric(.22)}, Equity: []EquityPoint{{Time: base, Value: 100}, {Time: base.Add(time.Hour), Value: 100}}}
+	policy := validation.BaselineComparabilityPolicy{MaxGrossExposureDifference: .02, MaxTurnoverRelativeDiff: .10}
+	if _, err := stage07Primitives(candidate, baseline, 0, 2, nil, policy); err != nil {
+		t.Fatal(err)
+	}
+	baseline.Metrics.AverageGrossExposure = availableMetric(.121)
+	if _, err := stage07Primitives(candidate, baseline, 0, 2, nil, policy); err == nil {
+		t.Fatal("out-of-tolerance exposure was accepted")
+	}
+}
+
 func TestStage07RunnerRejectsMutatedPartitionSample(t *testing.T) {
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	interval := validation.Interval{Start: base, End: base.Add(time.Hour)}

@@ -21,6 +21,7 @@ const (
 	StrategyBenchmarkTrendID       = "benchmark_trend"
 	StrategyEqualWeightID          = "equal_weight_liquid_universe"
 	StrategyMomentumID             = "cross_sectional_momentum"
+	StrategyMatchedMomentumID      = "matched_momentum_baseline"
 	StrategyLegacyCompatibility    = "legacy_indicator_voting"
 	StrategyTrendMomentumCandidate = "trend_momentum_candidate"
 )
@@ -363,7 +364,7 @@ func validateStrategyParameters(descriptor StrategyDescriptor, values map[string
 			return nil, &StrategyDiagnosticError{Code: DiagnosticInvalidCombination, Strategy: descriptor.ID, Details: "lookback_bars and top_n must be positive"}
 		}
 	}
-	if descriptor.ID == StrategyTrendMomentumCandidate {
+	if descriptor.ID == StrategyTrendMomentumCandidate || descriptor.ID == StrategyMatchedMomentumID {
 		intent := result["execution_intent"]
 		if intent == "paper_capital" || intent == "live_submit" || intent == "promotion" {
 			return nil, &StrategyDiagnosticError{Code: DiagnosticExecutionFenced, Strategy: descriptor.ID, Field: "execution_intent", Details: intent + " is unavailable before Stage 07 validation and human promotion"}
@@ -466,12 +467,32 @@ func newDefaultStrategyRegistry() *StrategyRegistry {
 	candidateV11.Version = "1.1.0"
 	candidateV11.Description += " Mandatory exits retain only explicitly evidenced exchange dust."
 	definitions = append(definitions, candidateV11)
+	matched := cloneStrategyDescriptor(candidateV11)
+	matched.ID = StrategyMatchedMomentumID
+	matched.Version = "1.0.0"
+	matched.Description = "Simple raw-momentum, equal-weight baseline with the candidate's regime, exposure, turnover, risk, and execution policies."
+	matched.Baseline = true
+	matched.ResearchOnly = false
+	matched.FactorTraceSchema = ""
+	matched.ExecutionIntents = nil
+	matched.AblationVariants = nil
+	for i := range matched.Parameters {
+		if matched.Parameters[i].Name == "vol_normalization" {
+			matched.Parameters[i].Default = "false"
+			matched.Parameters[i].Enum = []string{"false"}
+		}
+		if matched.Parameters[i].Name == "variant" {
+			matched.Parameters[i].Default = "combined"
+			matched.Parameters[i].Enum = []string{"combined"}
+		}
+	}
+	definitions = append(definitions, matched)
 	for _, descriptor := range definitions {
 		if descriptor.ID == StrategyEqualWeightID || descriptor.ID == StrategyMomentumID {
 			descriptor.Parameters = append(descriptor.Parameters, StrategyParameterSpec{Name: "include_shortlist", Type: "enum", Description: "Whether persisted shortlist members join active members in the tradable baseline universe.", Default: "true", Enum: []string{"false", "true"}})
 		}
 		planner := Stage05Planner(stage05BuiltinPlanner{})
-		if descriptor.ID == StrategyTrendMomentumCandidate {
+		if descriptor.ID == StrategyTrendMomentumCandidate || descriptor.ID == StrategyMatchedMomentumID {
 			planner = trendMomentumPlanner{}
 		}
 		if err := registry.RegisterExecutable(descriptor, func(map[string]string) (tradingcore.Strategy, error) {

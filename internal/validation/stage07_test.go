@@ -122,6 +122,15 @@ func TestManifestAuthorityComponentsCannotBeOmittedOrWeakened(t *testing.T) {
 	}
 }
 
+func TestManifestRejectsInvalidBaselineComparabilityTolerance(t *testing.T) {
+	manifest := manifestFixture(t)
+	spec := manifest.Spec
+	spec.BaselineComparability.MaxTurnoverRelativeDiff = 1.1
+	if _, _, err := CanonicalManifestSpec(spec); err == nil {
+		t.Fatal("invalid baseline comparability tolerance accepted")
+	}
+}
+
 func TestPurgeEmbargoExactBoundaries(t *testing.T) {
 	base := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	fold := Fold{Train: Interval{base, base.Add(10 * time.Hour)}, Validation: Interval{base.Add(10 * time.Hour), base.Add(20 * time.Hour)}, Test: Interval{base.Add(20 * time.Hour), base.Add(30 * time.Hour)}}

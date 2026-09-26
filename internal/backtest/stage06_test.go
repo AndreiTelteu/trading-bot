@@ -53,6 +53,22 @@ func TestTrendMomentumV11IsExplicitlyVersioned(t *testing.T) {
 	}
 }
 
+func TestMatchedMomentumBaselineFreezesCandidateEconomics(t *testing.T) {
+	parameters := map[string]string{"lookback_bars": "20", "trend_bars": "20", "regime_bars": "30", "rebalance": "48h", "top_n": "3", "max_positions": "3", "risk_on_gross": "0.75", "neutral_gross": "0.25", "risk_off_gross": "0", "regime_band": "0.02", "position_cap": "0.25", "max_gross": "0.75", "max_net": "0.75", "cash_reserve": "0.25", "turnover_budget": "0.10", "skip_delta": "0.015", "execution_gap_reserve": "0.1", "allocation_tolerance": "0.02", "hard_stop": "0.08", "include_shortlist": "true", "execution_intent": "backtest", "target_gross": "0.75", "final_policy": "liquidate"}
+	matched, _, _, err := DefaultStrategyRegistry.ResolveExecutable(StrategyMatchedMomentumID, "1.0.0", parameters)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !matched.Descriptor.Baseline || matched.Parameters["vol_normalization"] != "false" || matched.Parameters["variant"] != "combined" {
+		t.Fatalf("matched=%+v", matched)
+	}
+	for _, key := range []string{"regime_band", "risk_on_gross", "neutral_gross", "risk_off_gross", "position_cap", "turnover_budget", "skip_delta", "execution_gap_reserve", "hard_stop", "final_policy"} {
+		if matched.Parameters[key] != parameters[key] {
+			t.Fatalf("%s=%s want %s", key, matched.Parameters[key], parameters[key])
+		}
+	}
+}
+
 func TestTrendMomentumStableTieCapsAndShadowIsolation(t *testing.T) {
 	selected := selectedCandidate(t, map[string]string{"lookback_bars": "20", "trend_bars": "20", "regime_bars": "20", "top_n": "2", "max_positions": "2", "position_cap": "0.2", "cash_reserve": "0.25", "max_gross": "0.75", "max_net": "0.75", "target_gross": "0.75", "turnover_budget": "0.25"})
 	benchmark := rising4H(100, 61, 1)

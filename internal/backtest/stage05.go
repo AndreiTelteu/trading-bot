@@ -180,6 +180,9 @@ func RunStage05Comparison(config BacktestConfig, series map[string][]services.OH
 	if strategyNeedsUniverse(candidate.Descriptor.ID) {
 		ids = append(ids, StrategyEqualWeightID, StrategyMomentumID)
 	}
+	if candidate.Descriptor.ID == StrategyTrendMomentumCandidate {
+		ids = append(ids, StrategyMatchedMomentumID)
+	}
 	if !containsString(ids, candidate.Descriptor.ID) {
 		ids = append(ids, candidate.Descriptor.ID)
 	}
@@ -190,6 +193,10 @@ func RunStage05Comparison(config BacktestConfig, series map[string][]services.OH
 		if id == candidate.Descriptor.ID {
 			parameters = candidateParameters
 			version = candidate.Descriptor.Version
+		} else if id == StrategyMatchedMomentumID {
+			parameters = cloneStringMap(candidateParameters)
+			parameters["vol_normalization"] = "false"
+			version = "1.0.0"
 		} else if id != StrategyCashID {
 			parameters["target_gross"] = request.TargetGrossExposure
 			parameters["final_policy"] = request.FinalPolicy
@@ -316,7 +323,11 @@ func validateComparableInputs(config BacktestConfig, series map[string][]service
 }
 
 func strategyNeedsUniverse(id string) bool {
-	return id == StrategyEqualWeightID || id == StrategyMomentumID || id == StrategyLegacyCompatibility || id == StrategyTrendMomentumCandidate
+	return id == StrategyEqualWeightID || id == StrategyMomentumID || id == StrategyLegacyCompatibility || id == StrategyTrendMomentumCandidate || id == StrategyMatchedMomentumID
+}
+
+func usesTrendMomentumEconomics(id string) bool {
+	return id == StrategyTrendMomentumCandidate || id == StrategyMatchedMomentumID
 }
 
 type stage05Replay struct {
@@ -350,7 +361,7 @@ func runStage05StrategyWithPlanner(config BacktestConfig, series map[string][]se
 			sample, _ := strconv.Atoi(parameters["sample_bars"])
 			warmup = lookback*sample + 1
 		}
-		if selected.Descriptor.ID == StrategyTrendMomentumCandidate {
+		if selected.Descriptor.ID == StrategyTrendMomentumCandidate || selected.Descriptor.ID == StrategyMatchedMomentumID {
 			warmup = effectiveStage06Warmup(parameters)
 		}
 	}
@@ -443,7 +454,7 @@ func runStage05StrategyWithPlanner(config BacktestConfig, series map[string][]se
 		if regime == "" {
 			regime = "unknown"
 		}
-		if snapshot, found := replayAsOf(replays, signalAt); selected.Descriptor.ID != StrategyTrendMomentumCandidate && found && snapshot.regime != "" {
+		if snapshot, found := replayAsOf(replays, signalAt); selected.Descriptor.ID != StrategyTrendMomentumCandidate && selected.Descriptor.ID != StrategyMatchedMomentumID && found && snapshot.regime != "" {
 			regime = snapshot.regime
 		}
 		if plan.RiskStopOnly {
@@ -824,7 +835,7 @@ func rebalanceStage05(ledger *backtestMemoryLedger, config BacktestConfig, strat
 	decisionEquity := ledger.cash
 	for symbol, position := range ledger.positions {
 		valuationPrice := marks[symbol]
-		if config.StrategyID != StrategyTrendMomentumCandidate && fills[symbol] > 0 {
+		if !usesTrendMomentumEconomics(config.StrategyID) && fills[symbol] > 0 {
 			valuationPrice = fills[symbol]
 		}
 		if valuationPrice <= 0 {
@@ -854,7 +865,7 @@ func rebalanceStage05(ledger *backtestMemoryLedger, config BacktestConfig, strat
 		// contract. Stage 06 alone uses the causal decision mark plus an explicit
 		// adverse-gap reserve; changing baseline economics would invalidate the
 		// common comparison contract.
-		if config.StrategyID != StrategyTrendMomentumCandidate {
+		if !usesTrendMomentumEconomics(config.StrategyID) {
 			mark = fills[symbol]
 		}
 		gapReserve, _ := strconv.ParseFloat(parameters["execution_gap_reserve"], 64)
@@ -909,7 +920,7 @@ func rebalanceStage05(ledger *backtestMemoryLedger, config BacktestConfig, strat
 				reasonTrace.Primary = "rebalance_reduction"
 			}
 			decisionPrice := marks[symbol]
-			if config.StrategyID != StrategyTrendMomentumCandidate {
+			if !usesTrendMomentumEconomics(config.StrategyID) {
 				decisionPrice = fills[symbol]
 			}
 			if err := runStage05Target(ledger, config, strategy, symbol, tradingcore.Sell, delta, decisionPrice, fills[symbol], signalAt, fillAt, 0, symbolWeight, reason, regime, fills, factorBySymbol[symbol], reasonTrace); err != nil {
@@ -959,7 +970,7 @@ func rebalanceStage05(ledger *backtestMemoryLedger, config BacktestConfig, strat
 				symbolWeight = targetWeights[symbol]
 			}
 			decisionPrice := marks[symbol]
-			if config.StrategyID != StrategyTrendMomentumCandidate {
+			if !usesTrendMomentumEconomics(config.StrategyID) {
 				decisionPrice = fills[symbol]
 			}
 			if err := runStage05Target(ledger, config, strategy, symbol, tradingcore.Buy, delta, decisionPrice, fills[symbol], signalAt, fillAt, rank+1, symbolWeight, "rebalance_addition", regime, fills, factorBySymbol[symbol], ExitReasonTrace{Primary: "rebalance_addition"}); err != nil {
@@ -968,7 +979,7 @@ func rebalanceStage05(ledger *backtestMemoryLedger, config BacktestConfig, strat
 			remainingBudget -= notional
 		}
 	}
-	if config.StrategyID != StrategyTrendMomentumCandidate {
+	if !usesTrendMomentumEconomics(config.StrategyID) {
 		return nil
 	}
 	achievedGross := 0.0
@@ -1230,7 +1241,7 @@ func runStage05Target(ledger *backtestMemoryLedger, config BacktestConfig, strat
 	settings["intent_metadata.decision_reference_price"] = decimalString(signalPrice)
 	settings["intent_metadata.decision_observed_at"] = canonicalTime(signalAt)
 	settings["intent_metadata.execution_event_at"] = canonicalTime(fillAt)
-	if config.StrategyID == StrategyTrendMomentumCandidate {
+	if usesTrendMomentumEconomics(config.StrategyID) {
 		encoded, _ := json.Marshal(config.StrategyParameters)
 		settings["intent_metadata.strategy_hypothesis"] = "persistent_relative_and_absolute_trend_in_supportive_benchmark_regime"
 		settings["intent_metadata.effective_parameters"] = string(encoded)
@@ -1311,7 +1322,7 @@ func runStage05Target(ledger *backtestMemoryLedger, config BacktestConfig, strat
 	if err != nil {
 		return err
 	}
-	if config.StrategyID == StrategyTrendMomentumCandidate {
+	if usesTrendMomentumEconomics(config.StrategyID) {
 		ledger.recordStage06Run(result, signalAt, signalAt, snapshot, policy, strategy)
 	} else {
 		ledger.recordRun(result, signalAt, signalAt)

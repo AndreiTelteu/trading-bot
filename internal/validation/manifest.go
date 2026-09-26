@@ -99,6 +99,9 @@ func CanonicalManifestSpec(spec ManifestSpec) ([]byte, ManifestSpec, error) {
 	if !finite(spec.CapacityStress.MaxParticipation) || !finite(spec.CapacityStress.ImpactBpsAtMax) || !finite(spec.CapacityStress.StressMultiplier) || spec.CapacityStress.MaxParticipation <= 0 || spec.CapacityStress.MaxParticipation > 1 || spec.CapacityStress.ImpactBpsAtMax < 0 || spec.CapacityStress.StressMultiplier < 1 {
 		return nil, ManifestSpec{}, &DiagnosticError{Code: DiagnosticInvalidManifest, Field: "capacity_stress", Details: "bounded participation, nonnegative impact, and conservative multiplier are required"}
 	}
+	if !finite(spec.BaselineComparability.MaxGrossExposureDifference) || !finite(spec.BaselineComparability.MaxTurnoverRelativeDiff) || spec.BaselineComparability.MaxGrossExposureDifference < 0 || spec.BaselineComparability.MaxGrossExposureDifference > 1 || spec.BaselineComparability.MaxTurnoverRelativeDiff < 0 || spec.BaselineComparability.MaxTurnoverRelativeDiff > 1 {
+		return nil, ManifestSpec{}, &DiagnosticError{Code: DiagnosticInvalidManifest, Field: "baseline_comparability", Details: "comparability tolerances must be finite fractions in [0,1]"}
+	}
 	if spec.FeatureHorizon < 0 || spec.LabelHorizon <= 0 || spec.Purge < 0 || spec.Embargo < 0 {
 		return nil, ManifestSpec{}, &DiagnosticError{Code: DiagnosticInvalidManifest, Field: "horizons", Details: "label horizon must be positive and purge/embargo cannot be negative"}
 	}

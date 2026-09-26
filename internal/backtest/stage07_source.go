@@ -51,6 +51,7 @@ type stage07FoldArtifact struct {
 	candidate, baseline SelectedStrategy
 	fixture             bool
 	dataDigest          string
+	comparability       validation.BaselineComparabilityPolicy
 }
 type stage07Factory struct{ folds map[int]stage07FoldArtifact }
 type stage07Runner struct {
@@ -148,7 +149,7 @@ func (s Stage07ExperimentSource) Load(manifest validation.ExperimentManifest) ([
 	}
 	factory := &stage07Factory{folds: map[int]stage07FoldArtifact{}}
 	for i, fold := range manifest.Spec.Folds {
-		factory.folds[fold.Index] = stage07FoldArtifact{config: config, series: sharedOHLCVSeries(series), candidate: selections[i].candidate, baseline: selections[i].baseline, dataDigest: dataDigest}
+		factory.folds[fold.Index] = stage07FoldArtifact{config: config, series: sharedOHLCVSeries(series), candidate: selections[i].candidate, baseline: selections[i].baseline, dataDigest: dataDigest, comparability: manifest.Spec.BaselineComparability}
 	}
 	return samples, factory, nil
 }
@@ -230,9 +231,9 @@ func (r *stage07Runner) Test(fold validation.Fold, artifact []byte, test []valid
 	if err != nil {
 		return validation.FoldPrimitives{}, err
 	}
-	return stage07Primitives(candidate, baseline, fold.Index, len(test), r.source.series)
+	return stage07Primitives(candidate, baseline, fold.Index, len(test), r.source.series, r.source.comparability)
 }
-func stage07Primitives(candidate, baseline Stage05StrategyResult, fold, observations int, series map[string][]services.OHLCV) (validation.FoldPrimitives, error) {
+func stage07Primitives(candidate, baseline Stage05StrategyResult, fold, observations int, series map[string][]services.OHLCV, comparability ...validation.BaselineComparabilityPolicy) (validation.FoldPrimitives, error) {
 	start, err := strconv.ParseFloat(candidate.Metrics.StartingCapital, 64)
 	if err != nil || start <= 0 {
 		return validation.FoldPrimitives{}, &validation.DiagnosticError{Code: validation.DiagnosticNonFinite, Details: "invalid starting capital"}
@@ -274,7 +275,12 @@ func stage07Primitives(candidate, baseline Stage05StrategyResult, fold, observat
 	}
 	baselineGross, baselineTurnover := metricValue(baseline.Metrics.AverageGrossExposure), metricValue(baseline.Metrics.TurnoverRatio)
 	candidateTurnover := metricValue(candidate.Metrics.TurnoverRatio)
-	if math.Abs(baselineGross-gross) > 1e-10 || math.Abs(baselineTurnover-candidateTurnover) > 1e-10 {
+	policy := validation.BaselineComparabilityPolicy{}
+	if len(comparability) == 1 {
+		policy = comparability[0]
+	}
+	turnoverScale := math.Max(math.Max(math.Abs(candidateTurnover), math.Abs(baselineTurnover)), 1e-12)
+	if math.Abs(baselineGross-gross) > policy.MaxGrossExposureDifference+1e-10 || math.Abs(baselineTurnover-candidateTurnover)/turnoverScale > policy.MaxTurnoverRelativeDiff+1e-10 {
 		return validation.FoldPrimitives{}, &validation.DiagnosticError{Code: validation.DiagnosticBaselineMismatch, Details: "Stage 05 baseline is not exposure/turnover matched"}
 	}
 	return validation.FoldPrimitives{StartingCapital: start, ExpectedObservations: observations, ObservedObservations: observations, Trades: trades, Curve: curve, BaselineGrossExposure: baselineGross, BaselineTurnover: candidateTurnover}, nil
