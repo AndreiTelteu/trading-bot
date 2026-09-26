@@ -6,6 +6,32 @@ production job, a changed execution policy, a dataset edit, a confirmatory
 holdout use, or promotion. The first executable action is the read-only
 preflight below. Stop before replay if its facts remain unresolved.
 
+## Implementation and isolation update (2026-09-27)
+
+The operator selected normal-cadence reevaluation. Opt-in v3, strict Stage 07
+no-fill evidence, and the runtime-only research runner are integrated at
+`fa63480e4589de83ec68e8b587c2337bf9ece8cb`. The earlier v2 stop below remains
+historical context; no bar, interval, or candidate parameter was changed to
+remove that failure. Integrated verification used PATH Go 1.26.6 because the
+documented Go 1.26.1 binary was absent. The full `go test -p 1 -count=1 ./...`
+run used an explicit PostgreSQL 16 test DSN on port 5433: all packages passed
+except three AI endpoint fixtures that omitted the empty digest field during
+hashing. The fixture-only correction preserves production verification; the
+entire `internal/testing` package then passed in a separate serial rerun.
+`go vet ./...` and `git diff --check` passed. The first isolated v3 source
+submission is cleared after committing this checkpoint.
+
+The separate PostgreSQL 16 clone is `trading_bot_research` on loopback port
+5544. Restore exited successfully; the source custom archive and restored
+archive copy both hash to
+`bf3937413759609047f51f9096212d0c1ccee31dfd95a7935e1b9b2316624fa1`.
+Read-only checks matched the pinned manifest, the AVAX minute, pre-cutoff v2
+bar counts (10,241,721), and schema catalog counts (65 tables, 387 indexes,
+155 constraints). These are restore checks, not a full canonical row-by-row
+fingerprint. Readiness passed for the declared interval, three folds, 639
+universe snapshots, eight tradables, and BTC. No source job has been submitted
+at this checkpoint, and no post-cutoff outcomes or holdout were inspected.
+
 ## Frozen lineage and what the prior runs mean
 
 The pinned Stage 04 manifest ID and content hash are both
@@ -166,9 +192,8 @@ flags, DB, queues, and cache are untouched.
    readiness. Verify cloned policy/settings, manifest content hash, universe
    and constraints, and the first AVAX bar before any write. The clone must
    also have enough memory for one replay; keep concurrency at one.
-4. **Currently blocked.** Once a new unfilled-order policy has been reviewed,
-   implemented, tested, committed, and assigned a new execution-policy
-   version, submit one candidate comparison through the isolated CLI only
+4. **First v3 control cleared after the verified checkpoint above is committed.**
+   Submit one candidate comparison through the isolated CLI only
    after preflight passes. The request's `strategy_id`,
    `strategy_version`, `execution_policy_version=backtest-execution-v3`, full
    `parameters`, `target_gross_exposure=0.75`,

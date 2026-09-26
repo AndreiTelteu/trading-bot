@@ -930,7 +930,9 @@ func withStage05OptimizationEvidence(t *testing.T, legacy string) (string, strin
 	}
 	value["rows"] = []map[string]interface{}{row("cash", "1.0.0", true, 0), row("benchmark_buy_hold", "1.0.0", true, .01), row("benchmark_trend", "1.0.0", true, .005), row("vol_sizing", "fixture", false, .02)}
 	value["governance"] = map[string]interface{}{"schema_version": "baseline-governance-gate-v1", "optimization_allowed": true, "promotion_allowed": false}
-	delete(value, "artifact_digest")
+	// Match the production comparison encoder: the digest field is present
+	// and empty while the canonical payload is hashed.
+	value["artifact_digest"] = ""
 	unsigned, _ := json.Marshal(value)
 	artifactDigest := fmt.Sprintf("%x", sha256.Sum256(unsigned))
 	value["artifact_digest"] = artifactDigest
