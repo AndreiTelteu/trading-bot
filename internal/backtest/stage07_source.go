@@ -51,7 +51,7 @@ type stage07FoldArtifact struct {
 	candidate, baseline SelectedStrategy
 	fixture             bool
 	dataDigest          string
-	comparability       validation.BaselineComparabilityPolicy
+	comparability       *validation.BaselineComparabilityPolicy
 }
 type stage07Factory struct{ folds map[int]stage07FoldArtifact }
 type stage07Runner struct {
@@ -231,7 +231,10 @@ func (r *stage07Runner) Test(fold validation.Fold, artifact []byte, test []valid
 	if err != nil {
 		return validation.FoldPrimitives{}, err
 	}
-	return stage07Primitives(candidate, baseline, fold.Index, len(test), r.source.series, r.source.comparability)
+	if r.source.comparability != nil {
+		return stage07Primitives(candidate, baseline, fold.Index, len(test), r.source.series, *r.source.comparability)
+	}
+	return stage07Primitives(candidate, baseline, fold.Index, len(test), r.source.series)
 }
 func stage07Primitives(candidate, baseline Stage05StrategyResult, fold, observations int, series map[string][]services.OHLCV, comparability ...validation.BaselineComparabilityPolicy) (validation.FoldPrimitives, error) {
 	start, err := strconv.ParseFloat(candidate.Metrics.StartingCapital, 64)

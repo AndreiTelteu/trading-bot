@@ -168,7 +168,7 @@ type ManifestSpec struct {
 	Seed                  int64                        `json:"seed"`
 	ExecutionSemantics    map[string]string            `json:"execution_semantics"`
 	CapacityStress        CapacityStressPolicy         `json:"capacity_stress"`
-	BaselineComparability BaselineComparabilityPolicy  `json:"baseline_comparability,omitempty"`
+	BaselineComparability *BaselineComparabilityPolicy `json:"baseline_comparability,omitempty"`
 	Folds                 []Fold                       `json:"folds"`
 	FoldSourceJobIDs      []uint                       `json:"fold_source_job_ids"`
 	FeatureHorizon        time.Duration                `json:"feature_horizon"`

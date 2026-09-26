@@ -125,7 +125,7 @@ func TestManifestAuthorityComponentsCannotBeOmittedOrWeakened(t *testing.T) {
 func TestManifestRejectsInvalidBaselineComparabilityTolerance(t *testing.T) {
 	manifest := manifestFixture(t)
 	spec := manifest.Spec
-	spec.BaselineComparability.MaxTurnoverRelativeDiff = 1.1
+	spec.BaselineComparability = &BaselineComparabilityPolicy{MaxTurnoverRelativeDiff: 1.1}
 	if _, _, err := CanonicalManifestSpec(spec); err == nil {
 		t.Fatal("invalid baseline comparability tolerance accepted")
 	}
