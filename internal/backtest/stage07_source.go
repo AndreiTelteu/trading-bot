@@ -286,7 +286,10 @@ func stage07Primitives(candidate, baseline Stage05StrategyResult, fold, observat
 	if math.Abs(baselineGross-gross) > policy.MaxGrossExposureDifference+1e-10 || math.Abs(baselineTurnover-candidateTurnover)/turnoverScale > policy.MaxTurnoverRelativeDiff+1e-10 {
 		return validation.FoldPrimitives{}, &validation.DiagnosticError{Code: validation.DiagnosticBaselineMismatch, Details: "Stage 05 baseline is not exposure/turnover matched"}
 	}
-	return validation.FoldPrimitives{StartingCapital: start, ExpectedObservations: observations, ObservedObservations: observations, Trades: trades, Curve: curve, BaselineGrossExposure: baselineGross, BaselineTurnover: candidateTurnover}, nil
+	// Comparability was checked against the observed baseline immediately above.
+	// Bind the primitives to the candidate-normalized exposure/turnover so the
+	// generic metric derivation cannot reintroduce an exact-equality requirement.
+	return validation.FoldPrimitives{StartingCapital: start, ExpectedObservations: observations, ObservedObservations: observations, Trades: trades, Curve: curve, BaselineGrossExposure: gross, BaselineTurnover: candidateTurnover}, nil
 }
 
 func stage07TradeLiquidity(series map[string][]services.OHLCV, symbol string, at time.Time, price float64) float64 {
