@@ -191,7 +191,8 @@ flags, DB, queues, and cache are untouched.
    Stage 07 manifest using those source IDs. Copy the old three fold
    intervals and strict gates, bind the new code and source digests, set
    `study_type=exploratory`, `exploratory=true`, and
-   `execution_semantics.execution_policy_version=backtest-execution-v3`;
+   `execution_semantics.execution_policy_version=backtest-execution-v3` and
+   `execution_semantics.no_fill_rule=selected_zero_base_volume_cancel_at_bar_close_v1`;
    leave `confirmatory_holdout` absent. Use a fresh idempotency key. The
    Stage 07 path validates server-derived source provenance. Execute only in the clone,
    then inspect fold cash + marked inventory, closed + residual P&L, fees,
@@ -219,6 +220,13 @@ data/execution integrity under the future policy. Do not tune on the three
 test windows or open any confirmatory holdout. No new parameter may be added
 after inspecting a fold without registering a new exploratory attempt and
 disclosing the full tuning history.
+
+Each Stage 05 comparison also evaluates four fixed, embedded Stage 06
+sensitivity configurations under strategy `1.0.0`: `absolute-20-24h`,
+`relative-30-24h`, `combined-30-24h`, and `combined-vol-20-48h`. Record their
+outcomes and failures as evaluated components of each source job. They are not
+independent replications or post-result winners, so the three-row outer
+matrix is not the total count of configurations evaluated internally.
 
 The append-only attempt ledger includes historical jobs #30–49 and #50–65
 (including failures, zero-trade outputs, and repeats), all Stage 07 manifest
