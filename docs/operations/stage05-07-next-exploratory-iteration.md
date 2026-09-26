@@ -1,5 +1,89 @@
 # Stage 05/07 next exploratory iteration (predeclared, 2026-09-26)
 
+## Stage 07 clone driver checkpoint (2026-09-27)
+
+`cmd/researchlab` has an explicit `-stage07-mode prepare|run` path for one **new
+exploratory** validation manifest. It is restricted to the same marked,
+runtime-only PostgreSQL 16 research clone as the Stage 05 source runner. It
+does not start the server or schedulers, use migration/ledger/parity credentials,
+touch the production database, or consume a confirmatory holdout. The mode is
+code only at this checkpoint: no Stage 07 prepare or run command has been
+executed. A human must review the exact private plan and its SHA-256 before
+invoking `run`.
+
+The driver reads the byte-pinned prior exploratory spec (SHA-256
+`a3b0d140308a1c383882012c92a4937df2da96908e5e4b6215bb037ae02e95c7`),
+then admits exactly three distinct new, completed Stage 05 source jobs. Each
+source must retain the candidate, baseline, configuration, implementation,
+dataset, and source code revision `ad775fdb6af118d6f8a55db09aaeb22a0b20f9a6`.
+The plan carries their full comparison references, run-manifest digests,
+primitive validation-artifact digests, and the SHA-256 of the ordered reference
+array used by repository registration. `Stage07ExperimentSource.Load` verifies
+the actual source artifacts and replay contract before either plan creation or
+execution. It requires `execution_semantics.execution_policy_version` equal to
+`backtest-execution-v3` and `execution_semantics.no_fill_rule` equal to
+`selected_zero_base_volume_cancel_at_bar_close_v1`, consistent with the source
+and replay manifests. The new spec also changes `policies.execution` and the
+authority envelope's `execution_policy` to v3, with a new policy-bundle label
+and authority digest. Its old fold boundaries, gates, sample requirements,
+bootstrap 500, cost 10/5 bps, capacity stress, comparability bounds, and
+exploratory family remain pinned. The old `confirmatory_holdout` remains absent.
+
+The source job's code revision remains `ad775fd` as provenance. The new
+manifest's `code_revision` and replay environment must instead equal the
+**actual clean committed driver SHA**. The driver rejects any change between
+those two commits outside `cmd/researchlab/**` and `docs/**`; this excludes
+`internal/**`, other commands, dependency files, and any transitive economic,
+data, or validation implementation changes. This satisfies the existing source
+loader's replay-code identity without impersonating the source SHA. Any later
+implementation change needs a new reviewed lineage and source assessment.
+
+After the three source IDs and digests are final, the operator can prepare a
+private mode-0600 plan. These variable names denote paths and identities only;
+never print the runtime DSN file. Use a new bounded idempotency key and an
+explicit research creator. The append-only mode-0600 ledger records the plan,
+execution intent, registration, and outcome, including failures. Preparation
+creates no experiment or validation job.
+
+```bash
+export DATABASE_URL_FILE="$CLONE_RUNTIME_DSN_FILE"
+export STAGE08_NEW_BACKTEST=research BACKTEST_MAX_CONCURRENT_JOBS=1
+export BACKTEST_CODE_REVISION="$(git rev-parse HEAD)"
+go run ./cmd/researchlab \
+  -clone-marker-file "$CLONE_MARKER_FILE" \
+  -reviewed-code-sha "$BACKTEST_CODE_REVISION" \
+  -ledger-file "$PRIVATE_ATTEMPT_LEDGER" \
+  -stage07-mode prepare \
+  -stage07-old-manifest-file "$PINNED_OLD_SPEC_FILE" \
+  -stage07-source-job-ids 66,67,68 \
+  -stage07-creator "$RESEARCH_CREATOR" \
+  -stage07-idempotency-key "$FRESH_STAGE07_KEY" \
+  -stage07-plan-file "$PRIVATE_REVIEWED_PLAN_FILE"
+```
+
+Only after reviewing the exact plan, source references, and ledger, invoke
+the one-shot execution with its reported plan SHA-256. The plan's `reproduce`
+field records this CLI mode and the actual driver SHA; the reviewed plan hash
+is supplied separately to avoid a self-referential digest.
+
+```bash
+go run ./cmd/researchlab \
+  -clone-marker-file "$CLONE_MARKER_FILE" \
+  -reviewed-code-sha "$BACKTEST_CODE_REVISION" \
+  -ledger-file "$PRIVATE_ATTEMPT_LEDGER" \
+  -stage07-mode run \
+  -stage07-plan-file "$PRIVATE_REVIEWED_PLAN_FILE" \
+  -stage07-plan-sha256 "$REVIEWED_PLAN_SHA256"
+```
+
+The run mode rechecks plan bytes, pinned spec derivation, live source
+references, clone identity, clean Git identity, and source replay before
+registering through `validation.Repository.CreateManifestAuthenticated` with
+the explicit creator and idempotency key. It then calls one
+`validation.JobService.Run`. A key already registered is refused so a retry
+cannot silently create another validation outcome. An incomplete or failing
+result remains a recorded failed exploratory attempt, not promotion evidence.
+
 This is a **research-only** plan at code HEAD
 `5e51cec7b4715ee06a1d3fa8bfeedd3533d617aa`. It does not authorize a
 production job, a changed execution policy, a dataset edit, a confirmatory

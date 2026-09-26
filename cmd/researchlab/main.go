@@ -36,6 +36,13 @@ func main() {
 	requestFile := flag.String("request-file", "", "exact Stage 05 JSON request (omit for identity preflight)")
 	ledgerFile := flag.String("ledger-file", "", "append-only local JSONL attempt ledger")
 	expectedSHA := flag.String("reviewed-code-sha", "", "committed reviewed v3 code identity")
+	stage07Mode := flag.String("stage07-mode", "", "Stage 07 prepare or run; requires an exact reviewed plan")
+	stage07OldManifest := flag.String("stage07-old-manifest-file", "", "private pinned prior exploratory manifest (prepare only)")
+	stage07Plan := flag.String("stage07-plan-file", "", "private Stage 07 reviewed plan file")
+	stage07PlanSHA := flag.String("stage07-plan-sha256", "", "reviewed SHA-256 of the exact Stage 07 plan (run only)")
+	stage07SourceIDs := flag.String("stage07-source-job-ids", "", "three new completed source job IDs, comma-separated (prepare only)")
+	stage07Creator := flag.String("stage07-creator", "", "explicit research creator (prepare only)")
+	stage07Key := flag.String("stage07-idempotency-key", "", "fresh bounded experiment idempotency key (prepare only)")
 	repetitions := flag.Int("repetitions", 1, "exact sequential source jobs, 1 to 3")
 	jobTimeout := flag.Duration("job-timeout", 4*time.Hour, "deadline per source job, at most 6h")
 	flag.Parse()
@@ -59,6 +66,22 @@ func main() {
 	stage08.ReadOnly = true
 	if _, err := stage08.Initialize(context.Background()); err != nil {
 		fatal(err)
+	}
+	if *stage07Mode != "" {
+		if *requestFile != "" || *repetitions != 1 || *ledgerFile == "" || *expectedSHA == "" || *stage07Plan == "" {
+			fatal(fmt.Errorf("Stage 07 requires a plan, ledger, reviewed code SHA, and no Stage 05 request"))
+		}
+		if err := validateRevision(*expectedSHA); err != nil {
+			fatal(err)
+		}
+		if err := validateStage07CodeLineage(*expectedSHA); err != nil {
+			fatal(err)
+		}
+		options := stage07Options{Mode: *stage07Mode, OldManifestFile: *stage07OldManifest, PlanFile: *stage07Plan, PlanSHA256: *stage07PlanSHA, SourceJobIDs: *stage07SourceIDs, Creator: *stage07Creator, IdempotencyKey: *stage07Key, LedgerFile: *ledgerFile, MarkerFile: *markerFile, DriverSHA: *expectedSHA}
+		if err := runStage07Mode(options); err != nil {
+			fatal(err)
+		}
+		return
 	}
 	if *requestFile == "" {
 		fmt.Println(`{"status":"clone_identity_verified"}`)
