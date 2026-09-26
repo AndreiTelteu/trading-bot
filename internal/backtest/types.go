@@ -134,7 +134,31 @@ type ExecutionPolicy struct {
 	Timing      ExecutionTiming              `json:"timing"`
 	Liquidity   LiquidityPolicy              `json:"liquidity"`
 	CostVersion string                       `json:"cost_version"`
+	NoFillRule  string                       `json:"no_fill_rule,omitempty"`
 	Constraints map[string]SymbolConstraints `json:"constraints,omitempty"`
+}
+
+const SimulatedNoFillSchemaVersion = "simulated-no-fill-v1"
+
+// SimulatedNoFill is non-economic evidence for an approved intent whose
+// selected execution window reported no base-volume trades.
+type SimulatedNoFill struct {
+	SchemaVersion          string `json:"schema_version"`
+	OrderID                string `json:"order_id"`
+	Symbol                 string `json:"symbol"`
+	Side                   string `json:"side"`
+	SignalAt               string `json:"signal_at"`
+	SelectedOpenAt         string `json:"selected_open_at"`
+	EvaluatedAt            string `json:"evaluated_at"`
+	RequestedQuantity      string `json:"requested_quantity"`
+	ApprovedQuantity       string `json:"approved_quantity"`
+	FilledQuantity         string `json:"filled_quantity"`
+	ReferencePrice         string `json:"reference_price"`
+	SelectedOpenPrice      string `json:"selected_open_price"`
+	ExecutionPolicyVersion string `json:"execution_policy_version"`
+	DatasetManifestID      string `json:"dataset_manifest_id"`
+	Reason                 string `json:"reason"`
+	LiquidityEvidence      string `json:"liquidity_evidence"`
 }
 
 type SymbolConstraints struct {
@@ -370,18 +394,19 @@ type RunManifest struct {
 }
 
 type DecisionArtifact struct {
-	SchemaVersion  string         `json:"schema_version,omitempty"`
-	IntentID       string         `json:"intent_id,omitempty"`
-	SignalAt       string         `json:"signal_at"`
-	DecisionAt     string         `json:"decision_at"`
-	Symbol         string         `json:"symbol"`
-	Code           string         `json:"code"`
-	Stage          string         `json:"stage"`
-	Side           string         `json:"side,omitempty"`
-	Quantity       string         `json:"quantity,omitempty"`
-	Reason         string         `json:"reason,omitempty"`
-	ReasonMetadata ReasonMetadata `json:"reason_metadata,omitempty"`
-	PolicyVersion  string         `json:"policy_version,omitempty"`
+	SchemaVersion    string         `json:"schema_version,omitempty"`
+	IntentID         string         `json:"intent_id,omitempty"`
+	SignalAt         string         `json:"signal_at"`
+	DecisionAt       string         `json:"decision_at"`
+	Symbol           string         `json:"symbol"`
+	Code             string         `json:"code"`
+	Stage            string         `json:"stage"`
+	Side             string         `json:"side,omitempty"`
+	Quantity         string         `json:"quantity,omitempty"`
+	ApprovedQuantity string         `json:"approved_quantity,omitempty"`
+	Reason           string         `json:"reason,omitempty"`
+	ReasonMetadata   ReasonMetadata `json:"reason_metadata,omitempty"`
+	PolicyVersion    string         `json:"policy_version,omitempty"`
 }
 type OrderArtifact struct {
 	SchemaVersion  string            `json:"schema_version,omitempty"`
@@ -451,6 +476,7 @@ type BacktestArtifacts struct {
 	Fills         []FillArtifact     `json:"fills"`
 	Ledger        []LedgerArtifact   `json:"ledger"`
 	Exposure      []ExposureArtifact `json:"exposure"`
+	NoFills       []SimulatedNoFill  `json:"no_fills,omitempty"`
 }
 
 type ArtifactBytes struct {

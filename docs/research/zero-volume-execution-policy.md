@@ -1,6 +1,6 @@
 # Design proposal: selected zero-volume execution bar
 
-Status: **design only; economic-policy decision required before implementation**. Reviewed at `5e51cec`. No dataset repair, strategy tuning, code, or database change is proposed here.
+Status: **option A approved and implemented as opt-in `backtest-execution-v3`**. Stops are re-evaluated only at the next normal decision and are not latched. The original design review was at `5e51cec`; this document retains its research rationale and limitations.
 
 ## Evidence and boundary
 
@@ -14,7 +14,7 @@ The bar's final volume is knowable only **after** the minute closes. Strategy an
 
 The loop currently sets `lastTargets` after execution and `lastRebalance = signalAt` for non-stop plans, even if some target fails. Those fields are **decision cadence/selected targets**, not achieved holdings; changing them on a no-fill would create an unscheduled retry or rerank. Actual portfolio positions and cash already flow back to the next planner context. `finalLiquidationPrices` picks the last eligible selected bar; `liquidateStage05` uses the same per-symbol shared path. `mark_to_market` simply values remaining inventory at the last causal end mark. Stage 06's target/achieved-exposure assertions and mandatory-reduction handling can currently turn a failed exit into a fatal error; they need an explicit exception only for the new no-trade outcome, never for arbitrary risk, constraints, broker faults, or partial fills.
 
-## Recommended new policy: `backtest-execution-v3` (decision requested)
+## Approved policy: `backtest-execution-v3`
 
 1. Keep v1/v2 replay semantics immutable; select v3 explicitly for new jobs and bind its version, no-fill reason, timing/window rule, and unchanged cost model into every manifest/comparison/fold digest. Preserve the dataset manifest ID and all observed bars. No fallback to a later nonzero-volume bar and no use of its price for this intent.
 2. At the original signal, form the same target intent and run the **same strategy and risk engine** with causal marks. For an approved intent whose exact selected execution bar is present, finite, and has zero reported base volume **and zero trades when that field exists**, have the **backtest simulation broker** return a complete, terminal *simulated zero-fill/cancel* outcome with a code such as `simulated_no_fill_zero_trades`, evaluated at that window's end and correlated to intent/order ID, selected bar timestamp, symbol, side, requested/approved quantity, decision/reference and selected-open prices, execution-policy version, and source dataset. This is a conservative rule over OHLCV, **not evidence that Binance rejected a real order or that the order book had no executable liquidity**. It has **zero fills**, zero fee/slippage/turnover, no cash/position/ledger-economic change and no pending order. Persist it as non-economic rejected-intent evidence in the run trace/artifact, explicitly labeled `simulated`; ensure the rejection survives serialization, digests, and comparison output. A missing, negative, NaN/infinite, malformed, or unverified selected bar, or contradictory volume/trade-count fields, remains a **coverage/manifest error**, not a no-fill. If source bars do not carry trade count, zero base volume can support the simulation rule but the artifact must say which field was used.

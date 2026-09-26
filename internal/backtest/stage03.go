@@ -65,6 +65,9 @@ func defaultStage03Policies(config *BacktestConfig) {
 	if config.ExecutionPolicy.Version == "" {
 		config.ExecutionPolicy.Version = "backtest-execution-v2"
 	}
+	if config.ExecutionPolicy.Version == "backtest-execution-v3" {
+		config.ExecutionPolicy.NoFillRule = "selected_zero_base_volume_cancel_at_bar_close_v1"
+	}
 	if config.ExecutionPolicy.Timing == "" {
 		config.ExecutionPolicy.Timing = ExecutionNextExecutable
 	}
@@ -92,6 +95,11 @@ func defaultStage03Policies(config *BacktestConfig) {
 }
 
 func validateRealismPolicy(config BacktestConfig) error {
+	switch config.ExecutionPolicy.Version {
+	case "backtest-execution-v1", "backtest-execution-v2", "backtest-execution-v3", "next-executable-v1":
+	default:
+		return &UnsupportedRealismError{Policy: config.ExecutionPolicy.Version, Reason: "unknown execution policy version"}
+	}
 	if config.FeeBps != math.Trunc(config.FeeBps) || config.SlippageBps != math.Trunc(config.SlippageBps) {
 		return &UnsupportedRealismError{Policy: "fractional_basis_points", Reason: "fee and slippage basis points must be integral"}
 	}
@@ -636,7 +644,16 @@ func buildBacktestArtifacts(ledger *backtestMemoryLedger, positions map[string]*
 		}
 		for _, rejection := range run.Broker.Rejected() {
 			intent := intents[rejection.OrderID.String()]
-			artifacts.Decisions = append(artifacts.Decisions, decisionFromIntent(intent, "broker", string(rejection.Code)))
+			decision := decisionFromIntent(intent, "broker", string(rejection.Code))
+			if rejection.Code == tradingcore.SimulatedNoFillZeroTrades {
+				for _, approved := range run.Risk.Approved().Intents() {
+					if approved.ID == rejection.OrderID {
+						decision.ApprovedQuantity = approved.Quantity.Decimal().String()
+						break
+					}
+				}
+			}
+			artifacts.Decisions = append(artifacts.Decisions, decision)
 		}
 		for _, accepted := range run.Broker.Accepted() {
 			intent := intents[accepted.OrderID.String()]

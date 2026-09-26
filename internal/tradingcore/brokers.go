@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/big"
 	"strings"
+	"time"
 )
 
 const ExchangeExecutionFenced RejectionCode = "exchange_execution_fenced"
@@ -28,7 +29,12 @@ type SimulationBroker struct {
 	Costs CostModel
 	Name  string
 }
-type BacktestBroker struct{ SimulationBroker }
+type BacktestBroker struct {
+	SimulationBroker
+	zeroVolumeInstrument InstrumentID
+	zeroVolumeOpen       time.Time
+	zeroVolumeClose      time.Time
+}
 type PaperBroker struct{ SimulationBroker }
 type ShadowBroker struct{}
 
@@ -40,10 +46,58 @@ func (ShadowBroker) Submit(_ context.Context, batch DecisionBatch) (BrokerBatchO
 }
 
 func NewBacktestBroker(clock Clock, ids IDGenerator, costs CostModel) BacktestBroker {
-	return BacktestBroker{SimulationBroker{Clock: clock, IDs: ids, Costs: costs, Name: "backtest"}}
+	return BacktestBroker{SimulationBroker: SimulationBroker{Clock: clock, IDs: ids, Costs: costs, Name: "backtest"}}
 }
 func NewPaperBroker(clock Clock, ids IDGenerator, costs CostModel) PaperBroker {
 	return PaperBroker{SimulationBroker{Clock: clock, IDs: ids, Costs: costs, Name: "paper"}}
+}
+
+const SimulatedNoFillZeroTrades RejectionCode = "simulated_no_fill_zero_trades"
+
+// WithZeroVolumeWindow applies only to the backtest adapter. The selected
+// completed bar is execution evidence; it is never part of strategy/risk input.
+func (broker BacktestBroker) WithZeroVolumeWindow(instrument InstrumentID, open, close time.Time) BacktestBroker {
+	broker.zeroVolumeInstrument = instrument
+	broker.zeroVolumeOpen = open.UTC()
+	broker.zeroVolumeClose = close.UTC()
+	return broker
+}
+
+func (broker BacktestBroker) Submit(ctx context.Context, batch DecisionBatch) (BrokerBatchOutcome, error) {
+	if broker.zeroVolumeClose.IsZero() {
+		return broker.SimulationBroker.Submit(ctx, batch)
+	}
+	if broker.Clock == nil || broker.IDs == nil {
+		return BrokerBatchOutcome{}, fmt.Errorf("simulation broker dependencies are required")
+	}
+	if broker.zeroVolumeInstrument.String() == "" || broker.zeroVolumeOpen.IsZero() || !broker.zeroVolumeClose.After(broker.zeroVolumeOpen) || !broker.Clock.Now().UTC().Equal(broker.zeroVolumeOpen) {
+		return BrokerBatchOutcome{}, fmt.Errorf("invalid selected zero-volume execution window")
+	}
+	rejected := make([]OrderRejection, 0, len(batch.Intents()))
+	other := make([]OrderIntent, 0, len(batch.Intents()))
+	for _, intent := range batch.Intents() {
+		if intent.Instrument.ID != broker.zeroVolumeInstrument {
+			other = append(other, intent)
+			continue
+		}
+		if intent.DecisionAt.After(broker.zeroVolumeOpen) || intent.CreatedAt.After(broker.zeroVolumeOpen) {
+			return BrokerBatchOutcome{}, fmt.Errorf("intent %s occurs after selected zero-volume open", intent.ID.String())
+		}
+		metadata := intent.Metadata()
+		if metadata["cost_policy_version"] != broker.Costs.Version || metadata["fee_bps"] != fmt.Sprint(broker.Costs.FeeBPS) || metadata["slippage_bps"] != fmt.Sprint(broker.Costs.SlippageBPS) {
+			return BrokerBatchOutcome{}, fmt.Errorf("intent %s cost reservation does not match broker cost model", intent.ID.String())
+		}
+		rejected = append(rejected, OrderRejection{OrderID: intent.ID, Code: SimulatedNoFillZeroTrades, Message: "simulated zero-fill/cancel: selected execution bar has zero reported base volume", EvaluatedAt: broker.zeroVolumeClose, PolicyVersion: intent.Versions.Policy})
+	}
+	otherBatch, err := NewDecisionBatch(other)
+	if err != nil {
+		return BrokerBatchOutcome{}, err
+	}
+	filled, err := broker.SimulationBroker.Submit(ctx, otherBatch)
+	if err != nil {
+		return BrokerBatchOutcome{}, err
+	}
+	return NewBrokerBatchOutcome(OutcomeComplete, filled.Accepted(), append(rejected, filled.Rejected()...))
 }
 
 func (broker SimulationBroker) Submit(_ context.Context, batch DecisionBatch) (BrokerBatchOutcome, error) {

@@ -87,6 +87,9 @@ type replaySnapshotEntry struct {
 }
 
 func RunBacktest(config BacktestConfig, series map[string][]services.OHLCV) (BacktestResult, error) {
+	if config.ExecutionPolicy.Version == "backtest-execution-v3" {
+		return BacktestResult{}, &UnsupportedRealismError{Policy: config.ExecutionPolicy.Version, Reason: "v3 simulated no-fill is supported only by Stage 05/06 comparison and fold replay"}
+	}
 	if config.EngineMode == "" {
 		config.EngineMode = EngineLegacy
 	}

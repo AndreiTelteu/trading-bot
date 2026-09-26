@@ -51,6 +51,19 @@ Establish minimal, understandable baselines before introducing a production cand
   and UTC fill time. An unchanged holding does not require fill liquidity;
   execution is never silently skipped or deferred to a later bar. New runs
   record v2 in the manifest; explicit v1 replays retain their original policy.
+- [x] Optional `backtest-execution-v3` preserves the same decision/risk path and
+  turns only a risk-approved intent on its exact finite zero-volume selected
+  execution bar into a terminal simulated zero-fill at bar close. Each lane
+  records a digest-bound `simulated-no-fill-v1` record linked to its order and
+  broker rejection, with requested/approved/zero-filled quantity, signal/open/
+  close times, reference/open prices, policy, dataset and zero-base-volume
+  evidence. There is no fee, fill, turnover, cash/position change, later-price
+  deferral or hidden retry. Attempted decision turnover remains reserved for
+  subsequent same-decision symbols; executed turnover is measured from fills.
+  One-shot hold may remain cash. A failed stop retains its marked exposure and
+  is re-evaluated only at the next normal decision, without latching. Final
+  `liquidate` fails on a no-fill exit; `mark_to_market` retains marked inventory.
+  Positive-volume v3 economics match v2; v1/v2 remain reproducible.
 - [x] Report absolute and benchmark-relative return.
 - [x] Report drawdown, Sharpe/Sortino where sample size permits, profit factor, expectancy, turnover, exposure time, and trade count.
 - [x] Report concentration by symbol, period, and regime.

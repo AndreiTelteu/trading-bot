@@ -22,6 +22,17 @@ Turn the backtest into an explicit simulation of information availability and ex
 
 ## Cost and fill model
 
+Stage 05/06 comparisons can opt into `backtest-execution-v3` via the comparison
+request's `execution_policy_version` (or `cmd/backtest -execution-policy`). It
+keeps v2's next selected execution bar and cost model. An approved intent whose
+exact selected bar has finite zero base volume is simulated as a terminal
+zero-fill/cancel at that bar's recorded close. The broker rejection is
+`simulated_no_fill_zero_trades`; it is an OHLCV simulation, not an exchange
+rejection or proof of absent order-book liquidity. Strategy and risk see only
+the earlier causal decision mark. Missing, negative, nonfinite or malformed
+execution bars fail instead. The Stage 03 `RunBacktest` engine rejects a v3
+label; its v1/v2 semantics remain unchanged.
+
 - [x] Apply fees on each fill, not only at trade summary level.
 - [x] Apply deterministic slippage by side and configured bps/model.
 - [x] Define partial-fill and liquidity-cap policy; if unsupported, reject unsupported configurations clearly.

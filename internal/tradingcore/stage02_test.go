@@ -91,6 +91,39 @@ func TestFixtureParityAcrossBacktestPaperAndFencedLive(t *testing.T) {
 	}
 }
 
+func TestBacktestZeroVolumeWindowRejectsOnlyMatchingInstrument(t *testing.T) {
+	fixture := loadParityFixture(t)
+	snapshot := parityContext(t, fixture, tradingcore.ExecutionBacktest, false)
+	strategyResult, err := (tradingcore.LegacyRuleStrategy{IDs: tradingcore.NewSequenceIDGenerator("decision", 1)}).Decide(context.Background(), snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	riskResult, err := (tradingcore.PortfolioRiskEngine{}).Evaluate(context.Background(), strategyResult.Intents(), snapshot.Portfolio(), parityPolicy(t, fixture))
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := riskResult.Approved().Intents()[0]
+	second := first
+	second.ID, _ = tradingcore.NewOrderID("order-second")
+	second.IdempotencyKey, _ = tradingcore.NewIdempotencyKey("idem-second")
+	second.Instrument.ID, _ = tradingcore.NewInstrumentID("second-instrument")
+	second.Instrument.VenueSymbol = "SECONDUSDT"
+	batch, err := tradingcore.NewDecisionBatch([]tradingcore.OrderIntent{first, second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	open := first.CreatedAt.Add(time.Minute)
+	close := open.Add(time.Minute - time.Millisecond)
+	broker := tradingcore.NewBacktestBroker(tradingcore.NewFixedClock(open), tradingcore.NewSequenceIDGenerator("mixed-fill", 1), tradingcore.CostModel{FeeBPS: fixture.FeeBPS, SlippageBPS: fixture.SlippageBPS, Version: "cost-v1"}).WithZeroVolumeWindow(first.Instrument.ID, open, close)
+	outcome, err := broker.Submit(context.Background(), batch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(outcome.Rejected()) != 1 || outcome.Rejected()[0].OrderID != first.ID || outcome.Rejected()[0].Code != tradingcore.SimulatedNoFillZeroTrades || !outcome.Rejected()[0].EvaluatedAt.Equal(close) || len(outcome.Accepted()) != 1 || outcome.Accepted()[0].OrderID != second.ID {
+		t.Fatalf("mixed zero-volume broker outcome: %+v", outcome)
+	}
+}
+
 func TestHistoricalMinimumNotionalRejectsSimulationFill(t *testing.T) {
 	fixture := loadParityFixture(t)
 	snapshot := parityContext(t, fixture, tradingcore.ExecutionPaper, false)

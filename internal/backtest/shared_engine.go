@@ -146,6 +146,7 @@ type backtestMemoryLedger struct {
 	config                BacktestConfig
 	runRecords            []backtestRunRecord
 	allocationDiagnostics []StrategyTraceDiagnostic
+	noFills               []SimulatedNoFill
 	evidence              RunEvidence
 }
 

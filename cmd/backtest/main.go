@@ -61,6 +61,7 @@ func main() {
 	targetGross := flag.String("target-gross", "1", "normalized Stage 05 gross exposure decimal")
 	maxNet := flag.String("max-net", "1", "normalized Stage 05 maximum net exposure decimal")
 	finalPolicy := flag.String("final-policy", "liquidate", "liquidate or mark_to_market")
+	executionPolicy := flag.String("execution-policy", "", "Stage 05 execution policy version; backtest-execution-v3 is opt-in")
 	validationTrainMonths := flag.Int("validation-train-months", -1, "walk-forward training months (default: persisted setting, normally 12)")
 	validationTestMonths := flag.Int("validation-test-months", -1, "walk-forward test months (default: persisted setting, normally 3)")
 	validationBootstrapIterations := flag.Int("validation-bootstrap-iterations", -1, "bootstrap iterations (default: persisted setting, normally 500)")
@@ -110,7 +111,7 @@ func main() {
 			}
 			parameters[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
 		}
-		comparison, compareErr := backtest.RunStage05ComparisonSyncWithOverrides(backtest.Stage05RunRequest{StrategyID: *strategyID, StrategyVersion: *strategyVersion, Parameters: parameters, TargetGrossExposure: *targetGross, MaxNetExposure: *maxNet, FinalPolicy: *finalPolicy}, overrides)
+		comparison, compareErr := backtest.RunStage05ComparisonSyncWithOverrides(backtest.Stage05RunRequest{StrategyID: *strategyID, StrategyVersion: *strategyVersion, Parameters: parameters, TargetGrossExposure: *targetGross, MaxNetExposure: *maxNet, FinalPolicy: *finalPolicy, ExecutionPolicyVersion: *executionPolicy}, overrides)
 		if compareErr != nil {
 			log.Fatalf("Stage 05 comparison failed: %v", compareErr)
 		}
