@@ -3,7 +3,12 @@
 ## Stage 07 clone driver checkpoint (2026-09-27)
 
 `cmd/researchlab` has an explicit `-stage07-mode prepare|run` path for one **new
-exploratory** validation manifest. It is restricted to the same marked,
+exploratory** validation manifest. The current `ad775fd` source pins are a
+deliberate fail-closed placeholder: jobs #66–68 are diagnostic attempts after
+the #66/#67 exact-repeat digest mismatch, and no Stage 07 preparation or run
+is authorized. A deterministic replay fix and new audited source checkpoint
+must precede updating the driver pins and reviewing an exact plan. The driver
+is restricted to the same marked,
 runtime-only PostgreSQL 16 research clone as the Stage 05 source runner. It
 does not start the server or schedulers, use migration/ledger/parity credentials,
 touch the production database, or consume a confirmatory holdout. The mode is
@@ -14,8 +19,11 @@ invoking `run`.
 The driver reads the byte-pinned prior exploratory spec (SHA-256
 `a3b0d140308a1c383882012c92a4937df2da96908e5e4b6215bb037ae02e95c7`),
 then admits exactly three distinct new, completed Stage 05 source jobs. Each
-source must retain the candidate, baseline, configuration, implementation,
-dataset, and source code revision `ad775fdb6af118d6f8a55db09aaeb22a0b20f9a6`.
+source must retain the candidate, baseline, configuration, dataset, and source
+code revision `ad775fdb6af118d6f8a55db09aaeb22a0b20f9a6`. The v3
+candidate and baseline implementation digests are taken from audited job #66
+and required on both exact repeats; the old v1 implementation digests are
+historical provenance, not the v3 executable identities.
 The plan carries their full comparison references, run-manifest digests,
 primitive validation-artifact digests, and the SHA-256 of the ordered reference
 array used by repository registration. `Stage07ExperimentSource.Load` verifies
@@ -25,20 +33,28 @@ execution. It requires `execution_semantics.execution_policy_version` equal to
 `selected_zero_base_volume_cancel_at_bar_close_v1`, consistent with the source
 and replay manifests. The new spec also changes `policies.execution` and the
 authority envelope's `execution_policy` to v3, with a new policy-bundle label
-and authority digest. Its old fold boundaries, gates, sample requirements,
-bootstrap 500, cost 10/5 bps, capacity stress, comparability bounds, and
-exploratory family remain pinned. The old `confirmatory_holdout` remains absent.
+and authority digest. The source `liquidity=full_fill_ohlcv` semantic remains
+unchanged; the explicit no-fill rule describes the zero-volume exception.
+Its old fold boundaries, gates, sample requirements, bootstrap 500, cost 10/5
+bps, capacity stress, and comparability bounds remain pinned. A new family ID
+is derived from the new implementation and composite policy; the old family ID
+is retained in the private plan and ledger as research lineage. The old
+`confirmatory_holdout` remains absent.
 
-The source job's code revision remains `ad775fd` as provenance. The new
-manifest's `code_revision` and replay environment must instead equal the
-**actual clean committed driver SHA**. The driver rejects any change between
-those two commits outside `cmd/researchlab/**` and `docs/**`; this excludes
-`internal/**`, other commands, dependency files, and any transitive economic,
-data, or validation implementation changes. This satisfies the existing source
-loader's replay-code identity without impersonating the source SHA. Any later
-implementation change needs a new reviewed lineage and source assessment.
+Jobs #66–68 retain `ad775fd` as historical provenance. The new manifest's
+`code_revision` and replay environment must instead equal the **actual clean
+committed driver SHA**. The driver rejects every source-to-driver diff path
+outside `cmd/researchlab/**` and `docs/**`. A separately committed Stage 07
+loader metadata repair restores the fixed v3 `NoFillRule` omitted by the
+point-in-time constructor before requiring full equality with the source
+policy. It never copies a rule from source evidence or overwrites a conflicting
+nonempty rule. That repair belongs in the **next source revision**, not as an
+exception allowing use of `ad775fd` sources. Until the deterministic replay
+fix, loader repair, new source SHA, and audited implementation digests are
+pinned together, the current driver's lineage guard stops preparation.
 
-After the three source IDs and digests are final, the operator can prepare a
+After the new three source IDs and digests are final and driver pins updated,
+the operator can prepare a
 private mode-0600 plan. These variable names denote paths and identities only;
 never print the runtime DSN file. Use a new bounded idempotency key and an
 explicit research creator. The append-only mode-0600 ledger records the plan,
@@ -55,7 +71,7 @@ go run ./cmd/researchlab \
   -ledger-file "$PRIVATE_ATTEMPT_LEDGER" \
   -stage07-mode prepare \
   -stage07-old-manifest-file "$PINNED_OLD_SPEC_FILE" \
-  -stage07-source-job-ids 66,67,68 \
+  -stage07-source-job-ids "$NEW_AUDITED_SOURCE_JOB_IDS" \
   -stage07-creator "$RESEARCH_CREATOR" \
   -stage07-idempotency-key "$FRESH_STAGE07_KEY" \
   -stage07-plan-file "$PRIVATE_REVIEWED_PLAN_FILE"

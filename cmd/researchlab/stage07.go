@@ -22,10 +22,12 @@ import (
 )
 
 const (
-	stage07SourceSHA   = "ad775fdb6af118d6f8a55db09aaeb22a0b20f9a6"
-	stage07OldSpecSHA  = "a3b0d140308a1c383882012c92a4937df2da96908e5e4b6215bb037ae02e95c7"
-	stage07NoFillRule  = "selected_zero_base_volume_cancel_at_bar_close_v1"
-	stage07PlanVersion = "researchlab-stage07-plan-v1"
+	stage07SourceSHA               = "ad775fdb6af118d6f8a55db09aaeb22a0b20f9a6"
+	stage07OldSpecSHA              = "a3b0d140308a1c383882012c92a4937df2da96908e5e4b6215bb037ae02e95c7"
+	stage07NoFillRule              = "selected_zero_base_volume_cancel_at_bar_close_v1"
+	stage07PlanVersion             = "researchlab-stage07-plan-v1"
+	stage07CandidateImplementation = "c71a6af5020f45c4b6e4107e6bd4994c5a43c9a252041dcb8b278eadad4216ec"
+	stage07BaselineImplementation  = "d1d6f449093afdac3b38be1a78f660dec6c322c85827127e88a9cb6dd792ba3e"
 )
 
 type stage07Options struct {
@@ -45,6 +47,7 @@ type stage07Plan struct {
 	OldManifestSHA256  string                   `json:"old_manifest_sha256"`
 	SourceCodeRevision string                   `json:"source_code_revision"`
 	DriverCodeRevision string                   `json:"driver_code_revision"`
+	PriorFamilyID      string                   `json:"prior_family_id"`
 	Creator            string                   `json:"creator"`
 	IdempotencyKey     string                   `json:"idempotency_key"`
 	SourceReferences   []stage07SourceReference `json:"source_references"`
@@ -158,7 +161,7 @@ func loadStage07References(ids []uint, old validation.ManifestSpec) ([]stage07So
 		}
 		candidate, cOK := ref.Strategies[old.Candidate.ID]
 		baseline, bOK := ref.Strategies[old.Baseline.ID]
-		if !cOK || !bOK || ref.Candidate != old.Candidate.ID+"@"+old.Candidate.Version || ref.DatasetDigest != old.DatasetDigest || candidate.ImplementationDigest != old.Candidate.ImplementationDigest || candidate.ConfigDigest != old.Candidate.ConfigDigest || baseline.ImplementationDigest != old.Baseline.ImplementationDigest || baseline.ConfigDigest != old.Baseline.ConfigDigest {
+		if !cOK || !bOK || ref.Candidate != old.Candidate.ID+"@"+old.Candidate.Version || ref.DatasetDigest != old.DatasetDigest || candidate.ConfigDigest != old.Candidate.ConfigDigest || baseline.ConfigDigest != old.Baseline.ConfigDigest {
 			return nil, "", fmt.Errorf("source job %d differs from pinned strategy/dataset identity", id)
 		}
 		var job database.BacktestJob
@@ -186,6 +189,9 @@ func loadStage07References(ids []uint, old validation.ManifestSpec) ([]stage07So
 		refs = append(refs, stage07SourceReference{ref, *job.ValidationArtifactDigest, stage07SourceSHA})
 		comparisons = append(comparisons, ref)
 	}
+	if err := validateStage07ReferenceSet(refs, old); err != nil {
+		return nil, "", err
+	}
 	encoded, err := json.Marshal(comparisons)
 	if err != nil {
 		return nil, "", err
@@ -193,8 +199,30 @@ func loadStage07References(ids []uint, old validation.ManifestSpec) ([]stage07So
 	return refs, fmt.Sprintf("%x", sha256.Sum256(encoded)), nil
 }
 
-func buildStage07Spec(old validation.ManifestSpec, ids []uint, driverSHA, comparisonDigest string) (validation.ManifestSpec, error) {
-	if len(ids) != 3 || driverSHA == "" || comparisonDigest == "" {
+func validateStage07ReferenceSet(refs []stage07SourceReference, old validation.ManifestSpec) error {
+	if len(refs) != 3 || refs[0].Comparison.JobID != 66 {
+		return fmt.Errorf("audited source #66 and two exact repeats are required")
+	}
+	seen := map[uint]bool{}
+	for _, ref := range refs {
+		if ref.Comparison.JobID <= 65 || seen[ref.Comparison.JobID] {
+			return fmt.Errorf("source job IDs must be distinct new jobs")
+		}
+		seen[ref.Comparison.JobID] = true
+		candidate, cOK := ref.Comparison.Strategies[old.Candidate.ID]
+		baseline, bOK := ref.Comparison.Strategies[old.Baseline.ID]
+		if !cOK || !bOK || ref.Comparison.Candidate != old.Candidate.ID+"@"+old.Candidate.Version || candidate.ImplementationDigest != stage07CandidateImplementation || baseline.ImplementationDigest != stage07BaselineImplementation || candidate.ConfigDigest != old.Candidate.ConfigDigest || baseline.ConfigDigest != old.Baseline.ConfigDigest || ref.Comparison.DatasetDigest != old.DatasetDigest || ref.SourceCodeRevision != stage07SourceSHA || ref.ValidationArtifactDigest == "" {
+			return fmt.Errorf("Stage 07 source reference differs from audited #66 implementation or pinned configuration/dataset")
+		}
+	}
+	return nil
+}
+
+func buildStage07Spec(old validation.ManifestSpec, refs []stage07SourceReference, driverSHA, comparisonDigest string) (validation.ManifestSpec, error) {
+	if err := validateStage07ReferenceSet(refs, old); err != nil {
+		return old, err
+	}
+	if driverSHA == "" || comparisonDigest == "" {
 		return old, fmt.Errorf("incomplete Stage 07 identity")
 	}
 	// Copy through JSON so all pinned slices and maps remain independent.
@@ -207,7 +235,10 @@ func buildStage07Spec(old validation.ManifestSpec, ids []uint, driverSHA, compar
 		return old, err
 	}
 	next.CodeRevision = driverSHA
-	next.FoldSourceJobIDs = append([]uint(nil), ids...)
+	next.FoldSourceJobIDs = []uint{refs[0].Comparison.JobID, refs[1].Comparison.JobID, refs[2].Comparison.JobID}
+	next.Candidate.ImplementationDigest = refs[0].Comparison.Strategies[old.Candidate.ID].ImplementationDigest
+	next.Baseline.ImplementationDigest = refs[0].Comparison.Strategies[old.Baseline.ID].ImplementationDigest
+	next.FamilyID = "" // New implementation and policy require a new immutable family scope.
 	next.Policies.Execution = "backtest-execution-v3"
 	policy := next.Policies
 	policy.Composite = ""
@@ -224,7 +255,6 @@ func buildStage07Spec(old validation.ManifestSpec, ids []uint, driverSHA, compar
 	next.ExecutionSemantics["execution_policy_version"] = "backtest-execution-v3"
 	next.ExecutionSemantics["no_fill_rule"] = stage07NoFillRule
 	next.ExecutionSemantics["source_code_revision"] = stage07SourceSHA
-	next.ExecutionSemantics["liquidity"] = "zero_base_volume_no_fill"
 	next.Artifacts.Comparison = "stage05-comparison-references-sha256:" + comparisonDigest
 	next.Reproduce = validation.ReproductionInvocation{Command: "go", Args: []string{"run", "./cmd/researchlab", "-stage07-mode", "run", "-clone-marker-file", "<clone-marker-file>", "-ledger-file", "<private-attempt-ledger>", "-reviewed-code-sha", driverSHA, "-stage07-plan-file", "<reviewed-plan-file>", "-stage07-plan-sha256", "<reviewed-plan-sha256>"}, Env: map[string]string{"BACKTEST_CODE_REVISION": driverSHA, "DATABASE_URL_FILE": "<clone-runtime-dsn-file>", "STAGE08_NEW_BACKTEST": "research"}}
 	manifest, err := validation.NewManifest(next, time.Now().UTC())
@@ -242,6 +272,9 @@ func validateStage07Plan(plan stage07Plan, opts stage07Options) error {
 	if err != nil {
 		return err
 	}
+	if plan.PriorFamilyID != old.FamilyID {
+		return fmt.Errorf("prior research family lineage differs from pinned spec")
+	}
 	ids := make([]uint, 0, 3)
 	for _, ref := range plan.SourceReferences {
 		ids = append(ids, ref.Comparison.JobID)
@@ -257,7 +290,7 @@ func validateStage07Plan(plan stage07Plan, opts stage07Options) error {
 	if !reflect.DeepEqual(live, plan.SourceReferences) || digest != plan.ComparisonDigest {
 		return fmt.Errorf("reviewed source references changed")
 	}
-	want, err := buildStage07Spec(old, parsed, opts.DriverSHA, digest)
+	want, err := buildStage07Spec(old, live, opts.DriverSHA, digest)
 	if err != nil {
 		return err
 	}
@@ -292,11 +325,11 @@ func runStage07Mode(opts stage07Options) error {
 		if err != nil {
 			return err
 		}
-		spec, err := buildStage07Spec(old, ids, opts.DriverSHA, digest)
+		spec, err := buildStage07Spec(old, refs, opts.DriverSHA, digest)
 		if err != nil {
 			return err
 		}
-		plan := stage07Plan{stage07PlanVersion, opts.OldManifestFile, stage07OldSpecSHA, stage07SourceSHA, opts.DriverSHA, opts.Creator, opts.IdempotencyKey, refs, digest, spec}
+		plan := stage07Plan{SchemaVersion: stage07PlanVersion, OldManifestFile: opts.OldManifestFile, OldManifestSHA256: stage07OldSpecSHA, SourceCodeRevision: stage07SourceSHA, DriverCodeRevision: opts.DriverSHA, PriorFamilyID: old.FamilyID, Creator: opts.Creator, IdempotencyKey: opts.IdempotencyKey, SourceReferences: refs, ComparisonDigest: digest, Spec: spec}
 		if err := validateStage07Plan(plan, opts); err != nil {
 			return err
 		}
@@ -327,7 +360,7 @@ func runStage07Mode(opts stage07Options) error {
 			return writeErr
 		}
 		planSHA := fmt.Sprintf("%x", sha256.Sum256(raw))
-		if err := appendRecord(ledger, map[string]any{"at": time.Now().UTC(), "status": "stage07_plan_prepared", "plan_sha256": planSHA, "source_job_ids": ids, "comparison_digest": digest, "source_code_sha": stage07SourceSHA, "driver_code_sha": opts.DriverSHA}); err != nil {
+		if err := appendRecord(ledger, map[string]any{"at": time.Now().UTC(), "status": "stage07_plan_prepared", "plan_sha256": planSHA, "source_job_ids": ids, "comparison_digest": digest, "prior_family_id": old.FamilyID, "family_id": spec.FamilyID, "source_code_sha": stage07SourceSHA, "driver_code_sha": opts.DriverSHA}); err != nil {
 			return err
 		}
 		fmt.Printf("{\"status\":\"stage07_plan_prepared\",\"plan_sha256\":%q,\"comparison_digest\":%q}\n", planSHA, digest)
@@ -357,7 +390,7 @@ func runStage07Mode(opts stage07Options) error {
 	if _, _, err := (backtest.Stage07ExperimentSource{DB: database.DB}).Load(manifest); err != nil {
 		return fmt.Errorf("Stage 07 source preflight: %w", err)
 	}
-	if err := appendRecord(ledger, map[string]any{"at": time.Now().UTC(), "status": "stage07_execution_intent", "plan_sha256": opts.PlanSHA256, "content_id": manifest.ContentID, "source_job_ids": plan.Spec.FoldSourceJobIDs, "comparison_digest": plan.ComparisonDigest, "source_code_sha": stage07SourceSHA, "driver_code_sha": opts.DriverSHA}); err != nil {
+	if err := appendRecord(ledger, map[string]any{"at": time.Now().UTC(), "status": "stage07_execution_intent", "plan_sha256": opts.PlanSHA256, "content_id": manifest.ContentID, "source_job_ids": plan.Spec.FoldSourceJobIDs, "comparison_digest": plan.ComparisonDigest, "prior_family_id": plan.PriorFamilyID, "family_id": plan.Spec.FamilyID, "source_code_sha": stage07SourceSHA, "driver_code_sha": opts.DriverSHA}); err != nil {
 		return err
 	}
 	first := plan.Spec.FoldSourceJobIDs[0]
