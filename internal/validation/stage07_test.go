@@ -340,7 +340,11 @@ func TestPrimitiveReconciliationAndCapitalWeightedAggregation(t *testing.T) {
 	folds := make([]FoldResult, 3)
 	for i := range folds {
 		primitive := healthyPrimitives(m.Spec.Folds[i], returns[i])
-		primitive.StartingCapital = []float64{100, 1000, 1000}[i]
+		capitalScale := []float64{100, 1000, 1000}[i] / primitive.StartingCapital
+		primitive.StartingCapital *= capitalScale
+		for fillIndex := range primitive.Fills {
+			primitive.Fills[fillIndex].Notional *= capitalScale
+		}
 		for tradeIndex := range primitive.Trades {
 			primitive.Trades[tradeIndex].NetPnL = primitive.StartingCapital * returns[i] / 4
 			primitive.Trades[tradeIndex].GrossPnL = primitive.Trades[tradeIndex].NetPnL + .1
@@ -352,6 +356,9 @@ func TestPrimitiveReconciliationAndCapitalWeightedAggregation(t *testing.T) {
 		metrics, e := DeriveFoldMetrics(primitive)
 		if e != nil {
 			t.Fatal(e)
+		}
+		if math.Abs(metrics.Turnover-primitive.BaselineTurnover) > 1e-12 {
+			t.Fatalf("scaled fold fill turnover=%v declared=%v", metrics.Turnover, primitive.BaselineTurnover)
 		}
 		folds[i] = FoldResult{Fold: m.Spec.Folds[i], Primitives: primitive, Metrics: metrics}
 	}
