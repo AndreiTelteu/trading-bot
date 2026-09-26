@@ -50,15 +50,19 @@ manifest from the isolated clone. This old manifest is exploratory and failed
 integrity under older code; it cannot be edited in place. Current HEAD adds
 fill attribution, turnover/stress, marked residual P&L, and v2 liquidity
 checks. New Stage 05 runs pin `backtest-execution-v2`; v1 is retained only for
-reproduction and is not comparable v2 evidence.
+reproduction and is not comparable v2 evidence. The known zero-volume failure
+is from the **first Stage 07 fold replay under v2**. The full 21-month Stage 05
+source comparison has **not** been rerun under v2, so its outcome is unknown;
+do not claim that a full-window v2 job failed or reproduced the old return.
 
 ## Read-only preflight: run before any clone or research job
 
-Run this against the existing PostgreSQL container; it uses a read-only
-transaction and prints no secrets:
+Run this against the existing PostgreSQL container as the restricted runtime
+login; `-i` passes the heredoc to `psql`. The transaction is read-only and
+prints no secrets:
 
 ```bash
-podman exec trading-postgres psql -U postgres -d trading_bot -X -v ON_ERROR_STOP=1 -P pager=off <<'SQL'
+podman exec -i trading-postgres psql -U trading_bot_app_runtime -d trading_bot -X -v ON_ERROR_STOP=1 -P pager=off <<'SQL'
 BEGIN READ ONLY;
 SELECT id, content_hash, dataset_version FROM dataset_manifests
 WHERE id = '32fe7e3664ab9d1a14c7cff30c0db6dc673f37ca0eea0479ed9cd812011ec9bc';
@@ -107,10 +111,11 @@ The manifest's role/timeframe entry binds `AVAXUSDT` to
 `binance-avaxusdt-v2/execution/1m` under that exact dataset version, with
 knowledge cutoff `2026-09-20T07:30:40Z`. This closes the pinned dataset
 attribution without inspecting other research outcomes. No dataset correction
-is justified. Under current v2 semantics an
-intended fill at this clock fails `execution_bar_liquidity_unavailable`;
-therefore **stop this pinned v2 candidate and its Stage 07 rerun**. Do not
-skip/defer that fill or change the interval, symbol list, or parameters to
+is justified. In the first Stage 07 fold, current v2 semantics reject the
+intended fill at this clock with `execution_bar_liquidity_unavailable`;
+therefore **stop the Stage 07 rerun**. A full-window Stage 05 source run under
+v2 has not been attempted. Do not skip/defer that fill or change the interval,
+symbol list, or parameters to
 evade the failure. The separate unfilled-order policy design must be decided,
 implemented, versioned, tested, and committed before a new exploratory
 replay can be considered. A v1 diagnostic replay retains historical meaning
@@ -210,15 +215,22 @@ test windows or open any confirmatory holdout. No new parameter may be added
 after inspecting a fold without registering a new exploratory attempt and
 disclosing the full tuning history.
 
-The attempt denominator includes historical jobs #34–49 and #50–65 (including
-failures, zero-trade outputs, repeats, and all Stage 07 manifest attempts),
-plus any new submissions. Jobs #42/#50/#51 and #54–65 include repeated
-same-configuration runs; #63–65 are source artifacts for three folds, not
-three independent tests. The earlier Stage 07 attempts
+The append-only attempt ledger includes historical jobs #30–49 and #50–65
+(including failures, zero-trade outputs, and repeats), all Stage 07 manifest
+attempts, and any new submissions. Jobs #42/#50/#51 and #54–65 include
+repeated same-configuration runs; #63–65 are source artifacts for three folds,
+not three independent tests. The earlier Stage 07 attempts
 `8e5529…`, `bea10f…`, `279eca…`, `97c635…`, `e554c4…`,
 `d7b462…`, and `7dec2b…` remain in the ledger with their failures; verify
-full IDs in the DB before using them. Count every distinct candidate and
-every submitted attempt for multiple-testing/deflated-Sharpe diagnostics.
+full IDs in the DB before using them. Keep **submission count** separate from
+**distinct hypothesis/trial count**: exact deterministic repetitions remain
+in the audit ledger but are not extra multiple-testing hypotheses. A changed
+parameter vector, policy, or post-result selection is a new hypothesis.
+Current `internal/validation` deflated-Sharpe calculation uses the manifest's
+`allowed_tuning` choice count and three fold units; it does not ingest this
+external historical ledger. Its output is a heuristic diagnostic, not a
+history-adjusted significance claim. Disclose the distinct historical tuning
+count and this limitation alongside any exploratory result.
 The statistical unit for any valid Stage 07 assessment is the chronological
 test window, with minimum three windows, not the repeated source job.
 
