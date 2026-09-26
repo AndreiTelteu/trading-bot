@@ -47,6 +47,50 @@ func TestStage07PrimitivesAttributeActualFillCostsPerTrade(t *testing.T) {
 	}
 }
 
+func TestStage07SourceBindsV3ExecutionPolicyAndRule(t *testing.T) {
+	policy := ExecutionPolicy{Version: "backtest-execution-v3", CostVersion: "backtest-cost-v1", NoFillRule: "selected_zero_base_volume_cancel_at_bar_close_v1"}
+	settings := map[string]string{"backtest_execution_policy_version": policy.Version}
+	semantics := map[string]string{"execution_policy_version": policy.Version, "no_fill_rule": "selected_zero_base_volume_cancel_at_bar_close_v1"}
+	if err := stage07SourceExecutionIdentity(policy, policy, policy, settings, semantics); err != nil {
+		t.Fatal(err)
+	}
+	wrongRule := policy
+	wrongRule.NoFillRule = ""
+	if err := stage07SourceExecutionIdentity(wrongRule, wrongRule, wrongRule, settings, semantics); err == nil {
+		t.Fatal("source policies with no v3 no-fill rule were accepted")
+	}
+	for name, mutate := range map[string]func(*ExecutionPolicy, *ExecutionPolicy, map[string]string, map[string]string){
+		"baseline policy": func(_ *ExecutionPolicy, baseline *ExecutionPolicy, _ map[string]string, _ map[string]string) {
+			baseline.Version = "backtest-execution-v2"
+		},
+		"source cost": func(source *ExecutionPolicy, _ *ExecutionPolicy, _ map[string]string, _ map[string]string) {
+			source.CostVersion = "other"
+		},
+		"source rule": func(source *ExecutionPolicy, _ *ExecutionPolicy, _ map[string]string, _ map[string]string) {
+			source.NoFillRule = "other"
+		},
+		"replay setting": func(_ *ExecutionPolicy, _ *ExecutionPolicy, values map[string]string, _ map[string]string) {
+			values["backtest_execution_policy_version"] = "backtest-execution-v2"
+		},
+		"manifest rule": func(_ *ExecutionPolicy, _ *ExecutionPolicy, _ map[string]string, values map[string]string) {
+			values["no_fill_rule"] = "other"
+		},
+		"manifest version": func(_ *ExecutionPolicy, _ *ExecutionPolicy, _ map[string]string, values map[string]string) {
+			values["execution_policy_version"] = "backtest-execution-v2"
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			source, baseline := policy, policy
+			replay := map[string]string{"backtest_execution_policy_version": policy.Version}
+			manifest := map[string]string{"execution_policy_version": policy.Version, "no_fill_rule": "selected_zero_base_volume_cancel_at_bar_close_v1"}
+			mutate(&source, &baseline, replay, manifest)
+			if err := stage07SourceExecutionIdentity(policy, baseline, source, replay, manifest); err == nil {
+				t.Fatal("mismatched v3 execution source was accepted")
+			}
+		})
+	}
+}
+
 func TestStage07EconomicPrimitivesRepeatedBuysAndSameTimePartialCloses(t *testing.T) {
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	at := []time.Time{base, base.Add(time.Minute), base.Add(2 * time.Minute), base.Add(3 * time.Minute)}

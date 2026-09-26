@@ -2,7 +2,9 @@ package validation
 
 import (
 	"math"
+	"math/big"
 	"sort"
+	"time"
 )
 
 // DeriveFoldMetrics is the sole authority path from immutable trade/curve
@@ -64,6 +66,7 @@ func DeriveFoldMetrics(p FoldPrimitives) (FoldMetrics, error) {
 		symbolContrib[trade.Symbol] += contribution
 	}
 	fillIDs := make(map[string]struct{}, len(p.Fills))
+	fillOrderIDs := make(map[string]struct{}, len(p.Fills))
 	for _, fill := range p.Fills {
 		if fill.ID == "" || fill.Symbol == "" || (fill.Side != "buy" && fill.Side != "sell") || fill.At.IsZero() || !finite(fill.Notional) || fill.Notional <= 0 || !finite(fill.AvailableLiquidity) || fill.AvailableLiquidity <= 0 {
 			return FoldMetrics{}, &DiagnosticError{Code: DiagnosticManifestIntegrity, Field: "fill", Details: "complete economic fill is required"}
@@ -72,10 +75,19 @@ func DeriveFoldMetrics(p FoldPrimitives) (FoldMetrics, error) {
 			return FoldMetrics{}, &DiagnosticError{Code: DiagnosticManifestIntegrity, Field: "fill.id", Details: "duplicate fill: " + fill.ID}
 		}
 		fillIDs[fill.ID] = struct{}{}
+		if fill.OrderID != "" {
+			fillOrderIDs[fill.OrderID] = struct{}{}
+		}
 		turnover += fill.Notional / p.StartingCapital
 		if participation := fill.Notional / fill.AvailableLiquidity; participation > maxParticipation {
 			maxParticipation = participation
 		}
+	}
+	if err := validateNoFillSet(p.NoFills, fillOrderIDs, p.Curve[0].At, p.Curve[len(p.Curve)-1].At); err != nil {
+		return FoldMetrics{}, err
+	}
+	if err := validateNoFillSet(p.BaselineNoFills, nil, p.Curve[0].At, p.Curve[len(p.Curve)-1].At); err != nil {
+		return FoldMetrics{}, err
 	}
 	if len(p.Trades) > 0 && len(p.Fills) == 0 {
 		return FoldMetrics{}, &DiagnosticError{Code: DiagnosticManifestIntegrity, Field: "fills", Details: "trades require economic fill evidence"}
@@ -115,12 +127,42 @@ func DeriveFoldMetrics(p FoldPrimitives) (FoldMetrics, error) {
 	sharpe := periodSharpe(periodReturns)
 	return FoldMetrics{
 		Observations: p.ObservedObservations, Trades: len(p.Trades), BenchmarkPresent: true,
+		NoFillCount: len(p.NoFills), BaselineNoFillCount: len(p.BaselineNoFills),
 		CoverageComplete: p.ObservedObservations == p.ExpectedObservations, Regimes: regimes,
 		RegimeContributions: regimeContrib, AfterCostExpectancy: expectancy, AfterCostReturn: afterCostReturn,
 		BenchmarkRelativeReturn: afterCostReturn - benchmarkReturn, MaxDrawdown: drawdown, Turnover: turnover,
 		GrossExposure: grossExposure / float64(len(p.Curve)), NetExposure: netExposure / float64(len(p.Curve)),
 		Coverage: float64(p.ObservedObservations) / float64(p.ExpectedObservations), DownsideDeviation: downside, ExpectedShortfall95: tail, MaxLiquidityParticipation: maxParticipation, Sharpe: sharpe, TradeContributions: tradeContrib, OpenPositionContributions: openContrib, SymbolContributions: symbolContrib,
 	}, nil
+}
+
+func validateNoFillSet(values []NoFillPrimitive, filledOrders map[string]struct{}, curveStart, curveEnd time.Time) error {
+	seen := make(map[string]struct{}, len(values))
+	previousSignal := time.Time{}
+	for _, rejected := range values {
+		if rejected.SchemaVersion != "simulated-no-fill-v1" || rejected.OrderID == "" || rejected.Symbol == "" || (rejected.Side != "buy" && rejected.Side != "sell") || rejected.SignalAt.IsZero() || !rejected.SelectedOpenAt.After(rejected.SignalAt) || !rejected.EvaluatedAt.After(rejected.SelectedOpenAt) || rejected.ExecutionPolicyVersion != "backtest-execution-v3" || rejected.DatasetManifestID == "" || rejected.Reason != "simulated_no_fill_zero_trades" || rejected.LiquidityEvidence != "zero_base_volume" {
+			return &DiagnosticError{Code: DiagnosticManifestIntegrity, Field: "no_fills", Details: "incomplete simulated no-fill evidence"}
+		}
+		if rejected.SignalAt.Before(curveStart) || rejected.EvaluatedAt.After(curveEnd) || (!previousSignal.IsZero() && rejected.SignalAt.Before(previousSignal)) || !rejected.SelectedOpenAt.Equal(rejected.SelectedOpenAt.UTC().Truncate(time.Minute)) || !rejected.EvaluatedAt.Equal(rejected.SelectedOpenAt.Add(time.Minute-time.Millisecond)) {
+			return &DiagnosticError{Code: DiagnosticManifestIntegrity, Field: "no_fills", Details: "no-fill chronology differs from the fold curve or selected minute"}
+		}
+		requested, reqOK := new(big.Rat).SetString(rejected.RequestedQuantity)
+		approved, appOK := new(big.Rat).SetString(rejected.ApprovedQuantity)
+		filled, fillOK := new(big.Rat).SetString(rejected.FilledQuantity)
+		reference, refOK := new(big.Rat).SetString(rejected.ReferencePrice)
+		open, openOK := new(big.Rat).SetString(rejected.SelectedOpenPrice)
+		if !reqOK || !appOK || !fillOK || !refOK || !openOK || requested.Sign() <= 0 || approved.Sign() <= 0 || approved.Cmp(requested) > 0 || filled.Sign() != 0 || reference.Sign() <= 0 || open.Sign() <= 0 {
+			return &DiagnosticError{Code: DiagnosticManifestIntegrity, Field: "no_fills", Details: "no-fill quantity or price is invalid"}
+		}
+		if _, duplicate := seen[rejected.OrderID]; duplicate {
+			return &DiagnosticError{Code: DiagnosticManifestIntegrity, Field: "no_fills", Details: "duplicate no-fill order"}
+		}
+		if _, filledOrder := filledOrders[rejected.OrderID]; filledOrder {
+			return &DiagnosticError{Code: DiagnosticManifestIntegrity, Field: "no_fills", Details: "no-fill order also has an economic fill"}
+		}
+		seen[rejected.OrderID], previousSignal = struct{}{}, rejected.SignalAt
+	}
+	return nil
 }
 
 func downsideAndExpectedShortfall(returns []float64) (float64, float64) {

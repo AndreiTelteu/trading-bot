@@ -1,10 +1,12 @@
 package backtest
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"math"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -71,6 +73,8 @@ func (s Stage07ExperimentSource) Load(manifest validation.ExperimentManifest) ([
 		return nil, nil, &validation.DiagnosticError{Code: validation.DiagnosticManifestIntegrity, Details: "Stage 04 manifest identity/content mismatch"}
 	}
 	var replaySettings map[string]string
+	sourceExecutionVersion := ""
+	var sourceExecutionPolicy ExecutionPolicy
 	selections := make([]struct{ candidate, baseline SelectedStrategy }, len(manifest.Spec.Folds))
 	for i, jobID := range manifest.Spec.FoldSourceJobIDs {
 		ref, err := LoadStage07ComparisonReference(s.DB, jobID)
@@ -113,9 +117,40 @@ func (s Stage07ExperimentSource) Load(manifest validation.ExperimentManifest) ([
 		if !ok {
 			return nil, nil, &validation.DiagnosticError{Code: validation.DiagnosticMissingBenchmark, Details: "baseline result missing"}
 		}
+		comparison, err := UnmarshalComparisonArtifact([]byte(*job.SummaryJSON))
+		if err != nil {
+			return nil, nil, err
+		}
+		for _, result := range []struct {
+			id    string
+			value Stage05StrategyResult
+		}{{manifest.Spec.Candidate.ID, candidate}, {manifest.Spec.Baseline.ID, baseline}} {
+			matched := false
+			for _, row := range comparison.Rows {
+				if row.StrategyID != result.id {
+					continue
+				}
+				if matched || len(row.NoFills) != len(result.value.NoFills) || (len(row.NoFills) > 0 && !reflect.DeepEqual(row.NoFills, result.value.NoFills)) {
+					return nil, nil, &validation.DiagnosticError{Code: validation.DiagnosticManifestIntegrity, Details: "source comparison and replay no-fill evidence differ"}
+				}
+				matched = true
+			}
+			if !matched {
+				return nil, nil, &validation.DiagnosticError{Code: validation.DiagnosticManifestIntegrity, Details: "source comparison row is missing"}
+			}
+		}
 		if candidate.Manifest.DatasetManifestID != manifest.Spec.DatasetManifestID || baseline.Manifest.DatasetManifestID != manifest.Spec.DatasetManifestID {
 			return nil, nil, &validation.DiagnosticError{Code: validation.DiagnosticInvalidWindowOrder, Details: "source job dataset differs from immutable manifest"}
 		}
+		candidateExecution := candidate.Manifest.ExecutionPolicy.Version
+		if err := stage07SourceExecutionIdentity(candidate.Manifest.ExecutionPolicy, baseline.Manifest.ExecutionPolicy, comparison.Assumptions.ExecutionPolicy, artifact.ReplaySettings, manifest.Spec.ExecutionSemantics); err != nil || (sourceExecutionVersion != "" && sourceExecutionVersion != candidateExecution) {
+			if err != nil {
+				return nil, nil, err
+			}
+			return nil, nil, &validation.DiagnosticError{Code: validation.DiagnosticManifestIntegrity, Details: "fold source execution policies differ"}
+		}
+		sourceExecutionVersion = candidateExecution
+		sourceExecutionPolicy = candidate.Manifest.ExecutionPolicy
 		if replaySettings == nil {
 			replaySettings = cloneStringMap(artifact.ReplaySettings)
 		} else if stage07SettingsDigest(replaySettings) != artifact.ReplaySettingsDigest {
@@ -138,6 +173,9 @@ func (s Stage07ExperimentSource) Load(manifest validation.ExperimentManifest) ([
 	}
 	if config.DatasetManifestID != manifest.Spec.DatasetManifestID || !config.DatasetManifestValidated || config.CodeRevision != manifest.Spec.CodeRevision {
 		return nil, nil, &validation.DiagnosticError{Code: validation.DiagnosticManifestIntegrity, Details: "replay configuration does not match immutable validation manifest"}
+	}
+	if sourceExecutionVersion != "" && !stage07ExecutionPolicyEqual(config.ExecutionPolicy, sourceExecutionPolicy) {
+		return nil, nil, &validation.DiagnosticError{Code: validation.DiagnosticManifestIntegrity, Details: "replay execution policy differs from source comparison"}
 	}
 	samples, err := stage07Samples(s.DB, dataset, manifest, config)
 	if err != nil {
@@ -231,12 +269,20 @@ func (r *stage07Runner) Test(fold validation.Fold, artifact []byte, test []valid
 	if err != nil {
 		return validation.FoldPrimitives{}, err
 	}
+	for _, result := range []Stage05StrategyResult{candidate, baseline} {
+		if result.Manifest.Start != canonicalTime(fold.Test.Start) || result.Manifest.End != canonicalTime(fold.Test.End) {
+			return validation.FoldPrimitives{}, &validation.DiagnosticError{Code: validation.DiagnosticManifestIntegrity, Field: "fold_interval", Details: "replay result differs from the frozen test interval"}
+		}
+	}
 	if r.source.comparability != nil {
 		return stage07Primitives(candidate, baseline, fold.Index, len(test), r.source.series, r.source.config.ExecutionSeries, *r.source.comparability)
 	}
 	return stage07Primitives(candidate, baseline, fold.Index, len(test), r.source.series, r.source.config.ExecutionSeries)
 }
 func stage07Primitives(candidate, baseline Stage05StrategyResult, fold, observations int, series, executionSeries map[string][]services.OHLCV, comparability ...validation.BaselineComparabilityPolicy) (validation.FoldPrimitives, error) {
+	if !stage07ExecutionPolicyEqual(candidate.Manifest.ExecutionPolicy, baseline.Manifest.ExecutionPolicy) || candidate.Manifest.DatasetManifestID != baseline.Manifest.DatasetManifestID {
+		return validation.FoldPrimitives{}, &validation.DiagnosticError{Code: validation.DiagnosticManifestIntegrity, Field: "fold_source", Details: "candidate and baseline replay have different policy or dataset identities"}
+	}
 	start, err := strconv.ParseFloat(candidate.Metrics.StartingCapital, 64)
 	if err != nil || start <= 0 {
 		return validation.FoldPrimitives{}, &validation.DiagnosticError{Code: validation.DiagnosticNonFinite, Details: "invalid starting capital"}
@@ -267,6 +313,14 @@ func stage07Primitives(candidate, baseline Stage05StrategyResult, fold, observat
 	if err != nil {
 		return validation.FoldPrimitives{}, err
 	}
+	noFills, err := stage07NoFillPrimitives(candidate, executionSeries, curve[0].At, curve[len(curve)-1].At)
+	if err != nil {
+		return validation.FoldPrimitives{}, err
+	}
+	baselineNoFills, err := stage07NoFillPrimitives(baseline, executionSeries, baseline.Equity[0].Time, baseline.Equity[len(baseline.Equity)-1].Time)
+	if err != nil {
+		return validation.FoldPrimitives{}, err
+	}
 	residualPositions, err := stage07ResidualPrimitives(candidate, inventory, series, start)
 	if err != nil {
 		return validation.FoldPrimitives{}, err
@@ -284,7 +338,7 @@ func stage07Primitives(candidate, baseline Stage05StrategyResult, fold, observat
 	// Comparability was checked against the observed baseline immediately above.
 	// Bind the primitives to the candidate-normalized exposure/turnover so the
 	// generic metric derivation cannot reintroduce an exact-equality requirement.
-	return validation.FoldPrimitives{StartingCapital: start, ExpectedObservations: observations, ObservedObservations: observations, Trades: trades, Fills: fills, ResidualPositions: residualPositions, Curve: curve, BaselineGrossExposure: gross, BaselineTurnover: candidateTurnover}, nil
+	return validation.FoldPrimitives{StartingCapital: start, ExpectedObservations: observations, ObservedObservations: observations, Trades: trades, Fills: fills, NoFills: noFills, BaselineNoFills: baselineNoFills, ResidualPositions: residualPositions, Curve: curve, BaselineGrossExposure: gross, BaselineTurnover: candidateTurnover}, nil
 }
 
 func metricValue(v OptionalMetric) float64 {
@@ -314,6 +368,22 @@ func stage07SettingsDigest(values map[string]string) string {
 	encoded, _ := json.Marshal(values)
 	sum := sha256.Sum256(encoded)
 	return fmt.Sprintf("%x", sum)
+}
+
+func stage07SourceExecutionIdentity(candidate, baseline, comparison ExecutionPolicy, settings, semantics map[string]string) error {
+	if !stage07ExecutionPolicyEqual(candidate, baseline) || !stage07ExecutionPolicyEqual(candidate, comparison) {
+		return &validation.DiagnosticError{Code: validation.DiagnosticManifestIntegrity, Details: "source comparison and candidate/baseline execution policies differ"}
+	}
+	if candidate.Version == "backtest-execution-v3" && (candidate.NoFillRule != "selected_zero_base_volume_cancel_at_bar_close_v1" || settings["backtest_execution_policy_version"] != candidate.Version || semantics["execution_policy_version"] != candidate.Version || semantics["no_fill_rule"] != candidate.NoFillRule) {
+		return &validation.DiagnosticError{Code: validation.DiagnosticManifestIntegrity, Details: "v3 source settings or validation manifest do not bind the zero-volume rule"}
+	}
+	return nil
+}
+
+func stage07ExecutionPolicyEqual(left, right ExecutionPolicy) bool {
+	a, errA := json.Marshal(left)
+	b, errB := json.Marshal(right)
+	return errA == nil && errB == nil && bytes.Equal(a, b)
 }
 
 type stage07FrozenArtifact struct {

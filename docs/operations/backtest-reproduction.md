@@ -74,6 +74,15 @@ disagreement with Stage 05 fee, slippage, fill count, or turnover metrics must
 stop validation; do not repair the discrepancy by spreading aggregate costs
 across trades.
 
+For a v3 replay, also inspect candidate `no_fills` and `no_fill_count`, plus
+`baseline_no_fills` and `baseline_no_fill_count`, in each fold.
+Each entry must match one approved intent/order, one simulated broker rejection,
+and the exact pinned zero-base-volume 1m bar; its evaluation time is that bar's
+recorded close. A no-fill is non-economic and cannot satisfy a trade gate or
+provide a capacity denominator. If a trace is missing or duplicated, or the
+dataset/policy identity differs from the fold, stop validation. A final
+liquidation no-fill is a failed run, not a completed fold.
+
 When final equity includes exchange-minimum dust or another retained marked
 position, inspect the fold's `residual_positions` evidence: quantity, cost
 basis, remaining entry fee, final mark, marked value, and unrealized PnL.

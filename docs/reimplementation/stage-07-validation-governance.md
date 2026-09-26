@@ -64,6 +64,24 @@ slippage, and buy-plus-sell notional must reconcile to Stage 05 metrics. Fold
 turnover, liquidity participation, and capacity stress use all verified fills,
 including open buys, rather than closed-trade entry notionals.
 
+Under `backtest-execution-v3`, a selected 1m bar with zero reported base
+volume may produce a terminal simulated no-fill/cancel at that bar's recorded
+close. Each such outcome is separate non-economic fold evidence, linked to its
+approved order, broker rejection, selected bar, execution policy, and dataset
+manifest. The source adapter requires an exact one-to-one match among these
+records and rejects missing, duplicate, extra, malformed, or contradictory
+outcomes. A no-fill remains a chronological market/decision observation; it
+does not add a fill, trade, turnover, fee, slippage, or capacity denominator.
+Only actual fills on positive-liquidity bars enter fill-based metrics. The
+no-fill count is visible in fold metrics and the outcomes are bound into the
+immutable fold digest. Existing insufficient-trade, zero-trade, coverage,
+comparability, and promotion gates continue to apply to actual executions.
+V3 experiment manifests must declare `execution_semantics.execution_policy_version`
+as `backtest-execution-v3` and `execution_semantics.no_fill_rule` as
+`selected_zero_base_volume_cancel_at_bar_close_v1`; the source comparison,
+saved replay settings, and fresh fold configuration must all agree. Candidate
+and baseline no-fills are reported separately.
+
 The same replay returns final cash and remaining quantity, weighted entry
 price, and unallocated entry fee for each symbol. Stage 07 checks quantities
 against Stage 05 exposure artifacts and values the remaining inventory at the

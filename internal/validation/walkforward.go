@@ -102,6 +102,8 @@ func (f FrozenDecision) Digest() (string, error) {
 type FoldMetrics struct {
 	Observations              int                `json:"observations"`
 	Trades                    int                `json:"trades"`
+	NoFillCount               int                `json:"no_fill_count,omitempty"`
+	BaselineNoFillCount       int                `json:"baseline_no_fill_count,omitempty"`
 	BenchmarkPresent          bool               `json:"benchmark_present"`
 	CoverageComplete          bool               `json:"coverage_complete"`
 	Regimes                   map[string]int     `json:"regimes"`
@@ -161,11 +163,33 @@ type TradePrimitive struct {
 
 type FillPrimitive struct {
 	ID                 string    `json:"id"`
+	OrderID            string    `json:"order_id,omitempty"`
 	Symbol             string    `json:"symbol"`
 	Side               string    `json:"side"`
 	At                 time.Time `json:"at"`
 	Notional           float64   `json:"notional"`
 	AvailableLiquidity float64   `json:"available_liquidity"`
+}
+
+// NoFillPrimitive is non-economic execution evidence. It contributes neither
+// a fill nor a trade, but remains in the immutable fold evidence digest.
+type NoFillPrimitive struct {
+	SchemaVersion          string    `json:"schema_version"`
+	OrderID                string    `json:"order_id"`
+	Symbol                 string    `json:"symbol"`
+	Side                   string    `json:"side"`
+	SignalAt               time.Time `json:"signal_at"`
+	SelectedOpenAt         time.Time `json:"selected_open_at"`
+	EvaluatedAt            time.Time `json:"evaluated_at"`
+	RequestedQuantity      string    `json:"requested_quantity"`
+	ApprovedQuantity       string    `json:"approved_quantity"`
+	FilledQuantity         string    `json:"filled_quantity"`
+	ReferencePrice         string    `json:"reference_price"`
+	SelectedOpenPrice      string    `json:"selected_open_price"`
+	ExecutionPolicyVersion string    `json:"execution_policy_version"`
+	DatasetManifestID      string    `json:"dataset_manifest_id"`
+	Reason                 string    `json:"reason"`
+	LiquidityEvidence      string    `json:"liquidity_evidence"`
 }
 
 type CurvePrimitive struct {
@@ -196,6 +220,8 @@ type FoldPrimitives struct {
 	ObservedObservations  int                         `json:"observed_observations"`
 	Trades                []TradePrimitive            `json:"trades"`
 	Fills                 []FillPrimitive             `json:"fills,omitempty"`
+	NoFills               []NoFillPrimitive           `json:"no_fills,omitempty"`
+	BaselineNoFills       []NoFillPrimitive           `json:"baseline_no_fills,omitempty"`
 	ResidualPositions     []ResidualPositionPrimitive `json:"residual_positions,omitempty"`
 	Curve                 []CurvePrimitive            `json:"curve"`
 	BaselineGrossExposure float64                     `json:"baseline_gross_exposure"`

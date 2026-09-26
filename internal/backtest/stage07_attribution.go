@@ -68,7 +68,11 @@ func stage07EconomicPrimitives(result Stage05StrategyResult, fold int, capital f
 		turnover += notional
 		fees += fee
 		slippage += fillSlippage
-		fills = append(fills, validation.FillPrimitive{ID: fill.FillID, Symbol: fill.Symbol, Side: fill.Side, At: at.UTC(), Notional: notional, AvailableLiquidity: liquidity})
+		orderID := ""
+		if result.Manifest.ExecutionPolicy.Version == "backtest-execution-v3" {
+			orderID = fill.OrderID
+		}
+		fills = append(fills, validation.FillPrimitive{ID: fill.FillID, OrderID: orderID, Symbol: fill.Symbol, Side: fill.Side, At: at.UTC(), Notional: notional, AvailableLiquidity: liquidity})
 		if fill.Side == "buy" {
 			cash -= notional + fee
 			if !stage07Nonnegative(cash + 1e-9) {
