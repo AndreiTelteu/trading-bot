@@ -51,6 +51,7 @@ const (
 	DiagnosticAllocationConstrained StrategyDiagnosticCode = "target_allocation_constrained"
 	DiagnosticConstraintResidual    StrategyDiagnosticCode = "target_delta_below_exchange_minimum"
 	DiagnosticIntentRuntime         StrategyDiagnosticCode = "execution_intent_runtime_mismatch"
+	DiagnosticExecutionLiquidity    StrategyDiagnosticCode = "execution_bar_liquidity_unavailable"
 )
 
 type StrategyDiagnosticError struct {

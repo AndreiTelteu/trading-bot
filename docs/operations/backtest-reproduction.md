@@ -72,6 +72,15 @@ against the immutable fill ledger. The final point-in-time mark is taken at the
 fold's equity boundary; an exposure artifact may carry a later bar-close mark.
 Closed-trade PnL plus explicit residual PnL must equal the equity change.
 
+New Stage 05 runs use `backtest-execution-v2`. If an intended fill's selected
+execution bar has zero, negative, missing, or nonfinite volume, the run fails
+with `execution_bar_liquidity_unavailable`, including symbol and UTC fill time.
+Inspect the pinned 1-minute bar and source quality before rerunning with a new
+manifest; do not skip that fill or move it to the next liquid bar. A held symbol
+with no order at that clock does not trigger this diagnostic. Explicit v1
+manifest replays keep their historical execution behavior and are not
+interchangeable with v2 evidence.
+
 ## Self Improvement operator interface
 
 The authenticated `/self-improvement` route is the guided research surface for

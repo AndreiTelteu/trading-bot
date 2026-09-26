@@ -401,6 +401,19 @@ func runStage05StrategyWithPlanner(config BacktestConfig, series map[string][]se
 	if _, ok := allSeries[config.BenchmarkSymbol]; !ok {
 		allSeries[config.BenchmarkSymbol] = immutableOHLCVView(config.BenchmarkSeries)
 	}
+	if !config.ExecutionSeriesRequired {
+		// Preserve the same fallback source used by price selection for the
+		// intent-level liquidity check, without changing the caller's config.
+		runConfig.ExecutionSeries = make(map[string][]services.OHLCV, len(allSeries))
+		for symbol, bars := range allSeries {
+			runConfig.ExecutionSeries[symbol] = bars
+		}
+		for symbol, bars := range config.ExecutionSeries {
+			if len(bars) > 0 {
+				runConfig.ExecutionSeries[symbol] = bars
+			}
+		}
+	}
 	finalPolicy := parameters["final_policy"]
 	if finalPolicy == "" {
 		finalPolicy = "mark_to_market"
@@ -1186,6 +1199,11 @@ func runStage05Target(ledger *backtestMemoryLedger, config BacktestConfig, strat
 	if quantity <= 0 {
 		return &StrategyDiagnosticError{Code: DiagnosticInvalidCombination, Strategy: config.StrategyID, Field: symbol, Details: "executable delta quantity is zero"}
 	}
+	if config.ExecutionPolicy.Version == "backtest-execution-v2" {
+		if err := intendedFillLiquidityError(config, symbol, fillAt); err != nil {
+			return err
+		}
+	}
 	quantity = stage05EconomicFloat(quantity)
 	positionBefore := 0.0
 	if existing := ledger.positions[symbol]; existing != nil {
@@ -1532,6 +1550,19 @@ func nextFillPrices(config BacktestConfig, series map[string][]services.OHLCV, s
 		prices[symbol] = bars[idx].Open
 	}
 	return common, prices, !common.IsZero()
+}
+
+func intendedFillLiquidityError(config BacktestConfig, symbol string, at time.Time) error {
+	bars := config.ExecutionSeries[symbol]
+	idx := sort.Search(len(bars), func(i int) bool { return !time.UnixMilli(bars[i].OpenTime).Before(at) })
+	if idx >= len(bars) || !time.UnixMilli(bars[idx].OpenTime).Equal(at) {
+		return &StrategyDiagnosticError{Code: DiagnosticExecutionLiquidity, Strategy: config.StrategyID, Field: symbol, Details: fmt.Sprintf("selected execution bar at %s is missing", at.UTC().Format(time.RFC3339Nano))}
+	}
+	volume := bars[idx].Volume
+	if volume > 0 && !math.IsInf(volume, 0) {
+		return nil
+	}
+	return &StrategyDiagnosticError{Code: DiagnosticExecutionLiquidity, Strategy: config.StrategyID, Field: symbol, Details: fmt.Sprintf("selected execution bar at %s has nonpositive or nonfinite volume", at.UTC().Format(time.RFC3339Nano))}
 }
 
 func lastExecutionTimestamp(config BacktestConfig, series map[string][]services.OHLCV, reference []services.OHLCV) time.Time {

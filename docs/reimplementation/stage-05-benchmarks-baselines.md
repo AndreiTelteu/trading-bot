@@ -45,6 +45,12 @@ Establish minimal, understandable baselines before introducing a production cand
 
 - [x] Normalize starting capital and maximum gross/net exposure.
 - [x] Use identical universe/data manifests, decision timestamps, fill policy, and costs.
+- [x] Under `backtest-execution-v2`, reject an intended entry, rebalance, exit,
+  risk stop, or final-liquidation fill when its exact selected execution bar has
+  zero, negative, missing, or nonfinite volume. The diagnostic names the symbol
+  and UTC fill time. An unchanged holding does not require fill liquidity;
+  execution is never silently skipped or deferred to a later bar. New runs
+  record v2 in the manifest; explicit v1 replays retain their original policy.
 - [x] Report absolute and benchmark-relative return.
 - [x] Report drawdown, Sharpe/Sortino where sample size permits, profit factor, expectancy, turnover, exposure time, and trade count.
 - [x] Report concentration by symbol, period, and regime.

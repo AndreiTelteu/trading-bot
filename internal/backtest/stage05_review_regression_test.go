@@ -56,6 +56,7 @@ func TestStage05RegisteredCandidateExecutesWithoutComparisonSwitch(t *testing.T)
 
 func TestStage05DeltaRebalanceAvoidsUnchangedChurn(t *testing.T) {
 	config, series := stage05Fixture(map[string][]float64{"AAAUSDT": {10, 10, 10, 10, 10}, "BBBUSDT": {20, 20, 20, 20, 20}}, []float64{100, 100, 100, 100, 100}, 0, 0)
+	config.ExecutionPolicy.Version = "backtest-execution-v2"
 	for i := 0; i < 4; i++ {
 		config.ReplaySnapshots = append(config.ReplaySnapshots, ReplaySnapshot{Timestamp: stage05CloseAt(config.Start, i), ObservedComplete: true, Members: replayMembers("AAAUSDT", "BBBUSDT")})
 	}
@@ -66,6 +67,11 @@ func TestStage05DeltaRebalanceAvoidsUnchangedChurn(t *testing.T) {
 	}
 	if len(result.Artifacts.Fills) != 4 {
 		t.Fatalf("unchanged rebalance produced churn: %+v", result.Artifacts.Fills)
+	}
+	series["BBBUSDT"][2].Volume = 0 // A held target has no delta at this clock.
+	result, err = runStage05Strategy(config, series, selected, strategy, true)
+	if err != nil || len(result.Artifacts.Fills) != 4 {
+		t.Fatalf("unchanged held symbol required fill liquidity: fills=%d err=%v", len(result.Artifacts.Fills), err)
 	}
 }
 
@@ -363,13 +369,123 @@ func TestStage05CommonExecutionClockIgnoresDifferingDecisionOpens(t *testing.T) 
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	signalAt := start.Add(15*time.Minute - time.Millisecond)
 	minute := func(price float64) []services.OHLCV {
-		return []services.OHLCV{{OpenTime: start.Add(15 * time.Minute).UnixMilli(), Open: price, High: price, Low: price, Close: price, CloseTime: start.Add(16*time.Minute - time.Millisecond).UnixMilli()}}
+		return []services.OHLCV{{OpenTime: start.Add(15 * time.Minute).UnixMilli(), Open: price, High: price, Low: price, Close: price, Volume: 100, CloseTime: start.Add(16*time.Minute - time.Millisecond).UnixMilli()}}
 	}
 	config := BacktestConfig{End: start.Add(time.Hour), ExecutionSeriesRequired: true, ExecutionSeries: map[string][]services.OHLCV{"BTCUSDT": minute(100), "AAAUSDT": minute(50)}}
 	decision := map[string][]services.OHLCV{"BTCUSDT": stage05Bars(start, []float64{10, 999}), "AAAUSDT": stage05Bars(start, []float64{20, 888})}
 	fillAt, prices, ok := nextFillPrices(config, decision, []string{"AAAUSDT", "BTCUSDT"}, signalAt)
 	if !ok || !fillAt.Equal(start.Add(15*time.Minute)) || prices["BTCUSDT"] != 100 || prices["AAAUSDT"] != 50 {
 		t.Fatalf("fill=%s prices=%v ok=%v", fillAt, prices, ok)
+	}
+}
+
+func TestStage05SelectedNextFillRejectsZeroVolumeWithoutDeferral(t *testing.T) {
+	start := time.Date(2026, 2, 14, 3, 59, 0, 0, time.UTC)
+	bar := func(at time.Time, volume float64) services.OHLCV {
+		return services.OHLCV{OpenTime: at.UnixMilli(), CloseTime: at.Add(time.Minute - time.Millisecond).UnixMilli(), Open: 10, High: 10, Low: 10, Close: 10, Volume: volume}
+	}
+	selected := start.Add(time.Minute)
+	config := BacktestConfig{End: start.Add(3 * time.Minute), ExecutionSeriesRequired: true, ExecutionSeries: map[string][]services.OHLCV{
+		"AVAXUSDT": {bar(selected, 0), bar(selected.Add(time.Minute), 100)},
+	}}
+	config.ExecutionPolicy.Version = "backtest-execution-v2"
+	fillAt, _, ok := nextFillPrices(config, nil, []string{"AVAXUSDT"}, start)
+	if !ok || !fillAt.Equal(selected) {
+		t.Fatalf("selection changed: %s ok=%v", fillAt, ok)
+	}
+	err := intendedFillLiquidityError(config, "AVAXUSDT", fillAt)
+	if !IsStrategyDiagnostic(err, DiagnosticExecutionLiquidity) || !strings.Contains(err.Error(), "AVAXUSDT") || !strings.Contains(err.Error(), selected.Format(time.RFC3339)) {
+		t.Fatalf("selected zero-volume bar must fail with symbol and time: %v", err)
+	}
+}
+
+func TestStage05SelectedFinalLiquidationRejectsZeroVolume(t *testing.T) {
+	start := time.Date(2026, 2, 14, 3, 59, 0, 0, time.UTC)
+	bar := func(at time.Time, volume float64) services.OHLCV {
+		return services.OHLCV{OpenTime: at.UnixMilli(), CloseTime: at.Add(time.Minute - time.Millisecond).UnixMilli(), Open: 10, High: 10, Low: 10, Close: 10, Volume: volume}
+	}
+	last := start.Add(2 * time.Minute)
+	config := BacktestConfig{End: start.Add(3 * time.Minute), ExecutionSeriesRequired: true, ExecutionSeries: map[string][]services.OHLCV{
+		"AVAXUSDT": {bar(start, 100), bar(start.Add(time.Minute), 100), bar(last, 0)},
+	}}
+	positions := map[string]*positionState{"AVAXUSDT": {}}
+	config.ExecutionPolicy.Version = "backtest-execution-v2"
+	_, fillAt, _, ok := finalLiquidationPrices(config, nil, positions)
+	if !ok || !fillAt.Equal(last) {
+		t.Fatalf("liquidation selection changed: %s ok=%v", fillAt, ok)
+	}
+	err := intendedFillLiquidityError(config, "AVAXUSDT", fillAt)
+	if !IsStrategyDiagnostic(err, DiagnosticExecutionLiquidity) || !strings.Contains(err.Error(), "AVAXUSDT") || !strings.Contains(err.Error(), last.Format(time.RFC3339)) {
+		t.Fatalf("selected zero-volume liquidation bar must fail with symbol and time: %v", err)
+	}
+	config.ExecutionSeries["AVAXUSDT"][2].Volume = 100
+	signalAt, fillAt, prices, ok := finalLiquidationPrices(config, nil, positions)
+	err = intendedFillLiquidityError(config, "AVAXUSDT", fillAt)
+	if err != nil || !ok || !fillAt.Equal(last) || !signalAt.Equal(start.Add(2*time.Minute-time.Millisecond)) || prices["AVAXUSDT"] != 10 {
+		t.Fatalf("positive-volume liquidation changed: signal=%s fill=%s prices=%v ok=%v err=%v", signalAt, fillAt, prices, ok, err)
+	}
+}
+
+func TestStage05RunRejectsZeroVolumeSelectedEntry(t *testing.T) {
+	config, series := stage05Fixture(map[string][]float64{"AVAXUSDT": {10, 10, 10, 10}}, []float64{100, 100, 100, 100}, 0, 0)
+	config.ExecutionPolicy.Version = "backtest-execution-v2"
+	selected, strategy, err := DefaultStrategyRegistry.Resolve(StrategyBenchmarkHoldID, "", map[string]string{"warmup_bars": "1", "final_policy": "liquidate"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseline, err := runStage05Strategy(config, series, selected, strategy, true)
+	if err != nil || len(baseline.Artifacts.Fills) == 0 {
+		t.Fatalf("positive-volume baseline: fills=%d err=%v", len(baseline.Artifacts.Fills), err)
+	}
+	config.BenchmarkSeries[1].Volume = 0
+	_, err = runStage05Strategy(config, series, selected, strategy, true)
+	if !IsStrategyDiagnostic(err, DiagnosticExecutionLiquidity) || !strings.Contains(err.Error(), "BTCUSDT") || !strings.Contains(err.Error(), config.Start.Add(15*time.Minute).Format(time.RFC3339)) {
+		t.Fatalf("selected entry should fail before evidence is produced: %v", err)
+	}
+}
+
+func TestStage05ZeroVolumeUnchangedHoldingAndExplicitV1(t *testing.T) {
+	config, series := stage05Fixture(nil, []float64{100, 100, 100, 100}, 0, 0)
+	config.ExecutionPolicy.Version = "backtest-execution-v2"
+	selected, strategy, err := DefaultStrategyRegistry.Resolve(StrategyBenchmarkHoldID, "", map[string]string{"warmup_bars": "1", "final_policy": "mark_to_market"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.BenchmarkSeries[2].Volume = 0 // Held across this selected clock; no order delta.
+	result, err := runStage05Strategy(config, series, selected, strategy, true)
+	if err != nil || len(result.Artifacts.Fills) != 1 {
+		t.Fatalf("unchanged holding should not require fill liquidity: fills=%d err=%v", len(result.Artifacts.Fills), err)
+	}
+	config.ExecutionPolicy.Version = "backtest-execution-v1"
+	config.BenchmarkSeries[1].Volume = 0 // Historical v1 semantics remain reproducible.
+	if _, err := runStage05Strategy(config, series, selected, strategy, true); err != nil {
+		t.Fatalf("explicit v1 replay changed: %v", err)
+	}
+}
+
+func TestStage05RunRejectsZeroVolumeFinalLiquidation(t *testing.T) {
+	config, series := stage05Fixture(nil, []float64{100, 100, 100, 100}, 0, 0)
+	config.ExecutionPolicy.Version = "backtest-execution-v2"
+	selected, strategy, err := DefaultStrategyRegistry.Resolve(StrategyBenchmarkHoldID, "", map[string]string{"warmup_bars": "1", "final_policy": "liquidate"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.BenchmarkSeries[3].Volume = 0
+	_, err = runStage05Strategy(config, series, selected, strategy, true)
+	if !IsStrategyDiagnostic(err, DiagnosticExecutionLiquidity) || !strings.Contains(err.Error(), "BTCUSDT") || !strings.Contains(err.Error(), config.Start.Add(45*time.Minute).Format(time.RFC3339)) {
+		t.Fatalf("selected final liquidation should fail: %v", err)
+	}
+}
+
+func TestStage05IntendedFillRejectsNonfiniteVolume(t *testing.T) {
+	config := BacktestConfig{StrategyID: StrategyBenchmarkHoldID, ExecutionSeriesRequired: true, ExecutionSeries: map[string][]services.OHLCV{"BTCUSDT": {{OpenTime: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC).UnixMilli(), Volume: math.NaN()}}}}
+	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	if err := intendedFillLiquidityError(config, "BTCUSDT", at); !IsStrategyDiagnostic(err, DiagnosticExecutionLiquidity) {
+		t.Fatalf("NaN volume accepted: %v", err)
+	}
+	config.ExecutionSeries["BTCUSDT"][0].Volume = math.Inf(1)
+	if err := intendedFillLiquidityError(config, "BTCUSDT", at); !IsStrategyDiagnostic(err, DiagnosticExecutionLiquidity) {
+		t.Fatalf("infinite volume accepted: %v", err)
 	}
 }
 

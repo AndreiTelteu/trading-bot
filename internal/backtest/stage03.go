@@ -63,7 +63,7 @@ func defaultStage03Policies(config *BacktestConfig) {
 		}
 	}
 	if config.ExecutionPolicy.Version == "" {
-		config.ExecutionPolicy.Version = "backtest-execution-v1"
+		config.ExecutionPolicy.Version = "backtest-execution-v2"
 	}
 	if config.ExecutionPolicy.Timing == "" {
 		config.ExecutionPolicy.Timing = ExecutionNextExecutable
