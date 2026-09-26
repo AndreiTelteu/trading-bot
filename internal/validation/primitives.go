@@ -58,16 +58,29 @@ func DeriveFoldMetrics(p FoldPrimitives) (FoldMetrics, error) {
 		}
 		contribution := trade.NetPnL / p.StartingCapital
 		netPnL += trade.NetPnL
-		turnover += trade.Notional / p.StartingCapital
-		if participation := trade.Notional / trade.AvailableLiquidity; participation > maxParticipation {
-			maxParticipation = participation
-		}
 		regimes[trade.Regime]++
 		regimeContrib[trade.Regime] += contribution
 		tradeContrib[trade.ID] = contribution
 		symbolContrib[trade.Symbol] += contribution
 	}
-	if !finite(p.BaselineGrossExposure) || !finite(p.BaselineTurnover) || p.BaselineTurnover < 0 || math.Abs(p.BaselineGrossExposure-grossExposure/float64(len(p.Curve))) > tolerance(1) {
+	fillIDs := make(map[string]struct{}, len(p.Fills))
+	for _, fill := range p.Fills {
+		if fill.ID == "" || fill.Symbol == "" || (fill.Side != "buy" && fill.Side != "sell") || fill.At.IsZero() || !finite(fill.Notional) || fill.Notional <= 0 || !finite(fill.AvailableLiquidity) || fill.AvailableLiquidity <= 0 {
+			return FoldMetrics{}, &DiagnosticError{Code: DiagnosticManifestIntegrity, Field: "fill", Details: "complete economic fill is required"}
+		}
+		if _, duplicate := fillIDs[fill.ID]; duplicate {
+			return FoldMetrics{}, &DiagnosticError{Code: DiagnosticManifestIntegrity, Field: "fill.id", Details: "duplicate fill: " + fill.ID}
+		}
+		fillIDs[fill.ID] = struct{}{}
+		turnover += fill.Notional / p.StartingCapital
+		if participation := fill.Notional / fill.AvailableLiquidity; participation > maxParticipation {
+			maxParticipation = participation
+		}
+	}
+	if len(p.Trades) > 0 && len(p.Fills) == 0 {
+		return FoldMetrics{}, &DiagnosticError{Code: DiagnosticManifestIntegrity, Field: "fills", Details: "trades require economic fill evidence"}
+	}
+	if !finite(p.BaselineGrossExposure) || !finite(p.BaselineTurnover) || p.BaselineTurnover < 0 || math.Abs(p.BaselineGrossExposure-grossExposure/float64(len(p.Curve))) > tolerance(1) || math.Abs(p.BaselineTurnover-turnover) > tolerance(math.Max(1, turnover)) {
 		return FoldMetrics{}, &DiagnosticError{Code: DiagnosticBaselineMismatch, Details: "baseline must be exposure and turnover matched"}
 	}
 	final := p.Curve[len(p.Curve)-1]

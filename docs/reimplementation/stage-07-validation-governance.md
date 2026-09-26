@@ -55,9 +55,14 @@ frozen artifact and supplied untouched test partition, truncates market data at
 the test boundary, and performs fresh candidate and baseline simulations.
 It never returns a Stage 05 primitive cached in a source job.
 
-Trade costs are reconstructed from the fills belonging to that trade: fee plus
-the observed fill-vs-market-price slippage. Missing fill attribution fails the
-fold; aggregate Stage 05 costs are never divided across trades.
+The fold replays Stage 05 economic fills in order. Stable fill IDs bind each
+closed trade to its sell fill and contributing buys; weighted-average entry
+price, entry fees, and entry slippage are allocated proportionally on partial
+closes. Missing, duplicate, or unmatched fills fail the fold. Slippage uses the
+same recorded execution-reference price as Stage 05, and the sum of fill fees,
+slippage, and buy-plus-sell notional must reconcile to Stage 05 metrics. Fold
+turnover, liquidity participation, and capacity stress use all verified fills,
+including open buys, rather than closed-trade entry notionals.
 
 ## Statistical evaluation
 
@@ -68,7 +73,7 @@ fold; aggregate Stage 05 costs are never divided across trades.
 - [x] Detect performance dominated by one trade/symbol/window.
 - [x] Correctly label exploratory versus confirmatory results.
 - [x] Report deterministic downside deviation and 95% expected shortfall from
-  chronological equity changes, maximum entry-liquidity participation, and a
+  chronological equity changes, maximum execution-fill liquidity participation, and a
   conservative capacity/impact-stressed after-cost return.
 - [x] Require source-baseline exposure and turnover matching; comparability is
   rejected rather than adjusted after the fact.

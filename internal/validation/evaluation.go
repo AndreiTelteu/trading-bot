@@ -347,10 +347,10 @@ func evaluateThresholds(thresholds []Threshold, metrics MetricSummary) []GateRes
 
 func stressedReturn(p FoldPrimitives, policy CapacityStressPolicy) float64 {
 	penalty := 0.0
-	for _, trade := range p.Trades {
-		participation := trade.Notional / trade.AvailableLiquidity
+	for _, fill := range p.Fills {
+		participation := fill.Notional / fill.AvailableLiquidity
 		impact := (policy.ImpactBpsAtMax / 10000) * (participation / policy.MaxParticipation) * policy.StressMultiplier
-		penalty += trade.Notional / p.StartingCapital * impact
+		penalty += fill.Notional / p.StartingCapital * impact
 	}
 	return p.Curve[len(p.Curve)-1].Equity/p.StartingCapital - 1 - penalty
 }

@@ -12,30 +12,111 @@ func TestStage07PrimitivesAttributeActualFillCostsPerTrade(t *testing.T) {
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	entry, exit := base.Add(time.Minute), base.Add(2*time.Minute)
 	candidate := Stage05StrategyResult{
-		Metrics: ComparableMetrics{StartingCapital: "100", AverageGrossExposure: availableMetric(.5), TurnoverRatio: availableMetric(.11)},
-		Equity:  []EquityPoint{{Time: base, Value: 100}, {Time: exit, Value: 110}},
-		Trades:  []Trade{{Symbol: "AAA", EntryTime: entry, ExitTime: exit, EntryPrice: 11, ExitPrice: 14, Size: 1, Pnl: 10, RegimeState: "risk_on"}},
+		Metrics: ComparableMetrics{StartingCapital: "100", AverageGrossExposure: availableMetric(.5), Turnover: "25", TurnoverRatio: availableMetric(.25), FeeCosts: "3", SlippageCosts: "2", FillCount: 2, TradeCount: 1},
+		Equity:  []EquityPoint{{Time: base, Value: 100}, {Time: exit, Value: 100}},
+		Trades:  []Trade{{Symbol: "AAA", EntryTime: entry, ExitTime: exit, EntryPrice: 11, ExitPrice: 14, Size: 1, Pnl: 0, RegimeState: "risk_on"}},
 		Artifacts: BacktestArtifacts{Fills: []FillArtifact{
-			{FillAt: entry.Format(time.RFC3339Nano), Symbol: "AAA", Fee: "1", Price: "11", Quantity: "1"},
-			{FillAt: exit.Format(time.RFC3339Nano), Symbol: "AAA", Fee: "2", Price: "14", Quantity: "1"},
+			{FillID: "buy", FillAt: entry.Format(time.RFC3339Nano), Symbol: "AAA", Side: "buy", Fee: "1", Price: "11", Quantity: "1", ExecutionReferencePrice: "10"},
+			{FillID: "sell", FillAt: exit.Format(time.RFC3339Nano), Symbol: "AAA", Side: "sell", Fee: "2", Price: "14", Quantity: "1", ExecutionReferencePrice: "15"},
 		}},
 	}
-	baseline := Stage05StrategyResult{Metrics: ComparableMetrics{AverageGrossExposure: availableMetric(.5), TurnoverRatio: availableMetric(.11)}, Equity: []EquityPoint{{Time: base, Value: 100}, {Time: exit, Value: 100}}}
-	series := map[string][]services.OHLCV{"AAA": {{OpenTime: entry.UnixMilli(), Open: 10, Close: 10, Volume: 100}, {OpenTime: exit.UnixMilli(), Open: 15, Close: 15, Volume: 100}}}
-	primitives, err := stage07Primitives(candidate, baseline, 0, 4, series)
+	baseline := Stage05StrategyResult{Metrics: ComparableMetrics{AverageGrossExposure: availableMetric(.5), TurnoverRatio: availableMetric(.25)}, Equity: []EquityPoint{{Time: base, Value: 100}, {Time: exit, Value: 100}}}
+	series := map[string][]services.OHLCV{"AAA": {{OpenTime: base.UnixMilli(), Open: 10, Close: 10, Volume: 100}}}
+	execution := map[string][]services.OHLCV{"AAA": {{OpenTime: entry.UnixMilli(), Open: 11, Close: 11, Volume: 100}, {OpenTime: exit.UnixMilli(), Open: 14, Close: 14, Volume: 100}}}
+	primitives, err := stage07Primitives(candidate, baseline, 0, 4, series, execution)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := primitives.Trades[0]; got.Cost != 5 || got.GrossPnL != 15 || got.NetPnL != 10 {
+	if got := primitives.Trades[0]; got.Cost != 5 || got.GrossPnL != 5 || got.NetPnL != 0 {
 		t.Fatalf("cost was not attributed to actual fills: %+v", got)
+	}
+	if len(primitives.Fills) != 2 || primitives.Fills[0].Notional != 11 || primitives.Fills[1].Notional != 14 {
+		t.Fatalf("fill turnover evidence missing: %+v", primitives.Fills)
+	}
+}
+
+func TestStage07EconomicPrimitivesRepeatedBuysAndSameTimePartialCloses(t *testing.T) {
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	at := []time.Time{base, base.Add(time.Minute), base.Add(2 * time.Minute), base.Add(3 * time.Minute)}
+	result := Stage05StrategyResult{
+		Metrics: ComparableMetrics{Turnover: "460.5", TurnoverRatio: availableMetric(.4605), FeeCosts: "5", SlippageCosts: "4", FillCount: 5, TradeCount: 3},
+		Trades: []Trade{
+			{Symbol: "AAA", EntryTime: at[0], ExitTime: at[2], EntryPrice: 105, ExitPrice: 120, Size: .5, Pnl: 6.25},
+			{Symbol: "AAA", EntryTime: at[0], ExitTime: at[2], EntryPrice: 105, ExitPrice: 121, Size: .5, Pnl: 6.75},
+			{Symbol: "AAA", EntryTime: at[0], ExitTime: at[3], EntryPrice: 105, ExitPrice: 130, Size: 1, Pnl: 22.5},
+		},
+		Artifacts: BacktestArtifacts{Fills: []FillArtifact{
+			{FillID: "b1", FillAt: at[0].Format(time.RFC3339Nano), Symbol: "AAA", Side: "buy", Quantity: "1", Price: "100", Fee: "1", ExecutionReferencePrice: "99"},
+			{FillID: "b2", FillAt: at[1].Format(time.RFC3339Nano), Symbol: "AAA", Side: "buy", Quantity: "1", Price: "110", Fee: "2", ExecutionReferencePrice: "109"},
+			{FillID: "s1", FillAt: at[2].Format(time.RFC3339Nano), Symbol: "AAA", Side: "sell", Quantity: "0.5", Price: "120", Fee: "0.5", ExecutionReferencePrice: "121"},
+			{FillID: "s2", FillAt: at[2].Format(time.RFC3339Nano), Symbol: "AAA", Side: "sell", Quantity: "0.5", Price: "121", Fee: "0.5", ExecutionReferencePrice: "122"},
+			{FillID: "s3", FillAt: at[3].Format(time.RFC3339Nano), Symbol: "AAA", Side: "sell", Quantity: "1", Price: "130", Fee: "1", ExecutionReferencePrice: "131"},
+		}},
+	}
+	series := map[string][]services.OHLCV{"AAA": {{OpenTime: at[0].UnixMilli(), Volume: 100}, {OpenTime: at[1].UnixMilli(), Volume: 100}, {OpenTime: at[2].UnixMilli(), Volume: 100}, {OpenTime: at[3].UnixMilli(), Volume: 100}}}
+	trades, fills, inventory, err := stage07EconomicPrimitives(result, 0, 1000, series)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(trades) != 3 || len(fills) != 5 || len(inventory) != 0 || trades[0].Cost != 2.25 || trades[1].Cost != 2.25 || trades[2].Cost != 4.5 {
+		t.Fatalf("incorrect partial cost allocation: trades=%+v fills=%+v", trades, fills)
+	}
+	partial := result
+	partial.Trades = partial.Trades[:2]
+	partial.Artifacts.Fills = partial.Artifacts.Fills[:4]
+	partial.Metrics.Turnover, partial.Metrics.TurnoverRatio = "330.5", availableMetric(.3305)
+	partial.Metrics.FeeCosts, partial.Metrics.SlippageCosts = "4", "3"
+	partial.Metrics.FillCount, partial.Metrics.TradeCount = 4, 2
+	_, _, inventory, err = stage07EconomicPrimitives(partial, 0, 1000, series)
+	if err != nil || len(inventory) != 1 || inventory["AAA"] != (stage07EndPosition{Quantity: 1, EntryPrice: 105, EntryFee: 1.5, EntrySlippage: 1}) {
+		t.Fatalf("verified end inventory: %+v err=%v", inventory, err)
+	}
+	for name, mutate := range map[string]func(*Stage05StrategyResult){
+		"missing sell":      func(v *Stage05StrategyResult) { v.Artifacts.Fills = v.Artifacts.Fills[:4] },
+		"duplicate fill id": func(v *Stage05StrategyResult) { v.Artifacts.Fills[3].FillID = "s1" },
+		"extra sell": func(v *Stage05StrategyResult) {
+			v.Artifacts.Fills = append(v.Artifacts.Fills, v.Artifacts.Fills[4])
+			v.Artifacts.Fills[5].FillID = "s4"
+		},
+		"wrong turnover":    func(v *Stage05StrategyResult) { v.Metrics.Turnover = "1" },
+		"missing reference": func(v *Stage05StrategyResult) { v.Artifacts.Fills[0].ExecutionReferencePrice = "" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			copy := result
+			copy.Artifacts.Fills = append([]FillArtifact(nil), result.Artifacts.Fills...)
+			mutate(&copy)
+			if _, _, _, err := stage07EconomicPrimitives(copy, 0, 1000, series); err == nil {
+				t.Fatal("invalid fill evidence was accepted")
+			}
+		})
+	}
+}
+
+func TestStage07BarAtRequiresExactSortedExecutionTimestamp(t *testing.T) {
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	bars := make([]services.OHLCV, 2000)
+	for i := range bars {
+		bars[i] = services.OHLCV{OpenTime: base.Add(time.Duration(i) * time.Minute).UnixMilli(), Open: float64(i + 1)}
+	}
+	if bar, ok := stage07BarAt(bars, base.Add(1700*time.Minute)); !ok || bar.Open != 1701 {
+		t.Fatalf("exact execution bar unavailable: %+v %v", bar, ok)
+	}
+	if _, ok := stage07BarAt(bars, base.Add(1700*time.Minute+time.Second)); ok {
+		t.Fatal("non-exact execution time matched a bar")
+	}
+	if _, ok := stage07BarAt(bars, base.Add(1700*time.Minute+time.Nanosecond)); ok {
+		t.Fatal("sub-millisecond execution time matched a bar")
+	}
+	if _, ok := stage07BarAt(bars, base.Add(-time.Minute)); ok {
+		t.Fatal("time before execution coverage matched a bar")
 	}
 }
 
 func TestStage07PrimitivesCausallyAlignBenchmarkAsOfCandidateClock(t *testing.T) {
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	candidate := Stage05StrategyResult{Metrics: ComparableMetrics{StartingCapital: "100", AverageGrossExposure: availableMetric(.5), TurnoverRatio: availableMetric(.1)}, Equity: []EquityPoint{{Time: base, Value: 100}, {Time: base.Add(2 * time.Hour), Value: 102}}}
-	baseline := Stage05StrategyResult{Metrics: ComparableMetrics{AverageGrossExposure: availableMetric(.5), TurnoverRatio: availableMetric(.1)}, Equity: []EquityPoint{{Time: base, Value: 100}, {Time: base.Add(time.Hour), Value: 101}, {Time: base.Add(2 * time.Hour), Value: 103}}}
-	primitives, err := stage07Primitives(candidate, baseline, 0, 2, nil)
+	candidate := Stage05StrategyResult{Metrics: ComparableMetrics{StartingCapital: "100", AverageGrossExposure: availableMetric(.5), Turnover: "0", TurnoverRatio: availableMetric(0), FeeCosts: "0", SlippageCosts: "0"}, Equity: []EquityPoint{{Time: base, Value: 100}, {Time: base.Add(2 * time.Hour), Value: 102}}}
+	baseline := Stage05StrategyResult{Metrics: ComparableMetrics{AverageGrossExposure: availableMetric(.5), TurnoverRatio: availableMetric(0)}, Equity: []EquityPoint{{Time: base, Value: 100}, {Time: base.Add(time.Hour), Value: 101}, {Time: base.Add(2 * time.Hour), Value: 103}}}
+	primitives, err := stage07Primitives(candidate, baseline, 0, 2, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,21 +124,21 @@ func TestStage07PrimitivesCausallyAlignBenchmarkAsOfCandidateClock(t *testing.T)
 		t.Fatalf("curve=%+v", primitives.Curve)
 	}
 	baseline.Equity = baseline.Equity[:2]
-	if _, err := stage07Primitives(candidate, baseline, 0, 2, nil); err == nil {
+	if _, err := stage07Primitives(candidate, baseline, 0, 2, nil, nil); err == nil {
 		t.Fatal("benchmark ending before the candidate was accepted")
 	}
 }
 
 func TestStage07PrimitivesUsePredeclaredComparabilityTolerances(t *testing.T) {
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	candidate := Stage05StrategyResult{Metrics: ComparableMetrics{StartingCapital: "100", AverageGrossExposure: availableMetric(.10), AverageNetExposure: availableMetric(.10), TurnoverRatio: availableMetric(.20)}, Equity: []EquityPoint{{Time: base, Value: 100}, {Time: base.Add(time.Hour), Value: 101}}}
-	baseline := Stage05StrategyResult{Metrics: ComparableMetrics{AverageGrossExposure: availableMetric(.12), TurnoverRatio: availableMetric(.22)}, Equity: []EquityPoint{{Time: base, Value: 100}, {Time: base.Add(time.Hour), Value: 100}}}
+	candidate := Stage05StrategyResult{Metrics: ComparableMetrics{StartingCapital: "100", AverageGrossExposure: availableMetric(.10), AverageNetExposure: availableMetric(.10), Turnover: "0", TurnoverRatio: availableMetric(0), FeeCosts: "0", SlippageCosts: "0"}, Equity: []EquityPoint{{Time: base, Value: 100}, {Time: base.Add(time.Hour), Value: 101}}}
+	baseline := Stage05StrategyResult{Metrics: ComparableMetrics{AverageGrossExposure: availableMetric(.12), TurnoverRatio: availableMetric(0)}, Equity: []EquityPoint{{Time: base, Value: 100}, {Time: base.Add(time.Hour), Value: 100}}}
 	policy := validation.BaselineComparabilityPolicy{MaxGrossExposureDifference: .02, MaxTurnoverRelativeDiff: .10}
-	if _, err := stage07Primitives(candidate, baseline, 0, 2, nil, policy); err != nil {
+	if _, err := stage07Primitives(candidate, baseline, 0, 2, nil, nil, policy); err != nil {
 		t.Fatal(err)
 	}
 	baseline.Metrics.AverageGrossExposure = availableMetric(.121)
-	if _, err := stage07Primitives(candidate, baseline, 0, 2, nil, policy); err == nil {
+	if _, err := stage07Primitives(candidate, baseline, 0, 2, nil, nil, policy); err == nil {
 		t.Fatal("out-of-tolerance exposure was accepted")
 	}
 }

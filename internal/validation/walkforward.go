@@ -145,6 +145,8 @@ type FoldFit struct {
 
 type TradePrimitive struct {
 	ID                 string    `json:"id"`
+	EntryFillIDs       []string  `json:"entry_fill_ids,omitempty"`
+	ExitFillID         string    `json:"exit_fill_id,omitempty"`
 	Symbol             string    `json:"symbol"`
 	Regime             string    `json:"regime"`
 	OpenedAt           time.Time `json:"opened_at"`
@@ -153,6 +155,15 @@ type TradePrimitive struct {
 	GrossPnL           float64   `json:"gross_pnl"`
 	Cost               float64   `json:"cost"`
 	NetPnL             float64   `json:"net_pnl"`
+	AvailableLiquidity float64   `json:"available_liquidity"`
+}
+
+type FillPrimitive struct {
+	ID                 string    `json:"id"`
+	Symbol             string    `json:"symbol"`
+	Side               string    `json:"side"`
+	At                 time.Time `json:"at"`
+	Notional           float64   `json:"notional"`
 	AvailableLiquidity float64   `json:"available_liquidity"`
 }
 
@@ -169,6 +180,7 @@ type FoldPrimitives struct {
 	ExpectedObservations  int              `json:"expected_observations"`
 	ObservedObservations  int              `json:"observed_observations"`
 	Trades                []TradePrimitive `json:"trades"`
+	Fills                 []FillPrimitive  `json:"fills,omitempty"`
 	Curve                 []CurvePrimitive `json:"curve"`
 	BaselineGrossExposure float64          `json:"baseline_gross_exposure"`
 	BaselineTurnover      float64          `json:"baseline_turnover"`

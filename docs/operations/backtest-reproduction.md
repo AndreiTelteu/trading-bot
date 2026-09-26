@@ -57,6 +57,13 @@ days for invalidly repeated dataset verification.
 
 Copy the exact `reproduce` invocation from the immutable Stage 07 manifest when validating promotion evidence. Compare artifact/manifest digests and classifications. `coverage_failed`, `gating_zero_trades`, and `strategy_zero_trades` have different meanings and are exposed separately by operational status. A completed command is not evidence of profitability or promotion eligibility.
 
+For Stage 07 fold attribution, inspect stable fill IDs, side, quantity, fee,
+execution-reference price, and execution-bar liquidity. Fold turnover and
+capacity stress include both buy and sell fills. Missing/duplicate fills or a
+disagreement with Stage 05 fee, slippage, fill count, or turnover metrics must
+stop validation; do not repair the discrepancy by spreading aggregate costs
+across trades.
+
 ## Self Improvement operator interface
 
 The authenticated `/self-improvement` route is the guided research surface for

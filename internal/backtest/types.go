@@ -398,21 +398,22 @@ type OrderArtifact struct {
 	ReasonMetadata ReasonMetadata    `json:"reason_metadata,omitempty"`
 }
 type FillArtifact struct {
-	SchemaVersion string         `json:"schema_version,omitempty"`
-	IntentID      string         `json:"intent_id,omitempty"`
-	OrderID       string         `json:"order_id,omitempty"`
-	FillID        string         `json:"fill_id,omitempty"`
-	SignalAt      string         `json:"signal_at"`
-	DecisionAt    string         `json:"decision_at"`
-	OrderAt       string         `json:"order_at"`
-	FillAt        string         `json:"fill_at"`
-	Symbol        string         `json:"symbol"`
-	Side          string         `json:"side"`
-	Quantity      string         `json:"quantity"`
-	Price         string         `json:"price"`
-	Fee           string         `json:"fee"`
-	CostVersion   string         `json:"cost_version"`
-	Reason        ReasonMetadata `json:"reason_metadata,omitempty"`
+	SchemaVersion           string         `json:"schema_version,omitempty"`
+	IntentID                string         `json:"intent_id,omitempty"`
+	OrderID                 string         `json:"order_id,omitempty"`
+	FillID                  string         `json:"fill_id,omitempty"`
+	SignalAt                string         `json:"signal_at"`
+	DecisionAt              string         `json:"decision_at"`
+	OrderAt                 string         `json:"order_at"`
+	FillAt                  string         `json:"fill_at"`
+	Symbol                  string         `json:"symbol"`
+	Side                    string         `json:"side"`
+	Quantity                string         `json:"quantity"`
+	Price                   string         `json:"price"`
+	Fee                     string         `json:"fee"`
+	ExecutionReferencePrice string         `json:"execution_reference_price,omitempty"`
+	CostVersion             string         `json:"cost_version"`
+	Reason                  ReasonMetadata `json:"reason_metadata,omitempty"`
 }
 type LedgerArtifact struct {
 	SchemaVersion string         `json:"schema_version,omitempty"`

@@ -644,7 +644,7 @@ func buildBacktestArtifacts(ledger *backtestMemoryLedger, positions map[string]*
 		}
 	}
 	for _, event := range ledger.events {
-		artifacts.Fills = append(artifacts.Fills, FillArtifact{SchemaVersion: "fill-artifact-v2", IntentID: event.IntentID, OrderID: event.OrderID, FillID: event.FillID, SignalAt: canonicalTime(event.SignalAt), DecisionAt: canonicalTime(event.DecisionAt), OrderAt: canonicalTime(event.OrderAt), FillAt: canonicalTime(event.At), Symbol: event.Symbol, Side: event.Side, Quantity: event.Quantity, Price: event.Price, Fee: event.Fee, CostVersion: event.CostVersion, Reason: event.ReasonMetadata})
+		artifacts.Fills = append(artifacts.Fills, FillArtifact{SchemaVersion: "fill-artifact-v2", IntentID: event.IntentID, OrderID: event.OrderID, FillID: event.FillID, SignalAt: canonicalTime(event.SignalAt), DecisionAt: canonicalTime(event.DecisionAt), OrderAt: canonicalTime(event.OrderAt), FillAt: canonicalTime(event.At), Symbol: event.Symbol, Side: event.Side, Quantity: event.Quantity, Price: event.Price, Fee: event.Fee, ExecutionReferencePrice: event.ExecutionReferencePrice, CostVersion: event.CostVersion, Reason: event.ReasonMetadata})
 		artifacts.Ledger = append(artifacts.Ledger, LedgerArtifact{SchemaVersion: "ledger-artifact-v2", IntentID: event.IntentID, OrderID: event.OrderID, FillID: event.FillID, At: canonicalTime(event.At), Symbol: event.Symbol, Side: event.Side, Quantity: event.Quantity, Price: event.Price, Fee: event.Fee, CashAfter: event.CashAfter, Reason: event.ReasonMetadata})
 	}
 	at := time.Time{}

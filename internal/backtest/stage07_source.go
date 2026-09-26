@@ -232,11 +232,11 @@ func (r *stage07Runner) Test(fold validation.Fold, artifact []byte, test []valid
 		return validation.FoldPrimitives{}, err
 	}
 	if r.source.comparability != nil {
-		return stage07Primitives(candidate, baseline, fold.Index, len(test), r.source.series, *r.source.comparability)
+		return stage07Primitives(candidate, baseline, fold.Index, len(test), r.source.series, r.source.config.ExecutionSeries, *r.source.comparability)
 	}
-	return stage07Primitives(candidate, baseline, fold.Index, len(test), r.source.series)
+	return stage07Primitives(candidate, baseline, fold.Index, len(test), r.source.series, r.source.config.ExecutionSeries)
 }
-func stage07Primitives(candidate, baseline Stage05StrategyResult, fold, observations int, series map[string][]services.OHLCV, comparability ...validation.BaselineComparabilityPolicy) (validation.FoldPrimitives, error) {
+func stage07Primitives(candidate, baseline Stage05StrategyResult, fold, observations int, series, executionSeries map[string][]services.OHLCV, comparability ...validation.BaselineComparabilityPolicy) (validation.FoldPrimitives, error) {
 	start, err := strconv.ParseFloat(candidate.Metrics.StartingCapital, 64)
 	if err != nil || start <= 0 {
 		return validation.FoldPrimitives{}, &validation.DiagnosticError{Code: validation.DiagnosticNonFinite, Details: "invalid starting capital"}
@@ -260,21 +260,12 @@ func stage07Primitives(candidate, baseline Stage05StrategyResult, fold, observat
 	if baseline.Equity[len(baseline.Equity)-1].Time.Before(candidate.Equity[len(candidate.Equity)-1].Time) {
 		return validation.FoldPrimitives{}, &validation.DiagnosticError{Code: validation.DiagnosticMissingBenchmark, Details: "benchmark curve ends before candidate"}
 	}
-	trades := make([]validation.TradePrimitive, len(candidate.Trades))
-	for i, t := range candidate.Trades {
-		regime := strings.TrimSpace(t.RegimeState)
-		if regime == "" {
-			regime = "unknown"
-		}
-		cost, err := stage07TradeCost(candidate.Artifacts.Fills, series, t)
-		if err != nil {
-			return validation.FoldPrimitives{}, err
-		}
-		liquidity := stage07TradeLiquidity(series, t.Symbol, t.EntryTime, t.EntryPrice)
-		if liquidity <= 0 {
-			return validation.FoldPrimitives{}, &validation.DiagnosticError{Code: validation.DiagnosticCapacity, Details: "point-in-time entry liquidity unavailable"}
-		}
-		trades[i] = validation.TradePrimitive{ID: fmt.Sprintf("%d:%d:%s:%s", fold, i, t.Symbol, t.EntryTime.UTC().Format(time.RFC3339Nano)), Symbol: t.Symbol, Regime: regime, OpenedAt: t.EntryTime.UTC(), ClosedAt: t.ExitTime.UTC(), Notional: math.Abs(t.EntryPrice * t.Size), AvailableLiquidity: liquidity, GrossPnL: t.Pnl + cost, Cost: cost, NetPnL: t.Pnl}
+	if len(executionSeries) == 0 {
+		executionSeries = series
+	}
+	trades, fills, _, err := stage07EconomicPrimitives(candidate, fold, start, executionSeries)
+	if err != nil {
+		return validation.FoldPrimitives{}, err
 	}
 	baselineGross, baselineTurnover := metricValue(baseline.Metrics.AverageGrossExposure), metricValue(baseline.Metrics.TurnoverRatio)
 	candidateTurnover := metricValue(candidate.Metrics.TurnoverRatio)
@@ -289,17 +280,9 @@ func stage07Primitives(candidate, baseline Stage05StrategyResult, fold, observat
 	// Comparability was checked against the observed baseline immediately above.
 	// Bind the primitives to the candidate-normalized exposure/turnover so the
 	// generic metric derivation cannot reintroduce an exact-equality requirement.
-	return validation.FoldPrimitives{StartingCapital: start, ExpectedObservations: observations, ObservedObservations: observations, Trades: trades, Curve: curve, BaselineGrossExposure: gross, BaselineTurnover: candidateTurnover}, nil
+	return validation.FoldPrimitives{StartingCapital: start, ExpectedObservations: observations, ObservedObservations: observations, Trades: trades, Fills: fills, Curve: curve, BaselineGrossExposure: gross, BaselineTurnover: candidateTurnover}, nil
 }
 
-func stage07TradeLiquidity(series map[string][]services.OHLCV, symbol string, at time.Time, price float64) float64 {
-	for _, bar := range series[symbol] {
-		if time.UnixMilli(bar.OpenTime).UTC().Equal(at.UTC()) && bar.Volume > 0 {
-			return bar.Volume * price
-		}
-	}
-	return 0
-}
 func metricValue(v OptionalMetric) float64 {
 	if v.Available {
 		return v.Value
@@ -446,37 +429,12 @@ func stage07TruncateBars(values []services.OHLCV, end time.Time) []services.OHLC
 	return values[:index:index]
 }
 func stage07BarAt(values []services.OHLCV, at time.Time) (services.OHLCV, bool) {
-	for _, bar := range values {
-		if time.UnixMilli(bar.OpenTime).UTC().Equal(at.UTC()) {
-			return bar, true
-		}
+	target := at.UTC().UnixMilli()
+	index := sort.Search(len(values), func(i int) bool { return values[i].OpenTime >= target })
+	if index < len(values) && time.UnixMilli(values[index].OpenTime).UTC().Equal(at.UTC()) {
+		return values[index], true
 	}
 	return services.OHLCV{}, false
-}
-
-func stage07TradeCost(fills []FillArtifact, series map[string][]services.OHLCV, trade Trade) (float64, error) {
-	cost := 0.0
-	for _, fill := range fills {
-		at, err := time.Parse(time.RFC3339Nano, fill.FillAt)
-		if err != nil {
-			return 0, &validation.DiagnosticError{Code: validation.DiagnosticManifestIntegrity, Details: "invalid fill time"}
-		}
-		if fill.Symbol != trade.Symbol || (!at.Equal(trade.EntryTime) && !at.Equal(trade.ExitTime)) {
-			continue
-		}
-		fee, feeErr := strconv.ParseFloat(fill.Fee, 64)
-		price, priceErr := strconv.ParseFloat(fill.Price, 64)
-		quantity, qtyErr := strconv.ParseFloat(fill.Quantity, 64)
-		bar, found := stage07BarAt(series[fill.Symbol], at)
-		if feeErr != nil || priceErr != nil || qtyErr != nil || !found {
-			return 0, &validation.DiagnosticError{Code: validation.DiagnosticManifestIntegrity, Details: "actual fill cost cannot be attributed"}
-		}
-		cost += fee + math.Abs(price-bar.Open)*math.Abs(quantity)
-	}
-	if cost < 0 || math.IsNaN(cost) || math.IsInf(cost, 0) {
-		return 0, &validation.DiagnosticError{Code: validation.DiagnosticNonFinite, Details: "invalid actual fill cost"}
-	}
-	return cost, nil
 }
 
 // stage07Samples derives every fold input from the manifest-pinned records:

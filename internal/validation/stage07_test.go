@@ -495,8 +495,29 @@ func healthyPrimitives(f Fold, value float64) FoldPrimitives {
 	at := f.Test.Start.Add(time.Hour)
 	return FoldPrimitives{StartingCapital: start, ExpectedObservations: 10, ObservedObservations: 10,
 		Trades:                []TradePrimitive{{ID: "a", Symbol: "A", Regime: "risk_on", OpenedAt: at, ClosedAt: at.Add(time.Minute), Notional: 50, AvailableLiquidity: 1000, GrossPnL: pnl/4 + .1, Cost: .1, NetPnL: pnl / 4}, {ID: "b", Symbol: "A", Regime: "risk_off", OpenedAt: at.Add(2 * time.Minute), ClosedAt: at.Add(3 * time.Minute), Notional: 50, AvailableLiquidity: 1000, GrossPnL: pnl/4 + .1, Cost: .1, NetPnL: pnl / 4}, {ID: "c", Symbol: "B", Regime: "risk_on", OpenedAt: at.Add(4 * time.Minute), ClosedAt: at.Add(5 * time.Minute), Notional: 50, AvailableLiquidity: 1000, GrossPnL: pnl/4 + .1, Cost: .1, NetPnL: pnl / 4}, {ID: "d", Symbol: "B", Regime: "risk_off", OpenedAt: at.Add(6 * time.Minute), ClosedAt: at.Add(7 * time.Minute), Notional: 50, AvailableLiquidity: 1000, GrossPnL: pnl/4 + .1, Cost: .1, NetPnL: pnl / 4}},
+		Fills:                 []FillPrimitive{{ID: "fa", Symbol: "A", Side: "buy", At: at, Notional: 50, AvailableLiquidity: 1000}, {ID: "fb", Symbol: "A", Side: "sell", At: at.Add(time.Minute), Notional: 50, AvailableLiquidity: 1000}, {ID: "fc", Symbol: "B", Side: "buy", At: at.Add(4 * time.Minute), Notional: 50, AvailableLiquidity: 1000}, {ID: "fd", Symbol: "B", Side: "sell", At: at.Add(5 * time.Minute), Notional: 50, AvailableLiquidity: 1000}},
 		BaselineGrossExposure: .5, BaselineTurnover: .2,
 		Curve: []CurvePrimitive{{At: at, Equity: start, Benchmark: start, GrossExposure: .5, NetExposure: .5}, {At: at.Add(time.Hour), Equity: start + pnl, Benchmark: start + pnl/2, GrossExposure: .5, NetExposure: .5}}}
+}
+
+func TestFoldTurnoverAndStressUseVerifiedBuyAndSellFills(t *testing.T) {
+	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	p := FoldPrimitives{StartingCapital: 100, ExpectedObservations: 1, ObservedObservations: 1,
+		Trades: []TradePrimitive{{ID: "trade", Symbol: "A", Regime: "risk_on", OpenedAt: at.Add(time.Minute), ClosedAt: at.Add(2 * time.Minute), Notional: 100, AvailableLiquidity: 1000, GrossPnL: 10, NetPnL: 10}},
+		Fills:  []FillPrimitive{{ID: "buy", Symbol: "A", Side: "buy", At: at.Add(time.Minute), Notional: 100, AvailableLiquidity: 1000}, {ID: "sell", Symbol: "A", Side: "sell", At: at.Add(2 * time.Minute), Notional: 110, AvailableLiquidity: 1100}},
+		Curve:  []CurvePrimitive{{At: at, Equity: 100, Benchmark: 100}, {At: at.Add(3 * time.Minute), Equity: 110, Benchmark: 100}}, BaselineTurnover: 2.1}
+	metrics, err := DeriveFoldMetrics(p)
+	if err != nil || math.Abs(metrics.Turnover-2.1) > 1e-12 || math.Abs(metrics.MaxLiquidityParticipation-.1) > 1e-12 {
+		t.Fatalf("fill turnover/capacity: metrics=%+v err=%v", metrics, err)
+	}
+	policy := CapacityStressPolicy{ImpactBpsAtMax: 100, MaxParticipation: .1, StressMultiplier: 1}
+	if got := stressedReturn(p, policy); math.Abs(got-.079) > 1e-12 {
+		t.Fatalf("stress must charge both fills: %.12f", got)
+	}
+	p.Fills = p.Fills[:1]
+	if _, err := DeriveFoldMetrics(p); err == nil {
+		t.Fatal("missing sell turnover was accepted")
+	}
 }
 func samplesForManifest(m ExperimentManifest) []Sample {
 	result := []Sample{}
