@@ -58,7 +58,7 @@ func TestStage07EconomicPrimitivesRepeatedBuysAndSameTimePartialCloses(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(trades) != 3 || len(fills) != 5 || len(inventory) != 0 || trades[0].Cost != 2.25 || trades[1].Cost != 2.25 || trades[2].Cost != 4.5 {
+	if len(trades) != 3 || len(fills) != 5 || len(inventory.Positions) != 0 || inventory.Cash != 1035.5 || trades[0].Cost != 2.25 || trades[1].Cost != 2.25 || trades[2].Cost != 4.5 {
 		t.Fatalf("incorrect partial cost allocation: trades=%+v fills=%+v", trades, fills)
 	}
 	partial := result
@@ -68,7 +68,7 @@ func TestStage07EconomicPrimitivesRepeatedBuysAndSameTimePartialCloses(t *testin
 	partial.Metrics.FeeCosts, partial.Metrics.SlippageCosts = "4", "3"
 	partial.Metrics.FillCount, partial.Metrics.TradeCount = 4, 2
 	_, _, inventory, err = stage07EconomicPrimitives(partial, 0, 1000, series)
-	if err != nil || len(inventory) != 1 || inventory["AAA"] != (stage07EndPosition{Quantity: 1, EntryPrice: 105, EntryFee: 1.5, EntrySlippage: 1}) {
+	if err != nil || len(inventory.Positions) != 1 || inventory.Positions[0] != (stage07EndPosition{Symbol: "AAA", Quantity: 1, EntryPrice: 105, EntryFee: 1.5, EntrySlippage: 1}) || inventory.Cash != 906.5 {
 		t.Fatalf("verified end inventory: %+v err=%v", inventory, err)
 	}
 	for name, mutate := range map[string]func(*Stage05StrategyResult){
@@ -109,6 +109,22 @@ func TestStage07BarAtRequiresExactSortedExecutionTimestamp(t *testing.T) {
 	}
 	if _, ok := stage07BarAt(bars, base.Add(-time.Minute)); ok {
 		t.Fatal("time before execution coverage matched a bar")
+	}
+}
+
+func TestStage07EconomicPrimitivesReturnsSortedOpenInventoryAndCash(t *testing.T) {
+	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	result := Stage05StrategyResult{
+		Metrics: ComparableMetrics{Turnover: "300", TurnoverRatio: availableMetric(.3), FeeCosts: "0", SlippageCosts: "0", FillCount: 2},
+		Artifacts: BacktestArtifacts{Fills: []FillArtifact{
+			{FillID: "z", FillAt: at.Format(time.RFC3339Nano), Symbol: "ZZZ", Side: "buy", Quantity: "1", Price: "100", Fee: "0", ExecutionReferencePrice: "100"},
+			{FillID: "a", FillAt: at.Format(time.RFC3339Nano), Symbol: "AAA", Side: "buy", Quantity: "1", Price: "200", Fee: "0", ExecutionReferencePrice: "200"},
+		}},
+	}
+	execution := map[string][]services.OHLCV{"AAA": {{OpenTime: at.UnixMilli(), Volume: 100}}, "ZZZ": {{OpenTime: at.UnixMilli(), Volume: 100}}}
+	_, _, inventory, err := stage07EconomicPrimitives(result, 0, 1000, execution)
+	if err != nil || inventory.Cash != 700 || len(inventory.Positions) != 2 || inventory.Positions[0].Symbol != "AAA" || inventory.Positions[1].Symbol != "ZZZ" {
+		t.Fatalf("inventory=%+v err=%v", inventory, err)
 	}
 }
 

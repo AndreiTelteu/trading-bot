@@ -3,6 +3,7 @@ package backtest
 import (
 	"fmt"
 	"math"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -15,13 +16,19 @@ import (
 // the same weighted-average entry and proportional entry-fee rules as the
 // shared memory ledger. A sell consumes exactly one closed-trade record.
 type stage07EndPosition struct {
+	Symbol        string
 	Quantity      float64
 	EntryPrice    float64
 	EntryFee      float64
 	EntrySlippage float64
 }
 
-func stage07EconomicPrimitives(result Stage05StrategyResult, fold int, capital float64, execution map[string][]services.OHLCV) ([]validation.TradePrimitive, []validation.FillPrimitive, map[string]stage07EndPosition, error) {
+type stage07EndInventory struct {
+	Cash      float64
+	Positions []stage07EndPosition // sorted by symbol for deterministic fold evidence
+}
+
+func stage07EconomicPrimitives(result Stage05StrategyResult, fold int, capital float64, execution map[string][]services.OHLCV) ([]validation.TradePrimitive, []validation.FillPrimitive, stage07EndInventory, error) {
 	type holding struct {
 		quantity, entryPrice, entryFee, entrySlippage float64
 		entryAt                                       time.Time
@@ -33,6 +40,7 @@ func stage07EconomicPrimitives(result Stage05StrategyResult, fold int, capital f
 	trades := make([]validation.TradePrimitive, 0, len(result.Trades))
 	fills := make([]validation.FillPrimitive, 0, len(result.Artifacts.Fills))
 	turnover, fees, slippage := 0.0, 0.0, 0.0
+	cash := capital
 	lastAt := time.Time{}
 	for _, fill := range result.Artifacts.Fills {
 		at, timeErr := time.Parse(time.RFC3339Nano, fill.FillAt)
@@ -41,17 +49,17 @@ func stage07EconomicPrimitives(result Stage05StrategyResult, fold int, capital f
 		fee, feeErr := strconv.ParseFloat(fill.Fee, 64)
 		reference, refErr := strconv.ParseFloat(fill.ExecutionReferencePrice, 64)
 		if fill.FillID == "" || seen[fill.FillID] || strings.TrimSpace(fill.Symbol) == "" || (fill.Side != "buy" && fill.Side != "sell") || timeErr != nil || (!lastAt.IsZero() && at.Before(lastAt)) || qtyErr != nil || priceErr != nil || feeErr != nil || refErr != nil || !stage07Positive(quantity) || !stage07Positive(price) || !stage07Positive(reference) || !stage07Nonnegative(fee) {
-			return nil, nil, nil, &validation.DiagnosticError{Code: validation.DiagnosticManifestIntegrity, Field: "fills", Details: "missing, duplicated, unordered, or invalid economic fill"}
+			return nil, nil, stage07EndInventory{}, &validation.DiagnosticError{Code: validation.DiagnosticManifestIntegrity, Field: "fills", Details: "missing, duplicated, unordered, or invalid economic fill"}
 		}
 		seen[fill.FillID], lastAt = true, at
 		bar, found := stage07BarAt(execution[fill.Symbol], at)
 		if !found || !stage07Positive(bar.Volume) {
-			return nil, nil, nil, &validation.DiagnosticError{Code: validation.DiagnosticCapacity, Field: "fills", Details: "point-in-time execution liquidity unavailable"}
+			return nil, nil, stage07EndInventory{}, &validation.DiagnosticError{Code: validation.DiagnosticCapacity, Field: "fills", Details: "point-in-time execution liquidity unavailable"}
 		}
 		notional := quantity * price
 		liquidity := bar.Volume * price
 		if !stage07Positive(notional) || !stage07Positive(liquidity) {
-			return nil, nil, nil, &validation.DiagnosticError{Code: validation.DiagnosticNonFinite, Field: "fills"}
+			return nil, nil, stage07EndInventory{}, &validation.DiagnosticError{Code: validation.DiagnosticNonFinite, Field: "fills"}
 		}
 		fillSlippage := math.Abs(price-reference) * quantity
 		turnover += notional
@@ -59,6 +67,10 @@ func stage07EconomicPrimitives(result Stage05StrategyResult, fold int, capital f
 		slippage += fillSlippage
 		fills = append(fills, validation.FillPrimitive{ID: fill.FillID, Symbol: fill.Symbol, Side: fill.Side, At: at.UTC(), Notional: notional, AvailableLiquidity: liquidity})
 		if fill.Side == "buy" {
+			cash -= notional + fee
+			if !stage07Nonnegative(cash + 1e-9) {
+				return nil, nil, stage07EndInventory{}, &validation.DiagnosticError{Code: validation.DiagnosticManifestIntegrity, Field: "cash", Details: "fill spends unavailable cash"}
+			}
 			if pos := positions[fill.Symbol]; pos != nil {
 				total := pos.quantity + quantity
 				pos.entryPrice = (pos.entryPrice*pos.quantity + notional) / total
@@ -71,16 +83,17 @@ func stage07EconomicPrimitives(result Stage05StrategyResult, fold int, capital f
 			}
 			continue
 		}
+		cash += notional - fee
 		pos := positions[fill.Symbol]
 		if pos == nil || quantity > pos.quantity+1e-12 || len(trades) >= len(result.Trades) {
-			return nil, nil, nil, &validation.DiagnosticError{Code: validation.DiagnosticManifestIntegrity, Field: "fills", Details: "sell cannot be attributed to a closed trade"}
+			return nil, nil, stage07EndInventory{}, &validation.DiagnosticError{Code: validation.DiagnosticManifestIntegrity, Field: "fills", Details: "sell cannot be attributed to a closed trade"}
 		}
 		trade := result.Trades[len(trades)]
 		entryFee := pos.entryFee * quantity / pos.quantity
 		entrySlippage := pos.entrySlippage * quantity / pos.quantity
 		pnl := (price-pos.entryPrice)*quantity - entryFee - fee
 		if trade.Symbol != fill.Symbol || !trade.EntryTime.Equal(pos.entryAt) || !trade.ExitTime.Equal(at) || !stage07Near(trade.Size, quantity) || !stage07Near(trade.EntryPrice, pos.entryPrice) || !stage07Near(trade.ExitPrice, price) || !stage07Near(trade.Pnl, pnl) {
-			return nil, nil, nil, &validation.DiagnosticError{Code: validation.DiagnosticManifestIntegrity, Field: "trade", Details: "closed trade does not reconcile to its unique fills"}
+			return nil, nil, stage07EndInventory{}, &validation.DiagnosticError{Code: validation.DiagnosticManifestIntegrity, Field: "trade", Details: "closed trade does not reconcile to its unique fills"}
 		}
 		cost := entryFee + fee + entrySlippage + fillSlippage
 		regime := strings.TrimSpace(trade.RegimeState)
@@ -96,16 +109,17 @@ func stage07EconomicPrimitives(result Stage05StrategyResult, fold int, capital f
 		}
 	}
 	if len(trades) != len(result.Trades) || result.Metrics.FillCount != len(fills) || result.Metrics.TradeCount != len(trades) {
-		return nil, nil, nil, &validation.DiagnosticError{Code: validation.DiagnosticManifestIntegrity, Field: "trades", Details: "closed trade has no attributed sell fill"}
+		return nil, nil, stage07EndInventory{}, &validation.DiagnosticError{Code: validation.DiagnosticManifestIntegrity, Field: "trades", Details: "closed trade has no attributed sell fill"}
 	}
 	if !stage07Near(turnover/capital, metricValue(result.Metrics.TurnoverRatio)) || !stage07Near(turnover, stage07MetricFloat(result.Metrics.Turnover)) || !stage07Near(fees, stage07MetricFloat(result.Metrics.FeeCosts)) || !stage07Near(slippage, stage07MetricFloat(result.Metrics.SlippageCosts)) {
-		return nil, nil, nil, &validation.DiagnosticError{Code: validation.DiagnosticManifestIntegrity, Field: "fills", Details: "fills do not reconcile to Stage 05 turnover and costs"}
+		return nil, nil, stage07EndInventory{}, &validation.DiagnosticError{Code: validation.DiagnosticManifestIntegrity, Field: "fills", Details: "fills do not reconcile to Stage 05 turnover and costs"}
 	}
-	endPositions := make(map[string]stage07EndPosition, len(positions))
+	endPositions := make([]stage07EndPosition, 0, len(positions))
 	for symbol, pos := range positions {
-		endPositions[symbol] = stage07EndPosition{Quantity: pos.quantity, EntryPrice: pos.entryPrice, EntryFee: pos.entryFee, EntrySlippage: pos.entrySlippage}
+		endPositions = append(endPositions, stage07EndPosition{Symbol: symbol, Quantity: pos.quantity, EntryPrice: pos.entryPrice, EntryFee: pos.entryFee, EntrySlippage: pos.entrySlippage})
 	}
-	return trades, fills, endPositions, nil
+	sort.Slice(endPositions, func(i, j int) bool { return endPositions[i].Symbol < endPositions[j].Symbol })
+	return trades, fills, stage07EndInventory{Cash: cash, Positions: endPositions}, nil
 }
 
 func stage07Positive(v float64) bool    { return !math.IsNaN(v) && !math.IsInf(v, 0) && v > 0 }
