@@ -346,12 +346,29 @@ interval, not three independent samples:
 | B | 0.03 | #45 | neighboring, already explored parameter |
 | C | 0.04 | #48 | wider, already explored parameter |
 
-At most five source jobs are planned: three exact row-A sources for Stage 07
+The original budget was five source jobs: three exact row-A sources for Stage 07
 and one comparison for each B and C. Do not run any row under current v2 policy, and do not run B or C if A fails
 data/execution integrity under the future policy. Do not tune on the three
 test windows or open any confirmatory holdout. No new parameter may be added
 after inspecting a fold without registering a new exploratory attempt and
 disclosing the full tuning history.
+
+### Technical repair budget, declared after jobs 66–68
+
+Jobs 66–68 consumed the original three A submissions and failed exact
+reproduction. Retain all three as diagnostic attempts. The deterministic
+ordering and v3 constructor repair require a new executable checkpoint;
+the old artifacts cannot supply Stage 07. This amendment permits at most
+three additional A source submissions under one reviewed, tested, committed
+revision with the same frozen request, costs, dataset, and interval.
+Audit the first before submitting the second; require exact canonical
+comparison and source digests to match before submitting the third. Stop
+on any failure or mismatch; no automatic retry is included in this repair
+budget. All three must match before Stage 07 preparation. B/C stay blocked
+until this technical gate passes; their original two slots remain unused.
+The revised maximum is eight source submissions including 66–68 and B/C.
+These technical repeats add no independent statistical observations or new
+parameter hypotheses. Record each in the append-only lineage ledger.
 
 Each Stage 05 comparison also evaluates four fixed, embedded Stage 06
 sensitivity configurations under strategy `1.0.0`: `absolute-20-24h`,

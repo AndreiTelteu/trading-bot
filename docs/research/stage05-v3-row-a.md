@@ -19,10 +19,17 @@ fields is not proof that every intermediate economic state matched.
 
 **Exact reproducibility has failed; Stage 07 and B/C submissions are blocked.**
 Job 68 had already been submitted sequentially before this audit detected the
-difference and is retained as diagnostic evidence. No rounding, digest
+difference and completed as diagnostic evidence. It differs from job 66 in
+42 comparison leaves and 16 source leaves, and from job 67 in 34 and 12.
+Its comparison digest is `55531593ce08517c5fa1d764baa16c3db4099f5b1c820f101f1b869fc327a5a8`
+and source digest is `efc8bd8e4c52ee1aae885c0a9f43d3978ca73714673f5a32f42ce5bdba26e9c4`.
+The same retained-field equality and omitted-history limitation apply.
+No rounding, digest
 tolerance, or retrospective replacement of these artifacts is permitted.
-The suspected cause is order-dependent floating-point accumulation; a
-regression and code fix are required before a new source checkpoint is frozen.
+Pure regressions reproduced order-dependent floating-point accumulation in
+portfolio equity, exposure, and planner weights. The repaired implementation
+uses stable economic-symbol order. Planner quantities can change at exact
+thresholds, so fresh sources under a new committed revision are required.
 The row-66 technical audit and historical performance below do not constitute
 a passed reproducibility or promotion gate.
 
@@ -87,6 +94,6 @@ are retained under the research-lab thread storage. No production jobs,
 settings changes, deployment, or holdout use were performed. Governance marks
 research optimization allowed and promotion blocked pending Stage 07.
 
-Next: two exact row-A source repetitions, then one new exploratory Stage 07
-manifest with the predeclared windows and strict gates. See the
+Next: freeze the repaired revision and run the bounded technical reproduction
+program before any exploratory Stage 07 manifest. See the
 [bounded program](../operations/stage05-07-next-exploratory-iteration.md).
