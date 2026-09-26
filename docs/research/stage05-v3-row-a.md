@@ -6,6 +6,26 @@ clone. The executable checkout was clean at
 `[2024-12-01, 2026-09-01)`. This result uses already-seen research data and
 is not confirmatory or promotion evidence.
 
+## Reproducibility gate update
+
+The first provenance repeat, job **67**, completed but did **not** reproduce
+job 66's canonical artifact digests. An exact recursive JSON comparison found
+43 comparison leaves and 15 source leaves differing: artifact/sensitivity
+digests, exposure diagnostics, and last-bit derived metrics including Sharpe,
+Sortino, exposure, and drawdown. The retained source trade lists, no-fill
+records, configuration identities, returns, and economic totals match. The
+compact source omits full fill/ledger/curve histories, so matching retained
+fields is not proof that every intermediate economic state matched.
+
+**Exact reproducibility has failed; Stage 07 and B/C submissions are blocked.**
+Job 68 had already been submitted sequentially before this audit detected the
+difference and is retained as diagnostic evidence. No rounding, digest
+tolerance, or retrospective replacement of these artifacts is permitted.
+The suspected cause is order-dependent floating-point accumulation; a
+regression and code fix are required before a new source checkpoint is frozen.
+The row-66 technical audit and historical performance below do not constitute
+a passed reproducibility or promotion gate.
+
 ## Results after costs
 
 | Strategy | Return | Max drawdown | Average gross exposure | Trades | Simulated no-fills |
