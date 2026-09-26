@@ -26,7 +26,14 @@ and required on both exact repeats; the old v1 implementation digests are
 historical provenance, not the v3 executable identities.
 The plan carries their full comparison references, run-manifest digests,
 primitive validation-artifact digests, and the SHA-256 of the ordered reference
-array used by repository registration. `Stage07ExperimentSource.Load` verifies
+array used by repository registration. Before preparing or running, the driver
+requires **exactly equal** canonical comparison digests and exactly equal
+canonical Stage 07 source-artifact digests across all three jobs. It rejects
+missing/null raw source artifacts and recomputes each digest from the decoded
+canonical envelope. The comparison-reference loader independently verifies
+each canonical comparison artifact against its stored digest. The differing
+#66/#67 digests therefore stop this path; equal reported returns alone cannot
+admit the sources. `Stage07ExperimentSource.Load` also verifies
 the actual source artifacts and replay contract before either plan creation or
 execution. It requires `execution_semantics.execution_policy_version` equal to
 `backtest-execution-v3` and `execution_semantics.no_fill_rule` equal to

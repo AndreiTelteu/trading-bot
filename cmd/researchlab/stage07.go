@@ -41,6 +41,44 @@ type stage07SourceReference struct {
 	SourceCodeRevision       string                              `json:"source_code_revision"`
 }
 
+// Matches the persisted Stage 07 source envelope's field order and types so
+// json.Marshal reconstructs its canonical digest after PostgreSQL jsonb load.
+type stage07CanonicalSourceArtifact struct {
+	SchemaVersion, ComparisonDigest, DatasetManifestID string
+	ReplaySettings                                     map[string]string                         `json:"replay_settings"`
+	ReplaySettingsDigest                               string                                    `json:"replay_settings_digest"`
+	Results                                            map[string]backtest.Stage05StrategyResult `json:"results"`
+}
+
+func stage07ExactDigest(value string) bool {
+	return len(value) == 64 && strings.Trim(value, "0123456789abcdef") == ""
+}
+
+func verifyStage07CanonicalSourceArtifact(raw []byte, sourceDigest, comparisonDigest, datasetID string) (stage07CanonicalSourceArtifact, error) {
+	var artifact stage07CanonicalSourceArtifact
+	if len(raw) == 0 || len(raw) > 16<<20 || !stage07ExactDigest(sourceDigest) || !stage07ExactDigest(comparisonDigest) || !stage07ExactDigest(datasetID) {
+		return artifact, fmt.Errorf("Stage 07 source artifact or digest is missing or unbounded")
+	}
+	if err := decodeStage07JSON(raw, &artifact); err != nil {
+		return artifact, err
+	}
+	canonical, err := json.Marshal(artifact)
+	if err != nil {
+		return artifact, err
+	}
+	if fmt.Sprintf("%x", sha256.Sum256(canonical)) != sourceDigest || artifact.SchemaVersion != "stage07-source-artifact-v2" || artifact.ComparisonDigest != comparisonDigest || artifact.DatasetManifestID != datasetID || len(artifact.ReplaySettings) == 0 || len(artifact.Results) == 0 {
+		return artifact, fmt.Errorf("Stage 07 source artifact canonical digest or envelope differs")
+	}
+	settings, err := json.Marshal(artifact.ReplaySettings)
+	if err != nil {
+		return artifact, err
+	}
+	if fmt.Sprintf("%x", sha256.Sum256(settings)) != artifact.ReplaySettingsDigest {
+		return artifact, fmt.Errorf("Stage 07 source replay settings digest differs")
+	}
+	return artifact, nil
+}
+
 type stage07Plan struct {
 	SchemaVersion      string                   `json:"schema_version"`
 	OldManifestFile    string                   `json:"old_manifest_file"`
@@ -171,14 +209,8 @@ func loadStage07References(ids []uint, old validation.ManifestSpec) ([]stage07So
 		if job.ValidationArtifactJSON == nil || job.ValidationArtifactDigest == nil {
 			return nil, "", fmt.Errorf("source job %d lacks validation artifact", id)
 		}
-		var artifact struct {
-			Results map[string]struct {
-				Manifest struct {
-					CodeRevision string `json:"code_revision"`
-				} `json:"manifest"`
-			} `json:"results"`
-		}
-		if err := json.Unmarshal([]byte(*job.ValidationArtifactJSON), &artifact); err != nil {
+		artifact, err := verifyStage07CanonicalSourceArtifact([]byte(*job.ValidationArtifactJSON), *job.ValidationArtifactDigest, ref.ArtifactDigest, old.DatasetManifestID)
+		if err != nil {
 			return nil, "", err
 		}
 		c, cOK := artifact.Results[old.Candidate.ID]
@@ -204,11 +236,18 @@ func validateStage07ReferenceSet(refs []stage07SourceReference, old validation.M
 		return fmt.Errorf("audited source #66 and two exact repeats are required")
 	}
 	seen := map[uint]bool{}
+	comparisonDigest, sourceDigest := refs[0].Comparison.ArtifactDigest, refs[0].ValidationArtifactDigest
+	if !stage07ExactDigest(comparisonDigest) || !stage07ExactDigest(sourceDigest) {
+		return fmt.Errorf("source canonical digests are missing")
+	}
 	for _, ref := range refs {
 		if ref.Comparison.JobID <= 65 || seen[ref.Comparison.JobID] {
 			return fmt.Errorf("source job IDs must be distinct new jobs")
 		}
 		seen[ref.Comparison.JobID] = true
+		if ref.Comparison.ArtifactDigest != comparisonDigest || ref.ValidationArtifactDigest != sourceDigest {
+			return fmt.Errorf("exact source repetitions have different canonical comparison or Stage 07 artifact digests")
+		}
 		candidate, cOK := ref.Comparison.Strategies[old.Candidate.ID]
 		baseline, bOK := ref.Comparison.Strategies[old.Baseline.ID]
 		if !cOK || !bOK || ref.Comparison.Candidate != old.Candidate.ID+"@"+old.Candidate.Version || candidate.ImplementationDigest != stage07CandidateImplementation || baseline.ImplementationDigest != stage07BaselineImplementation || candidate.ConfigDigest != old.Candidate.ConfigDigest || baseline.ConfigDigest != old.Baseline.ConfigDigest || ref.Comparison.DatasetDigest != old.DatasetDigest || ref.SourceCodeRevision != stage07SourceSHA || ref.ValidationArtifactDigest == "" {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"strings"
@@ -100,12 +101,57 @@ func TestStage07ReferenceSetRejectsImplementationOrConfigMismatch(t *testing.T) 
 		"different dataset": func(refs []stage07SourceReference) {
 			refs[2].Comparison.DatasetDigest = validation.DatasetDigest(strings.Repeat("0", 64))
 		},
+		"different comparison digest": func(refs []stage07SourceReference) {
+			refs[1].Comparison.ArtifactDigest = strings.Repeat("5", 64)
+		},
+		"different source artifact digest": func(refs []stage07SourceReference) {
+			refs[2].ValidationArtifactDigest = strings.Repeat("6", 64)
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			refs := stage07RefsFixture(old)
 			mutate(refs)
 			if _, err := buildStage07Spec(old, refs, strings.Repeat("9", 40), strings.Repeat("8", 64)); err == nil {
 				t.Fatal("mismatched source accepted")
+			}
+		})
+	}
+}
+
+func TestStage07RequiresCanonicalNonNullSourceArtifact(t *testing.T) {
+	old := stage07SpecFixture(t)
+	settings := map[string]string{"backtest_execution_policy_version": "backtest-execution-v3"}
+	settingsRaw, err := json.Marshal(settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifact := stage07CanonicalSourceArtifact{
+		SchemaVersion: "stage07-source-artifact-v2", ComparisonDigest: strings.Repeat("1", 64), DatasetManifestID: old.DatasetManifestID,
+		ReplaySettings: settings, ReplaySettingsDigest: fmt.Sprintf("%x", sha256.Sum256(settingsRaw)),
+		Results: map[string]backtest.Stage05StrategyResult{old.Candidate.ID: {Manifest: backtest.RunManifest{CodeRevision: stage07SourceSHA}}},
+	}
+	raw, err := json.Marshal(artifact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := fmt.Sprintf("%x", sha256.Sum256(raw))
+	if _, err := verifyStage07CanonicalSourceArtifact(raw, digest, artifact.ComparisonDigest, old.DatasetManifestID); err != nil {
+		t.Fatal(err)
+	}
+	for name, input := range map[string]struct {
+		raw        []byte
+		digest     string
+		comparison string
+	}{
+		"nil raw":          {nil, digest, artifact.ComparisonDigest},
+		"null raw":         {[]byte("null"), digest, artifact.ComparisonDigest},
+		"changed raw":      {[]byte(strings.Replace(string(raw), "backtest-execution-v3", "backtest-execution-v2", 1)), digest, artifact.ComparisonDigest},
+		"wrong comparison": {raw, digest, strings.Repeat("2", 64)},
+		"missing digest":   {raw, "", artifact.ComparisonDigest},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := verifyStage07CanonicalSourceArtifact(input.raw, input.digest, input.comparison, old.DatasetManifestID); err == nil {
+				t.Fatal("noncanonical or absent source evidence accepted")
 			}
 		})
 	}
