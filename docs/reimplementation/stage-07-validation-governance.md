@@ -64,6 +64,16 @@ slippage, and buy-plus-sell notional must reconcile to Stage 05 metrics. Fold
 turnover, liquidity participation, and capacity stress use all verified fills,
 including open buys, rather than closed-trade entry notionals.
 
+The same replay returns final cash and remaining quantity, weighted entry
+price, and unallocated entry fee for each symbol. Stage 07 checks quantities
+against Stage 05 exposure artifacts and values the remaining inventory at the
+last point-in-time mark used by the fold equity curve. Closed-trade net PnL plus
+each explicit unrealized PnL must equal the change in final equity; cash plus
+marked inventory must independently equal both the curve and Stage 05 ending
+equity. Final positions are separate from closed trades and are included in
+the immutable fold evidence digest. Missing marks, fees, or inventory evidence
+fail the fold.
+
 ## Statistical evaluation
 
 - [x] Bootstrap across the correct independent unit, normally windows/blocks rather than a single aggregate.

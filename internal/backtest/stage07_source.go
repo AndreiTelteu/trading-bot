@@ -263,7 +263,11 @@ func stage07Primitives(candidate, baseline Stage05StrategyResult, fold, observat
 	if len(executionSeries) == 0 {
 		executionSeries = series
 	}
-	trades, fills, _, err := stage07EconomicPrimitives(candidate, fold, start, executionSeries)
+	trades, fills, inventory, err := stage07EconomicPrimitives(candidate, fold, start, executionSeries)
+	if err != nil {
+		return validation.FoldPrimitives{}, err
+	}
+	residualPositions, err := stage07ResidualPrimitives(candidate, inventory, series, start)
 	if err != nil {
 		return validation.FoldPrimitives{}, err
 	}
@@ -280,7 +284,7 @@ func stage07Primitives(candidate, baseline Stage05StrategyResult, fold, observat
 	// Comparability was checked against the observed baseline immediately above.
 	// Bind the primitives to the candidate-normalized exposure/turnover so the
 	// generic metric derivation cannot reintroduce an exact-equality requirement.
-	return validation.FoldPrimitives{StartingCapital: start, ExpectedObservations: observations, ObservedObservations: observations, Trades: trades, Fills: fills, Curve: curve, BaselineGrossExposure: gross, BaselineTurnover: candidateTurnover}, nil
+	return validation.FoldPrimitives{StartingCapital: start, ExpectedObservations: observations, ObservedObservations: observations, Trades: trades, Fills: fills, ResidualPositions: residualPositions, Curve: curve, BaselineGrossExposure: gross, BaselineTurnover: candidateTurnover}, nil
 }
 
 func metricValue(v OptionalMetric) float64 {

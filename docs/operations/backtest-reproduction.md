@@ -64,6 +64,14 @@ disagreement with Stage 05 fee, slippage, fill count, or turnover metrics must
 stop validation; do not repair the discrepancy by spreading aggregate costs
 across trades.
 
+When final equity includes exchange-minimum dust or another retained marked
+position, inspect the fold's `residual_positions` evidence: quantity, cost
+basis, remaining entry fee, final mark, marked value, and unrealized PnL.
+Verify those quantities against Stage 05 exposure artifacts and final cash
+against the immutable fill ledger. The final point-in-time mark is taken at the
+fold's equity boundary; an exposure artifact may carry a later bar-close mark.
+Closed-trade PnL plus explicit residual PnL must equal the equity change.
+
 ## Self Improvement operator interface
 
 The authenticated `/self-improvement` route is the guided research surface for

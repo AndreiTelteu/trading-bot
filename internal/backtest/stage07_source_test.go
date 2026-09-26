@@ -12,10 +12,10 @@ func TestStage07PrimitivesAttributeActualFillCostsPerTrade(t *testing.T) {
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	entry, exit := base.Add(time.Minute), base.Add(2*time.Minute)
 	candidate := Stage05StrategyResult{
-		Metrics: ComparableMetrics{StartingCapital: "100", AverageGrossExposure: availableMetric(.5), Turnover: "25", TurnoverRatio: availableMetric(.25), FeeCosts: "3", SlippageCosts: "2", FillCount: 2, TradeCount: 1},
+		Metrics: ComparableMetrics{StartingCapital: "100", EndingEquity: "100", AverageGrossExposure: availableMetric(.5), Turnover: "25", TurnoverRatio: availableMetric(.25), FeeCosts: "3", SlippageCosts: "2", FillCount: 2, TradeCount: 1},
 		Equity:  []EquityPoint{{Time: base, Value: 100}, {Time: exit, Value: 100}},
 		Trades:  []Trade{{Symbol: "AAA", EntryTime: entry, ExitTime: exit, EntryPrice: 11, ExitPrice: 14, Size: 1, Pnl: 0, RegimeState: "risk_on"}},
-		Artifacts: BacktestArtifacts{Fills: []FillArtifact{
+		Artifacts: BacktestArtifacts{Ledger: []LedgerArtifact{{CashAfter: "88"}, {CashAfter: "100"}}, Fills: []FillArtifact{
 			{FillID: "buy", FillAt: entry.Format(time.RFC3339Nano), Symbol: "AAA", Side: "buy", Fee: "1", Price: "11", Quantity: "1", ExecutionReferencePrice: "10"},
 			{FillID: "sell", FillAt: exit.Format(time.RFC3339Nano), Symbol: "AAA", Side: "sell", Fee: "2", Price: "14", Quantity: "1", ExecutionReferencePrice: "15"},
 		}},
@@ -130,7 +130,7 @@ func TestStage07EconomicPrimitivesReturnsSortedOpenInventoryAndCash(t *testing.T
 
 func TestStage07PrimitivesCausallyAlignBenchmarkAsOfCandidateClock(t *testing.T) {
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	candidate := Stage05StrategyResult{Metrics: ComparableMetrics{StartingCapital: "100", AverageGrossExposure: availableMetric(.5), Turnover: "0", TurnoverRatio: availableMetric(0), FeeCosts: "0", SlippageCosts: "0"}, Equity: []EquityPoint{{Time: base, Value: 100}, {Time: base.Add(2 * time.Hour), Value: 102}}}
+	candidate := Stage05StrategyResult{Metrics: ComparableMetrics{StartingCapital: "100", EndingEquity: "100", AverageGrossExposure: availableMetric(.5), Turnover: "0", TurnoverRatio: availableMetric(0), FeeCosts: "0", SlippageCosts: "0"}, Equity: []EquityPoint{{Time: base, Value: 100}, {Time: base.Add(2 * time.Hour), Value: 100}}}
 	baseline := Stage05StrategyResult{Metrics: ComparableMetrics{AverageGrossExposure: availableMetric(.5), TurnoverRatio: availableMetric(0)}, Equity: []EquityPoint{{Time: base, Value: 100}, {Time: base.Add(time.Hour), Value: 101}, {Time: base.Add(2 * time.Hour), Value: 103}}}
 	primitives, err := stage07Primitives(candidate, baseline, 0, 2, nil, nil)
 	if err != nil {
@@ -147,7 +147,7 @@ func TestStage07PrimitivesCausallyAlignBenchmarkAsOfCandidateClock(t *testing.T)
 
 func TestStage07PrimitivesUsePredeclaredComparabilityTolerances(t *testing.T) {
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	candidate := Stage05StrategyResult{Metrics: ComparableMetrics{StartingCapital: "100", AverageGrossExposure: availableMetric(.10), AverageNetExposure: availableMetric(.10), Turnover: "0", TurnoverRatio: availableMetric(0), FeeCosts: "0", SlippageCosts: "0"}, Equity: []EquityPoint{{Time: base, Value: 100}, {Time: base.Add(time.Hour), Value: 101}}}
+	candidate := Stage05StrategyResult{Metrics: ComparableMetrics{StartingCapital: "100", EndingEquity: "100", AverageGrossExposure: availableMetric(.10), AverageNetExposure: availableMetric(.10), Turnover: "0", TurnoverRatio: availableMetric(0), FeeCosts: "0", SlippageCosts: "0"}, Equity: []EquityPoint{{Time: base, Value: 100}, {Time: base.Add(time.Hour), Value: 100}}}
 	baseline := Stage05StrategyResult{Metrics: ComparableMetrics{AverageGrossExposure: availableMetric(.12), TurnoverRatio: availableMetric(0)}, Equity: []EquityPoint{{Time: base, Value: 100}, {Time: base.Add(time.Hour), Value: 100}}}
 	policy := validation.BaselineComparabilityPolicy{MaxGrossExposureDifference: .02, MaxTurnoverRelativeDiff: .10}
 	if _, err := stage07Primitives(candidate, baseline, 0, 2, nil, nil, policy); err != nil {
