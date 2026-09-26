@@ -53,8 +53,11 @@ func stage07EconomicPrimitives(result Stage05StrategyResult, fold int, capital f
 		}
 		seen[fill.FillID], lastAt = true, at
 		bar, found := stage07BarAt(execution[fill.Symbol], at)
-		if !found || !stage07Positive(bar.Volume) {
-			return nil, nil, stage07EndInventory{}, &validation.DiagnosticError{Code: validation.DiagnosticCapacity, Field: "fills", Details: "point-in-time execution liquidity unavailable"}
+		if !found {
+			return nil, nil, stage07EndInventory{}, &validation.DiagnosticError{Code: validation.DiagnosticCapacity, Field: "fills", Details: fmt.Sprintf("execution bar absent for fill %s (%s at %s)", fill.FillID, fill.Symbol, at.UTC().Format(time.RFC3339Nano))}
+		}
+		if !stage07Positive(bar.Volume) {
+			return nil, nil, stage07EndInventory{}, &validation.DiagnosticError{Code: validation.DiagnosticCapacity, Field: "fills", Details: fmt.Sprintf("execution bar has nonpositive volume for fill %s (%s at %s)", fill.FillID, fill.Symbol, at.UTC().Format(time.RFC3339Nano))}
 		}
 		notional := quantity * price
 		liquidity := bar.Volume * price

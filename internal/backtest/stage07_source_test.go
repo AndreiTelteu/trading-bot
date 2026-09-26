@@ -1,6 +1,7 @@
 package backtest
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -32,6 +33,17 @@ func TestStage07PrimitivesAttributeActualFillCostsPerTrade(t *testing.T) {
 	}
 	if len(primitives.Fills) != 2 || primitives.Fills[0].Notional != 11 || primitives.Fills[1].Notional != 14 {
 		t.Fatalf("fill turnover evidence missing: %+v", primitives.Fills)
+	}
+	for name, bars := range map[string][]services.OHLCV{
+		"missing execution bar": nil,
+		"zero execution volume": {{OpenTime: entry.UnixMilli(), Open: 11, Volume: 0}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, _, _, err := stage07EconomicPrimitives(candidate, 0, 100, map[string][]services.OHLCV{"AAA": bars})
+			if err == nil || !strings.Contains(err.Error(), "execution bar ") {
+				t.Fatalf("execution liquidity failure was not explicit: %v", err)
+			}
+		})
 	}
 }
 
