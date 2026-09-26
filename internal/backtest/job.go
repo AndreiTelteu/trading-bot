@@ -939,7 +939,7 @@ func prepareBacktestInputsWithSettings(settings map[string]string) (BacktestConf
 	}
 
 	modelPolicy := services.GetModelSelectionPolicy(settings)
-	governance, err := services.ResolveGovernanceContext(settings, string(universeMode))
+	governance, err := services.ResolveBacktestGovernanceContext(settings, string(universeMode))
 	if err != nil {
 		return BacktestConfig{}, nil, err
 	}
@@ -1215,7 +1215,7 @@ func preparePointInTimeBacktestInputs(settings map[string]string) (BacktestConfi
 	if err != nil {
 		return BacktestConfig{}, nil, err
 	}
-	governance, err := services.ResolveGovernanceContext(settings, string(UniverseDynamicReplay))
+	governance, err := services.ResolveBacktestGovernanceContext(settings, string(UniverseDynamicReplay))
 	if err != nil {
 		return BacktestConfig{}, nil, err
 	}

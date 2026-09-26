@@ -14,6 +14,13 @@ export STAGE08_NEW_BACKTEST=research
   -target-gross 1 -max-net 1 -final-policy liquidate
 ```
 
+Historical backtest preparation derives policy versions from its settings
+snapshot without inserting or updating `policy_configs`. It still reads the
+governed deployment, manifest, authority policy, and model artifact when
+resolving context. Runtime governance synchronization continues to maintain
+active policy config rows. A read-only database transaction can therefore
+resolve a backtest context without changing runtime policy authority.
+
 The command runs a fail-closed validation-window preflight after the manifest-backed interval is resolved and before either baseline or volatility-sizing lane starts. The interval must contain at least one complete walk-forward window. With the governed `12` training months plus `3` test months policy, `2025-01-01T00:00:00Z` requires an end at or after `2026-04-01T00:00:00Z`; warmup history does not count toward this validation interval. The CLI flags above override only the run snapshot, and the effective train/test/bootstrap policy is included in the versioned run manifest.
 
 For a Stage 05/06 candidate comparison, the stricter research-readiness

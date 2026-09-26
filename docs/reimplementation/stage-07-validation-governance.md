@@ -135,6 +135,14 @@ implicit authority bypass.
 
 ## Testing instructions
 
+Historical Stage 07 fold replay uses the backtest governance resolver. Policy
+version hashes come from the same deterministic settings payloads as runtime,
+while deployment, manifest, authority, and model artifact lookups remain
+database reads. Replay does not synchronize `policy_configs`; the runtime
+governance resolver retains that responsibility. A PostgreSQL read-only
+transaction regression checks this boundary and compares the resulting policy
+identity with runtime synchronization.
+
 ### Window/leakage tests
 
 - [x] Purge removes overlapping labels across boundaries.

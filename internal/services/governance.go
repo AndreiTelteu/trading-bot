@@ -60,7 +60,17 @@ func ResolveGovernanceContext(settings map[string]string, universeMode string) (
 	if err != nil {
 		return GovernanceContext{}, err
 	}
+	return resolveGovernanceContext(settings, universeMode, versions)
+}
 
+// ResolveBacktestGovernanceContext derives the same policy identity as runtime
+// synchronization while leaving policy_configs unchanged. Historical replay
+// still reads deployment, manifest, authority, and model artifact evidence.
+func ResolveBacktestGovernanceContext(settings map[string]string, universeMode string) (GovernanceContext, error) {
+	return resolveGovernanceContext(settings, universeMode, derivePolicyVersions(buildPolicyPayloads(settings)))
+}
+
+func resolveGovernanceContext(settings map[string]string, universeMode string, versions PolicyVersionSet) (GovernanceContext, error) {
 	policy := GetAuthorizedModelSelectionPolicy(settings)
 	if policy.ExperimentID != "" {
 		if manifest, loadErr := (validation.Repository{DB: database.DB}).LoadManifest(policy.ExperimentID); loadErr == nil {
@@ -198,15 +208,7 @@ func BuildRuntimeAuthorityPolicy(settings map[string]string, rolloutState string
 
 func EnsurePolicyConfigs(settings map[string]string) (PolicyVersionSet, error) {
 	payloads := buildPolicyPayloads(settings)
-	versions := PolicyVersionSet{
-		ExecutionPolicyVersion:      policyVersion(PolicyTypeExecution, payloads[PolicyTypeExecution]),
-		UniversePolicyVersion:       policyVersion(PolicyTypeUniverse, payloads[PolicyTypeUniverse]),
-		ModelSelectionPolicyVersion: policyVersion(PolicyTypeModelSelection, payloads[PolicyTypeModelSelection]),
-		EntrySelectionPolicyVersion: policyVersion(PolicyTypeEntrySelection, payloads[PolicyTypeEntrySelection]),
-		PortfolioRiskPolicyVersion:  policyVersion(PolicyTypePortfolioRisk, payloads[PolicyTypePortfolioRisk]),
-		RolloutPolicyVersion:        policyVersion(PolicyTypeRollout, payloads[PolicyTypeRollout]),
-	}
-	versions.CompositeVersion = compositePolicyVersion(versions)
+	versions := derivePolicyVersions(payloads)
 
 	if database.DB == nil {
 		return versions, nil
@@ -253,6 +255,19 @@ func EnsurePolicyConfigs(settings map[string]string) (PolicyVersionSet, error) {
 	}
 
 	return versions, nil
+}
+
+func derivePolicyVersions(payloads map[string]map[string]string) PolicyVersionSet {
+	versions := PolicyVersionSet{
+		ExecutionPolicyVersion:      policyVersion(PolicyTypeExecution, payloads[PolicyTypeExecution]),
+		UniversePolicyVersion:       policyVersion(PolicyTypeUniverse, payloads[PolicyTypeUniverse]),
+		ModelSelectionPolicyVersion: policyVersion(PolicyTypeModelSelection, payloads[PolicyTypeModelSelection]),
+		EntrySelectionPolicyVersion: policyVersion(PolicyTypeEntrySelection, payloads[PolicyTypeEntrySelection]),
+		PortfolioRiskPolicyVersion:  policyVersion(PolicyTypePortfolioRisk, payloads[PolicyTypePortfolioRisk]),
+		RolloutPolicyVersion:        policyVersion(PolicyTypeRollout, payloads[PolicyTypeRollout]),
+	}
+	versions.CompositeVersion = compositePolicyVersion(versions)
+	return versions
 }
 
 func SyncGovernanceState(settings map[string]string, source string) (GovernanceContext, error) {
