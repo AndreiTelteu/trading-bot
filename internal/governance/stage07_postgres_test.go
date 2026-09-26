@@ -2,6 +2,7 @@ package governance
 
 import (
 	"errors"
+	"math"
 	"sync"
 	"testing"
 	"time"
@@ -256,7 +257,7 @@ func persistPassingEvidence(t *testing.T, gormDB *gorm.DB, created time.Time, mo
 	folds := []validation.FoldResult{}
 	for _, fold := range manifest.Spec.Folds {
 		at := fold.Test.Start.Add(time.Hour)
-		primitives := validation.FoldPrimitives{StartingCapital: 1000, ExpectedObservations: 10, ObservedObservations: 10, Trades: []validation.TradePrimitive{{ID: "a", Symbol: "A", Regime: "on", OpenedAt: at, ClosedAt: at.Add(time.Minute), Notional: 50, AvailableLiquidity: 1000, GrossPnL: 2.6, Cost: .1, NetPnL: 2.5}, {ID: "b", Symbol: "A", Regime: "off", OpenedAt: at.Add(2 * time.Minute), ClosedAt: at.Add(3 * time.Minute), Notional: 50, AvailableLiquidity: 1000, GrossPnL: 2.6, Cost: .1, NetPnL: 2.5}, {ID: "c", Symbol: "B", Regime: "on", OpenedAt: at.Add(4 * time.Minute), ClosedAt: at.Add(5 * time.Minute), Notional: 50, AvailableLiquidity: 1000, GrossPnL: 2.6, Cost: .1, NetPnL: 2.5}, {ID: "d", Symbol: "B", Regime: "off", OpenedAt: at.Add(6 * time.Minute), ClosedAt: at.Add(7 * time.Minute), Notional: 50, AvailableLiquidity: 1000, GrossPnL: 2.6, Cost: .1, NetPnL: 2.5}}, BaselineGrossExposure: .5, BaselineTurnover: .2, Curve: []validation.CurvePrimitive{{At: at, Equity: 1000, Benchmark: 1000, GrossExposure: .5, NetExposure: .5}, {At: at.Add(time.Hour), Equity: 1010, Benchmark: 1005, GrossExposure: .5, NetExposure: .5}}}
+		primitives := governanceFoldPrimitives(at)
 		metrics, deriveErr := validation.DeriveFoldMetrics(primitives)
 		if deriveErr != nil {
 			t.Fatal(deriveErr)
@@ -273,6 +274,48 @@ func persistPassingEvidence(t *testing.T, gormDB *gorm.DB, created time.Time, mo
 		t.Fatal(err)
 	}
 	return manifest, evidence
+}
+
+func governanceFoldPrimitives(at time.Time) validation.FoldPrimitives {
+	primitives := validation.FoldPrimitives{StartingCapital: 1000, ExpectedObservations: 10, ObservedObservations: 10, Trades: []validation.TradePrimitive{{ID: "a", Symbol: "A", Regime: "on", OpenedAt: at, ClosedAt: at.Add(time.Minute), Notional: 50, AvailableLiquidity: 1000, GrossPnL: 2.6, Cost: .1, NetPnL: 2.5}, {ID: "b", Symbol: "A", Regime: "off", OpenedAt: at.Add(2 * time.Minute), ClosedAt: at.Add(3 * time.Minute), Notional: 50, AvailableLiquidity: 1000, GrossPnL: 2.6, Cost: .1, NetPnL: 2.5}, {ID: "c", Symbol: "B", Regime: "on", OpenedAt: at.Add(4 * time.Minute), ClosedAt: at.Add(5 * time.Minute), Notional: 50, AvailableLiquidity: 1000, GrossPnL: 2.6, Cost: .1, NetPnL: 2.5}, {ID: "d", Symbol: "B", Regime: "off", OpenedAt: at.Add(6 * time.Minute), ClosedAt: at.Add(7 * time.Minute), Notional: 50, AvailableLiquidity: 1000, GrossPnL: 2.6, Cost: .1, NetPnL: 2.5}}, BaselineGrossExposure: .5, BaselineTurnover: .4104, Curve: []validation.CurvePrimitive{{At: at, Equity: 1000, Benchmark: 1000, GrossExposure: .5, NetExposure: .5}, {At: at.Add(time.Hour), Equity: 1010, Benchmark: 1005, GrossExposure: .5, NetExposure: .5}}}
+	// Each trade is a 50 buy and 52.6 sell with a 0.1 fee.
+	primitives.Fills = governanceFoldFills(at)
+	return primitives
+}
+
+func governanceFoldFills(at time.Time) []validation.FillPrimitive {
+	return []validation.FillPrimitive{
+		{ID: "a-buy", Symbol: "A", Side: "buy", At: at, Notional: 50, AvailableLiquidity: 1000},
+		{ID: "a-sell", Symbol: "A", Side: "sell", At: at.Add(time.Minute), Notional: 52.6, AvailableLiquidity: 1000},
+		{ID: "b-buy", Symbol: "A", Side: "buy", At: at.Add(2 * time.Minute), Notional: 50, AvailableLiquidity: 1000},
+		{ID: "b-sell", Symbol: "A", Side: "sell", At: at.Add(3 * time.Minute), Notional: 52.6, AvailableLiquidity: 1000},
+		{ID: "c-buy", Symbol: "B", Side: "buy", At: at.Add(4 * time.Minute), Notional: 50, AvailableLiquidity: 1000},
+		{ID: "c-sell", Symbol: "B", Side: "sell", At: at.Add(5 * time.Minute), Notional: 52.6, AvailableLiquidity: 1000},
+		{ID: "d-buy", Symbol: "B", Side: "buy", At: at.Add(6 * time.Minute), Notional: 50, AvailableLiquidity: 1000},
+		{ID: "d-sell", Symbol: "B", Side: "sell", At: at.Add(7 * time.Minute), Notional: 52.6, AvailableLiquidity: 1000},
+	}
+}
+
+func TestGovernanceFoldFillsReconcileToDeclaredTurnover(t *testing.T) {
+	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	primitives := governanceFoldPrimitives(at)
+	fills := primitives.Fills
+	seen := map[string]bool{}
+	turnover := 0.0
+	for _, fill := range fills {
+		if fill.ID == "" || seen[fill.ID] || fill.AvailableLiquidity <= fill.Notional || fill.At.IsZero() {
+			t.Fatalf("invalid governance fill: %+v", fill)
+		}
+		seen[fill.ID] = true
+		turnover += fill.Notional
+	}
+	if len(fills) != 8 || math.Abs(turnover-410.4) > 1e-9 {
+		t.Fatalf("governance fixture turnover=%v fills=%d", turnover, len(fills))
+	}
+	metrics, err := validation.DeriveFoldMetrics(primitives)
+	if err != nil || math.Abs(metrics.Turnover-.4104) > 1e-9 || metrics.Trades != 4 {
+		t.Fatalf("governance fixture metrics=%+v err=%v", metrics, err)
+	}
 }
 
 func code(err error, want Code, t *testing.T) {
