@@ -68,6 +68,47 @@ func TestStage05V3RepeatedNormalDecisionsHaveDistinctOrderIDs(t *testing.T) {
 	}
 }
 
+func TestStage05V3FlatEmptyDecisionKeepsCadenceAndLaterEntry(t *testing.T) {
+	config, series := stage05Fixture(nil, []float64{100, 100, 100, 100}, 0, 0)
+	config.ExecutionPolicy.Version = "backtest-execution-v3"
+	config.ExecutionSeriesRequired = true
+	config.ExecutionSeries = map[string][]services.OHLCV{"BTCUSDT": append([]services.OHLCV(nil), config.BenchmarkSeries[2:]...)}
+	selected, strategy, err := DefaultStrategyRegistry.Resolve(StrategyBenchmarkHoldID, "", map[string]string{"warmup_bars": "1", "final_policy": "mark_to_market"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstDecision := stage05CloseAt(config.Start, 0)
+	planner := Stage05PlannerFunc(func(c Stage05PlanningContext) (Stage05Plan, error) {
+		switch len(c.Reference) {
+		case 1:
+			return Stage05Plan{Decide: true}, nil
+		case 2:
+			if !c.LastRebalance.Equal(firstDecision) || len(c.LastTargets) != 0 {
+				t.Fatalf("flat decision lost cadence: last=%s targets=%v", c.LastRebalance, c.LastTargets)
+			}
+			return Stage05Plan{Targets: []string{"BTCUSDT"}, Decide: true}, nil
+		default:
+			return Stage05Plan{Targets: append([]string(nil), c.LastTargets...), Decide: false}, nil
+		}
+	})
+	result, err := runStage05StrategyWithPlanner(config, series, selected, strategy, planner, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Artifacts.Fills) != 1 || result.Artifacts.Fills[0].FillAt != canonicalTime(time.UnixMilli(config.BenchmarkSeries[2].OpenTime)) || len(result.NoFills) != 0 {
+		t.Fatalf("later scheduled entry was skipped or deferred: fills=%+v no_fills=%+v", result.Artifacts.Fills, result.NoFills)
+	}
+	found := false
+	for _, decision := range result.Artifacts.Decisions {
+		if decision.Code == "empty_target_no_execution" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("flat decision has no no-action evidence")
+	}
+}
+
 func TestStage05V3FinalLiquidationZeroVolumeFails(t *testing.T) {
 	config, series := stage05Fixture(nil, []float64{100, 100, 100, 100}, 0, 0)
 	config.ExecutionPolicy.Version = "backtest-execution-v3"

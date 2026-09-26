@@ -479,6 +479,19 @@ func runStage05StrategyWithPlanner(config BacktestConfig, series map[string][]se
 			equity = appendEquity(equity, signalAt, portfolioEquity(ledger, marks))
 			continue
 		}
+		// A flat, empty decision has no executable intent. In v3 it still
+		// advances normal cadence, but cannot require or select an execution bar.
+		if runConfig.ExecutionPolicy.Version == "backtest-execution-v3" && len(targets) == 0 && len(ledger.positions) == 0 {
+			if err := recordStage05NoAction(ledger, runConfig, strategy, config.BenchmarkSymbol, bar.Close, signalAt, "empty_target_no_execution", marks); err != nil {
+				return Stage05StrategyResult{}, err
+			}
+			lastTargets = nil
+			if !plan.RiskStopOnly {
+				lastRebalance = signalAt
+			}
+			equity = appendEquity(equity, signalAt, portfolioEquity(ledger, marks))
+			continue
+		}
 		fillAt, fillPrices, ok := nextFillPrices(config, allSeries, targetsWithHeld(targets, ledger.positions), signalAt)
 		if !ok && runConfig.ExecutionPolicy.Version == "backtest-execution-v3" && i < len(reference)-1 {
 			return Stage05StrategyResult{}, &StrategyDiagnosticError{Code: DiagnosticExecutionLiquidity, Strategy: selected.Descriptor.ID, Details: fmt.Sprintf("selected execution bar after %s is missing", canonicalTime(signalAt))}
