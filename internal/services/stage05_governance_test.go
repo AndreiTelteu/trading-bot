@@ -43,7 +43,7 @@ func TestStage05CanonicalGovernanceRejectsForgedEvidence(t *testing.T) {
 		},
 		func(value map[string]interface{}) {
 			rows := value["rows"].([]interface{})
-			delete(rows[3].(map[string]interface{})["metrics"].(map[string]interface{})["total_return"].(map[string]interface{}), "value")
+			rows[3].(map[string]interface{})["metrics"].(map[string]interface{})["total_return"].(map[string]interface{})["available"] = false
 		},
 	}
 	for i, mutate := range mutations {
@@ -68,12 +68,38 @@ func canonicalGovernanceFixture(t *testing.T) (string, string, string) {
 		return map[string]interface{}{"strategy_id": id, "strategy_version": version, "manifest_identity": fmt.Sprintf("%x", sha256.Sum256(raw)), "dataset_manifest_id": manifest, "parameters": params, "normalized_run_manifest": normalized, "descriptor": map[string]interface{}{"id": id, "version": version, "baseline": baseline}, "metrics": map[string]interface{}{"reconciled": true, "total_return": map[string]interface{}{"available": true, "value": value}}}
 	}
 	artifact := map[string]interface{}{"schema_version": "strategy-comparison-v1", "manifest_id": manifest, "candidate": "candidate@1.0.0", "normalized_assumptions": assumptions, "rows": []map[string]interface{}{row("cash", "1.0.0", true, 0), row("benchmark_buy_hold", "1.0.0", true, .01), row("benchmark_trend", "1.0.0", true, .005), row("candidate", "1.0.0", false, .02)}, "governance": map[string]interface{}{"schema_version": "baseline-governance-gate-v1", "optimization_allowed": true, "promotion_allowed": false}}
+	artifact["artifact_digest"] = ""
 	unsigned, _ := json.Marshal(artifact)
 	digest := fmt.Sprintf("%x", sha256.Sum256(unsigned))
 	artifact["artifact_digest"] = digest
 	encoded, _ := json.Marshal(artifact)
 	return string(encoded), digest, manifest
 }
+
+func TestStage05CanonicalGovernanceTreatsOmittedAvailableZeroAsZero(t *testing.T) {
+	summary, _, manifest := canonicalGovernanceFixture(t)
+	var artifact map[string]interface{}
+	if err := json.Unmarshal([]byte(summary), &artifact); err != nil {
+		t.Fatal(err)
+	}
+	rows := artifact["rows"].([]interface{})
+	delete(rows[3].(map[string]interface{})["metrics"].(map[string]interface{})["total_return"].(map[string]interface{}), "value")
+	artifact["governance"].(map[string]interface{})["optimization_allowed"] = false
+	artifact["governance"].(map[string]interface{})["reasons"] = []interface{}{"candidate_does_not_beat_cash_after_costs"}
+	artifact["artifact_digest"] = ""
+	unsigned, _ := json.Marshal(artifact)
+	digest := fmt.Sprintf("%x", sha256.Sum256(unsigned))
+	artifact["artifact_digest"] = digest
+	encoded, _ := json.Marshal(artifact)
+	job := database.BacktestJob{Status: "completed", JobType: "stage05_comparison", SummaryJSON: ptrString(string(encoded)), ArtifactDigest: &digest, DatasetManifestID: &manifest}
+
+	err := requireBaselineRelativeOptimizationEvidence(string(encoded), job)
+	if err == nil || !strings.Contains(err.Error(), "candidate_does_not_beat_cash_after_costs") {
+		t.Fatalf("available zero should reach the economic gate, got %v", err)
+	}
+}
+
+func ptrString(value string) *string { return &value }
 
 func TestStage05OptimizationEvidenceParserRejectsSelfAssertedPass(t *testing.T) {
 	summary := `{"schema_version":"strategy-comparison-v1","manifest_id":"m1","candidate":"candidate@1.0.0","normalized_assumptions":{"dataset_manifest_id":"m1"},"rows":[{"strategy_id":"cash","manifest_identity":"m1","metrics":{"reconciled":true,"total_return":{"available":true}}},{"strategy_id":"benchmark_buy_hold","manifest_identity":"m1","metrics":{"reconciled":true,"total_return":{"available":true}}},{"strategy_id":"candidate","manifest_identity":"m1","metrics":{"reconciled":true,"total_return":{"available":true}}}],"governance":{"schema_version":"baseline-governance-gate-v1","optimization_allowed":true}}`

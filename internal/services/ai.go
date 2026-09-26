@@ -545,7 +545,9 @@ func requireBaselineRelativeOptimizationEvidence(summaryJSON string, jobs ...dat
 	if json.Unmarshal([]byte(summaryJSON), &raw) != nil {
 		return fmt.Errorf("optimization_blocked: artifact canonicalization failed")
 	}
-	delete(raw, "artifact_digest")
+	// Stage 05 computes the digest with the field present and empty, then stores
+	// the resulting digest in that field. Preserve that exact canonical shape.
+	raw["artifact_digest"] = ""
 	canonical, _ := json.Marshal(raw)
 	digest := fmt.Sprintf("%x", sha256.Sum256(canonical))
 	if job.ArtifactDigest == nil || evidence.ArtifactDigest != *job.ArtifactDigest || digest != evidence.ArtifactDigest {
@@ -565,7 +567,16 @@ func requireBaselineRelativeOptimizationEvidence(summaryJSON string, jobs ...dat
 			return fmt.Errorf("optimization_blocked: duplicate strategy row %s", row.StrategyID)
 		}
 		seen[row.StrategyID] = true
-		if row.DatasetManifestID != evidence.ManifestID || row.Descriptor.ID != row.StrategyID || row.Descriptor.Version != row.StrategyVersion || row.Metrics.TotalReturn.Value == nil || math.IsNaN(*row.Metrics.TotalReturn.Value) || math.IsInf(*row.Metrics.TotalReturn.Value, 0) || !row.Metrics.Reconciled || !row.Metrics.TotalReturn.Available {
+		if row.DatasetManifestID != evidence.ManifestID || row.Descriptor.ID != row.StrategyID || row.Descriptor.Version != row.StrategyVersion || !row.Metrics.Reconciled || !row.Metrics.TotalReturn.Available {
+			return fmt.Errorf("optimization_blocked: exact reconciled numeric row evidence is incomplete")
+		}
+		// Persisted v1 artifacts omit an available numeric zero through omitempty.
+		// The canonical job digest above prevents a caller from forging this case.
+		value := 0.0
+		if row.Metrics.TotalReturn.Value != nil {
+			value = *row.Metrics.TotalReturn.Value
+		}
+		if math.IsNaN(value) || math.IsInf(value, 0) {
 			return fmt.Errorf("optimization_blocked: exact reconciled numeric row evidence is incomplete")
 		}
 		manifestDigest := sha256.Sum256(row.NormalizedRunManifest)
@@ -581,9 +592,9 @@ func requireBaselineRelativeOptimizationEvidence(summaryJSON string, jobs ...dat
 		if json.Unmarshal(row.NormalizedRunManifest, &manifest) != nil || manifest.DatasetManifestID != evidence.ManifestID || manifest.StrategyID != row.StrategyID || manifest.StrategyVersion != row.StrategyVersion || !maps.Equal(manifest.Parameters, row.Parameters) {
 			return fmt.Errorf("optimization_blocked: normalized run manifest mismatch")
 		}
-		returns[row.StrategyID] = *row.Metrics.TotalReturn.Value
+		returns[row.StrategyID] = value
 		if row.Descriptor.Baseline && row.StrategyID != candidateID {
-			baselineReturns[row.StrategyID] = *row.Metrics.TotalReturn.Value
+			baselineReturns[row.StrategyID] = value
 		}
 		seenCash = seenCash || row.StrategyID == "cash"
 		seenMarket = seenMarket || row.StrategyID == "benchmark_buy_hold"
