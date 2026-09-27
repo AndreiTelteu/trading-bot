@@ -1,6 +1,7 @@
 package validation
 
 import (
+	"errors"
 	"fmt"
 	"time"
 )
@@ -30,25 +31,24 @@ func (s JobService) Run(manifestID string) (PersistedEvidence, error) {
 	if err != nil {
 		return PersistedEvidence{}, err
 	}
+	completed, err := s.Repository.HasCompletedOutcome(manifest.ID)
+	if err != nil {
+		return PersistedEvidence{}, err
+	}
+	if completed {
+		return PersistedEvidence{}, &DiagnosticError{Code: DiagnosticManifestIntegrity, Details: "experiment already has an immutable outcome"}
+	}
 	samples, runner, loadErr := s.Source.Load(manifest)
 	createdAt := time.Now().UTC()
 	if s.Now != nil {
 		createdAt = s.Now().UTC()
 	}
 	if loadErr != nil {
-		evidence, persistErr := s.Repository.PersistEvidence(manifest.ID, nil, loadErr, createdAt)
-		if persistErr != nil {
-			return PersistedEvidence{}, persistErr
-		}
-		return evidence, loadErr
+		return s.persistFailure(manifest.ID, loadErr, createdAt)
 	}
 	result, runErr := RunWalkForward(manifest, samples, runner)
 	if runErr != nil {
-		evidence, persistErr := s.Repository.PersistEvidence(manifest.ID, nil, runErr, createdAt)
-		if persistErr != nil {
-			return PersistedEvidence{}, persistErr
-		}
-		return evidence, runErr
+		return s.persistFailure(manifest.ID, runErr, createdAt)
 	}
 	if manifest.Spec.Model != nil {
 		mlSource, ok := s.Source.(MLExperimentSource)
@@ -68,12 +68,32 @@ func (s JobService) Run(manifestID string) (PersistedEvidence, error) {
 			}
 		}
 		if runErr != nil {
-			evidence, persistErr := s.Repository.PersistEvidence(manifest.ID, nil, runErr, createdAt)
-			if persistErr != nil {
-				return PersistedEvidence{}, persistErr
-			}
-			return evidence, runErr
+			return s.persistFailure(manifest.ID, runErr, createdAt)
 		}
 	}
-	return s.Repository.PersistEvidence(manifest.ID, &result, nil, createdAt)
+	return s.persistResult(manifest, result, createdAt)
+}
+
+func (s JobService) persistResult(manifest ExperimentManifest, result WalkForwardResult, createdAt time.Time) (PersistedEvidence, error) {
+	evidence, err := s.Repository.PersistEvidence(manifest.ID, &result, nil, createdAt)
+	if err == nil {
+		return evidence, nil
+	}
+	if isPrewriteResultValidationError(err) {
+		return s.persistFailure(manifest.ID, err, createdAt)
+	}
+	return PersistedEvidence{}, err
+}
+
+func isPrewriteResultValidationError(err error) bool {
+	var prewrite *prewriteResultValidationError
+	return errors.As(err, &prewrite)
+}
+
+func (s JobService) persistFailure(manifestID string, original error, createdAt time.Time) (PersistedEvidence, error) {
+	evidence, err := s.Repository.PersistEvidence(manifestID, nil, original, createdAt)
+	if err != nil {
+		return PersistedEvidence{}, errors.Join(original, fmt.Errorf("persist failed validation outcome: %w", err))
+	}
+	return evidence, original
 }

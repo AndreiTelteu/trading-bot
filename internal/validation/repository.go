@@ -128,7 +128,87 @@ type PersistedEvidence struct {
 	CreatedAt    time.Time          `json:"created_at"`
 }
 
+// prewriteResultValidationError identifies validation of a supplied result
+// before any evidence transaction starts. Database, manifest-load, conflict,
+// and post-commit errors must never be treated as failed research results.
+type prewriteResultValidationError struct{ cause error }
+
+func (e *prewriteResultValidationError) Error() string { return e.cause.Error() }
+func (e *prewriteResultValidationError) Unwrap() error { return e.cause }
+
+func resultValidationError(err error) error {
+	return &prewriteResultValidationError{cause: err}
+}
+
+func validateResultForPersistence(manifest ExperimentManifest, result *WalkForwardResult) error {
+	if result == nil {
+		return resultValidationError(&DiagnosticError{Code: DiagnosticManifestIntegrity, Details: "result is required"})
+	}
+	if result.ExperimentID != manifest.ID || result.SchemaVersion != EvidenceSchemaVersion {
+		return resultValidationError(&DiagnosticError{Code: DiagnosticManifestIntegrity, Details: "result is not bound to experiment"})
+	}
+	if len(result.Folds) != len(manifest.Spec.Folds) {
+		return resultValidationError(&DiagnosticError{Code: DiagnosticManifestIntegrity, Details: "fold evidence does not cover the immutable manifest"})
+	}
+	for i, fold := range result.Folds {
+		if fold.Fold != manifest.Spec.Folds[i] || fold.Frozen.FoldIndex != fold.Fold.Index {
+			return resultValidationError(&DiagnosticError{Code: DiagnosticManifestIntegrity, Details: "fold identity or frozen decision mismatch"})
+		}
+		derived, err := DeriveFoldMetrics(fold.Primitives)
+		if err != nil {
+			return resultValidationError(err)
+		}
+		storedMetrics, err := json.Marshal(fold.Metrics)
+		if err != nil {
+			return resultValidationError(err)
+		}
+		derivedMetrics, err := json.Marshal(derived)
+		if err != nil {
+			return resultValidationError(err)
+		}
+		if string(storedMetrics) != string(derivedMetrics) {
+			return resultValidationError(&DiagnosticError{Code: DiagnosticManifestIntegrity, Details: "fold metrics do not reproduce from immutable primitives"})
+		}
+		if err := ValidateFoldMetrics(derived, manifest.Spec.Samples); err != nil {
+			return resultValidationError(err)
+		}
+	}
+	recomputed, err := Evaluate(result.Folds, manifest.Spec)
+	if err != nil {
+		return resultValidationError(err)
+	}
+	storedAggregate, err := json.Marshal(result.Aggregate)
+	if err != nil {
+		return resultValidationError(err)
+	}
+	recomputedAggregate, err := json.Marshal(recomputed)
+	if err != nil {
+		return resultValidationError(err)
+	}
+	if string(storedAggregate) != string(recomputedAggregate) {
+		return resultValidationError(&DiagnosticError{Code: DiagnosticManifestIntegrity, Details: "aggregate metrics do not reproduce from immutable folds"})
+	}
+	return nil
+}
+
+// HasCompletedOutcome is a read-only guard against replaying a finished job.
+// The unique immutable outcome constraint remains the concurrent-write guard.
+func (r Repository) HasCompletedOutcome(manifestID string) (bool, error) {
+	if r.DB == nil {
+		return false, fmt.Errorf("validation repository database is required")
+	}
+	var outcome database.ResearchAttemptOutcome
+	err := r.DB.Select("id").Where("experiment_id=?", manifestID).Take(&outcome).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
 func (r Repository) PersistEvidence(manifestID string, result *WalkForwardResult, failure error, createdAt time.Time) (PersistedEvidence, error) {
+	if (result == nil) == (failure == nil) {
+		return PersistedEvidence{}, &DiagnosticError{Code: DiagnosticInvalidManifest, Details: "exactly one of result or failure is required"}
+	}
 	manifest, err := r.LoadManifest(manifestID)
 	if err != nil {
 		return PersistedEvidence{}, err
@@ -144,40 +224,10 @@ func (r Repository) PersistEvidence(manifestID string, result *WalkForwardResult
 		if !errors.As(failure, &diagnostic) {
 			diagnostic = &DiagnosticError{Code: DiagnosticInvalidManifest, Details: failure.Error()}
 		}
-		result = nil
-	}
-	if result != nil && (result.ExperimentID != manifest.ID || result.SchemaVersion != EvidenceSchemaVersion) {
-		return PersistedEvidence{}, &DiagnosticError{Code: DiagnosticManifestIntegrity, Details: "result is not bound to experiment"}
 	}
 	if result != nil {
-		if len(result.Folds) != len(manifest.Spec.Folds) {
-			return PersistedEvidence{}, &DiagnosticError{Code: DiagnosticManifestIntegrity, Details: "fold evidence does not cover the immutable manifest"}
-		}
-		for i, fold := range result.Folds {
-			if fold.Fold != manifest.Spec.Folds[i] || fold.Frozen.FoldIndex != fold.Fold.Index {
-				return PersistedEvidence{}, &DiagnosticError{Code: DiagnosticManifestIntegrity, Details: "fold identity or frozen decision mismatch"}
-			}
-			derived, deriveErr := DeriveFoldMetrics(fold.Primitives)
-			if deriveErr != nil {
-				return PersistedEvidence{}, deriveErr
-			}
-			storedMetrics, _ := json.Marshal(fold.Metrics)
-			derivedMetrics, _ := json.Marshal(derived)
-			if string(storedMetrics) != string(derivedMetrics) {
-				return PersistedEvidence{}, &DiagnosticError{Code: DiagnosticManifestIntegrity, Details: "fold metrics do not reproduce from immutable primitives"}
-			}
-			if err := ValidateFoldMetrics(derived, manifest.Spec.Samples); err != nil {
-				return PersistedEvidence{}, err
-			}
-		}
-		recomputed, evalErr := Evaluate(result.Folds, manifest.Spec)
-		if evalErr != nil {
-			return PersistedEvidence{}, evalErr
-		}
-		storedAggregate, _ := json.Marshal(result.Aggregate)
-		recomputedAggregate, _ := json.Marshal(recomputed)
-		if string(storedAggregate) != string(recomputedAggregate) {
-			return PersistedEvidence{}, &DiagnosticError{Code: DiagnosticManifestIntegrity, Details: "aggregate metrics do not reproduce from immutable folds"}
+		if err := validateResultForPersistence(manifest, result); err != nil {
+			return PersistedEvidence{}, err
 		}
 	}
 	payload := struct {
@@ -189,10 +239,17 @@ func (r Repository) PersistEvidence(manifestID string, result *WalkForwardResult
 	}{EvidenceSchemaVersion, manifest.ID, status, result, diagnostic}
 	encoded, err := json.Marshal(payload)
 	if err != nil {
+		if result != nil {
+			return PersistedEvidence{}, resultValidationError(err)
+		}
 		return PersistedEvidence{}, err
 	}
 	if len(encoded) > MaxEvidenceBytes {
-		return PersistedEvidence{}, fmt.Errorf("validation evidence exceeds 2 MiB limit")
+		err := fmt.Errorf("validation evidence exceeds 2 MiB limit")
+		if result != nil {
+			return PersistedEvidence{}, resultValidationError(err)
+		}
+		return PersistedEvidence{}, err
 	}
 	evidenceDigest := digest(encoded)
 	id := digest([]byte(manifest.ID + "\n" + evidenceDigest))

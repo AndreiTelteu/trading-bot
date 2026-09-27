@@ -19,6 +19,16 @@ Require statistically meaningful, reproducible evidence before a strategy or mod
   point-in-time dataset digest and interval are bound before execution; a
   second confirmatory manifest fails closed.
 
+An attempt has one immutable outcome. Before loading a source, `JobService`
+refuses an experiment with a completed outcome; the repository's unique
+evidence/outcome keys remain the concurrent-write backstop. When supplied
+result metrics fail deterministic reproduction before the evidence transaction,
+the service records one failed outcome and returns the original integrity
+error. Database, manifest-read, immutable-conflict, and post-commit read errors
+are reported as operational failures and cannot be recast as failed validation
+evidence. If recording failure also fails, both errors are returned. An
+unfinished registered attempt is not automatically resumed or retried.
+
 ## Walk-forward validation
 
 - [x] Multiple chronological train/validation/test windows.
