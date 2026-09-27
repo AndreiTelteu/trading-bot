@@ -8,6 +8,28 @@ is not confirmatory or promotion evidence.
 
 ## Reproducibility gate update
 
+### Repaired checkpoint: exact retained-artifact reproduction passed
+
+Replacement jobs **69, 70, and 71** completed from clean revision
+`5c756fa14ddd53cdc7d8b6acd027760a6a7842b0` with the unchanged frozen request.
+All three comparison exports (1,991,405 bytes) and compact source exports
+(2,515,830 bytes) are byte-for-byte identical. Canonical comparison digest:
+`8967b6cf813206cdf2095a7aade61795a91449b3addc8bda4b89ccbf84f44cd0`;
+canonical source digest:
+`6b4850c9e7eee66fc0ad0b070a0a0294dbea35d85f2169e4398dcfcf05e5b095`.
+All seven rows and four embedded sensitivities report reconciliation.
+Candidate and matched baseline returns remain +2.9500954783% and
++0.8515087519%, respectively. Full raw fill, ledger, order, and curve
+histories are omitted from compact sources and are not established by this
+comparison. These repeats are technical reproducibility checks, not new
+independent statistical observations.
+
+The three replacement slots are consumed. Stage 07 read-only preparation is
+the next step; fold execution, statistical gates, and promotion remain pending.
+The failed original attempts below are retained without replacement.
+
+### Original checkpoint: jobs 66–68 failed reproduction
+
 The first provenance repeat, job **67**, completed but did **not** reproduce
 job 66's canonical artifact digests. An exact recursive JSON comparison found
 43 comparison leaves and 15 source leaves differing: artifact/sensitivity
@@ -17,7 +39,7 @@ records, configuration identities, returns, and economic totals match. The
 compact source omits full fill/ledger/curve histories, so matching retained
 fields is not proof that every intermediate economic state matched.
 
-**Exact reproducibility has failed; Stage 07 and B/C submissions are blocked.**
+**These original sources failed exact reproducibility and cannot supply Stage 07.**
 Job 68 had already been submitted sequentially before this audit detected the
 difference and completed as diagnostic evidence. It differs from job 66 in
 42 comparison leaves and 16 source leaves, and from job 67 in 34 and 12.
