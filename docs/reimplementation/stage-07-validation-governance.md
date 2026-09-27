@@ -155,9 +155,16 @@ remain readable with their original identity. A result preflight uses the same
 pure serialization and size checks as the repository write; folds, root, and
 outcome still commit atomically. The root, manifest, and ML evidence limits
 remain 2 MiB. A separate finite 16 MiB canonical limit per fold and 64 MiB
-total fold limit apply. A synthetic three-fold fixture with approximately
-45–47k curve points per fold measured 6.1–6.4 million bytes per fold and 18.7 million bytes in
-the former combined root. If a legitimate fold exceeds its bound, persistence
+total fold limit apply. A temporary synthetic three-fold measurement with approximately 45–47k
+curve points per fold measured 6.1–6.4 million bytes per fold and 18.7 million
+bytes in the former combined root. The committed large-result regression uses
+47,000 synthetic curve points per fold. Neither fixture measures the failed
+real run: its reported observation counts are not curve-point counts.
+The hydrated public response can exceed 2 MiB, bounded by the fold resource
+limits; consumers must allow that response size. Current consumers load evidence
+outside write transactions. A future caller supplying an existing transaction
+must provide a repeatable-read snapshot, since GORM may use a savepoint rather
+than apply nested transaction isolation options. If a legitimate fold exceeds its bound, persistence
 fails closed pending an explicit chunked-evidence design; no primitive is
 discarded or rounded to fit.
 

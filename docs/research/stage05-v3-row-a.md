@@ -297,3 +297,32 @@ GCC; it ran no test/replay. That failure is retained separately. Temporary
 files were removed after the replacement invocation, the dedicated checkout
 was clean, and selected clone counts were unchanged. The unfinished a8 record
 is untouched. The runbook declares the next bounded source renewal separately.
+
+## Evidence-size failure after sources 78–80
+
+Sources 78–80 at `d824c0811ecc3199f9125166b3722d29ae5bc0bb` reproduced
+canonical comparison/source digests and retained exports exactly. The compact
+source still omits raw economic histories. These are technical repeats, not
+new independent observations.
+
+Experiment `530c5d21a2856d17a8415e04b3d86fb4fa7428e49991ef29b2595e7c563c50de`
+ran once under clean driver `6bafed14a83e77c46d94062d37c59bed73c8879c` and
+plan SHA `de6c46c3b9a49183374c43a25d47aed4604e147ce00b22ebf6efdbf597b5d854`.
+It exited 1: `invalid_manifest: validation evidence exceeds 2 MiB limit`.
+Unlike the earlier unfinished a8 attempt, this failure has immutable evidence
+`ee55763dd815efb4f4a9fd7fed03db584d7bf3754c81e3796d21ad61f5ca50e3`
+with digest `0ae1bd94355f41648d06010a45ee8f217f51204ce91aabd826c9a24633612052`
+and a failed research outcome. No fold rows were persisted, so neither paired
+returns nor statistical gates are available. The actual payload size was not
+retained; observations do not establish curve-point or byte counts.
+Audit SHA: `cd1d75882acf9164dde22f8185342481f1a62ae0a520867f74f14a0f94d6aab2`.
+
+The former root duplicated the complete folds also written into separate rows.
+The compact-root repair keeps complete fold primitives with digest references
+and historical v2 read compatibility. Its synthetic size fixture is not a
+measurement of this failed experiment. The preceding full diagnostic called
+metric validation but omitted serialization and its size cap. A future private
+diagnostic must use the exact shared preparation function, including root and
+fold serialization, size limits, and digests, before any further source budget.
+No old outcome is rewritten. All fifteen A sources since job 66 are consumed;
+B/C remain unsubmitted. No new source or Stage07 attempt is authorized here.
