@@ -41,9 +41,15 @@ The immutable failed evidence digest is
 
 No paired test-window returns or statistical gate outcomes were produced.
 Read-only inspection found positive-volume bars at the excluded training
-end boundary. A boundary-handling regression investigation is pending;
-this is not evidence of statistical failure or missing market data.
-No retry, threshold change, holdout use, or promotion was performed.
+end boundary. The failure was not evidence of statistical failure or missing
+market data.
+No retry, threshold change, holdout use, or promotion was performed. A later
+committed half-open boundary repair at `7e8eadb5eec18fb69837f682d2de8d3033ec269e`
+passed a private read-only fold-0 train diagnostic (164 trades, zero no-fills)
+without registering evidence. Fresh source jobs #72 and #73 at that revision
+have exactly equal canonical comparison and compact-source digests; a third
+repeat remains pending. The failed experiment above remains immutable, and the
+new Stage 07 attempt requires a fresh idempotency key and new family lineage.
 
 The boundary repair was committed as
 `7e8eadb5eec18fb69837f682d2de8d3033ec269e` and passed serial PostgreSQL

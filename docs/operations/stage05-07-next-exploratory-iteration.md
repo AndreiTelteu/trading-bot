@@ -4,11 +4,15 @@
 
 `cmd/researchlab` has an explicit `-stage07-mode prepare|run` path for one **new
 exploratory** validation manifest. Source identity is now pinned to reviewed
-checkpoint `5c756fa14ddd53cdc7d8b6acd027760a6a7842b0` and audited first
-source job #69. Jobs #69 and #70 have identical canonical comparison and
-source-artifact digests and retained export bytes; the third source ID and
-audit are pending. Jobs #66–68 remain diagnostic attempts from `ad775fd` after
-their exact-repeat digest mismatch and cannot be used here. No Stage 07
+boundary-repair checkpoint `7e8eadb5eec18fb69837f682d2de8d3033ec269e`
+and audited first source job #72. Jobs #72 and #73 have identical canonical
+comparison digest `8967b6cf813206cdf2095a7aade61795a91449b3addc8bda4b89ccbf84f44cd0`
+and source-artifact digest `d73087603cc8158756670939208fe9e51bf2418e5420d854c774236ae1edab3a`;
+their retained exports match byte-for-byte. The third source ID and audit are
+pending. Jobs #66–68 remain diagnostic attempts from `ad775fd` after their
+exact-repeat digest mismatch. Jobs #69–71 reproduced
+exactly under `5c756fa` but belong to the pre-boundary-repair executable and
+cannot be used in this new attempt. No Stage 07
 preparation or run is authorized until the third source and exact plan are
 reviewed. The driver is restricted to the same marked, runtime-only PostgreSQL
 16 research clone as the Stage 05 source runner. It
@@ -22,8 +26,8 @@ The driver reads the byte-pinned prior exploratory spec (SHA-256
 `a3b0d140308a1c383882012c92a4937df2da96908e5e4b6215bb037ae02e95c7`),
 then admits exactly three distinct new, completed Stage 05 source jobs. Each
 source must retain the candidate, baseline, configuration, dataset, and source
-code revision `5c756fa14ddd53cdc7d8b6acd027760a6a7842b0`. The v3
-candidate and baseline implementation digests are taken from audited job #69
+code revision `7e8eadb5eec18fb69837f682d2de8d3033ec269e`. The v3
+candidate and baseline implementation digests are confirmed by audited job #72
 and required on both exact repeats; the old v1 implementation digests are
 historical provenance, not the v3 executable identities. The reviewed v3
 candidate digest is
@@ -38,8 +42,8 @@ canonical Stage 07 source-artifact digests across all three jobs. It rejects
 missing/null raw source artifacts and recomputes each digest from the decoded
 canonical envelope. The comparison-reference loader independently verifies
 each canonical comparison artifact against its stored digest. The differing
-#66/#67 digests therefore stop this path; equal reported returns alone cannot
-admit the sources. `Stage07ExperimentSource.Load` also verifies
+#66/#67 digests therefore stop their historical path; equal reported returns
+alone cannot admit sources. `Stage07ExperimentSource.Load` also verifies
 the actual source artifacts and replay contract before either plan creation or
 execution. It requires `execution_semantics.execution_policy_version` equal to
 `backtest-execution-v3` and `execution_semantics.no_fill_rule` equal to
@@ -54,23 +58,29 @@ is derived from the new implementation and composite policy; the old family ID
 is retained in the private plan and ledger as research lineage. The old
 `confirmatory_holdout` remains absent.
 
-Jobs #66–68 retain `ad775fd` as historical provenance. The new manifest's
-`code_revision` and replay environment must instead equal the **actual clean
+Jobs #66–68 retain `ad775fd` and jobs #69–71 retain `5c756fa` as historical
+provenance. The new manifest's `code_revision` and replay environment must
+instead equal the **actual clean
 committed driver SHA**. The driver rejects every source-to-driver diff path
-outside `cmd/researchlab/**` and `docs/**`. Checkpoint `5c756fa` includes the
-deterministic replay fix and initializes the fixed v3 `NoFillRule` in the
-point-in-time constructor, so the Stage 07 source adapter can require full
-policy equality. The earlier loader fallback commit `788d4cf` was not
-integrated. Driver changes from `5c756fa` must remain within the allowlist;
-source policy or economic changes require a new checkpoint and source audit.
+outside `cmd/researchlab/**` and `docs/**`. Checkpoint `7e8eadb` includes the
+deterministic replay and point-in-time v3 `NoFillRule` fixes plus the half-open
+fold execution boundary repair. A reviewed, private fold-0 train diagnostic
+under `7e8eadb` passed with 164 trades and no no-fills; it was a train-path
+smoke check, not Stage 07 validation evidence. The earlier loader fallback
+commit `788d4cf` was not integrated. Driver changes from `7e8eadb` must remain
+within the allowlist; source policy or economic changes require a new checkpoint
+and source audit.
 
-After the new three source IDs and digests are final and the exact plan reviewed,
-the operator can prepare a
-private mode-0600 plan. These variable names denote paths and identities only;
-never print the runtime DSN file. Use a new bounded idempotency key and an
-explicit research creator. The append-only mode-0600 ledger records the plan,
+After the three source IDs and digests are final and the exact plan reviewed,
+the operator can prepare a private mode-0600 plan. These variable names denote
+paths and identities only; never print the runtime DSN file. Use a new bounded
+idempotency key distinct from the failed experiment
+`2c1ab23be00a734b6f53224b7a65f79725e88dc63ed91a71a6fb6064a92dcc63`,
+and an explicit research creator. The append-only mode-0600 ledger records the plan,
 execution intent, registration, and outcome, including failures. Preparation
-creates no experiment or validation job.
+creates no experiment or validation job. The failed experiment and its immutable
+failure evidence remain in the prior research lineage; this new attempt is not
+a retry of it.
 
 ```bash
 export DATABASE_URL_FILE="$CLONE_RUNTIME_DSN_FILE"

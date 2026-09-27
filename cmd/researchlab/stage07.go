@@ -22,8 +22,10 @@ import (
 )
 
 const (
-	stage07SourceSHA               = "5c756fa14ddd53cdc7d8b6acd027760a6a7842b0"
-	stage07OldSpecSHA              = "a3b0d140308a1c383882012c92a4937df2da96908e5e4b6215bb037ae02e95c7"
+	stage07SourceSHA  = "7e8eadb5eec18fb69837f682d2de8d3033ec269e"
+	stage07OldSpecSHA = "a3b0d140308a1c383882012c92a4937df2da96908e5e4b6215bb037ae02e95c7"
+	// SHA-256 of the idempotency key in the reviewed, failed #69–71 Stage 07 plan.
+	stage07PriorAttemptKeySHA      = "49e304cbd812e5df58d00c1a94fc6e3774c46aa77903f83498b5eb7a7dfbef48"
 	stage07NoFillRule              = "selected_zero_base_volume_cancel_at_bar_close_v1"
 	stage07PlanVersion             = "researchlab-stage07-plan-v1"
 	stage07CandidateImplementation = "d1710c8250f660d56d824e59cb58cfcc6f2053c68a44e28c94be29613db790c4"
@@ -52,6 +54,10 @@ type stage07CanonicalSourceArtifact struct {
 
 func stage07ExactDigest(value string) bool {
 	return len(value) == 64 && strings.Trim(value, "0123456789abcdef") == ""
+}
+
+func stage07IdempotencyKeyNew(key, priorSHA string) bool {
+	return len(key) >= 8 && len(key) <= 120 && fmt.Sprintf("%x", sha256.Sum256([]byte(key))) != priorSHA
 }
 
 func verifyStage07CanonicalSourceArtifact(raw []byte, sourceDigest, comparisonDigest, datasetID string) (stage07CanonicalSourceArtifact, error) {
@@ -180,14 +186,14 @@ func parseStage07SourceIDs(raw string) ([]uint, error) {
 	seen := map[uint]bool{}
 	for _, part := range parts {
 		id, err := strconv.ParseUint(strings.TrimSpace(part), 10, 32)
-		if err != nil || id <= 68 || seen[uint(id)] {
+		if err != nil || id <= 71 || seen[uint(id)] {
 			return nil, fmt.Errorf("source IDs must be distinct new jobs")
 		}
 		seen[uint(id)] = true
 		ids = append(ids, uint(id))
 	}
-	if ids[0] != 69 {
-		return nil, fmt.Errorf("audited source #69 must be the first fold reference")
+	if ids[0] != 72 {
+		return nil, fmt.Errorf("audited source #72 must be the first fold reference")
 	}
 	return ids, nil
 }
@@ -235,8 +241,8 @@ func loadStage07References(ids []uint, old validation.ManifestSpec) ([]stage07So
 }
 
 func validateStage07ReferenceSet(refs []stage07SourceReference, old validation.ManifestSpec) error {
-	if len(refs) != 3 || refs[0].Comparison.JobID != 69 {
-		return fmt.Errorf("audited source #69 and two exact repeats are required")
+	if len(refs) != 3 || refs[0].Comparison.JobID != 72 {
+		return fmt.Errorf("audited source #72 and two exact repeats are required")
 	}
 	seen := map[uint]bool{}
 	comparisonDigest, sourceDigest := refs[0].Comparison.ArtifactDigest, refs[0].ValidationArtifactDigest
@@ -244,7 +250,7 @@ func validateStage07ReferenceSet(refs []stage07SourceReference, old validation.M
 		return fmt.Errorf("source canonical digests are missing")
 	}
 	for _, ref := range refs {
-		if ref.Comparison.JobID <= 68 || seen[ref.Comparison.JobID] {
+		if ref.Comparison.JobID <= 71 || seen[ref.Comparison.JobID] {
 			return fmt.Errorf("source job IDs must be distinct new jobs")
 		}
 		seen[ref.Comparison.JobID] = true
@@ -254,7 +260,7 @@ func validateStage07ReferenceSet(refs []stage07SourceReference, old validation.M
 		candidate, cOK := ref.Comparison.Strategies[old.Candidate.ID]
 		baseline, bOK := ref.Comparison.Strategies[old.Baseline.ID]
 		if !cOK || !bOK || ref.Comparison.Candidate != old.Candidate.ID+"@"+old.Candidate.Version || candidate.ImplementationDigest != stage07CandidateImplementation || baseline.ImplementationDigest != stage07BaselineImplementation || candidate.ConfigDigest != old.Candidate.ConfigDigest || baseline.ConfigDigest != old.Baseline.ConfigDigest || ref.Comparison.DatasetDigest != old.DatasetDigest || ref.SourceCodeRevision != stage07SourceSHA || ref.ValidationArtifactDigest == "" {
-			return fmt.Errorf("Stage 07 source reference differs from audited #69 implementation or pinned configuration/dataset")
+			return fmt.Errorf("Stage 07 source reference differs from audited #72 implementation or pinned configuration/dataset")
 		}
 	}
 	return nil
@@ -307,7 +313,7 @@ func buildStage07Spec(old validation.ManifestSpec, refs []stage07SourceReference
 }
 
 func validateStage07Plan(plan stage07Plan, opts stage07Options) error {
-	if plan.SchemaVersion != stage07PlanVersion || plan.SourceCodeRevision != stage07SourceSHA || plan.DriverCodeRevision != opts.DriverSHA || plan.OldManifestSHA256 != stage07OldSpecSHA || plan.Creator == "" || len(plan.IdempotencyKey) < 8 || len(plan.IdempotencyKey) > 120 || len(plan.SourceReferences) != 3 {
+	if plan.SchemaVersion != stage07PlanVersion || plan.SourceCodeRevision != stage07SourceSHA || plan.DriverCodeRevision != opts.DriverSHA || plan.OldManifestSHA256 != stage07OldSpecSHA || plan.Creator == "" || !stage07IdempotencyKeyNew(plan.IdempotencyKey, stage07PriorAttemptKeySHA) || len(plan.SourceReferences) != 3 {
 		return fmt.Errorf("Stage 07 plan identity or attempt metadata differs")
 	}
 	old, err := stage07OldSpec(plan.OldManifestFile)
@@ -352,7 +358,7 @@ func runStage07Mode(opts stage07Options) error {
 	}
 	defer ledger.Close()
 	if opts.Mode == "prepare" {
-		if opts.OldManifestFile == "" || opts.SourceJobIDs == "" || opts.Creator == "" || len(opts.IdempotencyKey) < 8 || len(opts.IdempotencyKey) > 120 || opts.PlanSHA256 != "" {
+		if opts.OldManifestFile == "" || opts.SourceJobIDs == "" || opts.Creator == "" || !stage07IdempotencyKeyNew(opts.IdempotencyKey, stage07PriorAttemptKeySHA) || opts.PlanSHA256 != "" {
 			return fmt.Errorf("prepare requires prior manifest, three sources, creator, fresh key, and no plan SHA")
 		}
 		old, err := stage07OldSpec(opts.OldManifestFile)
