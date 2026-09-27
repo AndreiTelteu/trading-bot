@@ -68,6 +68,12 @@ func defaultStage03Policies(config *BacktestConfig) {
 	if config.ExecutionPolicy.Version == "backtest-execution-v3" {
 		config.ExecutionPolicy.NoFillRule = "selected_zero_base_volume_cancel_at_bar_close_v1"
 	}
+	if config.ExecutionPolicy.Version == "backtest-execution-v4" {
+		config.ExecutionPolicy.Timing = ExecutionSelectedBarClose
+		config.ExecutionPolicy.Liquidity = LiquidityVolumeCapped
+		config.ExecutionPolicy.MaxParticipationBPS = 1000
+		config.ExecutionPolicy.NoFillRule = "selected_volume_cap_all_or_none_cancel_v1"
+	}
 	if config.ExecutionPolicy.Timing == "" {
 		config.ExecutionPolicy.Timing = ExecutionNextExecutable
 	}
@@ -96,7 +102,7 @@ func defaultStage03Policies(config *BacktestConfig) {
 
 func validateRealismPolicy(config BacktestConfig) error {
 	switch config.ExecutionPolicy.Version {
-	case "backtest-execution-v1", "backtest-execution-v2", "backtest-execution-v3", "next-executable-v1":
+	case "backtest-execution-v1", "backtest-execution-v2", "backtest-execution-v3", "backtest-execution-v4", "next-executable-v1":
 	default:
 		return &UnsupportedRealismError{Policy: config.ExecutionPolicy.Version, Reason: "unknown execution policy version"}
 	}
@@ -105,6 +111,13 @@ func validateRealismPolicy(config BacktestConfig) error {
 	}
 	switch config.ExecutionPolicy.Timing {
 	case ExecutionNextExecutable:
+		if config.ExecutionPolicy.Version == "backtest-execution-v4" {
+			return &UnsupportedRealismError{Policy: config.ExecutionPolicy.Version, Reason: "v4 requires selected-bar close timing"}
+		}
+	case ExecutionSelectedBarClose:
+		if config.ExecutionPolicy.Version != "backtest-execution-v4" {
+			return &UnsupportedRealismError{Policy: string(config.ExecutionPolicy.Timing), Reason: "selected-bar close timing requires v4"}
+		}
 	case ExecutionMarketOnClose:
 		return &UnsupportedRealismError{Policy: string(config.ExecutionPolicy.Timing), Reason: "market-on-close requires auction/close-order coverage not represented by OHLCV"}
 	default:
@@ -112,8 +125,16 @@ func validateRealismPolicy(config BacktestConfig) error {
 	}
 	switch config.ExecutionPolicy.Liquidity {
 	case LiquidityFullFillOHLCV:
+		if config.ExecutionPolicy.Version == "backtest-execution-v4" {
+			return &UnsupportedRealismError{Policy: config.ExecutionPolicy.Version, Reason: "v4 requires the volume cap"}
+		}
 		return nil
-	case LiquidityVolumeCapped, LiquidityPartialFill:
+	case LiquidityVolumeCapped:
+		if config.ExecutionPolicy.Version == "backtest-execution-v4" && config.ExecutionPolicy.MaxParticipationBPS == 1000 && config.ExecutionPolicy.NoFillRule == "selected_volume_cap_all_or_none_cancel_v1" {
+			return nil
+		}
+		return &UnsupportedRealismError{Policy: string(config.ExecutionPolicy.Liquidity), Reason: "volume cap requires the fixed v4 policy"}
+	case LiquidityPartialFill:
 		return &UnsupportedRealismError{Policy: string(config.ExecutionPolicy.Liquidity), Reason: "OHLCV has no order-book or trade-level liquidity needed for this policy"}
 	default:
 		return &UnsupportedRealismError{Policy: string(config.ExecutionPolicy.Liquidity), Reason: "unknown liquidity policy"}
@@ -417,7 +438,11 @@ func buildManifest(config BacktestConfig, coverage CoverageReport, classificatio
 	if !config.ConstraintsAvailable {
 		limitations = append(limitations, "legacy_non_manifest_fixture_symbol_constraints_fallback")
 	}
-	limitations = append(limitations, "ohlcv_full_fill_no_order_book_model")
+	if config.ExecutionPolicy.Version == "backtest-execution-v4" {
+		limitations = append(limitations, "ohlcv_10pct_bar_volume_cap_not_order_book_depth")
+	} else {
+		limitations = append(limitations, "ohlcv_full_fill_no_order_book_model")
+	}
 	sort.Strings(limitations)
 	selected := selectedStrategyForManifest(config)
 	return RunManifest{SchemaVersion: ManifestSchemaVersion, Classification: classification, CodeRevision: config.CodeRevision, ConfigVersion: config.ConfigVersion, StrategyVersion: selected.Descriptor.Version, Strategy: selected, PolicyVersion: backtestPolicyVersion(config), CostVersion: config.ExecutionPolicy.CostVersion, DatasetManifestID: config.DatasetManifestID, Dataset: DatasetAudit{ManifestID: config.DatasetManifestID, KnowledgeCutoff: config.DatasetKnowledgeCutoff, Series: append([]DatasetSeriesIdentity(nil), config.DatasetSeries...)}, UniverseMode: config.UniverseMode, BenchmarkSymbol: config.BenchmarkSymbol, Seed: config.Seed, FeeBPS: config.FeeBps, SlippageBPS: config.SlippageBps, CoveragePolicy: config.CoveragePolicy, ExecutionPolicy: config.ExecutionPolicy, ValidationPolicy: validationPolicy(config), Start: canonicalTime(config.Start), End: canonicalTime(config.End), Coverage: coverage, Limitations: limitations, Artifacts: ArtifactRefs{SchemaVersion: ArtifactSchemaVersion, Manifest: "manifest.json", Decisions: "decisions.json", Orders: "orders.json", Fills: "fills.json", Trades: "trades.json", Ledger: "ledger.json", Equity: "equity.json", Metrics: "metrics.json", Exposure: "exposure.json"}}

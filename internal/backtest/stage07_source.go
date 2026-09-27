@@ -371,6 +371,9 @@ func stage07SettingsDigest(values map[string]string) string {
 }
 
 func stage07SourceExecutionIdentity(candidate, baseline, comparison ExecutionPolicy, settings, semantics map[string]string) error {
+	if candidate.Version == "backtest-execution-v4" {
+		return &validation.DiagnosticError{Code: validation.DiagnosticManifestIntegrity, Details: "v4 volume-cap evidence is not yet supported by Stage 07 fold validation"}
+	}
 	if !stage07ExecutionPolicyEqual(candidate, baseline) || !stage07ExecutionPolicyEqual(candidate, comparison) {
 		return &validation.DiagnosticError{Code: validation.DiagnosticManifestIntegrity, Details: "source comparison and candidate/baseline execution policies differ"}
 	}

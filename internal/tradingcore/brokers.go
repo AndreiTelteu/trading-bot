@@ -21,6 +21,7 @@ type CostModel struct {
 	PriceTick           string
 	MinQuantity         string
 	MinNotional         string
+	SubmittedAt         time.Time // optional simulated order arrival; fill remains at broker clock
 }
 
 type SimulationBroker struct {
@@ -179,7 +180,14 @@ func (broker SimulationBroker) Submit(_ context.Context, batch DecisionBatch) (B
 		}
 		fillID, _ := NewFillID("fill-" + fillRaw)
 		at := broker.Clock.Now().UTC()
-		fill := Fill{ID: fillID, OrderID: intent.ID, ProviderFillID: broker.Name + "-" + fillRaw, Instrument: intent.Instrument, Side: intent.Side, Quantity: fillQuantity, Price: fillPrice, Fee: fee, FeeAsset: intent.Instrument.QuoteAsset, OrderedAt: intent.CreatedAt, SubmittedAt: at, AcceptedAt: at, FilledAt: at, Versions: intent.Versions, Provenance: Provenance{Source: broker.Name + "_broker", Actor: broker.Costs.Version, Reason: intent.Reason}, CostModelVersion: broker.Costs.Version}
+		submittedAt := at
+		if !broker.Costs.SubmittedAt.IsZero() {
+			submittedAt = broker.Costs.SubmittedAt.UTC()
+			if submittedAt.Before(intent.CreatedAt) || submittedAt.After(at) {
+				return BrokerBatchOutcome{}, fmt.Errorf("intent %s simulated submission lies outside order/fill interval", intent.ID.String())
+			}
+		}
+		fill := Fill{ID: fillID, OrderID: intent.ID, ProviderFillID: broker.Name + "-" + fillRaw, Instrument: intent.Instrument, Side: intent.Side, Quantity: fillQuantity, Price: fillPrice, Fee: fee, FeeAsset: intent.Instrument.QuoteAsset, OrderedAt: intent.CreatedAt, SubmittedAt: submittedAt, AcceptedAt: submittedAt, FilledAt: at, Versions: intent.Versions, Provenance: Provenance{Source: broker.Name + "_broker", Actor: broker.Costs.Version, Reason: intent.Reason}, CostModelVersion: broker.Costs.Version}
 		status := BrokerFilled
 		remaining := OptionalQuantity{}
 		if fillBPS < 10000 {
@@ -190,7 +198,7 @@ func (broker SimulationBroker) Submit(_ context.Context, batch DecisionBatch) (B
 			}
 			remaining = SomeQuantity(remainingQuantity)
 		}
-		order, err := NewAcceptedOrder(AcceptedOrder{OrderID: intent.ID, ProviderOrderID: broker.Name + "-order-" + intent.IdempotencyKey.String(), Status: status, AcceptedAt: at, Remaining: remaining}, []Fill{fill})
+		order, err := NewAcceptedOrder(AcceptedOrder{OrderID: intent.ID, ProviderOrderID: broker.Name + "-order-" + intent.IdempotencyKey.String(), Status: status, AcceptedAt: submittedAt, Remaining: remaining}, []Fill{fill})
 		if err != nil {
 			return BrokerBatchOutcome{}, err
 		}

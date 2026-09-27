@@ -2,6 +2,13 @@
 
 ## Current checkpoint: positive-entry hypothesis stopped after one source
 
+The next isolated checkpoint is the separately predeclared
+[Stage 05 v4 capacity experiment](../research/stage05-v4-capacity-exploratory.md):
+one source at most, candidate 1.1.0, fixed 10% selected-bar cap, accepted
+fills at that bar's close, and the prior dataset/cost/exposure/final policy.
+This is an exploratory execution-policy comparison, not a strategy retry or
+Stage 07 source admission. The historical Stage 07 driver remains v3-only.
+
 The exact candidate `1.2.0` request ran once as isolated clone job **84** under
 clean revision `cd1a97e7ee1955f04e85c0043cae7fd1ab740ef9`. It completed
 and persisted comparison digest

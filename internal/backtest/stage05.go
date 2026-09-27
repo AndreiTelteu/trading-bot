@@ -175,6 +175,12 @@ func RunStage05Comparison(config BacktestConfig, series map[string][]services.OH
 	if config.ExecutionPolicy.Version == "backtest-execution-v3" {
 		config.ExecutionPolicy.NoFillRule = "selected_zero_base_volume_cancel_at_bar_close_v1"
 	}
+	if config.ExecutionPolicy.Version == "backtest-execution-v4" {
+		config.ExecutionPolicy.Timing = ExecutionSelectedBarClose
+		config.ExecutionPolicy.Liquidity = LiquidityVolumeCapped
+		config.ExecutionPolicy.MaxParticipationBPS = 1000
+		config.ExecutionPolicy.NoFillRule = "selected_volume_cap_all_or_none_cancel_v1"
+	}
 	if err := validateComparableInputs(config, series, request); err != nil {
 		return ComparisonArtifact{}, err
 	}
@@ -244,8 +250,8 @@ func ValidateStage05RunRequest(request Stage05RunRequest) error {
 }
 
 func normalizeStage05RunRequest(request Stage05RunRequest) (Stage05RunRequest, map[string]string, error) {
-	if request.ExecutionPolicyVersion != "" && request.ExecutionPolicyVersion != "backtest-execution-v1" && request.ExecutionPolicyVersion != "backtest-execution-v2" && request.ExecutionPolicyVersion != "backtest-execution-v3" {
-		return request, nil, invalidParameter(request.StrategyID, "execution_policy_version", "must be backtest-execution-v1, v2, or v3")
+	if request.ExecutionPolicyVersion != "" && request.ExecutionPolicyVersion != "backtest-execution-v1" && request.ExecutionPolicyVersion != "backtest-execution-v2" && request.ExecutionPolicyVersion != "backtest-execution-v3" && request.ExecutionPolicyVersion != "backtest-execution-v4" {
+		return request, nil, invalidParameter(request.StrategyID, "execution_policy_version", "must be backtest-execution-v1, v2, v3, or v4")
 	}
 	if request.StrategyID == "" {
 		return request, nil, &StrategyDiagnosticError{Code: DiagnosticUnknownStrategy, Details: "candidate strategy id is required"}
@@ -295,7 +301,7 @@ func normalizeStage05RunRequest(request Stage05RunRequest) (Stage05RunRequest, m
 
 func validateComparableInputs(config BacktestConfig, series map[string][]services.OHLCV, request Stage05RunRequest) error {
 	switch config.ExecutionPolicy.Version {
-	case "backtest-execution-v1", "backtest-execution-v2", "backtest-execution-v3", "next-executable-v1":
+	case "backtest-execution-v1", "backtest-execution-v2", "backtest-execution-v3", "backtest-execution-v4", "next-executable-v1":
 	default:
 		return invalidParameter(request.StrategyID, "execution_policy_version", "unsupported execution policy version")
 	}
@@ -402,6 +408,12 @@ func runStage05StrategyWithPlanner(config BacktestConfig, series map[string][]se
 	if runConfig.ExecutionPolicy.Version == "backtest-execution-v3" {
 		runConfig.ExecutionPolicy.NoFillRule = "selected_zero_base_volume_cancel_at_bar_close_v1"
 	}
+	if runConfig.ExecutionPolicy.Version == "backtest-execution-v4" {
+		runConfig.ExecutionPolicy.Timing = ExecutionSelectedBarClose
+		runConfig.ExecutionPolicy.Liquidity = LiquidityVolumeCapped
+		runConfig.ExecutionPolicy.MaxParticipationBPS = 1000
+		runConfig.ExecutionPolicy.NoFillRule = "selected_volume_cap_all_or_none_cancel_v1"
+	}
 	runConfig.StrategyParameters = cloneStringMap(parameters)
 	if (selected.Descriptor.ID == StrategyEqualWeightID || selected.Descriptor.ID == StrategyMomentumID) && runConfig.MaxPositions < len(series) {
 		// Universe baselines own either every eligible member or their explicit
@@ -484,7 +496,7 @@ func runStage05StrategyWithPlanner(config BacktestConfig, series map[string][]se
 		}
 		// A flat, empty decision has no executable intent. In v3 it still
 		// advances normal cadence, but cannot require or select an execution bar.
-		if runConfig.ExecutionPolicy.Version == "backtest-execution-v3" && len(targets) == 0 && len(ledger.positions) == 0 {
+		if (runConfig.ExecutionPolicy.Version == "backtest-execution-v3" || runConfig.ExecutionPolicy.Version == "backtest-execution-v4") && len(targets) == 0 && len(ledger.positions) == 0 {
 			if err := recordStage05NoAction(ledger, runConfig, strategy, config.BenchmarkSymbol, bar.Close, signalAt, "empty_target_no_execution", marks); err != nil {
 				return Stage05StrategyResult{}, err
 			}
@@ -499,11 +511,17 @@ func runStage05StrategyWithPlanner(config BacktestConfig, series map[string][]se
 		// OHLCV opens/closes are millisecond timestamps. A close at End-1ms
 		// cannot select another open inside the half-open replay interval,
 		// regardless of whether the source still holds bars beyond End.
-		if !ok && runConfig.ExecutionPolicy.Version == "backtest-execution-v3" && signalAt.Add(time.Millisecond).Before(config.End) {
+		if !ok && (runConfig.ExecutionPolicy.Version == "backtest-execution-v3" || runConfig.ExecutionPolicy.Version == "backtest-execution-v4") && signalAt.Add(time.Millisecond).Before(config.End) {
 			return Stage05StrategyResult{}, &StrategyDiagnosticError{Code: DiagnosticExecutionLiquidity, Strategy: selected.Descriptor.ID, Details: fmt.Sprintf("selected execution bar after %s is missing", canonicalTime(signalAt))}
 		}
 		if !ok || (finalPolicy == "liquidate" && fillAt.Equal(lastExecutableAt)) {
 			break
+		}
+		if runConfig.ExecutionPolicy.Version == "backtest-execution-v4" {
+			fillAt, fillPrices, err = stage05V4ClosePrices(runConfig, targetsWithHeld(targets, ledger.positions), fillAt)
+			if err != nil {
+				return Stage05StrategyResult{}, err
+			}
 		}
 		regime := plan.Regime
 		if regime == "" {
@@ -534,6 +552,16 @@ func runStage05StrategyWithPlanner(config BacktestConfig, series map[string][]se
 		signalAt, fillAt, fillPrices, ok := finalLiquidationPrices(config, allSeries, ledger.positions)
 		if !ok {
 			return Stage05StrategyResult{}, &StrategyDiagnosticError{Code: DiagnosticManifestIncompatible, Strategy: selected.Descriptor.ID, Details: "final liquidation has no next-executable evidence inside [start,end)"}
+		}
+		if runConfig.ExecutionPolicy.Version == "backtest-execution-v4" {
+			symbols := make([]string, 0, len(fillPrices))
+			for symbol := range fillPrices {
+				symbols = append(symbols, symbol)
+			}
+			fillAt, fillPrices, err = stage05V4ClosePrices(runConfig, symbols, fillAt)
+			if err != nil {
+				return Stage05StrategyResult{}, err
+			}
 		}
 		marks := marksAsOf(allSeries, signalAt)
 		regime := "unknown"
@@ -1087,7 +1115,7 @@ func rebalanceStage05(ledger *backtestMemoryLedger, config BacktestConfig, strat
 			allowed = tolerance
 		}
 	}
-	if config.ExecutionPolicy.Version == "backtest-execution-v3" && achievedEquity > 0 {
+	if (config.ExecutionPolicy.Version == "backtest-execution-v3" || config.ExecutionPolicy.Version == "backtest-execution-v4") && achievedEquity > 0 {
 		for _, noFill := range ledger.noFills[decisionNoFills:] {
 			if noFill.Side != "sell" {
 				continue
@@ -1411,14 +1439,18 @@ func runStage05Target(ledger *backtestMemoryLedger, config BacktestConfig, strat
 	_, increasingExistingPosition := ledger.positions[symbol]
 	increasingExistingPosition = increasingExistingPosition && side == tradingcore.Buy
 	policy := tradingcore.RiskPolicy{Version: backtestPolicyVersion(config), MaxPositions: maxPositions, MaxGrossExposure: maxGross, MaxPositionValue: maxPosition, MaxTurnover: mustAmount(0), CashReserve: mustAmount(stage05EconomicFloat(cashReserve)), MaxConcurrentOrders: maxPositions, PyramidingEnabled: increasingExistingPosition, MaxPyramidLayers: 0, LotSize: mustQuantity(lot), ExecutionCosts: tradingcore.ExecutionCostPolicy{Version: config.ExecutionPolicy.CostVersion, FeeBPS: int64(config.FeeBps), AdverseSlippageBPS: int64(config.SlippageBps)}}
-	_, executionTick, executionMinQuantity, executionMinNotional, err := constraintValues(config, symbol, fillAt)
+	executionLot, executionTick, executionMinQuantity, executionMinNotional, err := constraintValues(config, symbol, fillAt)
 	if err != nil {
 		return &StrategyDiagnosticError{Code: DiagnosticConstraintRequired, Strategy: config.StrategyID, Field: symbol, Details: err.Error()}
 	}
-	broker := tradingcore.NewBacktestBroker(tradingcore.NewFixedClock(fillAt), tradingcore.NewSequenceIDGenerator("stage05-"+symbol+"-"+strconv.FormatInt(fillAt.UnixNano(), 10), uint64(len(ledger.events)+1)), tradingcore.CostModel{FeeBPS: int64(config.FeeBps), SlippageBPS: int64(config.SlippageBps), Version: config.ExecutionPolicy.CostVersion, ExecutionPrice: tradingcore.SomePrice(mustPrice(executionPrice)), PriceTick: executionTick, MinQuantity: executionMinQuantity, MinNotional: executionMinNotional})
+	costs := tradingcore.CostModel{FeeBPS: int64(config.FeeBps), SlippageBPS: int64(config.SlippageBps), Version: config.ExecutionPolicy.CostVersion, ExecutionPrice: tradingcore.SomePrice(mustPrice(executionPrice)), PriceTick: executionTick, MinQuantity: executionMinQuantity, MinNotional: executionMinNotional}
+	if config.ExecutionPolicy.Version == "backtest-execution-v4" {
+		costs.SubmittedAt = stage05SelectedOpenForFill(config, fillAt)
+	}
+	broker := tradingcore.NewBacktestBroker(tradingcore.NewFixedClock(fillAt), tradingcore.NewSequenceIDGenerator("stage05-"+symbol+"-"+strconv.FormatInt(fillAt.UnixNano(), 10), uint64(len(ledger.events)+1)), costs)
 	var executionBroker tradingcore.Broker = broker
-	if config.ExecutionPolicy.Version == "backtest-execution-v3" {
-		executionBroker = stage05V3Broker{broker: broker, config: config, symbol: symbol, instrument: instrument.ID, selectedOpen: fillAt}
+	if config.ExecutionPolicy.Version == "backtest-execution-v3" || config.ExecutionPolicy.Version == "backtest-execution-v4" {
+		executionBroker = stage05V3Broker{broker: broker, config: config, symbol: symbol, instrument: instrument.ID, selectedOpen: stage05SelectedOpenForFill(config, fillAt)}
 	}
 	runner := tradingcore.Orchestrator{Source: backtestDecisionSource{snapshot: snapshot, policy: policy}, Strategy: strategy, Risk: tradingcore.PortfolioRiskEngine{}, Broker: executionBroker, Ledger: ledger, Observer: ledger}
 	result, err := runner.Run(context.Background())
@@ -1449,15 +1481,28 @@ func runStage05Target(ledger *backtestMemoryLedger, config BacktestConfig, strat
 	if rejected := result.Broker.Rejected(); len(rejected) > 0 {
 		diagnostic.ProviderCode = string(rejected[0].Code)
 	}
-	if config.ExecutionPolicy.Version == "backtest-execution-v3" && len(result.Risk.Rejected()) == 0 && len(result.Risk.Approved().Intents()) == 1 && len(result.Broker.Accepted()) == 0 && len(result.Broker.Rejected()) == 1 {
+	if (config.ExecutionPolicy.Version == "backtest-execution-v3" || config.ExecutionPolicy.Version == "backtest-execution-v4") && len(result.Risk.Rejected()) == 0 && len(result.Risk.Approved().Intents()) == 1 && len(result.Broker.Accepted()) == 0 && len(result.Broker.Rejected()) == 1 {
 		intent := result.Risk.Approved().Intents()[0]
 		rejection := result.Broker.Rejected()[0]
-		selectedBar, zeroVolume, barErr := stage05V3SelectedBar(config, symbol, fillAt)
+		selectedOpen := stage05SelectedOpenForFill(config, fillAt)
+		selectedBar, zeroVolume, barErr := stage05V3SelectedBar(config, symbol, selectedOpen)
 		if barErr != nil {
 			return barErr
 		}
 		if zeroVolume && rejection.Code == tradingcore.SimulatedNoFillZeroTrades && rejection.OrderID == intent.ID && rejection.EvaluatedAt.Equal(time.UnixMilli(selectedBar.CloseTime)) {
-			ledger.noFills = append(ledger.noFills, SimulatedNoFill{SchemaVersion: SimulatedNoFillSchemaVersion, OrderID: intent.ID.String(), Symbol: symbol, Side: string(side), SignalAt: canonicalTime(signalAt), SelectedOpenAt: canonicalTime(fillAt), EvaluatedAt: canonicalTime(rejection.EvaluatedAt), RequestedQuantity: decimalString(quantity), ApprovedQuantity: intent.Quantity.Decimal().String(), FilledQuantity: "0", ReferencePrice: decimalString(signalPrice), SelectedOpenPrice: decimalString(executionPrice), ExecutionPolicyVersion: config.ExecutionPolicy.Version, DatasetManifestID: config.DatasetManifestID, Reason: string(rejection.Code), LiquidityEvidence: "zero_base_volume"})
+			ledger.noFills = append(ledger.noFills, SimulatedNoFill{SchemaVersion: SimulatedNoFillSchemaVersion, OrderID: intent.ID.String(), Symbol: symbol, Side: string(side), SignalAt: canonicalTime(signalAt), SelectedOpenAt: canonicalTime(selectedOpen), EvaluatedAt: canonicalTime(rejection.EvaluatedAt), RequestedQuantity: decimalString(quantity), ApprovedQuantity: intent.Quantity.Decimal().String(), FilledQuantity: "0", ReferencePrice: decimalString(signalPrice), SelectedOpenPrice: decimalString(executionPrice), ExecutionPolicyVersion: config.ExecutionPolicy.Version, DatasetManifestID: config.DatasetManifestID, Reason: string(rejection.Code), LiquidityEvidence: "zero_base_volume"})
+			return nil
+		}
+		if config.ExecutionPolicy.Version == "backtest-execution-v4" && rejection.Code == tradingcore.RejectionCode("simulated_no_fill_volume_cap") && rejection.OrderID == intent.ID && rejection.EvaluatedAt.Equal(time.UnixMilli(selectedBar.CloseTime)) {
+			capacity, capErr := stage05VolumeCap(selectedBar.Volume, executionLot)
+			if capErr != nil {
+				return capErr
+			}
+			barVolume, volumeErr := stage05InputDecimal(selectedBar.Volume)
+			if volumeErr != nil {
+				return volumeErr
+			}
+			ledger.noFills = append(ledger.noFills, SimulatedNoFill{SchemaVersion: SimulatedCapacityNoFillSchemaVersion, OrderID: intent.ID.String(), Symbol: symbol, Side: string(side), SignalAt: canonicalTime(signalAt), SelectedOpenAt: canonicalTime(selectedOpen), EvaluatedAt: canonicalTime(rejection.EvaluatedAt), RequestedQuantity: decimalString(quantity), ApprovedQuantity: intent.Quantity.Decimal().String(), FilledQuantity: "0", ReferencePrice: decimalString(signalPrice), SelectedOpenPrice: decimalString(selectedBar.Open), SelectedClosePrice: decimalString(selectedBar.Close), ExecutionPolicyVersion: config.ExecutionPolicy.Version, DatasetManifestID: config.DatasetManifestID, Reason: string(rejection.Code), LiquidityEvidence: "selected_bar_base_volume_10pct", BarVolume: barVolume, CapacityQuantity: capacity})
 			return nil
 		}
 	}
@@ -1681,6 +1726,40 @@ func stage05V3SelectedBar(config BacktestConfig, symbol string, at time.Time) (s
 	return bar, bar.Volume == 0, nil
 }
 
+func stage05SelectedOpenForFill(config BacktestConfig, fillAt time.Time) time.Time {
+	if config.ExecutionPolicy.Version != "backtest-execution-v4" {
+		return fillAt
+	}
+	minutes := config.ExecutionTimeframeMins
+	if minutes <= 0 {
+		minutes = config.TimeframeMinutes
+	}
+	return fillAt.Add(-time.Duration(minutes)*time.Minute + time.Millisecond)
+}
+
+func stage05V4ClosePrices(config BacktestConfig, symbols []string, selectedOpen time.Time) (time.Time, map[string]float64, error) {
+	sorted := append([]string(nil), symbols...)
+	sort.Strings(sorted)
+	prices := make(map[string]float64, len(sorted))
+	closeAt := time.Time{}
+	for _, symbol := range sorted {
+		bar, _, err := stage05V3SelectedBar(config, symbol, selectedOpen)
+		if err != nil {
+			return time.Time{}, nil, err
+		}
+		at := time.UnixMilli(bar.CloseTime).UTC()
+		if !closeAt.IsZero() && !at.Equal(closeAt) {
+			return time.Time{}, nil, fmt.Errorf("selected v4 execution bars have different close times")
+		}
+		closeAt = at
+		prices[symbol] = bar.Close
+	}
+	if closeAt.IsZero() {
+		return time.Time{}, nil, fmt.Errorf("v4 execution requires a selected bar")
+	}
+	return closeAt, prices, nil
+}
+
 // stage05V3Broker reads the selected bar only after the orchestrator has run
 // the shared strategy and risk engine. The bar cannot affect intent approval.
 type stage05V3Broker struct {
@@ -1700,10 +1779,71 @@ func (b stage05V3Broker) Submit(ctx context.Context, batch tradingcore.DecisionB
 		return tradingcore.BrokerBatchOutcome{}, err
 	}
 	broker := b.broker
+	if b.config.ExecutionPolicy.Version == "backtest-execution-v4" {
+		if len(batch.Intents()) != 1 || batch.Intents()[0].Instrument.ID != b.instrument {
+			return tradingcore.BrokerBatchOutcome{}, fmt.Errorf("v4 requires one approved intent for the selected instrument")
+		}
+		lot, _, _, _, err := constraintValues(b.config, b.symbol, time.UnixMilli(bar.CloseTime))
+		if err != nil {
+			return tradingcore.BrokerBatchOutcome{}, err
+		}
+		capacity, err := stage05VolumeCap(bar.Volume, lot)
+		if err != nil {
+			return tradingcore.BrokerBatchOutcome{}, err
+		}
+		approved := new(big.Rat)
+		approved.SetString(batch.Intents()[0].Quantity.Decimal().String())
+		capRat := new(big.Rat)
+		capRat.SetString(capacity)
+		intent := batch.Intents()[0]
+		metadata := intent.Metadata()
+		if metadata["cost_policy_version"] != broker.Costs.Version || metadata["fee_bps"] != fmt.Sprint(broker.Costs.FeeBPS) || metadata["slippage_bps"] != fmt.Sprint(broker.Costs.SlippageBPS) {
+			return tradingcore.BrokerBatchOutcome{}, fmt.Errorf("intent %s cost reservation does not match broker cost model", intent.ID.String())
+		}
+		if approved.Cmp(capRat) > 0 {
+			return tradingcore.NewBrokerBatchOutcome(tradingcore.OutcomeComplete, nil, []tradingcore.OrderRejection{{OrderID: intent.ID, Code: tradingcore.RejectionCode("simulated_no_fill_volume_cap"), Message: "simulated cancel: approved quantity exceeds selected-bar participation cap", EvaluatedAt: time.UnixMilli(bar.CloseTime), PolicyVersion: intent.Versions.Policy}})
+		}
+		return broker.Submit(ctx, batch)
+	}
 	if zero {
 		broker = broker.WithZeroVolumeWindow(b.instrument, b.selectedOpen, time.UnixMilli(bar.CloseTime))
 	}
 	return broker.Submit(ctx, batch)
+}
+
+// stage05VolumeCap converts the selected bar's reported base volume to a
+// conservative 10% all-or-none capacity, rounded down to the point-in-time
+// quantity step. OHLCV is execution evidence only, never a strategy input.
+func stage05VolumeCap(volume, lot float64) (string, error) {
+	if math.IsNaN(volume) || math.IsInf(volume, 0) || volume < 0 || math.IsNaN(lot) || math.IsInf(lot, 0) || lot <= 0 {
+		return "", fmt.Errorf("invalid selected-bar volume or quantity step")
+	}
+	volumeText, err := stage05InputDecimal(volume)
+	if err != nil {
+		return "", err
+	}
+	stepText, err := stage05InputDecimal(lot)
+	if err != nil {
+		return "", err
+	}
+	v, vok := new(big.Rat).SetString(volumeText)
+	step, sok := new(big.Rat).SetString(stepText)
+	if !vok || !sok || step.Sign() <= 0 {
+		return "", fmt.Errorf("invalid exact volume cap input")
+	}
+	limit := new(big.Rat).Mul(v, big.NewRat(1, 10))
+	units := new(big.Int).Quo(new(big.Rat).Quo(limit, step).Num(), new(big.Rat).Quo(limit, step).Denom())
+	capacity := new(big.Rat).Mul(new(big.Rat).SetInt(units), step)
+	return strings.TrimRight(strings.TrimRight(capacity.FloatString(18), "0"), "."), nil
+}
+
+func stage05InputDecimal(value float64) (string, error) {
+	text := strconv.FormatFloat(value, 'f', -1, 64)
+	decimal, err := tradingcore.ParseDecimal(text)
+	if err != nil {
+		return "", fmt.Errorf("selected-bar capacity input %q is not a supported exact decimal: %w", text, err)
+	}
+	return decimal.String(), nil
 }
 
 func lastExecutionTimestamp(config BacktestConfig, series map[string][]services.OHLCV, reference []services.OHLCV) time.Time {
@@ -2248,7 +2388,12 @@ func buildStage05Comparison(config BacktestConfig, request Stage05RunRequest, ca
 		}
 	}
 	limitations := append([]string(nil), config.DatasetLimitations...)
-	limitations = append(limitations, "positive historical performance requires complete external Stage 04 vendor coverage", "generalization requires Stage 07 multi-window validation", "live inference is not supported by a single backtest", "OHLCV full-fill evidence cannot prove order-book impact")
+	limitations = append(limitations, "positive historical performance requires complete external Stage 04 vendor coverage", "generalization requires Stage 07 multi-window validation", "live inference is not supported by a single backtest")
+	if config.ExecutionPolicy.Version == "backtest-execution-v4" {
+		limitations = append(limitations, "10% OHLCV bar-volume cap is a conservative simulation, not observed order-book liquidity")
+	} else {
+		limitations = append(limitations, "OHLCV full-fill evidence cannot prove order-book impact")
+	}
 	sort.Strings(limitations)
 	reasons = append(reasons, "pending_stage07_validation")
 	artifact := ComparisonArtifact{SchemaVersion: ComparisonSchemaVersion, ManifestID: config.DatasetManifestID, Candidate: candidate.Descriptor.ID + "@" + candidate.Descriptor.Version, Assumptions: assumptions, Rows: rows, Governance: GovernanceGate{SchemaVersion: GovernanceSchemaVersion, OptimizationAllowed: allowed, PromotionAllowed: false, Reasons: reasons}, Results: results, Limitations: limitations}

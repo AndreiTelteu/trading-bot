@@ -152,7 +152,7 @@ func main() {
 				fatal(err)
 			}
 			fmt.Printf("{\"job_id\":%d,\"status\":%q}\n", job.ID, result.Status)
-			if result.Status != "completed" || result.Comparison == nil || result.ArtifactDigest == nil || result.Comparison.Assumptions.ExecutionPolicy.Version != "backtest-execution-v3" || result.Comparison.ManifestID != manifestID {
+			if result.Status != "completed" || result.Comparison == nil || result.ArtifactDigest == nil || result.Comparison.Assumptions.ExecutionPolicy.Version != request.ExecutionPolicyVersion || result.Comparison.ManifestID != manifestID {
 				fatal(fmt.Errorf("Stage 05 source job %d did not produce complete evidence; stopping repetitions", job.ID))
 			}
 			break
@@ -166,8 +166,8 @@ func parseRequest(payload []byte) (input, error) {
 		return input{}, err
 	}
 	var policyVersion string
-	if err := json.Unmarshal(envelope["execution_policy_version"], &policyVersion); err != nil || policyVersion != "backtest-execution-v3" {
-		return input{}, fmt.Errorf("reviewed backtest-execution-v3 policy is required")
+	if err := json.Unmarshal(envelope["execution_policy_version"], &policyVersion); err != nil || (policyVersion != "backtest-execution-v3" && policyVersion != "backtest-execution-v4") {
+		return input{}, fmt.Errorf("reviewed backtest-execution-v3 or v4 policy is required")
 	}
 	var request input
 	decoder := json.NewDecoder(bytes.NewReader(payload))
@@ -252,7 +252,8 @@ func validateRequest(req input) error {
 	newParameters["entry_momentum_rule"] = "positive_new_targets_v1"
 	oldRequest := req.StrategyVersion == "1.1.0" && maps.Equal(req.Parameters, expectedParameters)
 	newRequest := req.StrategyVersion == "1.2.0" && maps.Equal(req.Parameters, newParameters)
-	if req.StrategyID != "trend_momentum_candidate" || !oldRequest && !newRequest || req.ExecutionPolicyVersion != "backtest-execution-v3" || req.TargetGrossExposure != "0.75" || req.MaxNetExposure != "0.75" || req.FinalPolicy != "liquidate" || !maps.Equal(req.Overrides, expectedOverrides) {
+	allowedVersion := req.ExecutionPolicyVersion == "backtest-execution-v3" && (oldRequest || newRequest) || req.ExecutionPolicyVersion == "backtest-execution-v4" && oldRequest
+	if req.StrategyID != "trend_momentum_candidate" || !allowedVersion || req.TargetGrossExposure != "0.75" || req.MaxNetExposure != "0.75" || req.FinalPolicy != "liquidate" || !maps.Equal(req.Overrides, expectedOverrides) {
 		return fmt.Errorf("request differs from frozen exploratory Stage 05 boundary")
 	}
 	return nil

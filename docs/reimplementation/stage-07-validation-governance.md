@@ -92,6 +92,12 @@ as `backtest-execution-v3` and `execution_semantics.no_fill_rule` as
 saved replay settings, and fresh fold configuration must all agree. Candidate
 and baseline no-fills are reported separately.
 
+Stage 05 may also produce exploratory `backtest-execution-v4` comparisons
+under a fixed 10% selected-bar volume cap. Stage 07 rejects those sources
+explicitly: its fold no-fill and capacity attribution currently verifies only
+the v3 zero-volume policy. A new fold verifier and separately versioned
+experiment manifest are required before v4 can enter Stage 07.
+
 The same replay returns final cash and remaining quantity, weighted entry
 price, and unallocated entry fee for each symbol. Stage 07 checks quantities
 against Stage 05 exposure artifacts and values the remaining inventory at the

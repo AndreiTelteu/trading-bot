@@ -15,26 +15,27 @@ type ExecutionTiming string
 type LiquidityPolicy string
 
 const (
-	StrategyBaseline         StrategyMode      = "baseline"
-	StrategyVolSizing        StrategyMode      = "vol_sizing"
-	BacktestModeLegacyStatic BacktestMode      = "legacy_static"
-	BacktestModeDynamicRule  BacktestMode      = "dynamic_universe_rule_rank"
-	BacktestModeDynamicModel BacktestMode      = "dynamic_universe_model_rank"
-	BacktestModePaperReplay  BacktestMode      = "paper_replay"
-	UniverseStatic           UniverseMode      = "static"
-	UniverseDynamicRecompute UniverseMode      = "dynamic_recompute"
-	UniverseDynamicReplay    UniverseMode      = "dynamic_replay"
-	EngineLegacy             EngineMode        = "legacy"
-	EngineShared             EngineMode        = "shared"
-	RunCoverageFailed        RunClassification = "coverage_failed"
-	RunGatingZeroTrades      RunClassification = "gating_zero_trades"
-	RunStrategyZeroTrades    RunClassification = "strategy_zero_trades"
-	RunSuccessfulExecution   RunClassification = "successful_execution"
-	ExecutionNextExecutable  ExecutionTiming   = "next_executable"
-	ExecutionMarketOnClose   ExecutionTiming   = "market_on_close"
-	LiquidityFullFillOHLCV   LiquidityPolicy   = "full_fill_ohlcv"
-	LiquidityVolumeCapped    LiquidityPolicy   = "volume_capped"
-	LiquidityPartialFill     LiquidityPolicy   = "partial_fill"
+	StrategyBaseline          StrategyMode      = "baseline"
+	StrategyVolSizing         StrategyMode      = "vol_sizing"
+	BacktestModeLegacyStatic  BacktestMode      = "legacy_static"
+	BacktestModeDynamicRule   BacktestMode      = "dynamic_universe_rule_rank"
+	BacktestModeDynamicModel  BacktestMode      = "dynamic_universe_model_rank"
+	BacktestModePaperReplay   BacktestMode      = "paper_replay"
+	UniverseStatic            UniverseMode      = "static"
+	UniverseDynamicRecompute  UniverseMode      = "dynamic_recompute"
+	UniverseDynamicReplay     UniverseMode      = "dynamic_replay"
+	EngineLegacy              EngineMode        = "legacy"
+	EngineShared              EngineMode        = "shared"
+	RunCoverageFailed         RunClassification = "coverage_failed"
+	RunGatingZeroTrades       RunClassification = "gating_zero_trades"
+	RunStrategyZeroTrades     RunClassification = "strategy_zero_trades"
+	RunSuccessfulExecution    RunClassification = "successful_execution"
+	ExecutionNextExecutable   ExecutionTiming   = "next_executable"
+	ExecutionSelectedBarClose ExecutionTiming   = "selected_bar_close_after_volume"
+	ExecutionMarketOnClose    ExecutionTiming   = "market_on_close"
+	LiquidityFullFillOHLCV    LiquidityPolicy   = "full_fill_ohlcv"
+	LiquidityVolumeCapped     LiquidityPolicy   = "volume_capped"
+	LiquidityPartialFill      LiquidityPolicy   = "partial_fill"
 )
 
 type BacktestConfig struct {
@@ -130,15 +131,17 @@ type CoveragePolicy struct {
 }
 
 type ExecutionPolicy struct {
-	Version     string                       `json:"version"`
-	Timing      ExecutionTiming              `json:"timing"`
-	Liquidity   LiquidityPolicy              `json:"liquidity"`
-	CostVersion string                       `json:"cost_version"`
-	NoFillRule  string                       `json:"no_fill_rule,omitempty"`
-	Constraints map[string]SymbolConstraints `json:"constraints,omitempty"`
+	Version             string                       `json:"version"`
+	Timing              ExecutionTiming              `json:"timing"`
+	Liquidity           LiquidityPolicy              `json:"liquidity"`
+	MaxParticipationBPS int64                        `json:"max_participation_bps,omitempty"`
+	CostVersion         string                       `json:"cost_version"`
+	NoFillRule          string                       `json:"no_fill_rule,omitempty"`
+	Constraints         map[string]SymbolConstraints `json:"constraints,omitempty"`
 }
 
 const SimulatedNoFillSchemaVersion = "simulated-no-fill-v1"
+const SimulatedCapacityNoFillSchemaVersion = "simulated-no-fill-v2"
 
 // SimulatedNoFill is non-economic evidence for an approved intent whose
 // selected execution window reported no base-volume trades.
@@ -155,10 +158,13 @@ type SimulatedNoFill struct {
 	FilledQuantity         string `json:"filled_quantity"`
 	ReferencePrice         string `json:"reference_price"`
 	SelectedOpenPrice      string `json:"selected_open_price"`
+	SelectedClosePrice     string `json:"selected_close_price,omitempty"`
 	ExecutionPolicyVersion string `json:"execution_policy_version"`
 	DatasetManifestID      string `json:"dataset_manifest_id"`
 	Reason                 string `json:"reason"`
 	LiquidityEvidence      string `json:"liquidity_evidence"`
+	BarVolume              string `json:"bar_volume,omitempty"`
+	CapacityQuantity       string `json:"capacity_quantity,omitempty"`
 }
 
 type SymbolConstraints struct {

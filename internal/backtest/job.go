@@ -271,6 +271,12 @@ func configuredBacktestExecutionPolicy(settings map[string]string, constraints m
 	if policy.Version == "backtest-execution-v3" {
 		policy.NoFillRule = "selected_zero_base_volume_cancel_at_bar_close_v1"
 	}
+	if policy.Version == "backtest-execution-v4" {
+		policy.Timing = ExecutionSelectedBarClose
+		policy.Liquidity = LiquidityVolumeCapped
+		policy.MaxParticipationBPS = 1000
+		policy.NoFillRule = "selected_volume_cap_all_or_none_cancel_v1"
+	}
 	return policy
 }
 

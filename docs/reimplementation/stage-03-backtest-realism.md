@@ -33,6 +33,29 @@ the earlier causal decision mark. Missing, negative, nonfinite or malformed
 execution bars fail instead. The Stage 03 `RunBacktest` engine rejects a v3
 label; its v1/v2 semantics remain unchanged.
 
+`backtest-execution-v4` is a separate exploratory capacity policy. The shared
+strategy and risk decision occurs before the selected execution bar, and the
+simulated order arrives at its open. Its outcome is evaluated **at its close**,
+when reported volume is known. An accepted fill uses that close timestamp and
+close-price reference with the unchanged adverse slippage/fee model. The
+maximum order quantity is 10% of that bar's reported base
+volume, rounded **down** to the point-in-time quantity step. An approved order
+at or below that bound fills under the unchanged fee/slippage model; an order
+above it receives a terminal all-or-none simulated cancel at the selected
+bar's close, with approved quantity, reported volume, executable cap, order ID,
+selected open/close prices, and policy version in `simulated-no-fill-v2`
+non-economic evidence. Zero volume has a zero
+cap. No remainder is carried into a later bar. Final `liquidate` fails if its
+sell cannot execute, while `mark_to_market` retains and marks inventory.
+Missing/malformed bars and unsupported decimal precision fail closed. V1–v3
+remain available with their original semantics and identities. V4 applies
+identically to candidate and baselines in Stage 05, but Stage 07 explicitly
+rejects v4 sources until fold capacity/no-fill attribution is implemented.
+The 10% bound and close-price fill are retrospective OHLCV execution
+approximations, not observed order-book depth, trade sequence, or proof that a
+real order would fill at that price. No completed-bar volume enters strategy
+or risk decisions.
+
 - [x] Apply fees on each fill, not only at trade summary level.
 - [x] Apply deterministic slippage by side and configured bps/model.
 - [x] Define partial-fill and liquidity-cap policy; if unsupported, reject unsupported configurations clearly.

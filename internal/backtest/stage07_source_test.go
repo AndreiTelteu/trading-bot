@@ -91,6 +91,13 @@ func TestStage07SourceBindsV3ExecutionPolicyAndRule(t *testing.T) {
 	}
 }
 
+func TestStage07RejectsV4UntilCapacityEvidenceIsValidated(t *testing.T) {
+	policy := ExecutionPolicy{Version: "backtest-execution-v4", Liquidity: LiquidityVolumeCapped, MaxParticipationBPS: 1000, NoFillRule: "selected_volume_cap_all_or_none_cancel_v1"}
+	if err := stage07SourceExecutionIdentity(policy, policy, policy, map[string]string{"backtest_execution_policy_version": policy.Version}, map[string]string{"execution_policy_version": policy.Version, "no_fill_rule": policy.NoFillRule}); err == nil {
+		t.Fatal("Stage 07 accepted v4 without capacity/no-fill attribution support")
+	}
+}
+
 func TestStage07EconomicPrimitivesRepeatedBuysAndSameTimePartialCloses(t *testing.T) {
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	at := []time.Time{base, base.Add(time.Minute), base.Add(2 * time.Minute), base.Add(3 * time.Minute)}

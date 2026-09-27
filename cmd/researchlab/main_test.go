@@ -107,6 +107,11 @@ func TestValidateRequestRejectsParameterAndOverrideDrift(t *testing.T) {
 	if err := validateRequest(req); err != nil {
 		t.Fatalf("frozen request rejected: %v", err)
 	}
+	req.ExecutionPolicyVersion = "backtest-execution-v4"
+	if err := validateRequest(req); err != nil {
+		t.Fatalf("fixed capacity-policy request rejected: %v", err)
+	}
+	req.ExecutionPolicyVersion = "backtest-execution-v3"
 	req.Parameters["rebalance"] = "24h"
 	if err := validateRequest(req); err == nil {
 		t.Fatal("cadence drift accepted")
@@ -122,6 +127,11 @@ func TestValidateRequestRejectsParameterAndOverrideDrift(t *testing.T) {
 	if err := validateRequest(req); err != nil {
 		t.Fatalf("one-rule exploratory request rejected: %v", err)
 	}
+	req.ExecutionPolicyVersion = "backtest-execution-v4"
+	if err := validateRequest(req); err == nil {
+		t.Fatal("failed positive-entry hypothesis accepted under new capacity policy")
+	}
+	req.ExecutionPolicyVersion = "backtest-execution-v3"
 	delete(req.Parameters, "entry_momentum_rule")
 	if err := validateRequest(req); err == nil {
 		t.Fatal("new request omitted its frozen entry rule")

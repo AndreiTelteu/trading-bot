@@ -176,6 +176,10 @@ func TestStage05V3ReplaySettingsPreserveExplicitPolicy(t *testing.T) {
 		t.Fatal(err)
 	}
 	request.ExecutionPolicyVersion = "backtest-execution-v4"
+	if err := ValidateStage05RunRequest(request); err != nil {
+		t.Fatalf("v4 policy rejected: %v", err)
+	}
+	request.ExecutionPolicyVersion = "backtest-execution-v5"
 	if err := ValidateStage05RunRequest(request); err == nil {
 		t.Fatal("unsupported policy passed API allowlist")
 	}
