@@ -7,11 +7,13 @@ The matched final-marking capacity pair is now complete: v4 job 86 and v3 job
 +3.4099% in v4 and +2.9875% in v3; the relative edge over the matched
 baseline improves by only 0.0464 percentage points. Both are exploratory on
 inspected data. Compact source artifacts omit raw fills and final inventory,
-and Stage 07 still rejects v4. See the
+and the historical Stage 07 driver remains pinned to v3. See the
 [capacity source audit](../research/stage05-v4-capacity-exploratory.md).
 Do not submit more source jobs on this interval. The next implementation task
-is independently verifiable v4 fold capacity and inventory evidence, followed
-by a locked later unseen dataset. Promotion remains fenced.
+is to prepare a separate v4 manifest/driver and fresh, independently audited
+v4 fold sources. The fold verifier now checks accepted fill capacity, canceled
+orders, and reconciled final inventory using point-in-time constraints.
+After that, use a locked later unseen dataset. Promotion remains fenced.
 
 The isolated checkpoint was the separately predeclared
 [Stage 05 v4 capacity experiment](../research/stage05-v4-capacity-exploratory.md):

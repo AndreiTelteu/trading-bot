@@ -650,7 +650,8 @@ func UnmarshalRunManifest(data []byte) (RunManifest, error) {
 	return manifest, nil
 }
 
-func buildBacktestArtifacts(ledger *backtestMemoryLedger, positions map[string]*positionState, states map[string]*symbolState, timeline []int64) BacktestArtifacts {
+func buildBacktestArtifacts(ledger *backtestMemoryLedger, positions map[string]*positionState, states map[string]*symbolState, timeline []int64, policyVersions ...string) BacktestArtifacts {
+	v4 := len(policyVersions) == 1 && policyVersions[0] == "backtest-execution-v4"
 	artifacts := BacktestArtifacts{SchemaVersion: ArtifactSchemaVersion, Decisions: []DecisionArtifact{}, Orders: []OrderArtifact{}, Fills: []FillArtifact{}, Ledger: []LedgerArtifact{}, Exposure: []ExposureArtifact{}}
 	for _, record := range ledger.runRecords {
 		run := record.Result
@@ -670,7 +671,7 @@ func buildBacktestArtifacts(ledger *backtestMemoryLedger, positions map[string]*
 		for _, rejection := range run.Broker.Rejected() {
 			intent := intents[rejection.OrderID.String()]
 			decision := decisionFromIntent(intent, "broker", string(rejection.Code))
-			if rejection.Code == tradingcore.SimulatedNoFillZeroTrades {
+			if rejection.Code == tradingcore.SimulatedNoFillZeroTrades || (v4 && rejection.Code == tradingcore.RejectionCode("simulated_no_fill_volume_cap")) {
 				for _, approved := range run.Risk.Approved().Intents() {
 					if approved.ID == rejection.OrderID {
 						decision.ApprovedQuantity = approved.Quantity.Decimal().String()
@@ -682,7 +683,16 @@ func buildBacktestArtifacts(ledger *backtestMemoryLedger, positions map[string]*
 		}
 		for _, accepted := range run.Broker.Accepted() {
 			intent := intents[accepted.OrderID.String()]
-			artifacts.Decisions = append(artifacts.Decisions, decisionFromIntent(intent, "broker", string(accepted.Status)))
+			decision := decisionFromIntent(intent, "broker", string(accepted.Status))
+			if v4 {
+				for _, approved := range run.Risk.Approved().Intents() {
+					if approved.ID == accepted.OrderID {
+						decision.ApprovedQuantity = approved.Quantity.Decimal().String()
+						break
+					}
+				}
+			}
+			artifacts.Decisions = append(artifacts.Decisions, decision)
 		}
 	}
 	for _, event := range ledger.events {

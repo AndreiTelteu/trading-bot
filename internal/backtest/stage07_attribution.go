@@ -3,6 +3,7 @@ package backtest
 import (
 	"fmt"
 	"math"
+	"math/big"
 	"sort"
 	"strconv"
 	"strings"
@@ -28,7 +29,7 @@ type stage07EndInventory struct {
 	Positions []stage07EndPosition // sorted by symbol for deterministic fold evidence
 }
 
-func stage07EconomicPrimitives(result Stage05StrategyResult, fold int, capital float64, execution map[string][]services.OHLCV) ([]validation.TradePrimitive, []validation.FillPrimitive, stage07EndInventory, error) {
+func stage07EconomicPrimitives(result Stage05StrategyResult, fold int, capital float64, execution map[string][]services.OHLCV, configs ...BacktestConfig) ([]validation.TradePrimitive, []validation.FillPrimitive, stage07EndInventory, error) {
 	type holding struct {
 		quantity, entryPrice, entryFee, entrySlippage float64
 		entryAt                                       time.Time
@@ -42,6 +43,30 @@ func stage07EconomicPrimitives(result Stage05StrategyResult, fold int, capital f
 	turnover, fees, slippage := 0.0, 0.0, 0.0
 	cash := capital
 	lastAt := time.Time{}
+	v4 := result.Manifest.ExecutionPolicy.Version == "backtest-execution-v4"
+	var config BacktestConfig
+	if v4 {
+		if len(configs) != 1 || configs[0].ConstraintResolver == nil {
+			return nil, nil, stage07EndInventory{}, &validation.DiagnosticError{Code: validation.DiagnosticCapacity, Field: "fills", Details: "v4 requires point-in-time constraints for independent capacity verification"}
+		}
+		config = configs[0]
+	}
+	orders := map[string]OrderArtifact{}
+	accepted := map[string]int{}
+	approved := map[string]string{}
+	for _, order := range result.Artifacts.Orders {
+		if v4 && (order.OrderID == "" || order.OrderID != order.IntentID || orders[order.OrderID].OrderID != "") {
+			return nil, nil, stage07EndInventory{}, &validation.DiagnosticError{Code: validation.DiagnosticManifestIntegrity, Field: "orders", Details: "v4 order identity is missing or duplicated"}
+		}
+		orders[order.OrderID] = order
+	}
+	for _, decision := range result.Artifacts.Decisions {
+		if decision.Stage == "broker" && (decision.Code == "filled" || decision.Code == "accepted") {
+			accepted[decision.IntentID]++
+			approved[decision.IntentID] = decision.ApprovedQuantity
+		}
+	}
+	filledOrders := map[string]bool{}
 	for _, fill := range result.Artifacts.Fills {
 		at, timeErr := time.Parse(time.RFC3339Nano, fill.FillAt)
 		quantity, qtyErr := strconv.ParseFloat(fill.Quantity, 64)
@@ -52,12 +77,37 @@ func stage07EconomicPrimitives(result Stage05StrategyResult, fold int, capital f
 			return nil, nil, stage07EndInventory{}, &validation.DiagnosticError{Code: validation.DiagnosticManifestIntegrity, Field: "fills", Details: "missing, duplicated, unordered, or invalid economic fill"}
 		}
 		seen[fill.FillID], lastAt = true, at
-		bar, found := stage07BarAt(execution[fill.Symbol], at)
+		selectedOpen := at
+		if v4 {
+			selectedOpen = at.Add(-time.Minute + time.Millisecond)
+		}
+		bar, found := stage07BarAt(execution[fill.Symbol], selectedOpen)
 		if !found {
 			return nil, nil, stage07EndInventory{}, &validation.DiagnosticError{Code: validation.DiagnosticCapacity, Field: "fills", Details: fmt.Sprintf("execution bar absent for fill %s (%s at %s)", fill.FillID, fill.Symbol, at.UTC().Format(time.RFC3339Nano))}
 		}
 		if !stage07Positive(bar.Volume) {
 			return nil, nil, stage07EndInventory{}, &validation.DiagnosticError{Code: validation.DiagnosticCapacity, Field: "fills", Details: fmt.Sprintf("execution bar has nonpositive volume for fill %s (%s at %s)", fill.FillID, fill.Symbol, at.UTC().Format(time.RFC3339Nano))}
+		}
+		if v4 {
+			order, ok := orders[fill.OrderID]
+			signal, signalErr := time.Parse(time.RFC3339Nano, order.SignalAt)
+			orderAt, orderErr := time.Parse(time.RFC3339Nano, fill.OrderAt)
+			fillQty, qtyOK := new(big.Rat).SetString(fill.Quantity)
+			requested, reqOK := new(big.Rat).SetString(order.Quantity)
+			approvedQty, approvedOK := new(big.Rat).SetString(approved[fill.OrderID])
+			if !ok || filledOrders[fill.OrderID] || accepted[fill.OrderID] != 1 || fill.IntentID != fill.OrderID || order.Symbol != fill.Symbol || order.Side != fill.Side || signalErr != nil || orderErr != nil || !signal.Before(selectedOpen) || !orderAt.Equal(signal) || !qtyOK || !reqOK || !approvedOK || fillQty.Cmp(approvedQty) != 0 || approvedQty.Cmp(requested) > 0 || order.Metadata["execution_event_at"] != canonicalTime(at) || bar.CloseTime != at.UnixMilli() || bar.CloseTime != bar.OpenTime+int64(time.Minute/time.Millisecond)-1 || !stage07Positive(bar.Open) || !stage07Positive(bar.Close) || !stage07Positive(bar.High) || !stage07Positive(bar.Low) || bar.Low > bar.High || bar.Open < bar.Low || bar.Open > bar.High || bar.Close < bar.Low || bar.Close > bar.High || !stage07DecimalMatchesFloat(fill.ExecutionReferencePrice, bar.Close) || fill.CostVersion != result.Manifest.ExecutionPolicy.CostVersion {
+				return nil, nil, stage07EndInventory{}, &validation.DiagnosticError{Code: validation.DiagnosticCapacity, Field: "fills", Details: "v4 fill is not bound to one approved selected-bar-close order"}
+			}
+			lot, tick, _, _, constraintErr := constraintValues(config, fill.Symbol, at)
+			cap, capErr := stage05VolumeCap(bar.Volume, lot)
+			capRat, capOK := new(big.Rat).SetString(cap)
+			if constraintErr != nil || capErr != nil || !capOK || approvedQty.Cmp(capRat) > 0 || fillQty.Cmp(capRat) > 0 {
+				return nil, nil, stage07EndInventory{}, &validation.DiagnosticError{Code: validation.DiagnosticCapacity, Field: "fills", Details: "v4 fill exceeds point-in-time selected-bar capacity"}
+			}
+			if err := stage07VerifyV4FillCosts(fill, bar.Close, tick, config); err != nil {
+				return nil, nil, stage07EndInventory{}, &validation.DiagnosticError{Code: validation.DiagnosticManifestIntegrity, Field: "fills", Details: err.Error()}
+			}
+			filledOrders[fill.OrderID] = true
 		}
 		notional := quantity * price
 		liquidity := bar.Volume * price
@@ -69,7 +119,7 @@ func stage07EconomicPrimitives(result Stage05StrategyResult, fold int, capital f
 		fees += fee
 		slippage += fillSlippage
 		orderID := ""
-		if result.Manifest.ExecutionPolicy.Version == "backtest-execution-v3" {
+		if result.Manifest.ExecutionPolicy.Version == "backtest-execution-v3" || v4 {
 			orderID = fill.OrderID
 		}
 		fills = append(fills, validation.FillPrimitive{ID: fill.FillID, OrderID: orderID, Symbol: fill.Symbol, Side: fill.Side, At: at.UTC(), Notional: notional, AvailableLiquidity: liquidity})
@@ -127,6 +177,67 @@ func stage07EconomicPrimitives(result Stage05StrategyResult, fold int, capital f
 	}
 	sort.Slice(endPositions, func(i, j int) bool { return endPositions[i].Symbol < endPositions[j].Symbol })
 	return trades, fills, stage07EndInventory{Cash: cash, Positions: endPositions}, nil
+}
+
+func stage07VerifyV4FillCosts(fill FillArtifact, close float64, tick string, config BacktestConfig) error {
+	if config.FeeBps < 0 || config.SlippageBps < 0 || config.FeeBps != math.Trunc(config.FeeBps) || config.SlippageBps != math.Trunc(config.SlippageBps) {
+		return fmt.Errorf("v4 cost policy has invalid basis points")
+	}
+	closeText, err := stage05InputDecimal(close)
+	if err != nil {
+		return err
+	}
+	closeRat, _ := new(big.Rat).SetString(closeText)
+	quantity, qtyOK := new(big.Rat).SetString(fill.Quantity)
+	price, priceOK := new(big.Rat).SetString(fill.Price)
+	fee, feeOK := new(big.Rat).SetString(fill.Fee)
+	if !qtyOK || !priceOK || !feeOK || quantity.Sign() <= 0 || price.Sign() <= 0 || fee.Sign() < 0 {
+		return fmt.Errorf("v4 fill has invalid exact price, quantity or fee")
+	}
+	factor := int64(10000 + config.SlippageBps)
+	if fill.Side == "sell" {
+		factor = int64(10000 - config.SlippageBps)
+	}
+	if factor <= 0 {
+		return fmt.Errorf("v4 adverse slippage makes nonpositive price")
+	}
+	expected := stage07RoundRat18(new(big.Rat).Mul(closeRat, big.NewRat(factor, 10000)))
+	if tick != "" {
+		step, ok := new(big.Rat).SetString(tick)
+		if !ok || step.Sign() <= 0 {
+			return fmt.Errorf("v4 point-in-time price tick is invalid")
+		}
+		ratio := new(big.Rat).Quo(expected, step)
+		units := new(big.Int).Quo(ratio.Num(), ratio.Denom())
+		if fill.Side == "buy" && new(big.Rat).SetInt(units).Cmp(ratio) < 0 {
+			units.Add(units, big.NewInt(1))
+		}
+		expected = new(big.Rat).Mul(new(big.Rat).SetInt(units), step)
+		expected = stage07RoundRat18(expected)
+	}
+	if price.Cmp(expected) != 0 {
+		return fmt.Errorf("v4 fill price differs from close, adverse slippage and historical tick")
+	}
+	expectedFee := stage07RoundRat18(new(big.Rat).Mul(new(big.Rat).Mul(quantity, price), big.NewRat(int64(config.FeeBps), 10000)))
+	if fee.Cmp(expectedFee) != 0 {
+		return fmt.Errorf("v4 fill fee differs from historical cost policy")
+	}
+	return nil
+}
+
+func stage07RoundRat18(value *big.Rat) *big.Rat {
+	scale := new(big.Int).Exp(big.NewInt(10), big.NewInt(18), nil)
+	scaled := new(big.Rat).Mul(value, new(big.Rat).SetInt(scale))
+	units := new(big.Int).Quo(scaled.Num(), scaled.Denom())
+	remainder := new(big.Int).Rem(scaled.Num(), scaled.Denom())
+	if new(big.Int).Mul(new(big.Int).Abs(remainder), big.NewInt(2)).Cmp(scaled.Denom()) >= 0 {
+		if value.Sign() < 0 {
+			units.Sub(units, big.NewInt(1))
+		} else {
+			units.Add(units, big.NewInt(1))
+		}
+	}
+	return new(big.Rat).SetFrac(units, scale)
 }
 
 func stage07Positive(v float64) bool    { return !math.IsNaN(v) && !math.IsInf(v, 0) && v > 0 }

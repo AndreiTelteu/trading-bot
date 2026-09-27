@@ -580,7 +580,7 @@ func runStage05StrategyWithPlanner(config BacktestConfig, series map[string][]se
 	endEquity := portfolioEquity(ledger, endMarks)
 	equity = appendEquity(equity, config.End.UTC(), endEquity)
 	states := stage05SymbolStates(allSeries, config.End)
-	artifacts := buildBacktestArtifacts(ledger, ledger.positions, states, nil)
+	artifacts := buildBacktestArtifacts(ledger, ledger.positions, states, nil, config.ExecutionPolicy.Version)
 	artifacts.NoFills = append([]SimulatedNoFill(nil), ledger.noFills...)
 	coverage := CoverageReport{SchemaVersion: CoverageSchemaVersion, PolicyVersion: "stage05-exact-manifest-v1", Passed: true, Diagnostics: []CoverageDiagnostic{{Dataset: "strategy_requirements", Status: "passed"}}}
 	classification := RunStrategyZeroTrades

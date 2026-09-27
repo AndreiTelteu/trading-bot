@@ -47,12 +47,15 @@ the [v4 source](/home/andrei/.bb-machines/192.168.0.115-38886/thread-storage/thr
 and [v3 source](/home/andrei/.bb-machines/192.168.0.115-38886/thread-storage/thr_ig94ijqd28/stage05-v3-mark-job87-source.json)
 remain private. The append-only attempt ledger records both reviewed jobs.
 
-Stop further searches on the inspected 2024–2026 interval. The next technical
-boundary is a versioned Stage 07 verifier for v4 capacity cancels and accepted
-fill participation, with independently inspectable fill and final-inventory
-evidence. Only after that can a separately predeclared, genuinely later unseen
-dataset and single-use holdout test the strategy. No paper/live promotion or
-direct live submission follows from these sources.
+Stop further searches on the inspected 2024–2026 interval. The Stage 07 fresh
+fold verifier now checks v4 capacity cancels and accepted fill participation
+against the selected 1m bar and point-in-time quantity step, and reconciles
+fill-derived cash and final inventory against ledger, exposure, and curve
+evidence. The compact jobs 86/87 remain unchanged and do not contain those
+fresh fold primitives. A separately pinned v4 driver/manifest, fresh audited
+v4 fold sources, and then a predeclared genuinely later unseen dataset are
+still required. No paper/live promotion or direct live submission follows
+from these sources.
 
 ## First source outcome: failed full-liquidation boundary
 

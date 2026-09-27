@@ -91,10 +91,24 @@ func TestStage07SourceBindsV3ExecutionPolicyAndRule(t *testing.T) {
 	}
 }
 
-func TestStage07RejectsV4UntilCapacityEvidenceIsValidated(t *testing.T) {
-	policy := ExecutionPolicy{Version: "backtest-execution-v4", Liquidity: LiquidityVolumeCapped, MaxParticipationBPS: 1000, NoFillRule: "selected_volume_cap_all_or_none_cancel_v1"}
-	if err := stage07SourceExecutionIdentity(policy, policy, policy, map[string]string{"backtest_execution_policy_version": policy.Version}, map[string]string{"execution_policy_version": policy.Version, "no_fill_rule": policy.NoFillRule}); err == nil {
-		t.Fatal("Stage 07 accepted v4 without capacity/no-fill attribution support")
+func TestStage07V4SourceRequiresExactCapacitySemantics(t *testing.T) {
+	policy := ExecutionPolicy{Version: "backtest-execution-v4", Timing: ExecutionSelectedBarClose, Liquidity: LiquidityVolumeCapped, MaxParticipationBPS: 1000, NoFillRule: "selected_volume_cap_all_or_none_cancel_v1"}
+	settings := map[string]string{"backtest_execution_policy_version": policy.Version}
+	semantics := map[string]string{"execution_policy_version": policy.Version, "no_fill_rule": policy.NoFillRule, "timing": string(policy.Timing), "liquidity": string(policy.Liquidity), "max_participation_bps": "1000"}
+	if err := stage07SourceExecutionIdentity(policy, policy, policy, settings, semantics); err != nil {
+		t.Fatalf("complete v4 source rejected: %v", err)
+	}
+	for _, key := range []string{"execution_policy_version", "no_fill_rule", "timing", "liquidity", "max_participation_bps"} {
+		copy := cloneStringMap(semantics)
+		delete(copy, key)
+		if err := stage07SourceExecutionIdentity(policy, policy, policy, settings, copy); err == nil {
+			t.Fatalf("v4 source without %s was accepted", key)
+		}
+	}
+	wrong := policy
+	wrong.MaxParticipationBPS = 1001
+	if err := stage07SourceExecutionIdentity(wrong, wrong, wrong, settings, semantics); err == nil {
+		t.Fatal("modified capacity limit was accepted")
 	}
 }
 

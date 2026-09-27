@@ -143,6 +143,9 @@ func (s Stage07ExperimentSource) Load(manifest validation.ExperimentManifest) ([
 			return nil, nil, &validation.DiagnosticError{Code: validation.DiagnosticInvalidWindowOrder, Details: "source job dataset differs from immutable manifest"}
 		}
 		candidateExecution := candidate.Manifest.ExecutionPolicy.Version
+		if candidateExecution == "backtest-execution-v4" && manifest.Spec.Policies.Execution != candidateExecution {
+			return nil, nil, &validation.DiagnosticError{Code: validation.DiagnosticManifestIntegrity, Details: "v4 experiment policy does not match source execution policy"}
+		}
 		if err := stage07SourceExecutionIdentity(candidate.Manifest.ExecutionPolicy, baseline.Manifest.ExecutionPolicy, comparison.Assumptions.ExecutionPolicy, artifact.ReplaySettings, manifest.Spec.ExecutionSemantics); err != nil || (sourceExecutionVersion != "" && sourceExecutionVersion != candidateExecution) {
 			if err != nil {
 				return nil, nil, err
@@ -275,11 +278,14 @@ func (r *stage07Runner) Test(fold validation.Fold, artifact []byte, test []valid
 		}
 	}
 	if r.source.comparability != nil {
-		return stage07Primitives(candidate, baseline, fold.Index, len(test), r.source.series, r.source.config.ExecutionSeries, *r.source.comparability)
+		return stage07PrimitivesWithConfig(candidate, baseline, fold.Index, len(test), r.source.series, r.source.config.ExecutionSeries, r.source.config, *r.source.comparability)
 	}
-	return stage07Primitives(candidate, baseline, fold.Index, len(test), r.source.series, r.source.config.ExecutionSeries)
+	return stage07PrimitivesWithConfig(candidate, baseline, fold.Index, len(test), r.source.series, r.source.config.ExecutionSeries, r.source.config)
 }
 func stage07Primitives(candidate, baseline Stage05StrategyResult, fold, observations int, series, executionSeries map[string][]services.OHLCV, comparability ...validation.BaselineComparabilityPolicy) (validation.FoldPrimitives, error) {
+	return stage07PrimitivesWithConfig(candidate, baseline, fold, observations, series, executionSeries, BacktestConfig{}, comparability...)
+}
+func stage07PrimitivesWithConfig(candidate, baseline Stage05StrategyResult, fold, observations int, series, executionSeries map[string][]services.OHLCV, config BacktestConfig, comparability ...validation.BaselineComparabilityPolicy) (validation.FoldPrimitives, error) {
 	if !stage07ExecutionPolicyEqual(candidate.Manifest.ExecutionPolicy, baseline.Manifest.ExecutionPolicy) || candidate.Manifest.DatasetManifestID != baseline.Manifest.DatasetManifestID {
 		return validation.FoldPrimitives{}, &validation.DiagnosticError{Code: validation.DiagnosticManifestIntegrity, Field: "fold_source", Details: "candidate and baseline replay have different policy or dataset identities"}
 	}
@@ -309,17 +315,30 @@ func stage07Primitives(candidate, baseline Stage05StrategyResult, fold, observat
 	if len(executionSeries) == 0 {
 		executionSeries = series
 	}
-	trades, fills, inventory, err := stage07EconomicPrimitives(candidate, fold, start, executionSeries)
+	trades, fills, inventory, err := stage07EconomicPrimitives(candidate, fold, start, executionSeries, config)
 	if err != nil {
 		return validation.FoldPrimitives{}, err
 	}
-	noFills, err := stage07NoFillPrimitives(candidate, executionSeries, curve[0].At, curve[len(curve)-1].At)
+	noFills, err := stage07NoFillPrimitives(candidate, executionSeries, curve[0].At, curve[len(curve)-1].At, config)
 	if err != nil {
 		return validation.FoldPrimitives{}, err
 	}
-	baselineNoFills, err := stage07NoFillPrimitives(baseline, executionSeries, baseline.Equity[0].Time, baseline.Equity[len(baseline.Equity)-1].Time)
+	baselineNoFills, err := stage07NoFillPrimitives(baseline, executionSeries, baseline.Equity[0].Time, baseline.Equity[len(baseline.Equity)-1].Time, config)
 	if err != nil {
 		return validation.FoldPrimitives{}, err
+	}
+	if candidate.Manifest.ExecutionPolicy.Version == "backtest-execution-v4" {
+		baselineCapital, parseErr := strconv.ParseFloat(baseline.Metrics.StartingCapital, 64)
+		if parseErr != nil || !stage07Positive(baselineCapital) || !stage07Near(baselineCapital, start) {
+			return validation.FoldPrimitives{}, &validation.DiagnosticError{Code: validation.DiagnosticBaselineMismatch, Field: "starting_capital", Details: "v4 candidate and baseline capital differ"}
+		}
+		_, _, baselineInventory, auditErr := stage07EconomicPrimitives(baseline, fold, baselineCapital, executionSeries, config)
+		if auditErr != nil {
+			return validation.FoldPrimitives{}, auditErr
+		}
+		if _, auditErr := stage07ResidualPrimitives(baseline, baselineInventory, series, baselineCapital); auditErr != nil {
+			return validation.FoldPrimitives{}, auditErr
+		}
 	}
 	residualPositions, err := stage07ResidualPrimitives(candidate, inventory, series, start)
 	if err != nil {
@@ -371,14 +390,14 @@ func stage07SettingsDigest(values map[string]string) string {
 }
 
 func stage07SourceExecutionIdentity(candidate, baseline, comparison ExecutionPolicy, settings, semantics map[string]string) error {
-	if candidate.Version == "backtest-execution-v4" {
-		return &validation.DiagnosticError{Code: validation.DiagnosticManifestIntegrity, Details: "v4 volume-cap evidence is not yet supported by Stage 07 fold validation"}
-	}
 	if !stage07ExecutionPolicyEqual(candidate, baseline) || !stage07ExecutionPolicyEqual(candidate, comparison) {
 		return &validation.DiagnosticError{Code: validation.DiagnosticManifestIntegrity, Details: "source comparison and candidate/baseline execution policies differ"}
 	}
 	if candidate.Version == "backtest-execution-v3" && (candidate.NoFillRule != "selected_zero_base_volume_cancel_at_bar_close_v1" || settings["backtest_execution_policy_version"] != candidate.Version || semantics["execution_policy_version"] != candidate.Version || semantics["no_fill_rule"] != candidate.NoFillRule) {
 		return &validation.DiagnosticError{Code: validation.DiagnosticManifestIntegrity, Details: "v3 source settings or validation manifest do not bind the zero-volume rule"}
+	}
+	if candidate.Version == "backtest-execution-v4" && (candidate.Timing != ExecutionSelectedBarClose || candidate.Liquidity != LiquidityVolumeCapped || candidate.MaxParticipationBPS != 1000 || candidate.NoFillRule != "selected_volume_cap_all_or_none_cancel_v1" || settings["backtest_execution_policy_version"] != candidate.Version || semantics["execution_policy_version"] != candidate.Version || semantics["no_fill_rule"] != candidate.NoFillRule || semantics["timing"] != string(candidate.Timing) || semantics["liquidity"] != string(candidate.Liquidity) || semantics["max_participation_bps"] != "1000") {
+		return &validation.DiagnosticError{Code: validation.DiagnosticManifestIntegrity, Details: "v4 source settings or validation manifest do not bind selected-close capacity semantics"}
 	}
 	return nil
 }

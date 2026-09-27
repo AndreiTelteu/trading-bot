@@ -140,7 +140,7 @@ func validateNoFillSet(values []NoFillPrimitive, filledOrders map[string]struct{
 	seen := make(map[string]struct{}, len(values))
 	previousSignal := time.Time{}
 	for _, rejected := range values {
-		if rejected.SchemaVersion != "simulated-no-fill-v1" || rejected.OrderID == "" || rejected.Symbol == "" || (rejected.Side != "buy" && rejected.Side != "sell") || rejected.SignalAt.IsZero() || !rejected.SelectedOpenAt.After(rejected.SignalAt) || !rejected.EvaluatedAt.After(rejected.SelectedOpenAt) || rejected.ExecutionPolicyVersion != "backtest-execution-v3" || rejected.DatasetManifestID == "" || rejected.Reason != "simulated_no_fill_zero_trades" || rejected.LiquidityEvidence != "zero_base_volume" {
+		if rejected.OrderID == "" || rejected.Symbol == "" || (rejected.Side != "buy" && rejected.Side != "sell") || rejected.SignalAt.IsZero() || !rejected.SelectedOpenAt.After(rejected.SignalAt) || !rejected.EvaluatedAt.After(rejected.SelectedOpenAt) || rejected.DatasetManifestID == "" {
 			return &DiagnosticError{Code: DiagnosticManifestIntegrity, Field: "no_fills", Details: "incomplete simulated no-fill evidence"}
 		}
 		if rejected.SignalAt.Before(curveStart) || rejected.EvaluatedAt.After(curveEnd) || (!previousSignal.IsZero() && rejected.SignalAt.Before(previousSignal)) || !rejected.SelectedOpenAt.Equal(rejected.SelectedOpenAt.UTC().Truncate(time.Minute)) || !rejected.EvaluatedAt.Equal(rejected.SelectedOpenAt.Add(time.Minute-time.Millisecond)) {
@@ -153,6 +153,24 @@ func validateNoFillSet(values []NoFillPrimitive, filledOrders map[string]struct{
 		open, openOK := new(big.Rat).SetString(rejected.SelectedOpenPrice)
 		if !reqOK || !appOK || !fillOK || !refOK || !openOK || requested.Sign() <= 0 || approved.Sign() <= 0 || approved.Cmp(requested) > 0 || filled.Sign() != 0 || reference.Sign() <= 0 || open.Sign() <= 0 {
 			return &DiagnosticError{Code: DiagnosticManifestIntegrity, Field: "no_fills", Details: "no-fill quantity or price is invalid"}
+		}
+		switch rejected.ExecutionPolicyVersion {
+		case "backtest-execution-v3":
+			if rejected.SchemaVersion != "simulated-no-fill-v1" || rejected.Reason != "simulated_no_fill_zero_trades" || rejected.LiquidityEvidence != "zero_base_volume" || rejected.SelectedClosePrice != "" || rejected.BarVolume != "" || rejected.CapacityQuantity != "" {
+				return &DiagnosticError{Code: DiagnosticManifestIntegrity, Field: "no_fills", Details: "v3 no-fill policy or evidence differs"}
+			}
+		case "backtest-execution-v4":
+			if rejected.SchemaVersion != "simulated-no-fill-v2" || rejected.Reason != "simulated_no_fill_volume_cap" || rejected.LiquidityEvidence != "selected_bar_base_volume_10pct" {
+				return &DiagnosticError{Code: DiagnosticManifestIntegrity, Field: "no_fills", Details: "v4 capacity no-fill policy differs"}
+			}
+			closePrice, closeOK := new(big.Rat).SetString(rejected.SelectedClosePrice)
+			volume, volumeOK := new(big.Rat).SetString(rejected.BarVolume)
+			capacity, capacityOK := new(big.Rat).SetString(rejected.CapacityQuantity)
+			if !closeOK || !volumeOK || !capacityOK || closePrice.Sign() <= 0 || volume.Sign() < 0 || capacity.Sign() < 0 || capacity.Cmp(new(big.Rat).Quo(volume, big.NewRat(10, 1))) > 0 || approved.Cmp(capacity) <= 0 {
+				return &DiagnosticError{Code: DiagnosticManifestIntegrity, Field: "no_fills", Details: "v4 no-fill price, volume or capacity is invalid"}
+			}
+		default:
+			return &DiagnosticError{Code: DiagnosticManifestIntegrity, Field: "no_fills", Details: "unsupported no-fill execution policy"}
 		}
 		if _, duplicate := seen[rejected.OrderID]; duplicate {
 			return &DiagnosticError{Code: DiagnosticManifestIntegrity, Field: "no_fills", Details: "duplicate no-fill order"}

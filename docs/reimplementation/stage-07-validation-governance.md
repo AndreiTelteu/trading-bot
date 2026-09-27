@@ -93,10 +93,21 @@ saved replay settings, and fresh fold configuration must all agree. Candidate
 and baseline no-fills are reported separately.
 
 Stage 05 may also produce exploratory `backtest-execution-v4` comparisons
-under a fixed 10% selected-bar volume cap. Stage 07 rejects those sources
-explicitly: its fold no-fill and capacity attribution currently verifies only
-the v3 zero-volume policy. A new fold verifier and separately versioned
-experiment manifest are required before v4 can enter Stage 07.
+under a fixed 10% selected-bar volume cap. The fresh Stage 07 fold verifier
+binds every v4 fill to its approved order and selected 1m bar close, checks
+the close reference and costs, and recomputes the 10% cap using the historical
+quantity step at that close. It also requires one-to-one v4 cancellation
+evidence with zero economic effects and the same recomputed cap. Final cash
+and inventory still reconcile through the fill, ledger, exposure, and curve
+checks above. The immutable experiment semantics must declare selected-close
+timing, volume-capped liquidity, 1000 participation basis points, and the
+all-or-none cancellation rule. The historical `cmd/researchlab` Stage 07
+driver remains pinned to v3 sources; a separate v4 driver/manifest and fresh
+audited v4 fold sources are required before running a v4 experiment. Earlier
+v4 Stage 05 source artifacts are exploratory provenance, not Stage 07 folds.
+The verifier has synthetic and fresh Stage 05 replay regressions, including
+tampered cost/capacity evidence; an end-to-end manifest-backed PostgreSQL v4
+fold has not yet been exercised and remains a required admission check.
 
 The same replay returns final cash and remaining quantity, weighted entry
 price, and unallocated entry fee for each symbol. Stage 07 checks quantities

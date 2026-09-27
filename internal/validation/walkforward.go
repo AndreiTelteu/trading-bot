@@ -186,10 +186,13 @@ type NoFillPrimitive struct {
 	FilledQuantity         string    `json:"filled_quantity"`
 	ReferencePrice         string    `json:"reference_price"`
 	SelectedOpenPrice      string    `json:"selected_open_price"`
+	SelectedClosePrice     string    `json:"selected_close_price,omitempty"`
 	ExecutionPolicyVersion string    `json:"execution_policy_version"`
 	DatasetManifestID      string    `json:"dataset_manifest_id"`
 	Reason                 string    `json:"reason"`
 	LiquidityEvidence      string    `json:"liquidity_evidence"`
+	BarVolume              string    `json:"bar_volume,omitempty"`
+	CapacityQuantity       string    `json:"capacity_quantity,omitempty"`
 }
 
 type CurvePrimitive struct {
