@@ -116,6 +116,13 @@ previous fold evidence must retain its original revision and digest.
 - [x] Report a conservative deflated-Sharpe-style multiple-testing adjustment
   based on the predeclared tuning-space size. It is a screening gate, not a
   claim of a fully specified probability of backtest overfitting.
+- [x] Sum absolute trade and symbol contributions in sorted key order when
+  deriving domination fractions. Repeated evaluation of identical validated
+  folds now produces identical canonical aggregate JSON without rounding or
+  relaxing the evidence comparison or domination thresholds. This changes the
+  validation executable identity; prior source/evidence revisions cannot be
+  relabeled. The earlier process failure retained no fold aggregate, so its
+  exact differing field cannot be established from immutable evidence.
 
 ## Governance
 

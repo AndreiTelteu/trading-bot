@@ -438,9 +438,14 @@ func largestFraction(values []float64) float64 {
 	return safeFraction(max, sum)
 }
 func absMapSum(values map[string]float64) float64 {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
 	total := 0.0
-	for _, v := range values {
-		total += math.Abs(v)
+	for _, key := range keys {
+		total += math.Abs(values[key])
 	}
 	return total
 }
