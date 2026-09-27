@@ -1,5 +1,59 @@
 # Stage 05 v4 capacity checkpoint
 
+## Matched-marking source result (2026-09-27)
+
+The predeclared pair completed on the isolated clone under clean revision
+`97a7f1d2dc7c604061ef52779bf326086c1b4bd9`: job **86** used v4 and
+job **87** used v3. Both used dataset manifest
+`32fe7e3664ab9d1a14c7cff30c0db6dc673f37ca0eea0479ed9cd812011ec9bc`,
+candidate `1.1.0`, identical candidate and matched-baseline configuration and
+implementation digests, the same costs/exposure/interval, and
+`mark_to_market` final policy. All non-execution normalized assumptions match.
+Both candidate and matched baseline have nonzero fills and reconciled metrics.
+The comparison digests are
+`55481cacb9cfdf70e55d2925f4c653c88ba57177396b674c2ca98921d8909dbe`
+(v4) and `d0d2cb041e170a2f28f6d17051a49ad160e2a18e98e8161f1cb7afeafa1f5c0e`
+(v3).
+
+| Strategy / policy | After-cost return | Fills | Closed trades | Total costs | No-fills | Average gross exposure |
+|---|---:|---:|---:|---:|---:|---:|
+| Candidate 1.1.0 / v4 | +3.4099% | 587 | 282 | 90.2810 | 4 | 0.10228 |
+| Candidate 1.1.0 / v3 | +2.9875% | 588 | 282 | 67.1449 | 2 | 0.10240 |
+| Matched baseline 1.0.0 / v4 | +1.2642% | 587 | 280 | 89.2638 | 3 | 0.10128 |
+| Matched baseline 1.0.0 / v3 | +0.8882% | 588 | 280 | 66.3980 | 2 | 0.10144 |
+
+V4's candidate return is 0.4224 percentage points above v3, while its
+matched baseline is 0.3760 points above v3. Candidate excess over the matched
+baseline is 2.1457 points in v4 versus 2.0993 in v3: the difference is only
+**0.0464 points**. Candidate costs rise by 23.1361 capital units in v4. This
+is an observed exploratory sensitivity to a policy that changes **both** the
+bar-volume cap and accepted fill time/price; it is not evidence that the cap
+improves strategy quality. Neither job used a new holdout. The persisted Stage
+05 screening gate reports `optimization_allowed=true`, but promotion remains
+false, Stage 07 does not admit v4, and prior Stage 07 statistical gates remain
+failed for their historical policy.
+
+All 115 v4 no-fill records across the seven rows are versioned v2 capacity
+cancels: each has approved quantity above its recorded cap, zero filled
+quantity, and cap at most 10% of its recorded base volume. The retained compact
+source artifacts omit raw fill and final-inventory primitives. Thus this audit
+cannot independently verify **every accepted fill's** bar participation or
+reconstruct ending inventory from the persisted source alone. The shared
+broker path and synthetic regressions enforce the cap in code, but that is not
+a substitute for independent economic evidence. The private
+[pair audit](/home/andrei/.bb-machines/192.168.0.115-38886/thread-storage/thr_ig94ijqd28/stage05-v3-v4-mark-pair-audit.json)
+has SHA-256 `f209f557058ece6fb866f364d14ebdb3fcb8eb3e464777d6f0b18b38476fab1b`;
+the [v4 source](/home/andrei/.bb-machines/192.168.0.115-38886/thread-storage/thr_ig94ijqd28/stage05-v4-mark-job86-source.json)
+and [v3 source](/home/andrei/.bb-machines/192.168.0.115-38886/thread-storage/thr_ig94ijqd28/stage05-v3-mark-job87-source.json)
+remain private. The append-only attempt ledger records both reviewed jobs.
+
+Stop further searches on the inspected 2024–2026 interval. The next technical
+boundary is a versioned Stage 07 verifier for v4 capacity cancels and accepted
+fill participation, with independently inspectable fill and final-inventory
+evidence. Only after that can a separately predeclared, genuinely later unseen
+dataset and single-use holdout test the strategy. No paper/live promotion or
+direct live submission follows from these sources.
+
 ## First source outcome: failed full-liquidation boundary
 
 The single predeclared `liquidate` source ran as clone job **85** under clean

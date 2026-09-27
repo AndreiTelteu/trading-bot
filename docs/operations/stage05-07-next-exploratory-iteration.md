@@ -2,12 +2,23 @@
 
 ## Current checkpoint: positive-entry hypothesis stopped after one source
 
-The next isolated checkpoint is the separately predeclared
+The matched final-marking capacity pair is now complete: v4 job 86 and v3 job
+87 share the non-execution assumptions and reconcile. Candidate return is
++3.4099% in v4 and +2.9875% in v3; the relative edge over the matched
+baseline improves by only 0.0464 percentage points. Both are exploratory on
+inspected data. Compact source artifacts omit raw fills and final inventory,
+and Stage 07 still rejects v4. See the
+[capacity source audit](../research/stage05-v4-capacity-exploratory.md).
+Do not submit more source jobs on this interval. The next implementation task
+is independently verifiable v4 fold capacity and inventory evidence, followed
+by a locked later unseen dataset. Promotion remains fenced.
+
+The isolated checkpoint was the separately predeclared
 [Stage 05 v4 capacity experiment](../research/stage05-v4-capacity-exploratory.md):
 its first `liquidate` source, job 85, failed at a capped equal-weight final
-sell, with no comparison artifact. The distinct follow-on boundary uses
-`mark_to_market` for both v4 and v3, at most one source each and only if the
-v4 source completes first. Candidate 1.1.0, the fixed 10% selected-bar cap,
+sell, with no comparison artifact. The distinct follow-on boundary used
+`mark_to_market` for both v4 and v3, one source each after v4 completed.
+Candidate 1.1.0, the fixed 10% selected-bar cap,
 dataset, costs, exposure, and all strategy parameters remain pinned. This is
 an exploratory execution-policy comparison, not a strategy retry or Stage 07
 source admission. The historical Stage 07 driver remains v3-only.
