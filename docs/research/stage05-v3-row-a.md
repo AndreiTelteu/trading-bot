@@ -94,7 +94,7 @@ gap was repaired in committed checkpoint
 `149747021a7e40bf76c0a9c295466470e2770618`; no threshold was relaxed and
 the failed experiment remains immutable.
 
-### Matched-baseline repair checkpoint and pending source repeat
+### Matched-baseline repair checkpoint and source repeats
 
 The repair records below-minimum post-fill mandatory-exit dust for the matched
 baseline under the same rule already used by candidate 1.1.0. The new baseline
@@ -106,13 +106,13 @@ old exploratory test windows and passed primitive integrity checks. It skipped
 training, selection, and validation registration, so it cannot replace fresh
 source evidence or establish Stage 07 gates.
 
-Fresh source jobs #75 and #76 at `1497470` have exactly equal retained exports,
+Fresh source jobs #75, #76, and #77 at `1497470` have exactly equal retained exports,
 canonical comparison digest
 `d4bc2aee9387f5377d0954686af8efdf74a467c75dfe6cbc2605994f3ddebc4b`,
 and canonical compact-source digest
 `860f68bf0e1befff3c2c1f30ba926fc050439bae92cfa2c4ac303001f45c65ff`.
-The third exact repeat and its audit are pending. No Stage 07 preparation or
-execution has occurred from this checkpoint. Both failed experiments
+All three source slots are consumed. The subsequent Stage 07 process failure
+is recorded below. Both earlier immutable failed experiments
 `2c1ab23be00a734b6f53224b7a65f79725e88dc63ed91a71a6fb6064a92dcc63`
 and `4cceee430468b9515c60033e1ca5edac0ab46289a47761e9d9ece441918264b4`
 remain in the research lineage; a future attempt needs a new idempotency key.
@@ -141,6 +141,43 @@ and binary were removed and the dedicated checkout remained clean. Selected
 clone metadata counts were unchanged, which is not a full database fingerprint.
 Fresh authoritative sources and a new reviewed exploratory attempt remain
 necessary under the declared residual-repair budget.
+
+### Third Stage 07 attempt: aggregate reproduction and unfinished record
+
+Experiment `a8f62251ce99914384d5e5a0edd747dc1053b7a4ea9d379bae5d2cb15c404931`
+used clean driver `c56e924f72898570b81f14eb1c87194a5df0f5f1`, sources 75–77,
+and reviewed plan SHA-256
+`49593d7aabdeee562f6b559b7333640bcc039c5d88bb794c4f06cd015ea434dc`.
+The process exited 1 with `manifest_integrity_failure: aggregate metrics do
+not reproduce from immutable folds`. The private ledger records failure,
+but the database experiment remains **registered and unfinished**: one
+research attempt, zero fold evidence, zero final evidence, and zero research
+outcomes. This is not an immutable failed outcome. No retry or retrospective
+outcome repair has been performed.
+
+The repository compares derived fold metrics and the aggregate before its
+write transaction. No aggregate or fold primitives were retained, so the
+actual differing aggregate fields and statistical gate results are unknown.
+Private process-failure audit SHA-256:
+`aecbe4062353db80fdaac2442061776236313c061e6f5629e429cb57406fa578`.
+The attempt belongs to the same v3 family as its predecessors, not an
+independent research family.
+
+A pure regression subsequently reproduced last-bit differences in trade and
+symbol domination fractions from unordered floating-point map reductions.
+Sorted-key summation removes that mechanism without rounding or relaxing
+thresholds. This does not establish the precise field that differed in the
+real attempt. A separate persistence repair records typed prewrite result
+validation failures as failed outcomes, preserves the original error if that
+write fails, and refuses replay of completed outcomes before source loading.
+Operational database and immutable-content errors do not trigger fallback.
+Neither repair changes the existing unfinished record.
+
+Both repairs change validation executable identity. Existing sources cannot
+be relabeled, and the driver's source-to-driver path allowlist remains strict.
+No additional sources, B/C sensitivity runs, holdout, or Stage 07 retries are
+authorized by this report. Next is comprehensive integrity verification under
+a reviewed committed repair before any further bounded research submission.
 
 ### Original checkpoint: jobs 66–68 failed reproduction
 
