@@ -62,6 +62,35 @@ provenance explicitly under a different executable revision. This diagnostic
 does not establish validation/test outcomes or replace authoritative evidence.
 Fresh sources are required under the bounded boundary-repair program.
 
+### Boundary-repair sources and second Stage 07 attempt
+
+Sources 72–74 at `7e8eadb` produced byte-identical retained comparison and
+compact source exports. Their canonical source digest is
+`d73087603cc8158756670939208fe9e51bf2418e5420d854c774236ae1edab3a`;
+the comparison digest remains `8967b6cf813206cdf2095a7aade61795a91449b3addc8bda4b89ccbf84f44cd0`.
+During source 74, its shared checkout changed after job submission; only
+driver/documentation files changed and the already-compiled process continued.
+Exact build/precheck timestamps were not retained. The audit preserves this
+provenance limitation and a hash-linked correction; subsequent execution
+uses a dedicated lab-owned checkout.
+
+The next reviewed exploratory experiment,
+`4cceee430468b9515c60033e1ca5edac0ab46289a47761e9d9ece441918264b4`,
+used clean driver `46fe2e1e0e8fa485fdd4a478ba5a4868677b9dc4` and plan digest
+`69303ad9a2f23267a91ade23ea585a7d72f06d3a511636cac5e75121386a27f0`.
+It failed with `achieved_allocation_out_of_bounds` for the matched baseline:
+`achieved=0.000088288074822941 target=0 tolerance=0.02`.
+Failed evidence digest:
+`17e83693dc6fb775081eee7e05d5adb1be46e7e31d6ecdd92fb86a80305201d3`.
+
+The call path identifies baseline test replay, after fitting/selection and
+the failing fold's candidate replay. The fold index, symbol, and timestamp
+are not present in the diagnostic. Fold results persist only after the
+whole walk-forward succeeds; zero persisted folds therefore does not locate
+the failure or establish that earlier tests failed. No paired statistics or
+promotion-gate outcomes are available. Residual-allocation investigation is
+pending; no threshold relaxation or retry is authorized.
+
 ### Original checkpoint: jobs 66–68 failed reproduction
 
 The first provenance repeat, job **67**, completed but did **not** reproduce
