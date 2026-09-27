@@ -1,6 +1,39 @@
 # Stage 05/07 next exploratory iteration (predeclared, 2026-09-26)
 
-## Stage 07 clone driver checkpoint (2026-09-27)
+## Current status: validation repair and bounded source renewal
+
+Sources 75–77 matched exactly. Their Stage 07 attempt `a8f62251...` exited
+with an aggregate-reproduction error before evidence persistence and remains
+registered/unfinished, with no immutable outcome. Preserve that distinction
+and lineage; do not repair it retrospectively or reuse its idempotency key.
+Checkpoint `65e565d9f77a7bb0c5ceade5c169902a97485791` makes aggregate reductions
+deterministic and records typed prewrite integrity failures through the existing
+failed-outcome transaction. Serial PostgreSQL regressions passed.
+
+One private read-only full `RunWalkForward` plus the exact prewrite validator
+passed for all three folds at that checkpoint. It used source 75 solely as
+historical configuration/data provenance and a temporary diagnostic bridge.
+The earlier invocation failed at compilation before any replay; a replacement
+completed with exit 0. Audit SHA-256:
+`c2b7acdc343f76e27fb18985bd50b715a3e77ef86a76e7abdbfcbc08b80be753`.
+Temporary files were removed; the checkout was clean and selected clone
+counts unchanged. No authoritative source loader, registration, persistence,
+holdout, or promotion evidence was exercised. Evaluation ran internally;
+performance and statistical gate values were not reported or used for tuning.
+
+Declare at most **three new row-A sources** under the committed validation
+repair checkpoint, with unchanged frozen request, dataset, interval, and costs.
+Audit the first before authorizing the second, and exact digest/retained-byte
+matching before the third. Stop on error or mismatch, no automatic retries.
+The cumulative source cap becomes **seventeen since job 66**, including the
+two still-unused B/C slots; technical repeats are not new hypotheses or
+independent observations. Initially authorize only the first source. No Stage
+07 prepare/run until all three audits pass and a new driver pin and exact plan
+are reviewed. Keep source-to-driver path restrictions and all statistical gates.
+The driver pins described below remain historical and blocked for the new
+validation code until explicitly updated from audited fresh artifacts.
+
+## Historical Stage 07 clone driver checkpoint (2026-09-27)
 
 `cmd/researchlab` has an explicit `-stage07-mode prepare|run` path for one **new
 exploratory** validation manifest. Source identity is now pinned to reviewed
@@ -432,11 +465,10 @@ and full family lineage. The cumulative cap is fourteen sources since job 66,
 including the two still-unused B/C slots. This is technical repair accounting,
 not new independent statistical evidence or permission to tune on test windows.
 
-Fresh source jobs #75 and #76 at the repaired checkpoint match exactly on
-canonical comparison/source digests and retained exports. The third exact
-repeat is still pending. Do not prepare Stage 07 until its audit matches and
-the new private plan, source references, family lineage, and fresh idempotency
-key are separately reviewed. The new driver refuses sources #74 and below and
+Fresh source jobs #75–77 matched exactly on canonical comparison/source
+digests and retained exports. The subsequent aggregate-reproduction failure
+and superseding validation repair program are recorded at the top of this
+runbook. The new driver refuses sources #74 and below and
 both prior failed-plan keys. B/C remain unsubmitted; these technical repeats
 are not independent statistical observations or new parameter hypotheses.
 

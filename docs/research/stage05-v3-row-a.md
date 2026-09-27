@@ -270,3 +270,19 @@ research optimization allowed and promotion blocked pending Stage 07.
 Next: freeze the repaired revision and run the bounded technical reproduction
 program before any exploratory Stage 07 manifest. See the
 [bounded program](../operations/stage05-07-next-exploratory-iteration.md).
+
+## Full validation-repair diagnostic (2026-09-27)
+
+A private instrumented diagnostic at `65e565d9f77a7bb0c5ceade5c169902a97485791`
+completed full `RunWalkForward` and the exact pure prewrite validator for all
+three folds, exit 0 (1569.96 seconds). It used source 75 as historical config/data
+provenance only. Evaluation ran internally; no performance or statistical gate
+values were reported or used for selection. This does not replace authoritative
+source loading, fresh-source reproduction, or transactional evidence storage.
+Audit SHA-256: `c2b7acdc343f76e27fb18985bd50b715a3e77ef86a76e7abdbfcbc08b80be753`.
+Log SHA-256: `e0c90559bbb5975db62d76140b64619d0026245ce74adbfd12bcf6e833c5b8c5`.
+The first invocation stopped at compilation because the reduced PATH omitted
+GCC; it ran no test/replay. That failure is retained separately. Temporary
+files were removed after the replacement invocation, the dedicated checkout
+was clean, and selected clone counts were unchanged. The unfinished a8 record
+is untouched. The runbook declares the next bounded source renewal separately.
