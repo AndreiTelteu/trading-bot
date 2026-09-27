@@ -253,7 +253,8 @@ func validateRequest(req input) error {
 	oldRequest := req.StrategyVersion == "1.1.0" && maps.Equal(req.Parameters, expectedParameters)
 	newRequest := req.StrategyVersion == "1.2.0" && maps.Equal(req.Parameters, newParameters)
 	allowedVersion := req.ExecutionPolicyVersion == "backtest-execution-v3" && (oldRequest || newRequest) || req.ExecutionPolicyVersion == "backtest-execution-v4" && oldRequest
-	if req.StrategyID != "trend_momentum_candidate" || !allowedVersion || req.TargetGrossExposure != "0.75" || req.MaxNetExposure != "0.75" || req.FinalPolicy != "liquidate" || !maps.Equal(req.Overrides, expectedOverrides) {
+	allowedFinalPolicy := req.FinalPolicy == "liquidate" || oldRequest && req.FinalPolicy == "mark_to_market"
+	if req.StrategyID != "trend_momentum_candidate" || !allowedVersion || !allowedFinalPolicy || req.TargetGrossExposure != "0.75" || req.MaxNetExposure != "0.75" || !maps.Equal(req.Overrides, expectedOverrides) {
 		return fmt.Errorf("request differs from frozen exploratory Stage 05 boundary")
 	}
 	return nil

@@ -111,6 +111,15 @@ func TestValidateRequestRejectsParameterAndOverrideDrift(t *testing.T) {
 	if err := validateRequest(req); err != nil {
 		t.Fatalf("fixed capacity-policy request rejected: %v", err)
 	}
+	req.FinalPolicy = "mark_to_market"
+	if err := validateRequest(req); err != nil {
+		t.Fatalf("matched capacity mark-to-market request rejected: %v", err)
+	}
+	req.ExecutionPolicyVersion = "backtest-execution-v3"
+	if err := validateRequest(req); err != nil {
+		t.Fatalf("matched v3 mark-to-market request rejected: %v", err)
+	}
+	req.FinalPolicy = "liquidate"
 	req.ExecutionPolicyVersion = "backtest-execution-v3"
 	req.Parameters["rebalance"] = "24h"
 	if err := validateRequest(req); err == nil {
