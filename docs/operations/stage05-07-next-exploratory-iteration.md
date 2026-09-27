@@ -19,6 +19,13 @@ one bounded positive-raw-momentum entry hypothesis for an exploratory next
 version. Preserve failed gates and full research lineage; do not reuse or
 relabel historical data as confirmatory.
 
+Candidate `1.2.0` and matched baseline `1.1.0` contain the single fixed
+positive-new-target-momentum hypothesis described in the diagnostic. Their
+code and synthetic checks are preparation, not new Stage 05/07 evidence. The
+read-only fold audit also found a v3 full fill above 100% of the selected
+minute's reported volume. A new economic replay must remain explicitly
+exploratory and cannot claim executable capacity under that optimistic model.
+
 ## Prior status: compact evidence repair and bounded source renewal
 
 The driver is now repinned to committed compact-evidence source checkpoint

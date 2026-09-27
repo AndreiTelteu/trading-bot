@@ -468,6 +468,22 @@ func newDefaultStrategyRegistry() *StrategyRegistry {
 	candidateV11.Version = "1.1.0"
 	candidateV11.Description += " Mandatory exits retain only explicitly evidenced exchange dust."
 	definitions = append(definitions, candidateV11)
+	candidateV12 := cloneStrategyDescriptor(candidateV11)
+	candidateV12.Version = "1.2.0"
+	candidateV12.Description += " New long targets require strictly positive raw completed-bar momentum."
+	candidateV12.AblationVariants = nil
+	for i := range candidateV12.Parameters {
+		switch candidateV12.Parameters[i].Name {
+		case "variant":
+			candidateV12.Parameters[i].Default = "combined"
+			candidateV12.Parameters[i].Enum = []string{"combined"}
+		case "vol_normalization":
+			candidateV12.Parameters[i].Default = "true"
+			candidateV12.Parameters[i].Enum = []string{"true"}
+		}
+	}
+	candidateV12.Parameters = append(candidateV12.Parameters, StrategyParameterSpec{Name: "entry_momentum_rule", Type: "enum", Description: "Fixed positive raw momentum eligibility for new long targets.", Default: "positive_new_targets_v1", Enum: []string{"positive_new_targets_v1"}})
+	definitions = append(definitions, candidateV12)
 	matched := cloneStrategyDescriptor(candidateV11)
 	matched.ID = StrategyMatchedMomentumID
 	matched.Version = "1.0.0"
@@ -488,6 +504,11 @@ func newDefaultStrategyRegistry() *StrategyRegistry {
 		}
 	}
 	definitions = append(definitions, matched)
+	matchedV11 := cloneStrategyDescriptor(matched)
+	matchedV11.Version = "1.1.0"
+	matchedV11.Description += " New long targets require strictly positive raw completed-bar momentum."
+	matchedV11.Parameters = append(matchedV11.Parameters, StrategyParameterSpec{Name: "entry_momentum_rule", Type: "enum", Description: "Fixed positive raw momentum eligibility for new long targets.", Default: "positive_new_targets_v1", Enum: []string{"positive_new_targets_v1"}})
+	definitions = append(definitions, matchedV11)
 	for _, descriptor := range definitions {
 		if descriptor.ID == StrategyEqualWeightID || descriptor.ID == StrategyMomentumID {
 			descriptor.Parameters = append(descriptor.Parameters, StrategyParameterSpec{Name: "include_shortlist", Type: "enum", Description: "Whether persisted shortlist members join active members in the tradable baseline universe.", Default: "true", Enum: []string{"false", "true"}})

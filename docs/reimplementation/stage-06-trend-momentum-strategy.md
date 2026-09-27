@@ -123,6 +123,32 @@ Parity, future-data counterexample, concurrent-read race, and cache-identity
 tests protect this optimization. It changes implementation identity but must
 not change decisions, fills, costs, or metrics for identical inputs.
 
+### Exploratory positive-entry-momentum version
+
+`trend_momentum_candidate@1.2.0` adds one fixed rule: a symbol with zero or
+negative raw completed-20-bar momentum cannot become a new long target. An
+already-held symbol keeps the prior absolute-trend, rank, regime, and risk-stop
+exit rules; the new entry rule alone does not force its liquidation. The
+corresponding `matched_momentum_baseline@1.1.0` applies the same eligibility
+rule while retaining its raw-momentum, equal-weight comparison. Both versions
+retain the candidate 1.1/old matched baseline's evidenced mandatory-exit dust
+handling, but have new implementation and configuration identities. Their
+`entry_momentum_rule` is fixed to `positive_new_targets_v1` and cannot be
+turned off through the strategy parameter surface. Historical versions keep
+their previous decisions for the same inputs; immutable historical artifact
+digests remain attached to their original code revision. Rebuilding the
+shared planner changes the current implementation digest even for an old
+version, so new Stage 07 sources must be generated under one committed code
+revision and old source jobs cannot be relabeled. The new candidate comparison
+does not launch the old four-row sensitivity grid, because those rows
+implement the old hypothesis and do not test this single new rule.
+
+The rule is research-only. Its implementation does not establish Stage 05/07
+economic performance, baseline exposure/turnover comparability on real data,
+capacity, or promotion eligibility. See the
+[read-only fold diagnostic](../research/stage07-negative-window-diagnostic.md)
+for the predeclared hypothesis and observed entry/capacity limitations.
+
 ## Completion evidence
 
 - Initial implementation commit: `d1a45a6`.

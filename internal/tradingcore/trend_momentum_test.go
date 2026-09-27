@@ -49,6 +49,47 @@ func TestTrendMomentumWeightAllocationStableAcrossRepeatedPlans(t *testing.T) {
 	}
 }
 
+func TestPositiveEntryMomentumRuleKeepsExistingExitSemantics(t *testing.T) {
+	input := trendMomentumInputFixture(t, "AAAUSDT")
+	input.DecisionAt = input.Benchmark[len(input.Benchmark)-1].CloseTime
+	asset := append([]tradingcore.TrendMomentumBar(nil), input.Series["AAAUSDT"]...)
+	for i := range asset {
+		bucket := i / 16
+		asset[i].Close = 80
+		if bucket == 10 {
+			asset[i].Close = 100
+		} else if bucket == 30 {
+			asset[i].Close = 90
+		}
+	}
+	input.Series["AAAUSDT"] = asset
+	legacy, err := tradingcore.PlanTrendMomentum(input)
+	if err != nil || len(legacy.Targets) != 1 {
+		t.Fatalf("legacy negative-momentum absolute-trend selection: plan=%+v err=%v", legacy, err)
+	}
+	input.Parameters["entry_momentum_rule"] = "positive_new_targets_v1"
+	filtered, err := tradingcore.PlanTrendMomentum(input)
+	if err != nil || len(filtered.Targets) != 0 || len(filtered.Exits) != 0 {
+		t.Fatalf("new entry was not excluded: plan=%+v err=%v", filtered, err)
+	}
+	input.Positions = []tradingcore.TrendMomentumPosition{{Symbol: "AAAUSDT", EntryPrice: 85, MarkPrice: 90}}
+	held, err := tradingcore.PlanTrendMomentum(input)
+	if err != nil || len(held.Targets) != 1 || len(held.Exits) != 0 {
+		t.Fatalf("existing position changed exit semantics: plan=%+v err=%v", held, err)
+	}
+	for i := range asset {
+		if i/16 == 30 {
+			asset[i].Close = 100
+		}
+	}
+	input.Series["AAAUSDT"] = asset
+	input.Positions = nil
+	zero, err := tradingcore.PlanTrendMomentum(input)
+	if err != nil || len(zero.Targets) != 0 {
+		t.Fatalf("zero momentum was accepted: plan=%+v err=%v", zero, err)
+	}
+}
+
 // This is adapter parity at the actual executable-strategy boundary: a single
 // canonical point-in-time payload must yield the same exact intents regardless
 // of whether the consumer is replay, shadow, or paper.

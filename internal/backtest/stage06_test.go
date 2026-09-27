@@ -53,6 +53,66 @@ func TestTrendMomentumV11IsExplicitlyVersioned(t *testing.T) {
 	}
 }
 
+func TestPositiveEntryMomentumVersionsAreDistinctAndFenced(t *testing.T) {
+	candidate, _, _, err := DefaultStrategyRegistry.ResolveExecutable(StrategyTrendMomentumCandidate, "1.2.0", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseline, _, _, err := DefaultStrategyRegistry.ResolveExecutable(StrategyMatchedMomentumID, "1.1.0", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, selected := range []SelectedStrategy{candidate, baseline} {
+		if selected.Parameters["entry_momentum_rule"] != "positive_new_targets_v1" {
+			t.Fatalf("entry rule is not frozen: %+v", selected)
+		}
+	}
+	if strategyImplementationDigest(StrategyTrendMomentumCandidate, "1.1.0") == strategyImplementationDigest(StrategyTrendMomentumCandidate, "1.2.0") || strategyImplementationDigest(StrategyTrendMomentumCandidate, "1.2.0") != strategyImplementationDigest(StrategyMatchedMomentumID, "1.1.0") {
+		t.Fatal("new candidate/matched baseline implementation identities are wrong")
+	}
+	if _, _, _, err := DefaultStrategyRegistry.ResolveExecutable(StrategyTrendMomentumCandidate, "1.2.0", map[string]string{"entry_momentum_rule": "none"}); !IsStrategyDiagnostic(err, DiagnosticInvalidParameter) {
+		t.Fatalf("new rule can be disabled: %v", err)
+	}
+	if _, _, _, err := DefaultStrategyRegistry.ResolveExecutable(StrategyTrendMomentumCandidate, "1.2.0", map[string]string{"variant": "relative_momentum_only"}); !IsStrategyDiagnostic(err, DiagnosticInvalidParameter) {
+		t.Fatalf("new version admitted a second ablation: %v", err)
+	}
+	if _, _, _, err := DefaultStrategyRegistry.ResolveExecutable(StrategyTrendMomentumCandidate, "1.2.0", map[string]string{"vol_normalization": "false"}); !IsStrategyDiagnostic(err, DiagnosticInvalidParameter) {
+		t.Fatalf("new version admitted a second volatility hypothesis: %v", err)
+	}
+	if _, _, _, err := DefaultStrategyRegistry.ResolveExecutable(StrategyTrendMomentumCandidate, "1.1.0", map[string]string{"entry_momentum_rule": "positive_new_targets_v1"}); !IsStrategyDiagnostic(err, DiagnosticInvalidParameter) {
+		t.Fatalf("old version accepted new rule: %v", err)
+	}
+}
+
+func TestPositiveEntryMomentumSharedAdapterAndMatchedComparison(t *testing.T) {
+	selected, _, _, err := DefaultStrategyRegistry.ResolveExecutable(StrategyTrendMomentumCandidate, "1.2.0", map[string]string{"lookback_bars": "20", "trend_bars": "20", "regime_bars": "20"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	asset := flat4H(80, 31)
+	for i := range asset {
+		if i/16 == 10 {
+			asset[i].Close = 100
+		} else if i/16 == 30 {
+			asset[i].Close = 90
+		}
+	}
+	ctx := candidateContext(t, selected, rising4H(100, 31, 1), map[string][]services.OHLCV{"AAAUSDT": asset}, nil)
+	plan, err := (trendMomentumPlanner{}).Plan(ctx)
+	if err != nil || len(plan.Targets) != 0 || len(plan.Factors) == 0 || plan.Factors[0].StrategyVersion != "1.2.0" || plan.Factors[0].Reason != "excluded_nonpositive_new_entry_momentum" {
+		t.Fatalf("new shared adapter did not exclude negative entry: plan=%+v err=%v", plan, err)
+	}
+	old, _, _, err := DefaultStrategyRegistry.ResolveExecutable(StrategyTrendMomentumCandidate, "1.1.0", map[string]string{"lookback_bars": "20", "trend_bars": "20", "regime_bars": "20"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx.Selected = old
+	legacy, err := (trendMomentumPlanner{}).Plan(ctx)
+	if err != nil || len(legacy.Targets) != 1 || legacy.Factors[0].StrategyVersion != "1.0.0" {
+		t.Fatalf("historical version changed: plan=%+v err=%v", legacy, err)
+	}
+}
+
 func TestMatchedMomentumBaselineFreezesCandidateEconomics(t *testing.T) {
 	parameters := map[string]string{"lookback_bars": "20", "trend_bars": "20", "regime_bars": "30", "rebalance": "48h", "top_n": "3", "max_positions": "3", "risk_on_gross": "0.75", "neutral_gross": "0.25", "risk_off_gross": "0", "regime_band": "0.02", "position_cap": "0.25", "max_gross": "0.75", "max_net": "0.75", "cash_reserve": "0.25", "turnover_budget": "0.10", "skip_delta": "0.015", "execution_gap_reserve": "0.1", "allocation_tolerance": "0.02", "hard_stop": "0.08", "include_shortlist": "true", "execution_intent": "backtest", "target_gross": "0.75", "final_policy": "liquidate"}
 	matched, _, _, err := DefaultStrategyRegistry.ResolveExecutable(StrategyMatchedMomentumID, "1.0.0", parameters)
@@ -303,6 +363,15 @@ func TestTrendMomentumComparisonPreservesBaselinesMetadataAndGovernance(t *testi
 	decoded, err := UnmarshalComparisonArtifact(encoded)
 	if err != nil || decoded.CandidateEvidence == nil {
 		t.Fatalf("candidate evidence roundtrip err=%v evidence=%+v", err, decoded.CandidateEvidence)
+	}
+	newComparison, err := RunStage05Comparison(config, series, Stage05RunRequest{StrategyID: StrategyTrendMomentumCandidate, StrategyVersion: "1.2.0", Parameters: map[string]string{"lookback_bars": "20", "trend_bars": "20", "regime_bars": "20", "turnover_budget": "1"}, TargetGrossExposure: "0.75", MaxNetExposure: "0.75", FinalPolicy: "liquidate", AllowInMemoryFixture: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	newCandidate := newComparison.Results[StrategyTrendMomentumCandidate]
+	newBaseline := newComparison.Results[StrategyMatchedMomentumID]
+	if newCandidate.Manifest.Strategy.Descriptor.Version != "1.2.0" || newBaseline.Manifest.Strategy.Descriptor.Version != "1.1.0" || len(newCandidate.Sensitivity) != 0 || !newCandidate.Metrics.Reconciled || !newBaseline.Metrics.Reconciled {
+		t.Fatalf("new comparison candidate=%+v baseline=%+v", newCandidate.Manifest.Strategy.Descriptor, newBaseline.Manifest.Strategy.Descriptor)
 	}
 }
 

@@ -206,6 +206,9 @@ func RunStage05Comparison(config BacktestConfig, series map[string][]services.OH
 			parameters = cloneStringMap(candidateParameters)
 			parameters["vol_normalization"] = "false"
 			version = "1.0.0"
+			if candidate.Descriptor.Version == "1.2.0" {
+				version = "1.1.0"
+			}
 		} else if id != StrategyCashID {
 			parameters["target_gross"] = request.TargetGrossExposure
 			parameters["final_policy"] = request.FinalPolicy
@@ -220,7 +223,7 @@ func RunStage05Comparison(config BacktestConfig, series map[string][]services.OH
 		}
 		results[id] = result
 	}
-	if candidate.Descriptor.ID == StrategyTrendMomentumCandidate {
+	if candidate.Descriptor.ID == StrategyTrendMomentumCandidate && candidate.Descriptor.Version != "1.2.0" {
 		grid, gridErr := runStage06SensitivityGrid(config, series, candidateParameters, request.AllowInMemoryFixture)
 		if gridErr != nil {
 			return ComparisonArtifact{}, gridErr
@@ -1121,8 +1124,8 @@ func reconcileMandatoryExitResidual(ledger *backtestMemoryLedger, config Backtes
 }
 
 func usesMandatoryExitResidualEvidence(id, version string) bool {
-	return (id == StrategyTrendMomentumCandidate && version == "1.1.0") ||
-		(id == StrategyMatchedMomentumID && version == "1.0.0")
+	return (id == StrategyTrendMomentumCandidate && (version == "1.1.0" || version == "1.2.0")) ||
+		(id == StrategyMatchedMomentumID && (version == "1.0.0" || version == "1.1.0"))
 }
 
 func concurrentReasonSuffix(values []string) string {
@@ -2272,7 +2275,11 @@ func strategyImplementationDigest(id, version string) string {
 	base := tradingcore.StrategyArtifactDigest("target")
 	if usesMandatoryExitResidualEvidence(id, version) {
 		sum := sha256.Sum256([]byte(base + "\x00mandatory-exit-residual-v1"))
-		return fmt.Sprintf("%x", sum)
+		base = fmt.Sprintf("%x", sum)
+	}
+	if (id == StrategyTrendMomentumCandidate && version == "1.2.0") || (id == StrategyMatchedMomentumID && version == "1.1.0") {
+		sum := sha256.Sum256([]byte(base + "\x00positive-new-target-momentum-v1"))
+		base = fmt.Sprintf("%x", sum)
 	}
 	return base
 }

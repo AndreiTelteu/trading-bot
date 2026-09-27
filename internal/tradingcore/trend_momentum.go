@@ -225,9 +225,17 @@ func PlanTrendMomentumWithHistory(input TrendMomentumInput, history *TrendMoment
 		return rows[i].ExchangeSymbolID < rows[j].ExchangeSymbolID
 	})
 	topN := minTrendInt(tmInt(p, "top_n"), tmInt(p, "max_positions"))
+	held := make(map[string]bool, len(input.Positions))
+	for _, position := range input.Positions {
+		held[position.Symbol] = true
+	}
+	positiveNewTargets := p["entry_momentum_rule"] == "positive_new_targets_v1"
 	selected := []int{}
 	for i := range rows {
 		selectable := (variant == "absolute_trend_only" && rows[i].AbsoluteTrend) || (variant == "relative_momentum_only") || (variant == "combined" && result.Regime != "risk_off" && rows[i].AbsoluteTrend)
+		if positiveNewTargets && rows[i].Momentum <= 0 && !held[rows[i].Symbol] {
+			selectable = false
+		}
 		if selectable && len(selected) < topN {
 			selected = append(selected, i)
 		}
@@ -291,6 +299,8 @@ func PlanTrendMomentumWithHistory(input TrendMomentumInput, history *TrendMoment
 			rows[i].Reason = "excluded_absolute_trend"
 		} else if result.Regime == "risk_off" {
 			rows[i].Reason = "excluded_regime_risk_off"
+		} else if positiveNewTargets && rows[i].Momentum <= 0 && !held[rows[i].Symbol] {
+			rows[i].Reason = "excluded_nonpositive_new_entry_momentum"
 		}
 		result.Factors = append(result.Factors, rows[i].TrendMomentumFactor)
 	}
