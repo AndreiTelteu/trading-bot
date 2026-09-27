@@ -1,6 +1,7 @@
 package validation
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -217,70 +218,31 @@ func (r Repository) PersistEvidence(manifestID string, result *WalkForwardResult
 	if createdAt.IsZero() {
 		return PersistedEvidence{}, fmt.Errorf("evidence creation time is required")
 	}
-	status := "passed"
-	var diagnostic *DiagnosticError
-	if failure != nil {
-		status = "failed"
-		if !errors.As(failure, &diagnostic) {
-			diagnostic = &DiagnosticError{Code: DiagnosticInvalidManifest, Details: failure.Error()}
-		}
-	}
-	if result != nil {
-		if err := validateResultForPersistence(manifest, result); err != nil {
-			return PersistedEvidence{}, err
-		}
-	}
-	payload := struct {
-		SchemaVersion string             `json:"schema_version"`
-		ExperimentID  string             `json:"experiment_id"`
-		Status        string             `json:"status"`
-		Result        *WalkForwardResult `json:"result,omitempty"`
-		Failure       *DiagnosticError   `json:"failure,omitempty"`
-	}{EvidenceSchemaVersion, manifest.ID, status, result, diagnostic}
-	encoded, err := json.Marshal(payload)
+	prepared, err := prepareEvidenceForPersistence(manifest, result, failure)
 	if err != nil {
-		if result != nil {
-			return PersistedEvidence{}, resultValidationError(err)
-		}
 		return PersistedEvidence{}, err
 	}
-	if len(encoded) > MaxEvidenceBytes {
-		err := fmt.Errorf("validation evidence exceeds 2 MiB limit")
-		if result != nil {
-			return PersistedEvidence{}, resultValidationError(err)
-		}
-		return PersistedEvidence{}, err
-	}
-	evidenceDigest := digest(encoded)
-	id := digest([]byte(manifest.ID + "\n" + evidenceDigest))
+	id, evidenceDigest, status := prepared.ID, prepared.RootDigest, prepared.Status
 	err = r.DB.Transaction(func(tx *gorm.DB) error {
 		if result != nil {
-			for _, fold := range result.Folds {
-				foldBytes, e := json.Marshal(fold)
-				if e != nil {
-					return e
-				}
-				fd, e := fold.Frozen.Digest()
-				if e != nil {
-					return e
-				}
-				row := database.ValidationFoldEvidence{ExperimentID: manifest.ID, FoldIndex: fold.Fold.Index, SchemaVersion: EvidenceSchemaVersion, Status: status, FrozenDigest: fd, EvidenceJSON: string(foldBytes), EvidenceDigest: digest(foldBytes), CreatedAt: createdAt}
+			for _, fold := range prepared.Folds {
+				row := database.ValidationFoldEvidence{ExperimentID: manifest.ID, FoldIndex: fold.Ref.FoldIndex, SchemaVersion: EvidenceSchemaVersion, Status: status, FrozenDigest: fold.Ref.FrozenDigest, EvidenceJSON: string(fold.Bytes), EvidenceDigest: fold.Ref.EvidenceDigest, CreatedAt: createdAt}
 				res := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "experiment_id"}, {Name: "fold_index"}}, DoNothing: true}).Create(&row)
 				if res.Error != nil {
 					return res.Error
 				}
 				if res.RowsAffected == 0 {
 					var existing database.ValidationFoldEvidence
-					if e := tx.Where("experiment_id=? AND fold_index=?", manifest.ID, fold.Fold.Index).First(&existing).Error; e != nil {
+					if e := tx.Where("experiment_id=? AND fold_index=?", manifest.ID, fold.Ref.FoldIndex).First(&existing).Error; e != nil {
 						return e
 					}
-					if existing.EvidenceDigest != row.EvidenceDigest {
+					if existing.EvidenceDigest != row.EvidenceDigest || existing.FrozenDigest != row.FrozenDigest || existing.SchemaVersion != row.SchemaVersion || existing.Status != row.Status {
 						return &DiagnosticError{Code: DiagnosticManifestIntegrity, Details: "idempotent fold retry has different content"}
 					}
 				}
 			}
 		}
-		row := database.ValidationEvidence{ID: id, ExperimentID: manifest.ID, SchemaVersion: EvidenceSchemaVersion, Status: status, EvidenceJSON: string(encoded), EvidenceDigest: evidenceDigest, CreatedAt: createdAt}
+		row := database.ValidationEvidence{ID: id, ExperimentID: manifest.ID, SchemaVersion: CompactEvidenceRootSchemaVersion, Status: status, EvidenceJSON: string(prepared.RootBytes), EvidenceDigest: evidenceDigest, CreatedAt: createdAt}
 		res := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "experiment_id"}}, DoNothing: true}).Create(&row)
 		if res.Error != nil {
 			return res.Error
@@ -290,7 +252,7 @@ func (r Repository) PersistEvidence(manifestID string, result *WalkForwardResult
 			if e := tx.Where("experiment_id=?", manifest.ID).First(&existing).Error; e != nil {
 				return e
 			}
-			if existing.ID != id || existing.EvidenceDigest != evidenceDigest {
+			if existing.ID != id || existing.EvidenceDigest != evidenceDigest || existing.SchemaVersion != row.SchemaVersion || existing.Status != row.Status {
 				return &DiagnosticError{Code: DiagnosticManifestIntegrity, Details: "experiment already has different immutable evidence"}
 			}
 		}
@@ -405,12 +367,22 @@ func (r Repository) registerResearchAttempt(tx *gorm.DB, manifest ExperimentMani
 }
 
 func (r Repository) LoadEvidence(id string) (PersistedEvidence, error) {
+	var rootSize struct{ EvidenceBytes int64 }
+	if err := r.DB.Table("validation_evidences").Select("octet_length(evidence_json::text) AS evidence_bytes").Where("id=?", id).Take(&rootSize).Error; err != nil {
+		return PersistedEvidence{}, err
+	}
+	if rootSize.EvidenceBytes < 0 || rootSize.EvidenceBytes > 2*MaxEvidenceBytes {
+		return PersistedEvidence{}, &DiagnosticError{Code: DiagnosticManifestIntegrity, Details: "evidence exceeds bounded load size"}
+	}
 	var row database.ValidationEvidence
 	if err := r.DB.Where("id=?", id).First(&row).Error; err != nil {
 		return PersistedEvidence{}, err
 	}
 	if len(row.EvidenceJSON) > MaxEvidenceBytes {
 		return PersistedEvidence{}, &DiagnosticError{Code: DiagnosticManifestIntegrity, Details: "evidence exceeds bounded load size"}
+	}
+	if row.SchemaVersion == CompactEvidenceRootSchemaVersion {
+		return r.loadCompactEvidence(row)
 	}
 	var payload struct {
 		SchemaVersion string             `json:"schema_version"`
@@ -430,6 +402,77 @@ func (r Repository) LoadEvidence(id string) (PersistedEvidence, error) {
 		return PersistedEvidence{}, &DiagnosticError{Code: DiagnosticManifestIntegrity, Details: "evidence envelope mismatch"}
 	}
 	return PersistedEvidence{ID: row.ID, ExperimentID: row.ExperimentID, Status: row.Status, Result: payload.Result, Failure: payload.Failure, CreatedAt: row.CreatedAt.UTC()}, nil
+}
+
+func (r Repository) loadCompactEvidence(row database.ValidationEvidence) (PersistedEvidence, error) {
+	var loaded PersistedEvidence
+	err := r.DB.Transaction(func(tx *gorm.DB) error {
+		var err error
+		loaded, err = (Repository{DB: tx}).loadCompactEvidenceSnapshot(row)
+		return err
+	}, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelRepeatableRead})
+	return loaded, err
+}
+
+func (r Repository) loadCompactEvidenceSnapshot(row database.ValidationEvidence) (PersistedEvidence, error) {
+	bad := func(detail string) (PersistedEvidence, error) {
+		return PersistedEvidence{}, &DiagnosticError{Code: DiagnosticManifestIntegrity, Details: detail}
+	}
+	var root compactEvidenceRoot
+	if err := json.Unmarshal([]byte(row.EvidenceJSON), &root); err != nil {
+		return bad(err.Error())
+	}
+	canonical, err := json.Marshal(root)
+	if err != nil || digest(canonical) != row.EvidenceDigest || digest([]byte(row.ExperimentID+"\n"+row.EvidenceDigest)) != row.ID || root.ExperimentID != row.ExperimentID || root.Status != row.Status || root.SchemaVersion != row.SchemaVersion {
+		return bad("stored compact evidence digest or identity mismatch")
+	}
+	manifest, err := r.LoadManifest(row.ExperimentID)
+	if err != nil {
+		return PersistedEvidence{}, err
+	}
+	// Fetch only bounded metadata first. jsonb::text can add whitespace, so its
+	// SQL read guard is twice the strict canonical 16 MiB fold cap.
+	type foldSize struct {
+		FoldIndex     int
+		EvidenceBytes int64
+	}
+	var sizes []foldSize
+	if err := r.DB.Table("validation_fold_evidences").Select("fold_index, octet_length(evidence_json::text) AS evidence_bytes").Where("experiment_id=?", row.ExperimentID).Order("fold_index").Limit(len(manifest.Spec.Folds) + 1).Scan(&sizes).Error; err != nil {
+		return PersistedEvidence{}, err
+	}
+	if len(sizes) > len(manifest.Spec.Folds) {
+		return bad("extra compact fold rows")
+	}
+	var textTotal int64
+	for _, size := range sizes {
+		if size.EvidenceBytes < 0 || size.EvidenceBytes > 2*MaxFoldEvidenceBytes || textTotal > 2*MaxTotalFoldEvidenceBytes-size.EvidenceBytes {
+			return bad("compact fold row exceeds bounded load size")
+		}
+		textTotal += size.EvidenceBytes
+	}
+	if root.Result != nil && len(sizes) != len(root.Result.Folds) {
+		return bad("missing compact fold rows")
+	}
+	if root.Result == nil && len(sizes) != 0 {
+		return bad("failed compact evidence has fold rows")
+	}
+	rows := make([]database.ValidationFoldEvidence, 0, len(sizes))
+	for _, size := range sizes {
+		var fold database.ValidationFoldEvidence
+		if err := r.DB.Where("experiment_id=? AND fold_index=? AND octet_length(evidence_json::text) <= ?", row.ExperimentID, size.FoldIndex, 2*MaxFoldEvidenceBytes).First(&fold).Error; err != nil {
+			return PersistedEvidence{}, err
+		}
+		if !fold.CreatedAt.UTC().Equal(row.CreatedAt.UTC()) {
+			return bad("compact fold creation time mismatch")
+		}
+		rows = append(rows, fold)
+	}
+	evidence, err := hydratePreparedEvidence(manifest, []byte(row.EvidenceJSON), rows)
+	if err != nil {
+		return PersistedEvidence{}, err
+	}
+	evidence.ID, evidence.CreatedAt = row.ID, row.CreatedAt.UTC()
+	return evidence, nil
 }
 
 func IsNotFound(err error) bool { return errors.Is(err, gorm.ErrRecordNotFound) }

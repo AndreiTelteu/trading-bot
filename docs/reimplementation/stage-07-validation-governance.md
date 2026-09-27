@@ -143,6 +143,24 @@ previous fold evidence must retain its original revision and digest.
 - [x] Backtest authority follows rollout semantics or explicit research override recorded in manifest.
 - [x] No automatic optimizer may mutate live settings directly.
 
+### Compact evidence persistence
+
+Stage 07 persistence now writes a compact `validation-evidence-root-v3`
+envelope containing the aggregate and an ordered, digest-bound reference to
+each complete immutable v2 fold row. The fold rows retain all trades, fills,
+no-fills, positions, curves, metrics, and frozen decisions; loading verifies
+their exact set, identities, schemas, digests, frozen digests, and reproduced
+metrics before hydrating the original public result shape. Historical v2 roots
+remain readable with their original identity. A result preflight uses the same
+pure serialization and size checks as the repository write; folds, root, and
+outcome still commit atomically. The root, manifest, and ML evidence limits
+remain 2 MiB. A separate finite 16 MiB canonical limit per fold and 64 MiB
+total fold limit apply. A synthetic three-fold fixture with approximately
+45–47k curve points per fold measured 6.1–6.4 million bytes per fold and 18.7 million bytes in
+the former combined root. If a legitimate fold exceeds its bound, persistence
+fails closed pending an explicit chunked-evidence design; no primitive is
+discarded or rounded to fit.
+
 ### Typed identities
 
 Promotion records distinguish `implementation_digest`, `config_digest`,

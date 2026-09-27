@@ -17,6 +17,14 @@ evidence. If one forms a hypothesis, recreate it with the shared Go contracts
 and create a Stage 07 experiment. SQLite and `trading.db` are not supported
 research sources.
 
+New Stage 07 evidence uses a compact v3 root with digest references to complete
+immutable fold rows. A read must hydrate and verify every referenced fold before
+using the result for approval or promotion. Historical v2 roots remain readable.
+The root, manifest, and ML limits stay at 2 MiB; each complete fold is bounded
+at 16 MiB and all folds together at 64 MiB. If preflight reports an oversized
+fold, stop and review a chunked-evidence design. Do not trim curves, trades, or
+other primitives to force acceptance. Failed evidence has no fold rows.
+
 Before treating runtime model monitoring as promotion evidence, inspect the
 decision-cohort label coverage and pending/unavailable counts. Calibration uses
 only matured fixed-horizon labels; missing bars or unmatured horizons are
