@@ -24,9 +24,26 @@ histories are omitted from compact sources and are not established by this
 comparison. These repeats are technical reproducibility checks, not new
 independent statistical observations.
 
-The three replacement slots are consumed. Stage 07 read-only preparation is
-the next step; fold execution, statistical gates, and promotion remain pending.
+The three replacement slots are consumed. Stage 07 read-only preparation
+passed and one exploratory execution was attempted, as recorded below.
 The failed original attempts below are retained without replacement.
+
+### Stage 07 attempt: training replay boundary failure
+
+Experiment `2c1ab23be00a734b6f53224b7a65f79725e88dc63ed91a71a6fb6064a92dcc63`
+used driver `cc7ac6272d886a74c762d29ca1d3ab42280fecb9` and reviewed plan SHA-256
+`e6341ba2afc1827345f77a24ea91b2f0284e98a0bd85d11fef3ce036518b0356`.
+It failed before producing any fold evidence with `invalid_manifest`:
+`execution_bar_liquidity_unavailable`, selected execution bar after
+`2025-11-30T23:59:59.999Z` missing for the candidate.
+The immutable failed evidence digest is
+`807a749f860b74a9051ac953022d6e4a3d3b4aff1903271f9563a79705b69209`.
+
+No paired test-window returns or statistical gate outcomes were produced.
+Read-only inspection found positive-volume bars at the excluded training
+end boundary. A boundary-handling regression investigation is pending;
+this is not evidence of statistical failure or missing market data.
+No retry, threshold change, holdout use, or promotion was performed.
 
 ### Original checkpoint: jobs 66–68 failed reproduction
 
