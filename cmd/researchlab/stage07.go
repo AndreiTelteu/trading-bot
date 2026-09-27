@@ -22,14 +22,19 @@ import (
 )
 
 const (
-	stage07SourceSHA  = "7e8eadb5eec18fb69837f682d2de8d3033ec269e"
-	stage07OldSpecSHA = "a3b0d140308a1c383882012c92a4937df2da96908e5e4b6215bb037ae02e95c7"
-	// SHA-256 of the idempotency key in the reviewed, failed #69–71 Stage 07 plan.
-	stage07PriorAttemptKeySHA      = "49e304cbd812e5df58d00c1a94fc6e3774c46aa77903f83498b5eb7a7dfbef48"
+	stage07SourceSHA               = "149747021a7e40bf76c0a9c295466470e2770618"
+	stage07OldSpecSHA              = "a3b0d140308a1c383882012c92a4937df2da96908e5e4b6215bb037ae02e95c7"
+	stage07AuditedComparisonDigest = "d4bc2aee9387f5377d0954686af8efdf74a467c75dfe6cbc2605994f3ddebc4b"
+	stage07AuditedSourceDigest     = "860f68bf0e1befff3c2c1f30ba926fc050439bae92cfa2c4ac303001f45c65ff"
+	// SHA-256 of the keys in the two reviewed, failed Stage 07 plans.
+	stage07BoundaryAttemptKeySHA   = "49e304cbd812e5df58d00c1a94fc6e3774c46aa77903f83498b5eb7a7dfbef48"
+	stage07AllocationAttemptKeySHA = "f64edf70ba81edd5672a4baa8e8e95c1ba707e55539e5b6033d6e512deb9c337"
+	stage07BoundaryFailureID       = "2c1ab23be00a734b6f53224b7a65f79725e88dc63ed91a71a6fb6064a92dcc63"
+	stage07AllocationFailureID     = "4cceee430468b9515c60033e1ca5edac0ab46289a47761e9d9ece441918264b4"
 	stage07NoFillRule              = "selected_zero_base_volume_cancel_at_bar_close_v1"
 	stage07PlanVersion             = "researchlab-stage07-plan-v1"
 	stage07CandidateImplementation = "d1710c8250f660d56d824e59cb58cfcc6f2053c68a44e28c94be29613db790c4"
-	stage07BaselineImplementation  = "7849c702ff03da0104be460aec00f524c38e0d5481f110d3cadd9b9c5c8d7c8a"
+	stage07BaselineImplementation  = "d1710c8250f660d56d824e59cb58cfcc6f2053c68a44e28c94be29613db790c4"
 )
 
 type stage07Options struct {
@@ -56,8 +61,25 @@ func stage07ExactDigest(value string) bool {
 	return len(value) == 64 && strings.Trim(value, "0123456789abcdef") == ""
 }
 
-func stage07IdempotencyKeyNew(key, priorSHA string) bool {
-	return len(key) >= 8 && len(key) <= 120 && fmt.Sprintf("%x", sha256.Sum256([]byte(key))) != priorSHA
+func stage07PriorAttemptKeyHashes() [2]string {
+	return [2]string{stage07BoundaryAttemptKeySHA, stage07AllocationAttemptKeySHA}
+}
+
+func stage07IdempotencyKeyNew(key string, priorSHAs [2]string) bool {
+	if len(key) < 8 || len(key) > 120 {
+		return false
+	}
+	digest := fmt.Sprintf("%x", sha256.Sum256([]byte(key)))
+	for _, prior := range priorSHAs {
+		if digest == prior {
+			return false
+		}
+	}
+	return true
+}
+
+func stage07PriorFailedExperiments() []string {
+	return []string{stage07BoundaryFailureID, stage07AllocationFailureID}
 }
 
 func verifyStage07CanonicalSourceArtifact(raw []byte, sourceDigest, comparisonDigest, datasetID string) (stage07CanonicalSourceArtifact, error) {
@@ -86,17 +108,18 @@ func verifyStage07CanonicalSourceArtifact(raw []byte, sourceDigest, comparisonDi
 }
 
 type stage07Plan struct {
-	SchemaVersion      string                   `json:"schema_version"`
-	OldManifestFile    string                   `json:"old_manifest_file"`
-	OldManifestSHA256  string                   `json:"old_manifest_sha256"`
-	SourceCodeRevision string                   `json:"source_code_revision"`
-	DriverCodeRevision string                   `json:"driver_code_revision"`
-	PriorFamilyID      string                   `json:"prior_family_id"`
-	Creator            string                   `json:"creator"`
-	IdempotencyKey     string                   `json:"idempotency_key"`
-	SourceReferences   []stage07SourceReference `json:"source_references"`
-	ComparisonDigest   string                   `json:"comparison_digest"`
-	Spec               validation.ManifestSpec  `json:"spec"`
+	SchemaVersion            string                   `json:"schema_version"`
+	OldManifestFile          string                   `json:"old_manifest_file"`
+	OldManifestSHA256        string                   `json:"old_manifest_sha256"`
+	SourceCodeRevision       string                   `json:"source_code_revision"`
+	DriverCodeRevision       string                   `json:"driver_code_revision"`
+	PriorFamilyID            string                   `json:"prior_family_id"`
+	PriorFailedExperimentIDs []string                 `json:"prior_failed_experiment_ids"`
+	Creator                  string                   `json:"creator"`
+	IdempotencyKey           string                   `json:"idempotency_key"`
+	SourceReferences         []stage07SourceReference `json:"source_references"`
+	ComparisonDigest         string                   `json:"comparison_digest"`
+	Spec                     validation.ManifestSpec  `json:"spec"`
 }
 
 func validateStage07CodeLineage(driverSHA string) error {
@@ -186,14 +209,14 @@ func parseStage07SourceIDs(raw string) ([]uint, error) {
 	seen := map[uint]bool{}
 	for _, part := range parts {
 		id, err := strconv.ParseUint(strings.TrimSpace(part), 10, 32)
-		if err != nil || id <= 71 || seen[uint(id)] {
+		if err != nil || id <= 74 || seen[uint(id)] {
 			return nil, fmt.Errorf("source IDs must be distinct new jobs")
 		}
 		seen[uint(id)] = true
 		ids = append(ids, uint(id))
 	}
-	if ids[0] != 72 {
-		return nil, fmt.Errorf("audited source #72 must be the first fold reference")
+	if ids[0] != 75 {
+		return nil, fmt.Errorf("audited source #75 must be the first fold reference")
 	}
 	return ids, nil
 }
@@ -241,16 +264,16 @@ func loadStage07References(ids []uint, old validation.ManifestSpec) ([]stage07So
 }
 
 func validateStage07ReferenceSet(refs []stage07SourceReference, old validation.ManifestSpec) error {
-	if len(refs) != 3 || refs[0].Comparison.JobID != 72 {
-		return fmt.Errorf("audited source #72 and two exact repeats are required")
+	if len(refs) != 3 || refs[0].Comparison.JobID != 75 {
+		return fmt.Errorf("audited source #75 and two exact repeats are required")
 	}
 	seen := map[uint]bool{}
 	comparisonDigest, sourceDigest := refs[0].Comparison.ArtifactDigest, refs[0].ValidationArtifactDigest
-	if !stage07ExactDigest(comparisonDigest) || !stage07ExactDigest(sourceDigest) {
-		return fmt.Errorf("source canonical digests are missing")
+	if !stage07ExactDigest(comparisonDigest) || !stage07ExactDigest(sourceDigest) || comparisonDigest != stage07AuditedComparisonDigest || sourceDigest != stage07AuditedSourceDigest {
+		return fmt.Errorf("source canonical digests differ from audited #75")
 	}
 	for _, ref := range refs {
-		if ref.Comparison.JobID <= 71 || seen[ref.Comparison.JobID] {
+		if ref.Comparison.JobID <= 74 || seen[ref.Comparison.JobID] {
 			return fmt.Errorf("source job IDs must be distinct new jobs")
 		}
 		seen[ref.Comparison.JobID] = true
@@ -260,7 +283,7 @@ func validateStage07ReferenceSet(refs []stage07SourceReference, old validation.M
 		candidate, cOK := ref.Comparison.Strategies[old.Candidate.ID]
 		baseline, bOK := ref.Comparison.Strategies[old.Baseline.ID]
 		if !cOK || !bOK || ref.Comparison.Candidate != old.Candidate.ID+"@"+old.Candidate.Version || candidate.ImplementationDigest != stage07CandidateImplementation || baseline.ImplementationDigest != stage07BaselineImplementation || candidate.ConfigDigest != old.Candidate.ConfigDigest || baseline.ConfigDigest != old.Baseline.ConfigDigest || ref.Comparison.DatasetDigest != old.DatasetDigest || ref.SourceCodeRevision != stage07SourceSHA || ref.ValidationArtifactDigest == "" {
-			return fmt.Errorf("Stage 07 source reference differs from audited #72 implementation or pinned configuration/dataset")
+			return fmt.Errorf("Stage 07 source reference differs from audited #75 implementation or pinned configuration/dataset")
 		}
 	}
 	return nil
@@ -313,7 +336,7 @@ func buildStage07Spec(old validation.ManifestSpec, refs []stage07SourceReference
 }
 
 func validateStage07Plan(plan stage07Plan, opts stage07Options) error {
-	if plan.SchemaVersion != stage07PlanVersion || plan.SourceCodeRevision != stage07SourceSHA || plan.DriverCodeRevision != opts.DriverSHA || plan.OldManifestSHA256 != stage07OldSpecSHA || plan.Creator == "" || !stage07IdempotencyKeyNew(plan.IdempotencyKey, stage07PriorAttemptKeySHA) || len(plan.SourceReferences) != 3 {
+	if plan.SchemaVersion != stage07PlanVersion || plan.SourceCodeRevision != stage07SourceSHA || plan.DriverCodeRevision != opts.DriverSHA || plan.OldManifestSHA256 != stage07OldSpecSHA || plan.Creator == "" || !stage07IdempotencyKeyNew(plan.IdempotencyKey, stage07PriorAttemptKeyHashes()) || !reflect.DeepEqual(plan.PriorFailedExperimentIDs, stage07PriorFailedExperiments()) || len(plan.SourceReferences) != 3 {
 		return fmt.Errorf("Stage 07 plan identity or attempt metadata differs")
 	}
 	old, err := stage07OldSpec(plan.OldManifestFile)
@@ -358,7 +381,7 @@ func runStage07Mode(opts stage07Options) error {
 	}
 	defer ledger.Close()
 	if opts.Mode == "prepare" {
-		if opts.OldManifestFile == "" || opts.SourceJobIDs == "" || opts.Creator == "" || !stage07IdempotencyKeyNew(opts.IdempotencyKey, stage07PriorAttemptKeySHA) || opts.PlanSHA256 != "" {
+		if opts.OldManifestFile == "" || opts.SourceJobIDs == "" || opts.Creator == "" || !stage07IdempotencyKeyNew(opts.IdempotencyKey, stage07PriorAttemptKeyHashes()) || opts.PlanSHA256 != "" {
 			return fmt.Errorf("prepare requires prior manifest, three sources, creator, fresh key, and no plan SHA")
 		}
 		old, err := stage07OldSpec(opts.OldManifestFile)
@@ -377,7 +400,7 @@ func runStage07Mode(opts stage07Options) error {
 		if err != nil {
 			return err
 		}
-		plan := stage07Plan{SchemaVersion: stage07PlanVersion, OldManifestFile: opts.OldManifestFile, OldManifestSHA256: stage07OldSpecSHA, SourceCodeRevision: stage07SourceSHA, DriverCodeRevision: opts.DriverSHA, PriorFamilyID: old.FamilyID, Creator: opts.Creator, IdempotencyKey: opts.IdempotencyKey, SourceReferences: refs, ComparisonDigest: digest, Spec: spec}
+		plan := stage07Plan{SchemaVersion: stage07PlanVersion, OldManifestFile: opts.OldManifestFile, OldManifestSHA256: stage07OldSpecSHA, SourceCodeRevision: stage07SourceSHA, DriverCodeRevision: opts.DriverSHA, PriorFamilyID: old.FamilyID, PriorFailedExperimentIDs: stage07PriorFailedExperiments(), Creator: opts.Creator, IdempotencyKey: opts.IdempotencyKey, SourceReferences: refs, ComparisonDigest: digest, Spec: spec}
 		if err := validateStage07Plan(plan, opts); err != nil {
 			return err
 		}
@@ -408,7 +431,7 @@ func runStage07Mode(opts stage07Options) error {
 			return writeErr
 		}
 		planSHA := fmt.Sprintf("%x", sha256.Sum256(raw))
-		if err := appendRecord(ledger, map[string]any{"at": time.Now().UTC(), "status": "stage07_plan_prepared", "plan_sha256": planSHA, "source_job_ids": ids, "comparison_digest": digest, "prior_family_id": old.FamilyID, "family_id": spec.FamilyID, "source_code_sha": stage07SourceSHA, "driver_code_sha": opts.DriverSHA}); err != nil {
+		if err := appendRecord(ledger, map[string]any{"at": time.Now().UTC(), "status": "stage07_plan_prepared", "plan_sha256": planSHA, "source_job_ids": ids, "comparison_digest": digest, "prior_family_id": old.FamilyID, "prior_failed_experiment_ids": plan.PriorFailedExperimentIDs, "family_id": spec.FamilyID, "source_code_sha": stage07SourceSHA, "driver_code_sha": opts.DriverSHA}); err != nil {
 			return err
 		}
 		fmt.Printf("{\"status\":\"stage07_plan_prepared\",\"plan_sha256\":%q,\"comparison_digest\":%q}\n", planSHA, digest)
@@ -438,7 +461,7 @@ func runStage07Mode(opts stage07Options) error {
 	if _, _, err := (backtest.Stage07ExperimentSource{DB: database.DB}).Load(manifest); err != nil {
 		return fmt.Errorf("Stage 07 source preflight: %w", err)
 	}
-	if err := appendRecord(ledger, map[string]any{"at": time.Now().UTC(), "status": "stage07_execution_intent", "plan_sha256": opts.PlanSHA256, "content_id": manifest.ContentID, "source_job_ids": plan.Spec.FoldSourceJobIDs, "comparison_digest": plan.ComparisonDigest, "prior_family_id": plan.PriorFamilyID, "family_id": plan.Spec.FamilyID, "source_code_sha": stage07SourceSHA, "driver_code_sha": opts.DriverSHA}); err != nil {
+	if err := appendRecord(ledger, map[string]any{"at": time.Now().UTC(), "status": "stage07_execution_intent", "plan_sha256": opts.PlanSHA256, "content_id": manifest.ContentID, "source_job_ids": plan.Spec.FoldSourceJobIDs, "comparison_digest": plan.ComparisonDigest, "prior_family_id": plan.PriorFamilyID, "prior_failed_experiment_ids": plan.PriorFailedExperimentIDs, "family_id": plan.Spec.FamilyID, "source_code_sha": stage07SourceSHA, "driver_code_sha": opts.DriverSHA}); err != nil {
 		return err
 	}
 	first := plan.Spec.FoldSourceJobIDs[0]

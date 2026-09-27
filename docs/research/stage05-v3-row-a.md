@@ -46,10 +46,11 @@ market data.
 No retry, threshold change, holdout use, or promotion was performed. A later
 committed half-open boundary repair at `7e8eadb5eec18fb69837f682d2de8d3033ec269e`
 passed a private read-only fold-0 train diagnostic (164 trades, zero no-fills)
-without registering evidence. Fresh source jobs #72 and #73 at that revision
-have exactly equal canonical comparison and compact-source digests; a third
-repeat remains pending. The failed experiment above remains immutable, and the
-new Stage 07 attempt requires a fresh idempotency key and new family lineage.
+without registering evidence. Fresh source jobs #72–74 at that revision later
+matched exactly on canonical comparison and compact-source digests. Their
+subsequent Stage 07 attempt also failed, as recorded below. The first failed
+experiment remains immutable; a later attempt requires a fresh idempotency key
+and new family lineage.
 
 The boundary repair was committed as
 `7e8eadb5eec18fb69837f682d2de8d3033ec269e` and passed serial PostgreSQL
@@ -88,8 +89,33 @@ the failing fold's candidate replay. The fold index, symbol, and timestamp
 are not present in the diagnostic. Fold results persist only after the
 whole walk-forward succeeds; zero persisted folds therefore does not locate
 the failure or establish that earlier tests failed. No paired statistics or
-promotion-gate outcomes are available. Residual-allocation investigation is
-pending; no threshold relaxation or retry is authorized.
+promotion-gate outcomes are available. The matched-baseline residual evidence
+gap was repaired in committed checkpoint
+`149747021a7e40bf76c0a9c295466470e2770618`; no threshold was relaxed and
+the failed experiment remains immutable.
+
+### Matched-baseline repair checkpoint and pending source repeat
+
+The repair records below-minimum post-fill mandatory-exit dust for the matched
+baseline under the same rule already used by candidate 1.1.0. The new baseline
+implementation digest equals the candidate digest
+`d1710c8250f660d56d824e59cb58cfcc6f2053c68a44e28c94be29613db790c4`;
+their configuration digests remain distinct. A private read-only diagnostic
+under the repaired commit replayed candidate and baseline through all three
+old exploratory test windows and passed primitive integrity checks. It skipped
+training, selection, and validation registration, so it cannot replace fresh
+source evidence or establish Stage 07 gates.
+
+Fresh source jobs #75 and #76 at `1497470` have exactly equal retained exports,
+canonical comparison digest
+`d4bc2aee9387f5377d0954686af8efdf74a467c75dfe6cbc2605994f3ddebc4b`,
+and canonical compact-source digest
+`860f68bf0e1befff3c2c1f30ba926fc050439bae92cfa2c4ac303001f45c65ff`.
+The third exact repeat and its audit are pending. No Stage 07 preparation or
+execution has occurred from this checkpoint. Both failed experiments
+`2c1ab23be00a734b6f53224b7a65f79725e88dc63ed91a71a6fb6064a92dcc63`
+and `4cceee430468b9515c60033e1ca5edac0ab46289a47761e9d9ece441918264b4`
+remain in the research lineage; a future attempt needs a new idempotency key.
 
 The private read-only allocation trace subsequently identified fold 1,
 2026-04-03 04:00 UTC: an AVAX sell of 8.42 left approximately 0.01 AVAX

@@ -4,37 +4,38 @@
 
 `cmd/researchlab` has an explicit `-stage07-mode prepare|run` path for one **new
 exploratory** validation manifest. Source identity is now pinned to reviewed
-boundary-repair checkpoint `7e8eadb5eec18fb69837f682d2de8d3033ec269e`
-and audited first source job #72. Jobs #72 and #73 have identical canonical
-comparison digest `8967b6cf813206cdf2095a7aade61795a91449b3addc8bda4b89ccbf84f44cd0`
-and source-artifact digest `d73087603cc8158756670939208fe9e51bf2418e5420d854c774236ae1edab3a`;
+matched-baseline repair checkpoint `149747021a7e40bf76c0a9c295466470e2770618`
+and audited first source job #75. Jobs #75 and #76 have identical canonical
+comparison digest `d4bc2aee9387f5377d0954686af8efdf74a467c75dfe6cbc2605994f3ddebc4b`
+and source-artifact digest `860f68bf0e1befff3c2c1f30ba926fc050439bae92cfa2c4ac303001f45c65ff`;
 their retained exports match byte-for-byte. The third source ID and audit are
 pending. Jobs #66–68 remain diagnostic attempts from `ad775fd` after their
-exact-repeat digest mismatch. Jobs #69–71 reproduced
-exactly under `5c756fa` but belong to the pre-boundary-repair executable and
-cannot be used in this new attempt. No Stage 07
-preparation or run is authorized until the third source and exact plan are
+exact-repeat digest mismatch. Jobs #69–71 reproduced under `5c756fa`, and
+jobs #72–74 reproduced under `7e8eadb`; both groups belong to earlier
+executables and cannot be used in this new attempt. No Stage 07 preparation or
+run at this checkpoint is authorized until the third source and exact plan are
 reviewed. The driver is restricted to the same marked, runtime-only PostgreSQL
-16 research clone as the Stage 05 source runner. It
-does not start the server or schedulers, use migration/ledger/parity credentials,
-touch the production database, or consume a confirmatory holdout. The mode is
-code only at this checkpoint: no Stage 07 prepare or run command has been
-executed. A human must review the exact private plan and its SHA-256 before
-invoking `run`.
+16 research clone as the Stage 05 source runner. It does not start the server
+or schedulers, use migration/ledger/parity credentials,
+touch the production database, or consume a confirmatory holdout. This repin is
+code only: no Stage 07 prepare or run command using #75+ has been
+executed. Both earlier failed experiments remain immutable. A human must
+review the exact private plan and its SHA-256 before invoking `run`.
 
 The driver reads the byte-pinned prior exploratory spec (SHA-256
 `a3b0d140308a1c383882012c92a4937df2da96908e5e4b6215bb037ae02e95c7`),
 then admits exactly three distinct new, completed Stage 05 source jobs. Each
 source must retain the candidate, baseline, configuration, dataset, and source
-code revision `7e8eadb5eec18fb69837f682d2de8d3033ec269e`. The v3
-candidate and baseline implementation digests are confirmed by audited job #72
-and required on both exact repeats; the old v1 implementation digests are
-historical provenance, not the v3 executable identities. The reviewed v3
-candidate digest is
-`d1710c8250f660d56d824e59cb58cfcc6f2053c68a44e28c94be29613db790c4`;
-the baseline digest is
-`7849c702ff03da0104be460aec00f524c38e0d5481f110d3cadd9b9c5c8d7c8a`.
-The plan carries their full comparison references, run-manifest digests,
+code revision `149747021a7e40bf76c0a9c295466470e2770618`. The v3
+candidate and baseline implementation digests are confirmed by audited job #75
+and required on both exact repeats; older implementation digests are historical
+provenance, not the current v3 executable identities. The reviewed v3
+candidate and matched-baseline implementation digest is
+`d1710c8250f660d56d824e59cb58cfcc6f2053c68a44e28c94be29613db790c4`.
+Their configuration digests remain distinct. The earlier baseline digest
+`7849c702ff03da0104be460aec00f524c38e0d5481f110d3cadd9b9c5c8d7c8a`
+belongs only to pre-repair evidence. The plan carries their full comparison
+references, run-manifest digests,
 primitive validation-artifact digests, and the SHA-256 of the ordered reference
 array used by repository registration. Before preparing or running, the driver
 requires **exactly equal** canonical comparison digests and exactly equal
@@ -58,29 +59,29 @@ is derived from the new implementation and composite policy; the old family ID
 is retained in the private plan and ledger as research lineage. The old
 `confirmatory_holdout` remains absent.
 
-Jobs #66–68 retain `ad775fd` and jobs #69–71 retain `5c756fa` as historical
-provenance. The new manifest's `code_revision` and replay environment must
-instead equal the **actual clean
-committed driver SHA**. The driver rejects every source-to-driver diff path
-outside `cmd/researchlab/**` and `docs/**`. Checkpoint `7e8eadb` includes the
-deterministic replay and point-in-time v3 `NoFillRule` fixes plus the half-open
-fold execution boundary repair. A reviewed, private fold-0 train diagnostic
-under `7e8eadb` passed with 164 trades and no no-fills; it was a train-path
-smoke check, not Stage 07 validation evidence. The earlier loader fallback
-commit `788d4cf` was not integrated. Driver changes from `7e8eadb` must remain
-within the allowlist; source policy or economic changes require a new checkpoint
-and source audit.
+Jobs #66–68 retain `ad775fd`, jobs #69–71 retain `5c756fa`, and jobs #72–74
+retain `7e8eadb` as historical provenance. Failed exploratory experiments
+`2c1ab23be00a734b6f53224b7a65f79725e88dc63ed91a71a6fb6064a92dcc63`
+and `4cceee430468b9515c60033e1ca5edac0ab46289a47761e9d9ece441918264b4`
+remain immutable. The new plan and append-only ledger record both IDs and the
+old family ID. The new manifest's `code_revision` and replay environment must
+equal the **actual clean committed driver SHA**. The driver rejects every
+source-to-driver diff path outside `cmd/researchlab/**` and `docs/**` from
+checkpoint `1497470`, which repairs matched-baseline mandatory-exit residual
+evidence. A private read-only diagnostic at that checkpoint replayed candidate
+and baseline through all three old exploratory test windows and passed primitive
+integrity checks; it did not run training/selection or create Stage 07 evidence.
+Source policy or economic changes require a new checkpoint and source audit.
 
 After the three source IDs and digests are final and the exact plan reviewed,
 the operator can prepare a private mode-0600 plan. These variable names denote
 paths and identities only; never print the runtime DSN file. Use a new bounded
-idempotency key distinct from the failed experiment
-`2c1ab23be00a734b6f53224b7a65f79725e88dc63ed91a71a6fb6064a92dcc63`,
-and an explicit research creator. The append-only mode-0600 ledger records the plan,
+idempotency key distinct from **both** prior failed plans and an explicit
+research creator. The append-only mode-0600 ledger records the plan,
 execution intent, registration, and outcome, including failures. Preparation
-creates no experiment or validation job. The failed experiment and its immutable
-failure evidence remain in the prior research lineage; this new attempt is not
-a retry of it.
+creates no experiment or validation job. Both failed experiments and their
+immutable failure evidence remain in the prior research lineage; this new
+attempt is not a retry of either one.
 
 ```bash
 export DATABASE_URL_FILE="$CLONE_RUNTIME_DSN_FILE"
@@ -430,6 +431,14 @@ artifacts; old sources cannot be relabeled. Preserve both failed experiments
 and full family lineage. The cumulative cap is fourteen sources since job 66,
 including the two still-unused B/C slots. This is technical repair accounting,
 not new independent statistical evidence or permission to tune on test windows.
+
+Fresh source jobs #75 and #76 at the repaired checkpoint match exactly on
+canonical comparison/source digests and retained exports. The third exact
+repeat is still pending. Do not prepare Stage 07 until its audit matches and
+the new private plan, source references, family lineage, and fresh idempotency
+key are separately reviewed. The new driver refuses sources #74 and below and
+both prior failed-plan keys. B/C remain unsubmitted; these technical repeats
+are not independent statistical observations or new parameter hypotheses.
 
 Each Stage 05 comparison also evaluates four fixed, embedded Stage 06
 sensitivity configurations under strategy `1.0.0`: `absolute-20-24h`,

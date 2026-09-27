@@ -61,11 +61,12 @@ func stage07SpecFixture(t *testing.T) validation.ManifestSpec {
 
 func stage07RefsFixture(old validation.ManifestSpec) []stage07SourceReference {
 	refs := make([]stage07SourceReference, 0, 3)
-	for _, id := range []uint{72, 73, 999} {
-		refs = append(refs, stage07SourceReference{Comparison: backtest.Stage07ComparisonReference{JobID: id, Candidate: old.Candidate.ID + "@" + old.Candidate.Version, DatasetDigest: old.DatasetDigest, ArtifactDigest: strings.Repeat("1", 64), Strategies: map[string]backtest.Stage07StrategyRef{
+	// 999 is synthetic; the third repaired source has not been audited.
+	for _, id := range []uint{75, 76, 999} {
+		refs = append(refs, stage07SourceReference{Comparison: backtest.Stage07ComparisonReference{JobID: id, Candidate: old.Candidate.ID + "@" + old.Candidate.Version, DatasetDigest: old.DatasetDigest, ArtifactDigest: stage07AuditedComparisonDigest, Strategies: map[string]backtest.Stage07StrategyRef{
 			old.Candidate.ID: {ImplementationDigest: stage07CandidateImplementation, ConfigDigest: old.Candidate.ConfigDigest, RunManifestDigest: validation.RunManifestDigest(strings.Repeat("2", 64))},
 			old.Baseline.ID:  {ImplementationDigest: stage07BaselineImplementation, ConfigDigest: old.Baseline.ConfigDigest, RunManifestDigest: validation.RunManifestDigest(strings.Repeat("3", 64))},
-		}}, ValidationArtifactDigest: strings.Repeat("4", 64), SourceCodeRevision: stage07SourceSHA})
+		}}, ValidationArtifactDigest: stage07AuditedSourceDigest, SourceCodeRevision: stage07SourceSHA})
 	}
 	return refs
 }
@@ -77,10 +78,10 @@ func TestStage07SpecDerivesV3FamilyAndPreservesPinnedGates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if next.FamilyID == old.FamilyID || next.FamilyID == "" || next.Candidate.ImplementationDigest != stage07CandidateImplementation || next.Baseline.ImplementationDigest != stage07BaselineImplementation || next.CodeRevision != strings.Repeat("9", 40) || next.Policies.Execution != "backtest-execution-v3" || next.ExecutionSemantics["liquidity"] != "full_fill_ohlcv" || next.ExecutionSemantics["no_fill_rule"] != stage07NoFillRule || !reflect.DeepEqual(next.FoldSourceJobIDs, []uint{72, 73, 999}) {
+	if next.FamilyID == old.FamilyID || next.FamilyID == "" || next.Candidate.ImplementationDigest != stage07CandidateImplementation || next.Baseline.ImplementationDigest != stage07BaselineImplementation || next.CodeRevision != strings.Repeat("9", 40) || next.Policies.Execution != "backtest-execution-v3" || next.ExecutionSemantics["liquidity"] != "full_fill_ohlcv" || next.ExecutionSemantics["no_fill_rule"] != stage07NoFillRule || !reflect.DeepEqual(next.FoldSourceJobIDs, []uint{75, 76, 999}) {
 		t.Fatal("v3 spec identity or execution semantics incorrect")
 	}
-	if !reflect.DeepEqual(next.Folds, old.Folds) || !reflect.DeepEqual(next.PromotionThresholds, old.PromotionThresholds) || !reflect.DeepEqual(next.RollbackThresholds, old.RollbackThresholds) || !reflect.DeepEqual(next.Samples, old.Samples) || next.BootstrapIterations != old.BootstrapIterations || !reflect.DeepEqual(next.CapacityStress, old.CapacityStress) || !reflect.DeepEqual(next.BaselineComparability, old.BaselineComparability) || next.Policies.Cost != old.Policies.Cost || old.ExecutionSemantics["no_fill_rule"] != "" {
+	if !reflect.DeepEqual(next.Folds, old.Folds) || !reflect.DeepEqual(next.PromotionThresholds, old.PromotionThresholds) || !reflect.DeepEqual(next.RollbackThresholds, old.RollbackThresholds) || !reflect.DeepEqual(next.Samples, old.Samples) || next.BootstrapIterations != old.BootstrapIterations || !reflect.DeepEqual(next.CapacityStress, old.CapacityStress) || !reflect.DeepEqual(next.BaselineComparability, old.BaselineComparability) || next.Candidate.ConfigDigest != old.Candidate.ConfigDigest || next.Baseline.ConfigDigest != old.Baseline.ConfigDigest || next.Policies.Cost != old.Policies.Cost || old.ExecutionSemantics["no_fill_rule"] != "" {
 		t.Fatal("pinned old spec mutated or weakened")
 	}
 }
@@ -88,11 +89,16 @@ func TestStage07SpecDerivesV3FamilyAndPreservesPinnedGates(t *testing.T) {
 func TestStage07ReferenceSetRejectsImplementationOrConfigMismatch(t *testing.T) {
 	old := stage07SpecFixture(t)
 	for name, mutate := range map[string]func([]stage07SourceReference){
-		"pre-boundary source": func(refs []stage07SourceReference) {
-			refs[1].Comparison.JobID = 71
+		"pre-repair source": func(refs []stage07SourceReference) {
+			refs[1].Comparison.JobID = 74
 		},
 		"wrong first source": func(refs []stage07SourceReference) {
-			refs[0].Comparison.JobID = 73
+			refs[0].Comparison.JobID = 76
+		},
+		"pre-fix baseline implementation": func(refs []stage07SourceReference) {
+			r := refs[1].Comparison.Strategies[old.Baseline.ID]
+			r.ImplementationDigest = validation.ImplementationDigest("7849c702ff03da0104be460aec00f524c38e0d5481f110d3cadd9b9c5c8d7c8a")
+			refs[1].Comparison.Strategies[old.Baseline.ID] = r
 		},
 		"v1 implementation": func(refs []stage07SourceReference) {
 			r := refs[1].Comparison.Strategies[old.Candidate.ID]
@@ -112,6 +118,16 @@ func TestStage07ReferenceSetRejectsImplementationOrConfigMismatch(t *testing.T) 
 		},
 		"different source artifact digest": func(refs []stage07SourceReference) {
 			refs[2].ValidationArtifactDigest = strings.Repeat("6", 64)
+		},
+		"uniform unreviewed comparison digest": func(refs []stage07SourceReference) {
+			for i := range refs {
+				refs[i].Comparison.ArtifactDigest = strings.Repeat("5", 64)
+			}
+		},
+		"uniform unreviewed source digest": func(refs []stage07SourceReference) {
+			for i := range refs {
+				refs[i].ValidationArtifactDigest = strings.Repeat("6", 64)
+			}
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -190,11 +206,11 @@ func TestStage07ReviewedPlanRejectsAlteredSpec(t *testing.T) {
 }
 
 func TestStage07RequiresThreeDistinctNewSources(t *testing.T) {
-	ids, err := parseStage07SourceIDs("72,73,999")
+	ids, err := parseStage07SourceIDs("75,76,999")
 	if err != nil || len(ids) != 3 {
 		t.Fatalf("new sources rejected: %v", err)
 	}
-	for _, value := range []string{"66,67,68", "69,70,71", "69,73,999", "71,73,999", "72,72,999", "72,73", "72,73,999,1000", "72,abc,999", "73,74,999"} {
+	for _, value := range []string{"66,67,68", "72,73,74", "74,76,999", "75,74,999", "75,75,999", "75,76", "75,76,999,1000", "75,abc,999", "76,77,999"} {
 		if _, err := parseStage07SourceIDs(value); err == nil {
 			t.Fatalf("unsafe sources accepted: %s", value)
 		}
@@ -202,16 +218,29 @@ func TestStage07RequiresThreeDistinctNewSources(t *testing.T) {
 }
 
 func TestStage07ReviewedSourceCheckpointPins(t *testing.T) {
-	if stage07SourceSHA != "7e8eadb5eec18fb69837f682d2de8d3033ec269e" ||
+	if stage07SourceSHA != "149747021a7e40bf76c0a9c295466470e2770618" ||
+		stage07AuditedComparisonDigest != "d4bc2aee9387f5377d0954686af8efdf74a467c75dfe6cbc2605994f3ddebc4b" ||
+		stage07AuditedSourceDigest != "860f68bf0e1befff3c2c1f30ba926fc050439bae92cfa2c4ac303001f45c65ff" ||
 		stage07CandidateImplementation != "d1710c8250f660d56d824e59cb58cfcc6f2053c68a44e28c94be29613db790c4" ||
-		stage07BaselineImplementation != "7849c702ff03da0104be460aec00f524c38e0d5481f110d3cadd9b9c5c8d7c8a" {
+		stage07BaselineImplementation != "d1710c8250f660d56d824e59cb58cfcc6f2053c68a44e28c94be29613db790c4" {
 		t.Fatal("reviewed source checkpoint identities changed")
 	}
 }
 
 func TestStage07IdempotencyKeyMustBeFresh(t *testing.T) {
-	prior := fmt.Sprintf("%x", sha256.Sum256([]byte("previous-key")))
-	if stage07IdempotencyKeyNew("previous-key", prior) || !stage07IdempotencyKeyNew("different-key", prior) || stage07IdempotencyKeyNew("short", prior) {
+	prior1 := fmt.Sprintf("%x", sha256.Sum256([]byte("previous-key-one")))
+	prior2 := fmt.Sprintf("%x", sha256.Sum256([]byte("previous-key-two")))
+	prior := [2]string{prior1, prior2}
+	if stage07IdempotencyKeyNew("previous-key-one", prior) || stage07IdempotencyKeyNew("previous-key-two", prior) || !stage07IdempotencyKeyNew("different-key", prior) || stage07IdempotencyKeyNew("short", prior) {
 		t.Fatal("prior or invalid attempt key accepted")
+	}
+}
+
+func TestStage07PriorFailedAttemptLineageIsPinned(t *testing.T) {
+	if !reflect.DeepEqual(stage07PriorFailedExperiments(), []string{
+		"2c1ab23be00a734b6f53224b7a65f79725e88dc63ed91a71a6fb6064a92dcc63",
+		"4cceee430468b9515c60033e1ca5edac0ab46289a47761e9d9ece441918264b4",
+	}) || stage07BoundaryAttemptKeySHA != "49e304cbd812e5df58d00c1a94fc6e3774c46aa77903f83498b5eb7a7dfbef48" || stage07AllocationAttemptKeySHA != "f64edf70ba81edd5672a4baa8e8e95c1ba707e55539e5b6033d6e512deb9c337" {
+		t.Fatal("prior failed Stage 07 attempt lineage changed")
 	}
 }
