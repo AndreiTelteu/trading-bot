@@ -326,3 +326,21 @@ diagnostic must use the exact shared preparation function, including root and
 fold serialization, size limits, and digests, before any further source budget.
 No old outcome is rewritten. All fifteen A sources since job 66 are consumed;
 B/C remain unsubmitted. No new source or Stage07 attempt is authorized here.
+
+## Compact-envelope full diagnostic (2026-09-27)
+
+One private full walk-forward diagnostic at
+`a046554ac0d04b225bbee16b64ee403b760ccee7` passed the exact shared
+`prepareEvidenceForPersistence` function and full in-memory hydration with
+byte-identical reconstructed result, exit 0 (1578.82 seconds). The canonical
+root measured 3,284 bytes; complete folds measured 930,202 / 979,531 / 997,398
+bytes, totaling 2,907,131. These are measurements of this diagnostic, not the
+unretained payload of the earlier failed attempt. All primitives were retained.
+
+Audit SHA-256: `762f1fe8d57f5eb25982dd1668aaccd98062892dfa3e555413bd6717defcfe46`.
+Historical source 78 supplied configuration/data provenance only. The temporary
+bridge/test/binary were removed; the dedicated checkout was clean and selected
+clone counts unchanged. This exercised no authoritative source loading or
+transactional evidence write. Evaluation ran internally, but no performance or
+statistical-gate values were reported or used for tuning. No old outcome was
+changed and no holdout was queried.

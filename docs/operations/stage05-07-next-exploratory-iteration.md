@@ -1,6 +1,33 @@
 # Stage 05/07 next exploratory iteration (predeclared, 2026-09-26)
 
-## Current status: validation repair and bounded source renewal
+## Current status: compact evidence repair and bounded source renewal
+
+The exact-repeat sources 78–80 led to experiment `530c5d21...`, which recorded
+an immutable failed outcome because the former duplicated root exceeded 2 MiB.
+No fold or statistical results persisted. Preserve that failed outcome and the
+separate registered/unfinished a8 record without rewriting either.
+
+The compact-envelope repair at `a046554ac0d04b225bbee16b64ee403b760ccee7`
+passed serial PostgreSQL regression packages and one private full walk-forward
+plus exact serialization/size/hydration diagnostic. The latter measured a
+3,284-byte root and complete folds totaling 2,907,131 bytes, with exact
+in-memory result roundtrip. Its audit SHA is
+`762f1fe8d57f5eb25982dd1668aaccd98062892dfa3e555413bd6717defcfe46`.
+It did not establish authoritative source provenance or persist evidence.
+
+Declare at most three new row-A sources under the committed compact-evidence
+repair, unchanged frozen request, dataset, interval, costs, and strategy.
+Initially authorize only the first source; audit it before the second and
+require exact canonical digests/retained bytes before the third. Stop on error
+or mismatch; no automatic retries. The cumulative cap becomes twenty sources
+since job 66, including the two still-unused B/C slots. This is a technical
+repair allowance, not new independent evidence or a parameter search. Stage07
+prepare/run requires three audited sources, a reviewed driver repin retaining
+all prior failed/unfinished attempts, and a fresh exact plan. Existing driver
+pins remain historical and blocked for new internal code; do not loosen the
+source-to-driver path allowlist. No promotion or holdout use is authorized.
+
+## Prior status: validation repair and bounded source renewal
 
 The next driver is being repinned from committed source checkpoint
 `d824c0811ecc3199f9125166b3722d29ae5bc0bb`. Audited jobs **#78 and #79**
