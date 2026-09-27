@@ -375,3 +375,50 @@ rows bounded at 16 MiB each and 64 MiB total, and historical v2 root reads.
 The private root/fold byte measurements above establish readiness of that
 diagnostic only; they do not establish source authority, database persistence,
 or statistical gates for a new attempt.
+
+## Stage 07 completed evidence: technical pass, statistical rejection
+
+Experiment `16799f25f30d5e48e158329080375c805c047db16dbdf6087f92b3c3cf5f496b`
+completed once under clean driver `85d15dd5c7ede34c253f4ab3e7b953e45c58eac5`
+with sources 81–83 and reviewed plan SHA
+`30256be7cb593b0ef599fa4801fd75c1b427909f4510d8fd4872438a63d164ec`.
+Process exit 0; a compact v3 root, three complete v2 folds, and one research
+outcome persisted. Root digest:
+`61bb442a4deca049643af1706cbc429d65999ae2312018235f5171028ef8ee61`.
+Read-only repository hydration verified root/fold/frozen digests, exact plan
+identity, rederived fold metrics and aggregate, and reconciled accounting and
+matched exposure/turnover. Root/outcome status `passed` denotes completed
+technical evidence. **Aggregate statistical `passed` is false.**
+
+| Frozen gate | Evaluated quantity | Result |
+|---|---:|---|
+| After-cost return > 0 | Lower bound −0.029574118393 | Fail |
+| Stressed after-cost return > 0 | Lower bound −0.029812228452682926 | Fail |
+| Declared-baseline-relative return > 0 | Lower bound 0.000013391340000116353 | Pass |
+| Coverage >= 1 | 1 | Pass |
+| Max drawdown <= 0.2 | 0.05121098030728516 | Pass |
+
+The negative lower bounds above are gate inputs, not the aggregate point return.
+
+| Exploratory test fold | Candidate return | Matched baseline return | Paired excess (percentage points) |
+|---|---:|---:|---:|
+| 0 | −2.9574118393% | −3.0456836434% | +0.0882718041 |
+| 1 | −1.2663843259% | −1.2677234599% | +0.0013391340 |
+| 2 | +2.1413149277% | +2.1190118355% | +0.0223030922 |
+
+The candidate exceeds its matched baseline in each window by a small amount,
+but loses money in two windows and fails the predeclared positive-return and
+stress gates. The full-interval +2.9501% remains exploratory historical evidence;
+it does not override these results. Three chronological test windows and prior
+parameter search on the same dataset limit inference. Technical source repeats
+are not independent trials. No holdout was used and no promotion is authorized.
+
+Private terminal audit SHA:
+`edb7f2bca782ba5e83a89379fafd5f3f4b0d7983caf13fe3b52a65bb20760084`.
+Immutable export SHA:
+`3ce5e8ec78ba03bc9f7fd0c152561f21a22e9456943b2b8db826aa5c34bb01cd`.
+The clone gained one experiment/attempt/root/outcome and three folds, with no
+new backtest source jobs. Temporary verifier removed, driver checkout clean.
+The technical repair sequence is complete for this fixed candidate. Stop before
+further B/C runs or parameter hypotheses; review the negative windows and agree
+on a bounded next hypothesis without changing the failed gates retrospectively.

@@ -1,6 +1,22 @@
 # Stage 05/07 next exploratory iteration (predeclared, 2026-09-26)
 
-## Current status: compact evidence repair and bounded source renewal
+## Current result: complete technical evidence, statistical gates failed
+
+The single experiment `16799f25...` from sources 81–83 completed with a verified
+compact root and three complete folds. Technical root/outcome status is passed;
+aggregate statistical `passed` is false. Positive after-cost and stressed-return
+gates fail on their lower bounds. Coverage, drawdown and matched-baseline excess
+gates pass. Candidate returns across the three exploratory windows are
+−2.9574%, −1.2664%, +2.1413%; excess over the matched baseline is positive but
+small in each. See the [full result and audit identities](../research/stage05-v3-row-a.md).
+
+Do not treat the technical status as promotion permission. No holdout was used.
+All eighteen A source jobs since66 are consumed; two B/C slots remain reserved,
+but no further submission is authorized at this checkpoint. Discuss the next
+bounded hypothesis using persisted fold diagnostics, preserve failed gates and
+full research lineage, and do not reuse or relabel historical data as confirmatory.
+
+## Prior status: compact evidence repair and bounded source renewal
 
 The driver is now repinned to committed compact-evidence source checkpoint
 `7dc99449fc7297cd00ee6097de05d43916907b48`. Source jobs **#81 and #82**
