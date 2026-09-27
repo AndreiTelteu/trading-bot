@@ -2,6 +2,29 @@
 
 ## Current status: validation repair and bounded source renewal
 
+The next driver is being repinned from committed source checkpoint
+`d824c0811ecc3199f9125166b3722d29ae5bc0bb`. Audited jobs **#78 and #79**
+match exactly on canonical comparison digest
+`d4bc2aee9387f5377d0954686af8efdf74a467c75dfe6cbc2605994f3ddebc4b`
+and Stage 07 source-artifact digest
+`1421afe0a536ea09158e015b4acfb60d68c901586b9d52268b074d49b2bed042`.
+The third repeat is pending; no three-source result or new Stage 07 plan is
+claimed. The repinned driver requires source #78 first, rejects IDs ≤77,
+requires exact canonical digests across all three source jobs, and permits
+only driver/docs changes between source and actual execution revision. Both
+strategy implementation digests remain
+`d1710c8250f660d56d824e59cb58cfcc6f2053c68a44e28c94be29613db790c4`;
+candidate and baseline configuration digests and every frozen fold, tuning
+choice, cost, sample requirement, and gate remain distinct and unchanged.
+
+The next plan and append-only attempt ledger identify the two prior immutable
+failed experiments separately from registered-but-unfinished experiment
+`a8f62251ce99914384d5e5a0edd747dc1053b7a4ea9d379bae5d2cb15c404931`.
+The old reviewed plan's idempotency key is blocked by its SHA-256, without
+storing the key in code or treating the unfinished record as failed evidence.
+A new attempt requires a fresh key. No retrospective repair or retry of that
+record is authorized.
+
 Sources 75–77 matched exactly. Their Stage 07 attempt `a8f62251...` exited
 with an aggregate-reproduction error before evidence persistence and remains
 registered/unfinished, with no immutable outcome. Preserve that distinction
@@ -35,25 +58,25 @@ validation code until explicitly updated from audited fresh artifacts.
 
 ## Historical Stage 07 clone driver checkpoint (2026-09-27)
 
-`cmd/researchlab` has an explicit `-stage07-mode prepare|run` path for one **new
-exploratory** validation manifest. Source identity is now pinned to reviewed
+`cmd/researchlab` gained an explicit `-stage07-mode prepare|run` path for one
+exploratory validation manifest. The historical driver pinned reviewed
 matched-baseline repair checkpoint `149747021a7e40bf76c0a9c295466470e2770618`
-and audited first source job #75. Jobs #75 and #76 have identical canonical
+and audited first source job #75. Jobs #75 and #76 had identical canonical
 comparison digest `d4bc2aee9387f5377d0954686af8efdf74a467c75dfe6cbc2605994f3ddebc4b`
 and source-artifact digest `860f68bf0e1befff3c2c1f30ba926fc050439bae92cfa2c4ac303001f45c65ff`;
-their retained exports match byte-for-byte. The third source ID and audit are
-pending. Jobs #66–68 remain diagnostic attempts from `ad775fd` after their
+their retained exports match byte-for-byte. Job #77 later matched as well.
+Jobs #66–68 remain diagnostic attempts from `ad775fd` after their
 exact-repeat digest mismatch. Jobs #69–71 reproduced under `5c756fa`, and
 jobs #72–74 reproduced under `7e8eadb`; both groups belong to earlier
-executables and cannot be used in this new attempt. No Stage 07 preparation or
-run at this checkpoint is authorized until the third source and exact plan are
-reviewed. The driver is restricted to the same marked, runtime-only PostgreSQL
+executables and cannot be used in the current attempt. After job #77 matched,
+the reviewed plan was run once and left the registered-but-unfinished
+experiment recorded above. The driver is restricted to the marked, runtime-only PostgreSQL
 16 research clone as the Stage 05 source runner. It does not start the server
 or schedulers, use migration/ledger/parity credentials,
 touch the production database, or consume a confirmatory holdout. This repin is
-code only: no Stage 07 prepare or run command using #75+ has been
-executed. Both earlier failed experiments remain immutable. A human must
-review the exact private plan and its SHA-256 before invoking `run`.
+code changes were reviewed before that historical execution. Both earlier
+failed experiments remain immutable. A new invocation still requires a fresh
+reviewed private plan and its SHA-256.
 
 The driver reads the byte-pinned prior exploratory spec (SHA-256
 `a3b0d140308a1c383882012c92a4937df2da96908e5e4b6215bb037ae02e95c7`),
@@ -468,8 +491,9 @@ not new independent statistical evidence or permission to tune on test windows.
 Fresh source jobs #75–77 matched exactly on canonical comparison/source
 digests and retained exports. The subsequent aggregate-reproduction failure
 and superseding validation repair program are recorded at the top of this
-runbook. The new driver refuses sources #74 and below and
-both prior failed-plan keys. B/C remain unsubmitted; these technical repeats
+runbook. That historical driver refused sources #74 and below and
+both prior failed-plan keys. The current repin also blocks sources #77 and
+below and the registered-but-unfinished attempt key. B/C remain unsubmitted; these technical repeats
 are not independent statistical observations or new parameter hypotheses.
 
 Each Stage 05 comparison also evaluates four fixed, embedded Stage 06

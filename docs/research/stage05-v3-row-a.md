@@ -144,6 +144,17 @@ necessary under the declared residual-repair budget.
 
 ### Third Stage 07 attempt: aggregate reproduction and unfinished record
 
+The next source program is pinned to committed validation-repair checkpoint
+`d824c0811ecc3199f9125166b3722d29ae5bc0bb`. Jobs **#78 and #79** have
+matched canonical comparison digest
+`d4bc2aee9387f5377d0954686af8efdf74a467c75dfe6cbc2605994f3ddebc4b`
+and Stage 07 source-artifact digest
+`1421afe0a536ea09158e015b4acfb60d68c901586b9d52268b074d49b2bed042`.
+The third exact repeat is pending. No new Stage 07 plan, run, or outcome is
+claimed. The driver repin requires #78 first and preserves the full earlier
+lineage: two immutable failed outcomes and the separate registered-but-unfinished
+attempt below. Its prior idempotency key cannot be reused.
+
 Experiment `a8f62251ce99914384d5e5a0edd747dc1053b7a4ea9d379bae5d2cb15c404931`
 used clean driver `c56e924f72898570b81f14eb1c87194a5df0f5f1`, sources 75–77,
 and reviewed plan SHA-256

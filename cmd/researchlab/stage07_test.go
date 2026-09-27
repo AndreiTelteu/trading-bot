@@ -62,7 +62,7 @@ func stage07SpecFixture(t *testing.T) validation.ManifestSpec {
 func stage07RefsFixture(old validation.ManifestSpec) []stage07SourceReference {
 	refs := make([]stage07SourceReference, 0, 3)
 	// 999 is synthetic; the third repaired source has not been audited.
-	for _, id := range []uint{75, 76, 999} {
+	for _, id := range []uint{78, 79, 999} {
 		refs = append(refs, stage07SourceReference{Comparison: backtest.Stage07ComparisonReference{JobID: id, Candidate: old.Candidate.ID + "@" + old.Candidate.Version, DatasetDigest: old.DatasetDigest, ArtifactDigest: stage07AuditedComparisonDigest, Strategies: map[string]backtest.Stage07StrategyRef{
 			old.Candidate.ID: {ImplementationDigest: stage07CandidateImplementation, ConfigDigest: old.Candidate.ConfigDigest, RunManifestDigest: validation.RunManifestDigest(strings.Repeat("2", 64))},
 			old.Baseline.ID:  {ImplementationDigest: stage07BaselineImplementation, ConfigDigest: old.Baseline.ConfigDigest, RunManifestDigest: validation.RunManifestDigest(strings.Repeat("3", 64))},
@@ -78,7 +78,7 @@ func TestStage07SpecDerivesV3FamilyAndPreservesPinnedGates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if next.FamilyID == old.FamilyID || next.FamilyID == "" || next.Candidate.ImplementationDigest != stage07CandidateImplementation || next.Baseline.ImplementationDigest != stage07BaselineImplementation || next.CodeRevision != strings.Repeat("9", 40) || next.Policies.Execution != "backtest-execution-v3" || next.ExecutionSemantics["liquidity"] != "full_fill_ohlcv" || next.ExecutionSemantics["no_fill_rule"] != stage07NoFillRule || !reflect.DeepEqual(next.FoldSourceJobIDs, []uint{75, 76, 999}) {
+	if next.FamilyID == old.FamilyID || next.FamilyID == "" || next.Candidate.ImplementationDigest != stage07CandidateImplementation || next.Baseline.ImplementationDigest != stage07BaselineImplementation || next.CodeRevision != strings.Repeat("9", 40) || next.Policies.Execution != "backtest-execution-v3" || next.ExecutionSemantics["liquidity"] != "full_fill_ohlcv" || next.ExecutionSemantics["no_fill_rule"] != stage07NoFillRule || !reflect.DeepEqual(next.FoldSourceJobIDs, []uint{78, 79, 999}) {
 		t.Fatal("v3 spec identity or execution semantics incorrect")
 	}
 	if !reflect.DeepEqual(next.Folds, old.Folds) || !reflect.DeepEqual(next.PromotionThresholds, old.PromotionThresholds) || !reflect.DeepEqual(next.RollbackThresholds, old.RollbackThresholds) || !reflect.DeepEqual(next.Samples, old.Samples) || next.BootstrapIterations != old.BootstrapIterations || !reflect.DeepEqual(next.CapacityStress, old.CapacityStress) || !reflect.DeepEqual(next.BaselineComparability, old.BaselineComparability) || next.Candidate.ConfigDigest != old.Candidate.ConfigDigest || next.Baseline.ConfigDigest != old.Baseline.ConfigDigest || next.Policies.Cost != old.Policies.Cost || old.ExecutionSemantics["no_fill_rule"] != "" {
@@ -90,10 +90,10 @@ func TestStage07ReferenceSetRejectsImplementationOrConfigMismatch(t *testing.T) 
 	old := stage07SpecFixture(t)
 	for name, mutate := range map[string]func([]stage07SourceReference){
 		"pre-repair source": func(refs []stage07SourceReference) {
-			refs[1].Comparison.JobID = 74
+			refs[1].Comparison.JobID = 77
 		},
 		"wrong first source": func(refs []stage07SourceReference) {
-			refs[0].Comparison.JobID = 76
+			refs[0].Comparison.JobID = 79
 		},
 		"pre-fix baseline implementation": func(refs []stage07SourceReference) {
 			r := refs[1].Comparison.Strategies[old.Baseline.ID]
@@ -206,11 +206,11 @@ func TestStage07ReviewedPlanRejectsAlteredSpec(t *testing.T) {
 }
 
 func TestStage07RequiresThreeDistinctNewSources(t *testing.T) {
-	ids, err := parseStage07SourceIDs("75,76,999")
+	ids, err := parseStage07SourceIDs("78,79,999")
 	if err != nil || len(ids) != 3 {
 		t.Fatalf("new sources rejected: %v", err)
 	}
-	for _, value := range []string{"66,67,68", "72,73,74", "74,76,999", "75,74,999", "75,75,999", "75,76", "75,76,999,1000", "75,abc,999", "76,77,999"} {
+	for _, value := range []string{"66,67,68", "72,73,74", "75,76,77", "77,79,999", "78,77,999", "78,78,999", "78,79", "78,79,999,1000", "78,abc,999", "79,80,999"} {
 		if _, err := parseStage07SourceIDs(value); err == nil {
 			t.Fatalf("unsafe sources accepted: %s", value)
 		}
@@ -218,9 +218,9 @@ func TestStage07RequiresThreeDistinctNewSources(t *testing.T) {
 }
 
 func TestStage07ReviewedSourceCheckpointPins(t *testing.T) {
-	if stage07SourceSHA != "149747021a7e40bf76c0a9c295466470e2770618" ||
+	if stage07SourceSHA != "d824c0811ecc3199f9125166b3722d29ae5bc0bb" ||
 		stage07AuditedComparisonDigest != "d4bc2aee9387f5377d0954686af8efdf74a467c75dfe6cbc2605994f3ddebc4b" ||
-		stage07AuditedSourceDigest != "860f68bf0e1befff3c2c1f30ba926fc050439bae92cfa2c4ac303001f45c65ff" ||
+		stage07AuditedSourceDigest != "1421afe0a536ea09158e015b4acfb60d68c901586b9d52268b074d49b2bed042" ||
 		stage07CandidateImplementation != "d1710c8250f660d56d824e59cb58cfcc6f2053c68a44e28c94be29613db790c4" ||
 		stage07BaselineImplementation != "d1710c8250f660d56d824e59cb58cfcc6f2053c68a44e28c94be29613db790c4" {
 		t.Fatal("reviewed source checkpoint identities changed")
@@ -230,17 +230,36 @@ func TestStage07ReviewedSourceCheckpointPins(t *testing.T) {
 func TestStage07IdempotencyKeyMustBeFresh(t *testing.T) {
 	prior1 := fmt.Sprintf("%x", sha256.Sum256([]byte("previous-key-one")))
 	prior2 := fmt.Sprintf("%x", sha256.Sum256([]byte("previous-key-two")))
-	prior := [2]string{prior1, prior2}
-	if stage07IdempotencyKeyNew("previous-key-one", prior) || stage07IdempotencyKeyNew("previous-key-two", prior) || !stage07IdempotencyKeyNew("different-key", prior) || stage07IdempotencyKeyNew("short", prior) {
+	prior3 := fmt.Sprintf("%x", sha256.Sum256([]byte("previous-key-three")))
+	prior := [3]string{prior1, prior2, prior3}
+	if stage07IdempotencyKeyNew("previous-key-one", prior) || stage07IdempotencyKeyNew("previous-key-two", prior) || stage07IdempotencyKeyNew("previous-key-three", prior) || !stage07IdempotencyKeyNew("different-key", prior) || stage07IdempotencyKeyNew("short", prior) {
 		t.Fatal("prior or invalid attempt key accepted")
 	}
 }
 
-func TestStage07PriorFailedAttemptLineageIsPinned(t *testing.T) {
+func TestStage07PriorAttemptLineageIsPinned(t *testing.T) {
 	if !reflect.DeepEqual(stage07PriorFailedExperiments(), []string{
 		"2c1ab23be00a734b6f53224b7a65f79725e88dc63ed91a71a6fb6064a92dcc63",
 		"4cceee430468b9515c60033e1ca5edac0ab46289a47761e9d9ece441918264b4",
-	}) || stage07BoundaryAttemptKeySHA != "49e304cbd812e5df58d00c1a94fc6e3774c46aa77903f83498b5eb7a7dfbef48" || stage07AllocationAttemptKeySHA != "f64edf70ba81edd5672a4baa8e8e95c1ba707e55539e5b6033d6e512deb9c337" {
-		t.Fatal("prior failed Stage 07 attempt lineage changed")
+	}) || !reflect.DeepEqual(stage07PriorRegisteredUnfinishedExperiments(), []string{"a8f62251ce99914384d5e5a0edd747dc1053b7a4ea9d379bae5d2cb15c404931"}) || stage07BoundaryAttemptKeySHA != "49e304cbd812e5df58d00c1a94fc6e3774c46aa77903f83498b5eb7a7dfbef48" || stage07AllocationAttemptKeySHA != "f64edf70ba81edd5672a4baa8e8e95c1ba707e55539e5b6033d6e512deb9c337" || stage07RegisteredUnfinishedAttemptKeySHA != "e482b724e294d0633a040f32c59a92dffeb0debc0199ff56e1912ff90f29e951" {
+		t.Fatal("prior Stage 07 attempt lineage changed")
+	}
+}
+
+func TestStage07PlanMetadataRequiresRegisteredUnfinishedLineage(t *testing.T) {
+	old := stage07SpecFixture(t)
+	plan := stage07Plan{SchemaVersion: stage07PlanVersion, SourceCodeRevision: stage07SourceSHA, DriverCodeRevision: strings.Repeat("9", 40), OldManifestSHA256: stage07OldSpecSHA, Creator: "researcher", IdempotencyKey: "new-key-123", PriorFailedExperimentIDs: stage07PriorFailedExperiments(), PriorRegisteredUnfinishedExperimentIDs: stage07PriorRegisteredUnfinishedExperiments(), SourceReferences: stage07RefsFixture(old)}
+	opts := stage07Options{DriverSHA: plan.DriverCodeRevision}
+	if err := validateStage07PlanMetadata(plan, opts); err != nil {
+		t.Fatal(err)
+	}
+	plan.PriorRegisteredUnfinishedExperimentIDs = nil
+	if err := validateStage07PlanMetadata(plan, opts); err == nil {
+		t.Fatal("registered unfinished attempt missing from lineage")
+	}
+	plan.PriorRegisteredUnfinishedExperimentIDs = stage07PriorRegisteredUnfinishedExperiments()
+	plan.IdempotencyKey = "short"
+	if err := validateStage07PlanMetadata(plan, opts); err == nil {
+		t.Fatal("invalid idempotency key accepted")
 	}
 }
