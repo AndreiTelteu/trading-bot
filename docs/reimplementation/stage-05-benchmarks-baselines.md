@@ -64,6 +64,16 @@ Establish minimal, understandable baselines before introducing a production cand
   is re-evaluated only at the next normal decision, without latching. Final
   `liquidate` fails on a no-fill exit; `mark_to_market` retains marked inventory.
   Positive-volume v3 economics match v2; v1/v2 remain reproducible.
+- [x] The matched momentum baseline uses the candidate v1.1.0 mandatory-exit
+  post-fill residual check. A completed sell that leaves inventory below the
+  point-in-time exchange quantity or notional minimum records correlated
+  constraint-residual evidence. Only that evidenced dust may use the existing
+  allocation tolerance when the target is zero. An executable remainder still
+  fails, and a zero-volume no-fill is never classified as dust. The prior
+  baseline v1.0.0 replay could reject an otherwise valid risk-off exit because
+  its post-fill dust had no residual evidence. This correction changes the
+  baseline implementation and executable source identities; earlier Stage 07
+  source evidence must be regenerated, not relabeled.
 - [x] Replay floating-point reductions over held positions, exposure, and
   target weights use economic symbol order. This fixes last-bit drift from Go
   map iteration without rounding metrics or relaxing canonical artifact digests.

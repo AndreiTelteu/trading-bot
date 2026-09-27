@@ -992,7 +992,7 @@ func rebalanceStage05(ledger *backtestMemoryLedger, config BacktestConfig, strat
 				}
 				return err
 			}
-			if mandatory && desired <= 1e-10 && config.StrategyVersion == "1.1.0" && len(ledger.noFills) == beforeNoFills {
+			if mandatory && desired <= 1e-10 && usesMandatoryExitResidualEvidence(config.StrategyID, config.StrategyVersion) && len(ledger.noFills) == beforeNoFills {
 				if err := reconcileMandatoryExitResidual(ledger, config, symbol, delta, fills[symbol], fillAt); err != nil {
 					return err
 				}
@@ -1118,6 +1118,11 @@ func reconcileMandatoryExitResidual(ledger *backtestMemoryLedger, config Backtes
 	}
 	ledger.allocationDiagnostics = append(ledger.allocationDiagnostics, StrategyTraceDiagnostic{Code: DiagnosticConstraintResidual, Symbol: symbol, Details: fmt.Sprintf("side=sell requested=%s existing=%s provider=post_fill_below_minimum", decimalString(requested), decimalString(remaining.Size))})
 	return nil
+}
+
+func usesMandatoryExitResidualEvidence(id, version string) bool {
+	return (id == StrategyTrendMomentumCandidate && version == "1.1.0") ||
+		(id == StrategyMatchedMomentumID && version == "1.0.0")
 }
 
 func concurrentReasonSuffix(values []string) string {
@@ -2265,7 +2270,7 @@ func strategyImplementationDigest(id, version string) string {
 		return tradingcore.StrategyArtifactDigest("legacy")
 	}
 	base := tradingcore.StrategyArtifactDigest("target")
-	if id == StrategyTrendMomentumCandidate && version == "1.1.0" {
+	if usesMandatoryExitResidualEvidence(id, version) {
 		sum := sha256.Sum256([]byte(base + "\x00mandatory-exit-residual-v1"))
 		return fmt.Sprintf("%x", sum)
 	}

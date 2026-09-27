@@ -54,6 +54,10 @@ This stage implements a research/shadow candidate. It does not authorize paper/l
 - [x] With/without volatility normalization.
 - [x] Multiple bounded lookback/rebalance variants predefined before evaluation.
 - [x] Equal-exposure comparison against Stage 05 baselines.
+- [x] The matched momentum baseline shares the candidate v1.1.0 mandatory-exit
+  post-fill residual rule: below-minimum exchange dust is explicitly evidenced,
+  while an executable remainder is rejected. Candidate v1.0.0 retains its
+  original strict zero-target behavior.
 - [x] Report turnover and cost sensitivity, not only raw return.
 
 ## Testing instructions
