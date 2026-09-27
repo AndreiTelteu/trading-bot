@@ -22,16 +22,18 @@ import (
 )
 
 const (
-	stage07SourceSHA               = "d824c0811ecc3199f9125166b3722d29ae5bc0bb"
+	stage07SourceSHA               = "7dc99449fc7297cd00ee6097de05d43916907b48"
 	stage07OldSpecSHA              = "a3b0d140308a1c383882012c92a4937df2da96908e5e4b6215bb037ae02e95c7"
 	stage07AuditedComparisonDigest = "d4bc2aee9387f5377d0954686af8efdf74a467c75dfe6cbc2605994f3ddebc4b"
-	stage07AuditedSourceDigest     = "1421afe0a536ea09158e015b4acfb60d68c901586b9d52268b074d49b2bed042"
+	stage07AuditedSourceDigest     = "545e916d890415fb9af29e0f5bb38ec0cb0a81635e40e4943da3b3c4640db353"
 	// SHA-256 of prior reviewed plan keys; never retain the key values in code.
 	stage07BoundaryAttemptKeySHA             = "49e304cbd812e5df58d00c1a94fc6e3774c46aa77903f83498b5eb7a7dfbef48"
 	stage07AllocationAttemptKeySHA           = "f64edf70ba81edd5672a4baa8e8e95c1ba707e55539e5b6033d6e512deb9c337"
 	stage07RegisteredUnfinishedAttemptKeySHA = "e482b724e294d0633a040f32c59a92dffeb0debc0199ff56e1912ff90f29e951"
+	stage07EvidenceSizeAttemptKeySHA         = "c6652b5505cc5971e1a4d4705408f7137d4316418d1501369cf05dd24114b513"
 	stage07BoundaryFailureID                 = "2c1ab23be00a734b6f53224b7a65f79725e88dc63ed91a71a6fb6064a92dcc63"
 	stage07AllocationFailureID               = "4cceee430468b9515c60033e1ca5edac0ab46289a47761e9d9ece441918264b4"
+	stage07EvidenceSizeFailureID             = "530c5d21a2856d17a8415e04b3d86fb4fa7428e49991ef29b2595e7c563c50de"
 	stage07RegisteredUnfinishedID            = "a8f62251ce99914384d5e5a0edd747dc1053b7a4ea9d379bae5d2cb15c404931"
 	stage07NoFillRule                        = "selected_zero_base_volume_cancel_at_bar_close_v1"
 	stage07PlanVersion                       = "researchlab-stage07-plan-v1"
@@ -63,11 +65,11 @@ func stage07ExactDigest(value string) bool {
 	return len(value) == 64 && strings.Trim(value, "0123456789abcdef") == ""
 }
 
-func stage07PriorAttemptKeyHashes() [3]string {
-	return [3]string{stage07BoundaryAttemptKeySHA, stage07AllocationAttemptKeySHA, stage07RegisteredUnfinishedAttemptKeySHA}
+func stage07PriorAttemptKeyHashes() [4]string {
+	return [4]string{stage07BoundaryAttemptKeySHA, stage07AllocationAttemptKeySHA, stage07RegisteredUnfinishedAttemptKeySHA, stage07EvidenceSizeAttemptKeySHA}
 }
 
-func stage07IdempotencyKeyNew(key string, priorSHAs [3]string) bool {
+func stage07IdempotencyKeyNew(key string, priorSHAs [4]string) bool {
 	if len(key) < 8 || len(key) > 120 {
 		return false
 	}
@@ -81,7 +83,7 @@ func stage07IdempotencyKeyNew(key string, priorSHAs [3]string) bool {
 }
 
 func stage07PriorFailedExperiments() []string {
-	return []string{stage07BoundaryFailureID, stage07AllocationFailureID}
+	return []string{stage07BoundaryFailureID, stage07AllocationFailureID, stage07EvidenceSizeFailureID}
 }
 
 func stage07PriorRegisteredUnfinishedExperiments() []string {
@@ -216,14 +218,14 @@ func parseStage07SourceIDs(raw string) ([]uint, error) {
 	seen := map[uint]bool{}
 	for _, part := range parts {
 		id, err := strconv.ParseUint(strings.TrimSpace(part), 10, 32)
-		if err != nil || id <= 77 || seen[uint(id)] {
+		if err != nil || id <= 80 || seen[uint(id)] {
 			return nil, fmt.Errorf("source IDs must be distinct new jobs")
 		}
 		seen[uint(id)] = true
 		ids = append(ids, uint(id))
 	}
-	if ids[0] != 78 {
-		return nil, fmt.Errorf("audited source #78 must be the first fold reference")
+	if ids[0] != 81 {
+		return nil, fmt.Errorf("audited source #81 must be the first fold reference")
 	}
 	return ids, nil
 }
@@ -271,16 +273,16 @@ func loadStage07References(ids []uint, old validation.ManifestSpec) ([]stage07So
 }
 
 func validateStage07ReferenceSet(refs []stage07SourceReference, old validation.ManifestSpec) error {
-	if len(refs) != 3 || refs[0].Comparison.JobID != 78 {
-		return fmt.Errorf("audited source #78 and two exact repeats are required")
+	if len(refs) != 3 || refs[0].Comparison.JobID != 81 {
+		return fmt.Errorf("audited source #81 and two exact repeats are required")
 	}
 	seen := map[uint]bool{}
 	comparisonDigest, sourceDigest := refs[0].Comparison.ArtifactDigest, refs[0].ValidationArtifactDigest
 	if !stage07ExactDigest(comparisonDigest) || !stage07ExactDigest(sourceDigest) || comparisonDigest != stage07AuditedComparisonDigest || sourceDigest != stage07AuditedSourceDigest {
-		return fmt.Errorf("source canonical digests differ from audited #78")
+		return fmt.Errorf("source canonical digests differ from audited #81")
 	}
 	for _, ref := range refs {
-		if ref.Comparison.JobID <= 77 || seen[ref.Comparison.JobID] {
+		if ref.Comparison.JobID <= 80 || seen[ref.Comparison.JobID] {
 			return fmt.Errorf("source job IDs must be distinct new jobs")
 		}
 		seen[ref.Comparison.JobID] = true
@@ -290,7 +292,7 @@ func validateStage07ReferenceSet(refs []stage07SourceReference, old validation.M
 		candidate, cOK := ref.Comparison.Strategies[old.Candidate.ID]
 		baseline, bOK := ref.Comparison.Strategies[old.Baseline.ID]
 		if !cOK || !bOK || ref.Comparison.Candidate != old.Candidate.ID+"@"+old.Candidate.Version || candidate.ImplementationDigest != stage07CandidateImplementation || baseline.ImplementationDigest != stage07BaselineImplementation || candidate.ConfigDigest != old.Candidate.ConfigDigest || baseline.ConfigDigest != old.Baseline.ConfigDigest || ref.Comparison.DatasetDigest != old.DatasetDigest || ref.SourceCodeRevision != stage07SourceSHA || ref.ValidationArtifactDigest == "" {
-			return fmt.Errorf("Stage 07 source reference differs from audited #78 implementation or pinned configuration/dataset")
+			return fmt.Errorf("Stage 07 source reference differs from audited #81 implementation or pinned configuration/dataset")
 		}
 	}
 	return nil

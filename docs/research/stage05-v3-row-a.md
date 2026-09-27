@@ -150,9 +150,10 @@ matched canonical comparison digest
 `d4bc2aee9387f5377d0954686af8efdf74a467c75dfe6cbc2605994f3ddebc4b`
 and Stage 07 source-artifact digest
 `1421afe0a536ea09158e015b4acfb60d68c901586b9d52268b074d49b2bed042`.
-The third exact repeat is pending. No new Stage 07 plan, run, or outcome is
-claimed. The driver repin requires #78 first and preserves the full earlier
-lineage: two immutable failed outcomes and the separate registered-but-unfinished
+At that point the third exact repeat was pending; #80 later matched before the
+evidence-size attempt documented below. The historical driver repin required
+#78 first and preserved the full earlier lineage: two immutable failed
+outcomes and the separate registered-but-unfinished
 attempt below. Its prior idempotency key cannot be reused.
 
 Experiment `a8f62251ce99914384d5e5a0edd747dc1053b7a4ea9d379bae5d2cb15c404931`
@@ -344,3 +345,33 @@ clone counts unchanged. This exercised no authoritative source loading or
 transactional evidence write. Evaluation ran internally, but no performance or
 statistical-gate values were reported or used for tuning. No old outcome was
 changed and no holdout was queried.
+
+## Compact-envelope source renewal (pending third repeat)
+
+The reviewed source checkpoint is
+`7dc99449fc7297cd00ee6097de05d43916907b48`. Jobs **#81 and #82** have
+audited exact canonical comparison digest
+`d4bc2aee9387f5377d0954686af8efdf74a467c75dfe6cbc2605994f3ddebc4b`
+and complete Stage 07 source-artifact digest
+`545e916d890415fb9af29e0f5bb38ec0cb0a81635e40e4943da3b3c4640db353`.
+Their candidate and matched baseline implementation digest remains
+`d1710c8250f660d56d824e59cb58cfcc6f2053c68a44e28c94be29613db790c4`;
+the two configuration digests remain distinct and unchanged. The third source
+repeat is pending. These technical repeats do not add independent observations,
+and no Stage 07 plan, registration, or run follows until the exact third digest
+and retained bytes are audited.
+
+The next driver pins #81 as the first source and rejects IDs ≤80 while
+preserving the exact three-repeat digest gate and the source-to-driver diff
+allowlist of `cmd/researchlab/**` and `docs/**`. Its lineage records immutable
+failures `2c1ab23...`, `4cceee43...`, and `530c5d21...` separately from the
+registered-but-unfinished `a8f62251...`. All four reviewed prior attempt keys
+are barred by SHA-256; no key value is retained. The frozen exploratory
+folds, thresholds, sample and cost policies, tuning space, and absent holdout
+are unchanged. No earlier outcome is repaired or retried.
+
+The compact persistence contract retains the ≤2 MiB v3 root, complete v2 fold
+rows bounded at 16 MiB each and 64 MiB total, and historical v2 root reads.
+The private root/fold byte measurements above establish readiness of that
+diagnostic only; they do not establish source authority, database persistence,
+or statistical gates for a new attempt.

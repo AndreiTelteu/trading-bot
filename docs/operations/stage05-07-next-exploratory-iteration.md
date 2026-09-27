@@ -2,6 +2,34 @@
 
 ## Current status: compact evidence repair and bounded source renewal
 
+The driver is now repinned to committed compact-evidence source checkpoint
+`7dc99449fc7297cd00ee6097de05d43916907b48`. Source jobs **#81 and #82**
+have audited equal canonical comparison digest
+`d4bc2aee9387f5377d0954686af8efdf74a467c75dfe6cbc2605994f3ddebc4b`
+and Stage 07 source-artifact digest
+`545e916d890415fb9af29e0f5bb38ec0cb0a81635e40e4943da3b3c4640db353`.
+The third exact repeat remains pending; no three-source result, new plan, or
+Stage 07 outcome is claimed. Preparation requires #81 first, rejects IDs ≤80,
+and requires all three canonical digests to agree exactly. Only
+`cmd/researchlab/**` and `docs/**` may differ between this source checkpoint
+and the actual clean committed driver revision. Candidate and matched baseline
+retain implementation digest
+`d1710c8250f660d56d824e59cb58cfcc6f2053c68a44e28c94be29613db790c4`
+and their distinct frozen configuration digests. Fold boundaries, tuning,
+sample requirements, costs, stress/comparability rules, gates, and absent
+holdout remain unchanged.
+
+The new plan and append-only attempt ledger must list three immutable failed
+experiments, including `530c5d21a2856d17a8415e04b3d86fb4fa7428e49991ef29b2595e7c563c50de`,
+and separately list registered-but-unfinished `a8f62251...`. The reviewed
+530c plan's idempotency key is blocked by SHA-256, along with the earlier
+three keys; the key value is not retained in code. A fresh key is required.
+The compact persistence format stores a ≤2 MiB v3 root with digest references
+to complete v2 fold rows (≤16 MiB each, ≤64 MiB total). The private diagnostic
+measured a 3,284-byte root and 930,202 / 979,531 / 997,398-byte folds;
+that proves serialization readiness for its historical inputs only, not
+authoritative source provenance, transactional persistence, or passing gates.
+
 The exact-repeat sources 78–80 led to experiment `530c5d21...`, which recorded
 an immutable failed outcome because the former duplicated root exceeded 2 MiB.
 No fold or statistical results persisted. Preserve that failed outcome and the
@@ -35,9 +63,10 @@ match exactly on canonical comparison digest
 `d4bc2aee9387f5377d0954686af8efdf74a467c75dfe6cbc2605994f3ddebc4b`
 and Stage 07 source-artifact digest
 `1421afe0a536ea09158e015b4acfb60d68c901586b9d52268b074d49b2bed042`.
-The third repeat is pending; no three-source result or new Stage 07 plan is
-claimed. The repinned driver requires source #78 first, rejects IDs ≤77,
-requires exact canonical digests across all three source jobs, and permits
+At that earlier checkpoint the third repeat was pending; #80 later matched
+before the immutable evidence-size failure above. That driver required source
+#78 first, rejected IDs ≤77, required exact canonical digests across all
+three source jobs, and permitted
 only driver/docs changes between source and actual execution revision. Both
 strategy implementation digests remain
 `d1710c8250f660d56d824e59cb58cfcc6f2053c68a44e28c94be29613db790c4`;
