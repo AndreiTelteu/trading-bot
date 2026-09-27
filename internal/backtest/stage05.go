@@ -493,7 +493,10 @@ func runStage05StrategyWithPlanner(config BacktestConfig, series map[string][]se
 			continue
 		}
 		fillAt, fillPrices, ok := nextFillPrices(config, allSeries, targetsWithHeld(targets, ledger.positions), signalAt)
-		if !ok && runConfig.ExecutionPolicy.Version == "backtest-execution-v3" && i < len(reference)-1 {
+		// OHLCV opens/closes are millisecond timestamps. A close at End-1ms
+		// cannot select another open inside the half-open replay interval,
+		// regardless of whether the source still holds bars beyond End.
+		if !ok && runConfig.ExecutionPolicy.Version == "backtest-execution-v3" && signalAt.Add(time.Millisecond).Before(config.End) {
 			return Stage05StrategyResult{}, &StrategyDiagnosticError{Code: DiagnosticExecutionLiquidity, Strategy: selected.Descriptor.ID, Details: fmt.Sprintf("selected execution bar after %s is missing", canonicalTime(signalAt))}
 		}
 		if !ok || (finalPolicy == "liquidate" && fillAt.Equal(lastExecutableAt)) {

@@ -92,6 +92,14 @@ equity. Final positions are separate from closed trades and are included in
 the immutable fold evidence digest. Missing marks, fees, or inventory evidence
 fail the fold.
 
+Fold execution intervals are half-open: a bar opening at `End` belongs to the
+next interval and cannot provide a fill, no-fill observation, or final
+liquidation in the current fold. The last completed in-window decision may
+therefore have no legal next execution bar; that is a boundary outcome, while
+a missing selected execution bar with time remaining before `End` still fails
+closed. This boundary correction changes the executable source identity;
+previous fold evidence must retain its original revision and digest.
+
 ## Statistical evaluation
 
 - [x] Bootstrap across the correct independent unit, normally windows/blocks rather than a single aggregate.

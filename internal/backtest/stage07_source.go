@@ -498,8 +498,7 @@ func stage07TruncateSeries(values map[string][]services.OHLCV, end time.Time) ma
 	return result
 }
 func stage07TruncateBars(values []services.OHLCV, end time.Time) []services.OHLCV {
-	endMillis := end.UTC().UnixMilli()
-	index := sort.Search(len(values), func(index int) bool { return values[index].OpenTime > endMillis })
+	index := sort.Search(len(values), func(index int) bool { return !time.UnixMilli(values[index].OpenTime).Before(end) })
 	return values[:index:index]
 }
 func stage07BarAt(values []services.OHLCV, at time.Time) (services.OHLCV, bool) {
