@@ -12,9 +12,12 @@ small in each. See the [full result and audit identities](../research/stage05-v3
 
 Do not treat the technical status as promotion permission. No holdout was used.
 All eighteen A source jobs since66 are consumed; two B/C slots remain reserved,
-but no further submission is authorized at this checkpoint. Discuss the next
-bounded hypothesis using persisted fold diagnostics, preserve failed gates and
-full research lineage, and do not reuse or relabel historical data as confirmatory.
+but no further submission is authorized at this checkpoint. The
+[read-only negative-window diagnostic](../research/stage07-negative-window-diagnostic.md)
+attributes gross P&L, costs, residual marks, regimes, and symbols, and records
+one bounded positive-raw-momentum entry hypothesis for an exploratory next
+version. Preserve failed gates and full research lineage; do not reuse or
+relabel historical data as confirmatory.
 
 ## Prior status: compact evidence repair and bounded source renewal
 
