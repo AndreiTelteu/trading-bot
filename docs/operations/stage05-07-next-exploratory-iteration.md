@@ -25,6 +25,12 @@ code and synthetic checks are preparation, not new Stage 05/07 evidence. The
 read-only fold audit also found a v3 full fill above 100% of the selected
 minute's reported volume. A new economic replay must remain explicitly
 exploratory and cannot claim executable capacity under that optimistic model.
+The isolated `cmd/researchlab` Stage 05 boundary now also accepts exactly the
+candidate `1.2.0` request with `entry_momentum_rule=positive_new_targets_v1`;
+the old `1.1.0` request remains exact and unchanged. Run the new request only
+against the clone under its runtime login, with a clean committed SHA, explicit
+one-job submission and the existing append-only attempt ledger. Audit that
+first result before any further source jobs or a new Stage 07 manifest.
 
 ## Prior status: compact evidence repair and bounded source renewal
 

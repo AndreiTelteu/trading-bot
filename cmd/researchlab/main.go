@@ -248,7 +248,11 @@ func validateRequest(req input) error {
 		"backtest_execution_1m":          "true",
 		"backtest_require_point_in_time": "true",
 	}
-	if req.StrategyID != "trend_momentum_candidate" || req.StrategyVersion != "1.1.0" || req.ExecutionPolicyVersion != "backtest-execution-v3" || req.TargetGrossExposure != "0.75" || req.MaxNetExposure != "0.75" || req.FinalPolicy != "liquidate" || !maps.Equal(req.Parameters, expectedParameters) || !maps.Equal(req.Overrides, expectedOverrides) {
+	newParameters := maps.Clone(expectedParameters)
+	newParameters["entry_momentum_rule"] = "positive_new_targets_v1"
+	oldRequest := req.StrategyVersion == "1.1.0" && maps.Equal(req.Parameters, expectedParameters)
+	newRequest := req.StrategyVersion == "1.2.0" && maps.Equal(req.Parameters, newParameters)
+	if req.StrategyID != "trend_momentum_candidate" || !oldRequest && !newRequest || req.ExecutionPolicyVersion != "backtest-execution-v3" || req.TargetGrossExposure != "0.75" || req.MaxNetExposure != "0.75" || req.FinalPolicy != "liquidate" || !maps.Equal(req.Overrides, expectedOverrides) {
 		return fmt.Errorf("request differs from frozen exploratory Stage 05 boundary")
 	}
 	return nil

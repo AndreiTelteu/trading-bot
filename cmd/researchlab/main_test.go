@@ -116,4 +116,14 @@ func TestValidateRequestRejectsParameterAndOverrideDrift(t *testing.T) {
 	if err := validateRequest(req); err == nil {
 		t.Fatal("unknown end-date override accepted")
 	}
+	delete(req.Overrides, "backtest_end_date")
+	req.StrategyVersion = "1.2.0"
+	req.Parameters["entry_momentum_rule"] = "positive_new_targets_v1"
+	if err := validateRequest(req); err != nil {
+		t.Fatalf("one-rule exploratory request rejected: %v", err)
+	}
+	delete(req.Parameters, "entry_momentum_rule")
+	if err := validateRequest(req); err == nil {
+		t.Fatal("new request omitted its frozen entry rule")
+	}
 }
