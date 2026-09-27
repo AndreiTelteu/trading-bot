@@ -3,13 +3,15 @@
 ## Stage 07 clone driver checkpoint (2026-09-27)
 
 `cmd/researchlab` has an explicit `-stage07-mode prepare|run` path for one **new
-exploratory** validation manifest. The current `ad775fd` source pins are a
-deliberate fail-closed placeholder: jobs #66–68 are diagnostic attempts after
-the #66/#67 exact-repeat digest mismatch, and no Stage 07 preparation or run
-is authorized. A deterministic replay fix and new audited source checkpoint
-must precede updating the driver pins and reviewing an exact plan. The driver
-is restricted to the same marked,
-runtime-only PostgreSQL 16 research clone as the Stage 05 source runner. It
+exploratory** validation manifest. Source identity is now pinned to reviewed
+checkpoint `5c756fa14ddd53cdc7d8b6acd027760a6a7842b0` and audited first
+source job #69. Jobs #69 and #70 have identical canonical comparison and
+source-artifact digests and retained export bytes; the third source ID and
+audit are pending. Jobs #66–68 remain diagnostic attempts from `ad775fd` after
+their exact-repeat digest mismatch and cannot be used here. No Stage 07
+preparation or run is authorized until the third source and exact plan are
+reviewed. The driver is restricted to the same marked, runtime-only PostgreSQL
+16 research clone as the Stage 05 source runner. It
 does not start the server or schedulers, use migration/ledger/parity credentials,
 touch the production database, or consume a confirmatory holdout. The mode is
 code only at this checkpoint: no Stage 07 prepare or run command has been
@@ -20,10 +22,14 @@ The driver reads the byte-pinned prior exploratory spec (SHA-256
 `a3b0d140308a1c383882012c92a4937df2da96908e5e4b6215bb037ae02e95c7`),
 then admits exactly three distinct new, completed Stage 05 source jobs. Each
 source must retain the candidate, baseline, configuration, dataset, and source
-code revision `ad775fdb6af118d6f8a55db09aaeb22a0b20f9a6`. The v3
-candidate and baseline implementation digests are taken from audited job #66
+code revision `5c756fa14ddd53cdc7d8b6acd027760a6a7842b0`. The v3
+candidate and baseline implementation digests are taken from audited job #69
 and required on both exact repeats; the old v1 implementation digests are
-historical provenance, not the v3 executable identities.
+historical provenance, not the v3 executable identities. The reviewed v3
+candidate digest is
+`d1710c8250f660d56d824e59cb58cfcc6f2053c68a44e28c94be29613db790c4`;
+the baseline digest is
+`7849c702ff03da0104be460aec00f524c38e0d5481f110d3cadd9b9c5c8d7c8a`.
 The plan carries their full comparison references, run-manifest digests,
 primitive validation-artifact digests, and the SHA-256 of the ordered reference
 array used by repository registration. Before preparing or running, the driver
@@ -51,16 +57,14 @@ is retained in the private plan and ledger as research lineage. The old
 Jobs #66–68 retain `ad775fd` as historical provenance. The new manifest's
 `code_revision` and replay environment must instead equal the **actual clean
 committed driver SHA**. The driver rejects every source-to-driver diff path
-outside `cmd/researchlab/**` and `docs/**`. A separately committed Stage 07
-loader metadata repair restores the fixed v3 `NoFillRule` omitted by the
-point-in-time constructor before requiring full equality with the source
-policy. It never copies a rule from source evidence or overwrites a conflicting
-nonempty rule. That repair belongs in the **next source revision**, not as an
-exception allowing use of `ad775fd` sources. Until the deterministic replay
-fix, loader repair, new source SHA, and audited implementation digests are
-pinned together, the current driver's lineage guard stops preparation.
+outside `cmd/researchlab/**` and `docs/**`. Checkpoint `5c756fa` includes the
+deterministic replay fix and initializes the fixed v3 `NoFillRule` in the
+point-in-time constructor, so the Stage 07 source adapter can require full
+policy equality. The earlier loader fallback commit `788d4cf` was not
+integrated. Driver changes from `5c756fa` must remain within the allowlist;
+source policy or economic changes require a new checkpoint and source audit.
 
-After the new three source IDs and digests are final and driver pins updated,
+After the new three source IDs and digests are final and the exact plan reviewed,
 the operator can prepare a
 private mode-0600 plan. These variable names denote paths and identities only;
 never print the runtime DSN file. Use a new bounded idempotency key and an

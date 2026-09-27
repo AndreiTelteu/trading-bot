@@ -22,12 +22,12 @@ import (
 )
 
 const (
-	stage07SourceSHA               = "ad775fdb6af118d6f8a55db09aaeb22a0b20f9a6"
+	stage07SourceSHA               = "5c756fa14ddd53cdc7d8b6acd027760a6a7842b0"
 	stage07OldSpecSHA              = "a3b0d140308a1c383882012c92a4937df2da96908e5e4b6215bb037ae02e95c7"
 	stage07NoFillRule              = "selected_zero_base_volume_cancel_at_bar_close_v1"
 	stage07PlanVersion             = "researchlab-stage07-plan-v1"
-	stage07CandidateImplementation = "c71a6af5020f45c4b6e4107e6bd4994c5a43c9a252041dcb8b278eadad4216ec"
-	stage07BaselineImplementation  = "d1d6f449093afdac3b38be1a78f660dec6c322c85827127e88a9cb6dd792ba3e"
+	stage07CandidateImplementation = "d1710c8250f660d56d824e59cb58cfcc6f2053c68a44e28c94be29613db790c4"
+	stage07BaselineImplementation  = "7849c702ff03da0104be460aec00f524c38e0d5481f110d3cadd9b9c5c8d7c8a"
 )
 
 type stage07Options struct {
@@ -180,11 +180,14 @@ func parseStage07SourceIDs(raw string) ([]uint, error) {
 	seen := map[uint]bool{}
 	for _, part := range parts {
 		id, err := strconv.ParseUint(strings.TrimSpace(part), 10, 32)
-		if err != nil || id <= 65 || seen[uint(id)] {
+		if err != nil || id <= 68 || seen[uint(id)] {
 			return nil, fmt.Errorf("source IDs must be distinct new jobs")
 		}
 		seen[uint(id)] = true
 		ids = append(ids, uint(id))
+	}
+	if ids[0] != 69 {
+		return nil, fmt.Errorf("audited source #69 must be the first fold reference")
 	}
 	return ids, nil
 }
@@ -232,8 +235,8 @@ func loadStage07References(ids []uint, old validation.ManifestSpec) ([]stage07So
 }
 
 func validateStage07ReferenceSet(refs []stage07SourceReference, old validation.ManifestSpec) error {
-	if len(refs) != 3 || refs[0].Comparison.JobID != 66 {
-		return fmt.Errorf("audited source #66 and two exact repeats are required")
+	if len(refs) != 3 || refs[0].Comparison.JobID != 69 {
+		return fmt.Errorf("audited source #69 and two exact repeats are required")
 	}
 	seen := map[uint]bool{}
 	comparisonDigest, sourceDigest := refs[0].Comparison.ArtifactDigest, refs[0].ValidationArtifactDigest
@@ -241,7 +244,7 @@ func validateStage07ReferenceSet(refs []stage07SourceReference, old validation.M
 		return fmt.Errorf("source canonical digests are missing")
 	}
 	for _, ref := range refs {
-		if ref.Comparison.JobID <= 65 || seen[ref.Comparison.JobID] {
+		if ref.Comparison.JobID <= 68 || seen[ref.Comparison.JobID] {
 			return fmt.Errorf("source job IDs must be distinct new jobs")
 		}
 		seen[ref.Comparison.JobID] = true
@@ -251,7 +254,7 @@ func validateStage07ReferenceSet(refs []stage07SourceReference, old validation.M
 		candidate, cOK := ref.Comparison.Strategies[old.Candidate.ID]
 		baseline, bOK := ref.Comparison.Strategies[old.Baseline.ID]
 		if !cOK || !bOK || ref.Comparison.Candidate != old.Candidate.ID+"@"+old.Candidate.Version || candidate.ImplementationDigest != stage07CandidateImplementation || baseline.ImplementationDigest != stage07BaselineImplementation || candidate.ConfigDigest != old.Candidate.ConfigDigest || baseline.ConfigDigest != old.Baseline.ConfigDigest || ref.Comparison.DatasetDigest != old.DatasetDigest || ref.SourceCodeRevision != stage07SourceSHA || ref.ValidationArtifactDigest == "" {
-			return fmt.Errorf("Stage 07 source reference differs from audited #66 implementation or pinned configuration/dataset")
+			return fmt.Errorf("Stage 07 source reference differs from audited #69 implementation or pinned configuration/dataset")
 		}
 	}
 	return nil
