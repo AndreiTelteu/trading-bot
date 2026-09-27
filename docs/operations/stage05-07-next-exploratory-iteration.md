@@ -374,6 +374,29 @@ The revised maximum is eight source submissions including 66–68 and B/C.
 These technical repeats add no independent statistical observations or new
 parameter hypotheses. Record each in the append-only lineage ledger.
 
+### Boundary repair budget, declared after experiment 2c1ab23
+
+Sources 69–71 passed exact retained-artifact reproduction. The subsequent
+exploratory Stage 07 attempt failed in fold-0 training before any fold
+evidence, because the replay misclassified the half-open end boundary.
+Keep both the valid source history and failed experiment immutable.
+The corrected executable checkpoint is
+`7e8eadb5eec18fb69837f682d2de8d3033ec269e`. Serial PostgreSQL backtest,
+validation, and researchlab tests passed. A single diagnostic read-only
+fold-0 training replay passed (164 trades, zero no-fills); it is not validation
+evidence and did not exercise validation/test windows or statistical gates.
+
+Permit at most three new A sources at this checkpoint with the unchanged
+frozen request and dataset. Submit one at a time: audit the first, require
+the second to match its canonical comparison/source digests and retained
+exports exactly, then permit the third. Stop on failure or mismatch; no
+automatic retries. A new Stage 07 plan requires all three verified sources,
+updated driver identity pins, unchanged gates, and a separately reviewed
+plan hash. B/C remain unsubmitted until that review. The cumulative maximum
+is now eleven source submissions since job 66, including the two unused B/C
+slots. Record technical repair lineage separately from parameter hypotheses;
+neither these repeats nor the diagnostic add independent statistical units.
+
 Each Stage 05 comparison also evaluates four fixed, embedded Stage 06
 sensitivity configurations under strategy `1.0.0`: `absolute-20-24h`,
 `relative-30-24h`, `combined-30-24h`, and `combined-vol-20-48h`. Record their

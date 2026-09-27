@@ -45,6 +45,17 @@ end boundary. A boundary-handling regression investigation is pending;
 this is not evidence of statistical failure or missing market data.
 No retry, threshold change, holdout use, or promotion was performed.
 
+The boundary repair was committed as
+`7e8eadb5eec18fb69837f682d2de8d3033ec269e` and passed serial PostgreSQL
+regressions. A private harness with SHA-256
+`ac46fdcac4ce7701142f53cde971a473230f20af5536bedeaa3d5cda90899cfe`
+then replayed only fold-0 training in one read-only clone transaction.
+It passed in 406.39 seconds with 164 trades and zero no-fills; the original
+boundary error was absent. Source 69 supplied historical configuration/data
+provenance explicitly under a different executable revision. This diagnostic
+does not establish validation/test outcomes or replace authoritative evidence.
+Fresh sources are required under the bounded boundary-repair program.
+
 ### Original checkpoint: jobs 66–68 failed reproduction
 
 The first provenance repeat, job **67**, completed but did **not** reproduce
