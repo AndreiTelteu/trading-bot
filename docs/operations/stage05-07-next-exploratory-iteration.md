@@ -1,5 +1,24 @@
 # Stage 05/07 next exploratory iteration (predeclared, 2026-09-26)
 
+## Current checkpoint: positive-entry hypothesis stopped after one source
+
+The exact candidate `1.2.0` request ran once as isolated clone job **84** under
+clean revision `cd1a97e7ee1955f04e85c0043cae7fd1ab740ef9`. It completed
+and persisted comparison digest
+`08b410938625af0cb89c0a0a11ac38977426223964b2df24f624e1e66ae10dbf`.
+The candidate returned **−0.7153% after costs** versus **−1.5899%** for the
+matched baseline with the same entry rule. The previous candidate returned
+**+2.9501%** on the same inspected source interval. The new candidate failed
+the cash gate; optimization and promotion remain disabled. See the
+[source audit](../research/stage07-negative-window-diagnostic.md).
+
+The append-only research ledger records the one-job outcome and the decision
+to stop this hypothesis. Do not submit the reserved B/C repeats or construct a
+Stage 07 manifest for `1.2.0`. Keep the old Stage 07 statistical failure and
+the v3 capacity limitation visible. A next proposal must be separately
+predeclared, with a versioned capacity-aware execution policy and matched
+comparisons; a confirmatory result needs later unseen data and human approval.
+
 ## Current result: complete technical evidence, statistical gates failed
 
 The single experiment `16799f25...` from sources 81–83 completed with a verified
@@ -21,16 +40,16 @@ relabel historical data as confirmatory.
 
 Candidate `1.2.0` and matched baseline `1.1.0` contain the single fixed
 positive-new-target-momentum hypothesis described in the diagnostic. Their
-code and synthetic checks are preparation, not new Stage 05/07 evidence. The
+code and synthetic checks preceded the one Stage 05 source reported above. The
 read-only fold audit also found a v3 full fill above 100% of the selected
 minute's reported volume. A new economic replay must remain explicitly
 exploratory and cannot claim executable capacity under that optimistic model.
 The isolated `cmd/researchlab` Stage 05 boundary now also accepts exactly the
 candidate `1.2.0` request with `entry_momentum_rule=positive_new_targets_v1`;
-the old `1.1.0` request remains exact and unchanged. Run the new request only
-against the clone under its runtime login, with a clean committed SHA, explicit
-one-job submission and the existing append-only attempt ledger. Audit that
-first result before any further source jobs or a new Stage 07 manifest.
+the old `1.1.0` request remains exact and unchanged. The new request was run
+only against the clone under its runtime login, with a clean committed SHA,
+one-job submission and the existing append-only attempt ledger. Its failed
+cash gate closes this exploratory hypothesis at the first-source checkpoint.
 
 ## Prior status: compact evidence repair and bounded source renewal
 

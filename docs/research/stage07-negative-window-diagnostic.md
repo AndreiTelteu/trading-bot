@@ -1,4 +1,45 @@
-# Stage 07 negative-window diagnostic and next research hypothesis
+# Stage 07 negative-window diagnostic and exploratory hypothesis result
+
+## Exploratory source result (2026-09-27)
+
+The predeclared positive-new-target-momentum rule was exercised once on the
+isolated `trading_bot_research` clone as Stage 05 job **84**, using clean code
+revision `cd1a97e7ee1955f04e85c0043cae7fd1ab740ef9`, the unchanged
+manifest `32fe7e3664ab9d1a14c7cff30c0db6dc673f37ca0eea0479ed9cd812011ec9bc`,
+and v3 execution. The job completed with canonical comparison digest
+`08b410938625af0cb89c0a0a11ac38977426223964b2df24f624e1e66ae10dbf`;
+its retained Stage 07 source artifact digest is
+`ccfbe0220c1297dac5416727739dc6e52640e2c8dfd5890a07de9eef5132e1d0`.
+Both candidate and matched baseline reconciled and had nonzero fills.
+
+| Strategy | After-cost return | Ending equity | Fills | Total costs | Average gross exposure |
+|---|---:|---:|---:|---:|---:|
+| Candidate 1.2.0, positive new targets | -0.7153% | 992.8470 | 559 | 63.9508 | 0.09855 |
+| Matched baseline 1.1.0, same entry rule | -1.5899% | 984.1007 | 558 | 63.7557 | 0.09792 |
+| Previous candidate 1.1.0, jobs 81–83 | +2.9501% | 1029.5010 | 589 | 67.3758 | 0.10240 |
+
+The new candidate beat its matched baseline by 0.8746 percentage points, but
+lost 0.7153% against cash and lagged the previous candidate by 3.6654
+percentage points on this already-inspected source interval. The persisted
+governance decision sets both `optimization_allowed` and `promotion_allowed`
+to false (`candidate_does_not_beat_cash_after_costs`, plus pending Stage 07
+validation). This one exploratory comparison does not prove the entry rule
+caused the difference or generalize to unseen periods. It is sufficient to
+**stop this hypothesis at the one-source checkpoint**: do not spend the
+reserved B/C source slots or create a Stage 07 experiment for version 1.2.0.
+The [private compact export](/home/andrei/.bb-machines/192.168.0.115-38886/thread-storage/thr_ig94ijqd28/stage05-positive-entry-job84-compact.json)
+and [audit summary](/home/andrei/.bb-machines/192.168.0.115-38886/thread-storage/thr_ig94ijqd28/stage05-positive-entry-job84-audit.json)
+are retained separately from the repository; the audit SHA-256 is
+`808a1d248e3ca7243f4d02a0174b709fde06fadbf59a510442fc3ed68896ad22`.
+The append-only clone attempt ledger records submission, terminal evidence, and
+this stop decision. No holdout, paper promotion, or live execution occurred.
+
+Further work should first define and version a capacity-aware execution model
+that cannot fill more than the selected bar supports, with matched candidate
+and baseline assumptions. That is a new economic policy and needs its own
+predeclared experiment; existing v3 evidence must remain immutable. Any
+confirmatory claim also requires genuinely later, unseen data and the existing
+human-controlled promotion gates.
 
 This is a read-only attribution of exploratory experiment
 `16799f25f30d5e48e158329080375c805c047db16dbdf6087f92b3c3cf5f496b`
@@ -88,7 +129,7 @@ The private [capacity audit](/home/andrei/.bb-machines/192.168.0.115-38886/threa
 binds the fold fill ratios and selected bar row; its SHA-256 is
 `2bd0a4cf4c5cefa9d5e058df17842f9f98121783ce43190662a33c70b18fef5e`.
 
-## One bounded hypothesis for the next *exploratory* version
+## Predeclared bounded hypothesis for the exploratory version
 
 The current combined planner checks positive absolute trend and ranks relative
 momentum, but it can select an asset whose own completed 20-bar momentum is
@@ -112,9 +153,10 @@ have nonpositive raw momentum. Within the three test intervals, the counts are
 4/38, 8/69, and 10/69 selected trace rows, respectively. These are full-interval
 Stage 05 selection observations, **not** a count of executed fold entries or a
 causal P&L attribution. In particular, the positive fold also contains ten.
-The terminal Stage 07 export has no entry factor traces; the isolated
-`trading_bot_research` clone was no longer present at this review checkpoint,
-and source jobs 81–83 were not in the local `trading_bot` database.
+The terminal Stage 07 export has no entry factor traces. At the original
+read-only review checkpoint, source jobs 81–83 were not in the local
+`trading_bot` database; they are retained in the separate
+`trading_bot_research` clone.
 
 The fill audit links causal raw momentum to executed buys and identifies one
 unambiguous first-position buy. It does not assign counterfactual P&L: a new
@@ -127,15 +169,15 @@ with negative momentum. Candidate `1.2.0` and matched baseline `1.1.0` now
 implement the fixed new-target rule in the shared planner; targeted synthetic
 tests exercise exclusion, historical-version preservation, holding/exit
 semantics, version/digest separation, and matched comparison wiring. This is
-an implementation checkpoint only. No new real-data Stage 05 job or Stage 07
-experiment has been completed for these versions.
+the implementation checkpoint. The one real-data Stage 05 result is recorded
+above; no Stage 07 experiment has been completed for these versions.
 
-Record this as one additional distinct hypothesis in the append-only research
-ledger, including all prior configurations and failures. Any replay on the
-already inspected 2024-12 to 2026-09 dataset is exploratory and cannot become
-a fresh confirmatory holdout. Keep the same Stage 07 windows, sample/cost and
-statistical gates for comparison; do not use the two reserved B/C source slots
-as independent trials or reuse historical source digests for a changed rule.
+This is one additional distinct hypothesis in the append-only research ledger,
+alongside all prior configurations and failures. The replay on the already
+inspected 2024-12 to 2026-09 dataset is exploratory and cannot become a fresh
+confirmatory holdout. The Stage 07 windows, sample/cost and statistical gates
+were not changed; the two reserved B/C source slots are not independent trials,
+and historical source digests cannot be reused for a changed rule.
 Before a promotion claim, predeclare and acquire genuinely later unseen data,
-lock a new single-use holdout, and obtain the required human approval. No new
-job, experiment, holdout, or promotion is initiated by this diagnostic.
+lock a new single-use holdout, and obtain the required human approval. This
+diagnostic and the single source result do not authorize promotion.
