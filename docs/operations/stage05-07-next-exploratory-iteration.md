@@ -407,6 +407,30 @@ is now eleven source submissions since job 66, including the two unused B/C
 slots. Record technical repair lineage separately from parameter hypotheses;
 neither these repeats nor the diagnostic add independent statistical units.
 
+### Matched-baseline residual repair budget
+
+The second Stage 07 attempt `4cceee43...` failed during baseline test replay.
+A private read-only trace located fold 1's mandatory AVAX sell leaving
+below-minimum dust without residual evidence. The matched baseline's version
+guard omitted the candidate's post-fill residual check. Checkpoint
+`149747021a7e40bf76c0a9c295466470e2770618` repairs that classification without
+relaxing allocation tolerances or accepting executable leftovers. Serial
+PostgreSQL regression packages passed. One read-only diagnostic replayed
+candidate and baseline across all three frozen TEST windows and passed
+primitive reconciliation for every pair; it did not run fitting/selection,
+statistical gates, or authoritative evidence registration.
+
+Permit at most three new row-A source submissions at this checkpoint, with
+the original frozen request, dataset, costs, and interval. Audit the first
+before the second; require exact canonical comparison/source digest and
+retained-export equality before the third. Stop on any error or mismatch;
+no automatic retry. Require all three before a new reviewed Stage 07 plan.
+The baseline implementation identity must be updated from audited fresh
+artifacts; old sources cannot be relabeled. Preserve both failed experiments
+and full family lineage. The cumulative cap is fourteen sources since job 66,
+including the two still-unused B/C slots. This is technical repair accounting,
+not new independent statistical evidence or permission to tune on test windows.
+
 Each Stage 05 comparison also evaluates four fixed, embedded Stage 06
 sensitivity configurations under strategy `1.0.0`: `absolute-20-24h`,
 `relative-30-24h`, `combined-30-24h`, and `combined-vol-20-48h`. Record their

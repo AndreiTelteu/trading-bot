@@ -91,6 +91,31 @@ the failure or establish that earlier tests failed. No paired statistics or
 promotion-gate outcomes are available. Residual-allocation investigation is
 pending; no threshold relaxation or retry is authorized.
 
+The private read-only allocation trace subsequently identified fold 1,
+2026-04-03 04:00 UTC: an AVAX sell of 8.42 left approximately 0.01 AVAX
+worth 0.0881 USDT, below the 5 USDT minimum notional. No no-fill or rejection
+occurred. The matched baseline skipped post-fill residual evidence because
+of its strategy-version guard. Fix `149747021a7e40bf76c0a9c295466470e2770618`
+shares the corresponding candidate rule; executable leftovers still fail.
+
+A single private read-only diagnostic under that committed repair passed
+all three frozen test-window replay pairs and primitive reconciliation:
+
+| Fold | Observations | Candidate trades | Fills | Candidate / baseline no-fills | Residual positions |
+|---|---:|---:|---:|---:|---:|
+| 0 | 45,184 | 18 | 39 | 1 / 1 | 4 |
+| 1 | 46,720 | 35 | 72 | 0 / 0 | 3 |
+| 2 | 47,360 | 35 | 74 | 0 / 0 | 5 |
+
+Diagnostic log SHA-256:
+`861cd258eec1679df3229c78828d1db208479179b597f8819a2ef56f96dafdfc`.
+This omitted fitting/selection, bootstrap, promotion gates, and registration;
+source 72 was historical configuration/data provenance only. Temporary test
+and binary were removed and the dedicated checkout remained clean. Selected
+clone metadata counts were unchanged, which is not a full database fingerprint.
+Fresh authoritative sources and a new reviewed exploratory attempt remain
+necessary under the declared residual-repair budget.
+
 ### Original checkpoint: jobs 66–68 failed reproduction
 
 The first provenance repeat, job **67**, completed but did **not** reproduce
