@@ -2514,7 +2514,7 @@ func comparisonDigest(value ComparisonArtifact) (string, error) {
 }
 
 func MarshalComparisonArtifact(value ComparisonArtifact) ([]byte, error) {
-	if len(value.CouncilTraces) > 4096 || value.CouncilDiagnostic != nil && len(value.CouncilDiagnostic.Forward) != len(value.CouncilTraces) {
+	if len(value.CouncilTraces) > maxCouncilTraces || value.CouncilDiagnostic != nil && len(value.CouncilDiagnostic.Forward) != len(value.CouncilTraces) {
 		return nil, fmt.Errorf("unbounded or inconsistent decision council evidence")
 	}
 	if value.SchemaVersion != ComparisonSchemaVersion || value.Governance.SchemaVersion != GovernanceSchemaVersion || len(value.Rows) == 0 || len(value.Rows) > 16 {
@@ -2534,21 +2534,44 @@ func MarshalComparisonArtifact(value ComparisonArtifact) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if len(encoded) > 2<<20 {
-		return nil, fmt.Errorf("comparison artifact exceeds 2 MiB persistence limit")
+	if len(encoded) > comparisonArtifactLimit(len(value.CouncilTraces)) {
+		return nil, fmt.Errorf("comparison artifact exceeds persistence limit")
 	}
 	return encoded, nil
 }
 
+const (
+	comparisonArtifactBaseLimit = 2 << 20
+	// councilTraceArtifactBudget bounds one council trace plus its forward
+	// return diagnostic in the encoded artifact.
+	councilTraceArtifactBudget = 1536
+	maxCouncilTraces           = 4096
+)
+
+// comparisonArtifactLimit keeps the 2 MiB bound for ordinary comparisons and
+// adds a fixed budget per decision council trace (itself capped at 4096).
+func comparisonArtifactLimit(councilTraces int) int {
+	if councilTraces < 0 {
+		councilTraces = 0
+	}
+	if councilTraces > maxCouncilTraces {
+		councilTraces = maxCouncilTraces
+	}
+	return comparisonArtifactBaseLimit + councilTraces*councilTraceArtifactBudget
+}
+
 func UnmarshalComparisonArtifact(data []byte) (ComparisonArtifact, error) {
-	if len(data) > 2<<20 {
-		return ComparisonArtifact{}, fmt.Errorf("comparison artifact exceeds 2 MiB inspection limit")
+	if len(data) > comparisonArtifactLimit(maxCouncilTraces) {
+		return ComparisonArtifact{}, fmt.Errorf("comparison artifact exceeds inspection limit")
 	}
 	var value ComparisonArtifact
 	if err := json.Unmarshal(data, &value); err != nil {
 		return ComparisonArtifact{}, err
 	}
-	if len(value.CouncilTraces) > 4096 || value.CouncilDiagnostic != nil && len(value.CouncilDiagnostic.Forward) != len(value.CouncilTraces) {
+	if len(data) > comparisonArtifactLimit(len(value.CouncilTraces)) {
+		return ComparisonArtifact{}, fmt.Errorf("comparison artifact exceeds inspection limit")
+	}
+	if len(value.CouncilTraces) > maxCouncilTraces || value.CouncilDiagnostic != nil && len(value.CouncilDiagnostic.Forward) != len(value.CouncilTraces) {
 		return ComparisonArtifact{}, fmt.Errorf("unbounded or inconsistent decision council evidence")
 	}
 	if value.SchemaVersion != ComparisonSchemaVersion || value.Governance.SchemaVersion != GovernanceSchemaVersion || len(value.Rows) == 0 || len(value.Rows) > 16 {

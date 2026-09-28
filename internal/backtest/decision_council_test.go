@@ -317,3 +317,19 @@ func TestDecisionCouncilVetoFallbackAndInsufficientData(t *testing.T) {
 func tradingCouncil(model decisionmodel.Model) tradingcore.DecisionCouncil {
 	return tradingcore.DecisionCouncil{Model: model, Policy: tradingcore.CouncilVetoV1}
 }
+
+func TestComparisonArtifactLimitScalesWithCouncilTraces(t *testing.T) {
+	if comparisonArtifactLimit(0) != 2<<20 || comparisonArtifactLimit(-1) != 2<<20 {
+		t.Fatal("non-council artifacts lost the 2 MiB bound")
+	}
+	if comparisonArtifactLimit(600) != 2<<20+600*councilTraceArtifactBudget {
+		t.Fatal("council trace budget not applied")
+	}
+	if comparisonArtifactLimit(maxCouncilTraces+1) != comparisonArtifactLimit(maxCouncilTraces) {
+		t.Fatal("council trace budget unbounded")
+	}
+	oversized := []byte(`{"limitations":["` + strings.Repeat("a", 2<<20) + `"]}`)
+	if _, err := UnmarshalComparisonArtifact(oversized); err == nil || !strings.Contains(err.Error(), "inspection limit") {
+		t.Fatalf("oversized non-council artifact: %v", err)
+	}
+}
