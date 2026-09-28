@@ -20,6 +20,7 @@ import (
 	"trading-go/internal/backtest"
 	"trading-go/internal/config"
 	"trading-go/internal/database"
+	"trading-go/internal/decisionmodel"
 	"trading-go/internal/operations"
 	"trading-go/internal/services"
 )
@@ -250,12 +251,22 @@ func validateRequest(req input) error {
 	}
 	newParameters := maps.Clone(expectedParameters)
 	newParameters["entry_momentum_rule"] = "positive_new_targets_v1"
+	councilParameters := maps.Clone(expectedParameters)
+	councilParameters["decision_model"] = decisionmodel.DefaultIdentity
+	policy := req.Parameters["decision_council_policy"]
+	councilParameters["decision_council_policy"] = policy
 	oldRequest := req.StrategyVersion == "1.1.0" && maps.Equal(req.Parameters, expectedParameters)
 	newRequest := req.StrategyVersion == "1.2.0" && maps.Equal(req.Parameters, newParameters)
-	allowedVersion := req.ExecutionPolicyVersion == "backtest-execution-v3" && (oldRequest || newRequest) || req.ExecutionPolicyVersion == "backtest-execution-v4" && oldRequest
-	allowedFinalPolicy := req.FinalPolicy == "liquidate" || oldRequest && req.FinalPolicy == "mark_to_market"
+	councilRequest := req.StrategyVersion == "1.3.0" && (policy == "observe_v1" || policy == "veto_v1") && maps.Equal(req.Parameters, councilParameters)
+	allowedVersion := req.ExecutionPolicyVersion == "backtest-execution-v3" && (oldRequest || newRequest) || req.ExecutionPolicyVersion == "backtest-execution-v4" && (oldRequest || councilRequest)
+	allowedFinalPolicy := req.FinalPolicy == "liquidate" && !councilRequest || (oldRequest || councilRequest) && req.FinalPolicy == "mark_to_market"
 	if req.StrategyID != "trend_momentum_candidate" || !allowedVersion || !allowedFinalPolicy || req.TargetGrossExposure != "0.75" || req.MaxNetExposure != "0.75" || !maps.Equal(req.Overrides, expectedOverrides) {
 		return fmt.Errorf("request differs from frozen exploratory Stage 05 boundary")
+	}
+	if councilRequest {
+		if _, err := decisionmodel.EnvToken(decisionmodel.AIHubMixTokenEnv, decisionmodel.AIHubMixTokenFileEnv)(); err != nil {
+			return fmt.Errorf("decision council provider token is not configured: %w", err)
+		}
 	}
 	return nil
 }

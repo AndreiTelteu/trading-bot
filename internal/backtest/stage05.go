@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"math/big"
@@ -12,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"trading-go/internal/database"
+	"trading-go/internal/decisionmodel"
 	"trading-go/internal/services"
 	"trading-go/internal/tradingcore"
 )
@@ -72,19 +75,22 @@ type ComparableMetrics struct {
 }
 
 type Stage05StrategyResult struct {
-	Manifest    RunManifest                `json:"manifest"`
-	Metrics     ComparableMetrics          `json:"metrics"`
-	Artifacts   BacktestArtifacts          `json:"artifacts"`
-	Equity      []EquityPoint              `json:"equity"`
-	Trades      []Trade                    `json:"trades"`
-	Rankings    []RankingArtifact          `json:"rankings,omitempty"`
-	Factors     []FactorTrace              `json:"factor_traces,omitempty"`
-	Regimes     []RegimeObservation        `json:"regime_observations,omitempty"`
-	ExitReasons map[string]ExitReasonTrace `json:"exit_reasons,omitempty"`
-	Diagnostics []StrategyTraceDiagnostic  `json:"diagnostics,omitempty"`
-	Sensitivity []SensitivityRow           `json:"sensitivity,omitempty"`
-	Parity      *Stage06ParityEvidence     `json:"parity,omitempty"`
-	NoFills     []SimulatedNoFill          `json:"no_fills,omitempty"`
+	Manifest          RunManifest                `json:"manifest"`
+	Metrics           ComparableMetrics          `json:"metrics"`
+	Artifacts         BacktestArtifacts          `json:"artifacts"`
+	Equity            []EquityPoint              `json:"equity"`
+	Trades            []Trade                    `json:"trades"`
+	Rankings          []RankingArtifact          `json:"rankings,omitempty"`
+	Factors           []FactorTrace              `json:"factor_traces,omitempty"`
+	Regimes           []RegimeObservation        `json:"regime_observations,omitempty"`
+	ExitReasons       map[string]ExitReasonTrace `json:"exit_reasons,omitempty"`
+	Diagnostics       []StrategyTraceDiagnostic  `json:"diagnostics,omitempty"`
+	Sensitivity       []SensitivityRow           `json:"sensitivity,omitempty"`
+	Parity            *Stage06ParityEvidence     `json:"parity,omitempty"`
+	NoFills           []SimulatedNoFill          `json:"no_fills,omitempty"`
+	CouncilTraces     []DecisionCouncilTrace     `json:"decision_council_traces,omitempty"`
+	CouncilSummary    *DecisionCouncilSummary    `json:"decision_council_summary,omitempty"`
+	CouncilDiagnostic *DecisionCouncilDiagnostic `json:"decision_council_post_hoc,omitempty"`
 }
 
 type RankingArtifact struct {
@@ -162,6 +168,9 @@ type ComparisonArtifact struct {
 	Limitations       []string                         `json:"limitations"`
 	ArtifactDigest    string                           `json:"artifact_digest"`
 	CandidateEvidence *Stage06CandidateEvidence        `json:"candidate_evidence,omitempty"`
+	CouncilTraces     []DecisionCouncilTrace           `json:"decision_council_traces,omitempty"`
+	CouncilSummary    *DecisionCouncilSummary          `json:"decision_council_summary,omitempty"`
+	CouncilDiagnostic *DecisionCouncilDiagnostic       `json:"decision_council_post_hoc,omitempty"`
 }
 
 func RunStage05Comparison(config BacktestConfig, series map[string][]services.OHLCV, request Stage05RunRequest) (ComparisonArtifact, error) {
@@ -188,6 +197,13 @@ func RunStage05Comparison(config BacktestConfig, series map[string][]services.OH
 	if err != nil {
 		return ComparisonArtifact{}, err
 	}
+	if candidate.Descriptor.ID == StrategyTrendMomentumCandidate && candidate.Descriptor.Version == "1.3.0" {
+		resolved, resolveErr := newCouncilRuntime(config, candidate)
+		if resolveErr != nil {
+			return ComparisonArtifact{}, resolveErr
+		}
+		config.CouncilModel = resolved.core.Model
+	}
 	if candidate.Descriptor.ID == StrategyTrendMomentumCandidate {
 		config.trendMomentumHistory = prepareStage06TrendMomentumHistory(config, series)
 	}
@@ -211,6 +227,8 @@ func RunStage05Comparison(config BacktestConfig, series map[string][]services.OH
 		} else if id == StrategyMatchedMomentumID {
 			parameters = cloneStringMap(candidateParameters)
 			parameters["vol_normalization"] = "false"
+			delete(parameters, "decision_model")
+			delete(parameters, "decision_council_policy")
 			version = "1.0.0"
 			if candidate.Descriptor.Version == "1.2.0" {
 				version = "1.1.0"
@@ -229,7 +247,7 @@ func RunStage05Comparison(config BacktestConfig, series map[string][]services.OH
 		}
 		results[id] = result
 	}
-	if candidate.Descriptor.ID == StrategyTrendMomentumCandidate && candidate.Descriptor.Version != "1.2.0" {
+	if candidate.Descriptor.ID == StrategyTrendMomentumCandidate && candidate.Descriptor.Version != "1.2.0" && candidate.Descriptor.Version != "1.3.0" {
 		grid, gridErr := runStage06SensitivityGrid(config, series, candidateParameters, request.AllowInMemoryFixture)
 		if gridErr != nil {
 			return ComparisonArtifact{}, gridErr
@@ -267,6 +285,9 @@ func normalizeStage05RunRequest(request Stage05RunRequest) (Stage05RunRequest, m
 	}
 	candidateParameters := cloneStringMap(request.Parameters)
 	if request.StrategyID == StrategyTrendMomentumCandidate {
+		if request.StrategyVersion == "1.3.0" && request.ExecutionPolicyVersion != "backtest-execution-v4" {
+			return request, nil, invalidParameter(request.StrategyID, "execution_policy_version", "decision council requires backtest-execution-v4")
+		}
 		intent := candidateParameters["execution_intent"]
 		if intent == "" {
 			candidateParameters["execution_intent"] = "backtest"
@@ -415,6 +436,10 @@ func runStage05StrategyWithPlanner(config BacktestConfig, series map[string][]se
 		runConfig.ExecutionPolicy.NoFillRule = "selected_volume_cap_all_or_none_cancel_v1"
 	}
 	runConfig.StrategyParameters = cloneStringMap(parameters)
+	council, err := newCouncilRuntime(runConfig, selected)
+	if err != nil {
+		return Stage05StrategyResult{}, err
+	}
 	if (selected.Descriptor.ID == StrategyEqualWeightID || selected.Descriptor.ID == StrategyMomentumID) && runConfig.MaxPositions < len(series) {
 		// Universe baselines own either every eligible member or their explicit
 		// top-N selection. Candidate max-position settings must not truncate the
@@ -430,6 +455,11 @@ func runStage05StrategyWithPlanner(config BacktestConfig, series map[string][]se
 	regimes := []RegimeObservation{}
 	exitReasons := map[string]ExitReasonTrace{}
 	diagnostics := []StrategyTraceDiagnostic{}
+	var councilTraces []DecisionCouncilTrace
+	var councilSummary *DecisionCouncilSummary
+	if council != nil {
+		councilSummary = &DecisionCouncilSummary{}
+	}
 	lastTargets := []string{}
 	lastRebalance := time.Time{}
 	allSeries := sharedOHLCVSeries(series)
@@ -475,9 +505,18 @@ func runStage05StrategyWithPlanner(config BacktestConfig, series map[string][]se
 		for symbol, position := range ledger.positions {
 			positionQuantities[symbol], positionEntries[symbol] = position.Size, position.EntryPrice
 		}
-		plan, decisionErr := planner.Plan(Stage05PlanningContext{Selected: selected, Reference: reference[:i+1], Series: series, Config: config, Replays: replays, At: signalAt, LastRebalance: lastRebalance, LastTargets: lastTargets, Positions: positionQuantities, PositionEntries: positionEntries, Marks: marks, Fixture: fixture})
+		planning := Stage05PlanningContext{Selected: selected, Reference: reference[:i+1], Series: series, Config: config, Replays: replays, At: signalAt, LastRebalance: lastRebalance, LastTargets: lastTargets, Positions: positionQuantities, PositionEntries: positionEntries, Marks: marks, Fixture: fixture}
+		plan, decisionErr := planner.Plan(planning)
 		if decisionErr != nil {
 			return Stage05StrategyResult{}, decisionErr
+		}
+		if council != nil && plan.Decide && !plan.RiskStopOnly {
+			var traces []DecisionCouncilTrace
+			plan, traces, err = council.apply(planning, plan, councilSummary)
+			if err != nil {
+				return Stage05StrategyResult{}, err
+			}
+			councilTraces = append(councilTraces, traces...)
 		}
 		targets, ranked, decide := plan.Targets, plan.Rankings, plan.Decide
 		rankings = append(rankings, ranked...)
@@ -612,7 +651,11 @@ func runStage05StrategyWithPlanner(config BacktestConfig, series map[string][]se
 		}
 		parity = &evidence
 	}
-	return Stage05StrategyResult{Manifest: manifest, Metrics: metrics, Artifacts: artifacts, Equity: equity, Trades: append([]Trade(nil), ledger.trades...), Rankings: rankings, Factors: factors, Regimes: regimes, ExitReasons: exitReasons, Diagnostics: diagnostics, Sensitivity: sensitivity, Parity: parity, NoFills: append([]SimulatedNoFill(nil), ledger.noFills...)}, nil
+	var councilDiagnostic *DecisionCouncilDiagnostic
+	if council != nil {
+		councilDiagnostic = diagnoseCouncilAfterReplay(councilTraces, series, config.End)
+	}
+	return Stage05StrategyResult{Manifest: manifest, Metrics: metrics, Artifacts: artifacts, Equity: equity, Trades: append([]Trade(nil), ledger.trades...), Rankings: rankings, Factors: factors, Regimes: regimes, ExitReasons: exitReasons, Diagnostics: diagnostics, Sensitivity: sensitivity, Parity: parity, NoFills: append([]SimulatedNoFill(nil), ledger.noFills...), CouncilTraces: councilTraces, CouncilSummary: councilSummary, CouncilDiagnostic: councilDiagnostic}, nil
 }
 
 type stage06SensitivitySpec struct {
@@ -1152,7 +1195,7 @@ func reconcileMandatoryExitResidual(ledger *backtestMemoryLedger, config Backtes
 }
 
 func usesMandatoryExitResidualEvidence(id, version string) bool {
-	return (id == StrategyTrendMomentumCandidate && (version == "1.1.0" || version == "1.2.0")) ||
+	return (id == StrategyTrendMomentumCandidate && (version == "1.1.0" || version == "1.2.0" || version == "1.3.0")) ||
 		(id == StrategyMatchedMomentumID && (version == "1.0.0" || version == "1.1.0"))
 }
 
@@ -2399,6 +2442,11 @@ func buildStage05Comparison(config BacktestConfig, request Stage05RunRequest, ca
 	artifact := ComparisonArtifact{SchemaVersion: ComparisonSchemaVersion, ManifestID: config.DatasetManifestID, Candidate: candidate.Descriptor.ID + "@" + candidate.Descriptor.Version, Assumptions: assumptions, Rows: rows, Governance: GovernanceGate{SchemaVersion: GovernanceSchemaVersion, OptimizationAllowed: allowed, PromotionAllowed: false, Reasons: reasons}, Results: results, Limitations: limitations}
 	if candidate.Descriptor.ID == StrategyTrendMomentumCandidate {
 		result := results[candidate.Descriptor.ID]
+		if candidate.Descriptor.Version == "1.3.0" {
+			artifact.CouncilTraces = append([]DecisionCouncilTrace(nil), result.CouncilTraces...)
+			artifact.CouncilSummary = result.CouncilSummary
+			artifact.CouncilDiagnostic = result.CouncilDiagnostic
+		}
 		evidence := Stage06CandidateEvidence{SchemaVersion: "trend-momentum-candidate-evidence-v1", FactorTraces: boundedFactors(result.Factors, 1024), Regimes: boundedRegimes(result.Regimes, 512), ExitReasons: boundedExitReasons(result.ExitReasons, 1024), Diagnostics: boundedDiagnostics(result.Diagnostics, 1024), Sensitivity: append([]SensitivityRow(nil), result.Sensitivity...)}
 		if result.Parity != nil {
 			evidence.Parity = *result.Parity
@@ -2410,6 +2458,11 @@ func buildStage05Comparison(config BacktestConfig, request Stage05RunRequest, ca
 }
 
 func strategyImplementationDigest(id, version string) string {
+	if id == StrategyTrendMomentumCandidate && version == "1.3.0" {
+		prior := strategyImplementationDigest(id, "1.1.0")
+		sum := sha256.Sum256([]byte(prior + "\x00decision-council-v1\x00" + tradingcore.CouncilPromptDigest()))
+		return fmt.Sprintf("%x", sum)
+	}
 	// Stage 06 is the only deployable candidate and its digest covers the
 	// shared planner, target conversion and shared execution contracts. The
 	// Stage 05 baselines use the same target interpreter but remain distinct
@@ -2439,6 +2492,19 @@ func strategyConfigDigest(id, version string, parameters map[string]string) stri
 
 func comparisonDigest(value ComparisonArtifact) (string, error) {
 	value.ArtifactDigest = ""
+	// Cache telemetry describes how a replay obtained its answers, not what the
+	// council decided. Keep it in the artifact but out of its identity.
+	if len(value.CouncilTraces) > 0 {
+		value.CouncilTraces = append([]DecisionCouncilTrace(nil), value.CouncilTraces...)
+		for i := range value.CouncilTraces {
+			value.CouncilTraces[i].Cached = false
+		}
+	}
+	if value.CouncilSummary != nil {
+		summary := *value.CouncilSummary
+		summary.CacheHits = 0
+		value.CouncilSummary = &summary
+	}
 	encoded, err := json.Marshal(value)
 	if err != nil {
 		return "", err
@@ -2448,6 +2514,9 @@ func comparisonDigest(value ComparisonArtifact) (string, error) {
 }
 
 func MarshalComparisonArtifact(value ComparisonArtifact) ([]byte, error) {
+	if len(value.CouncilTraces) > 4096 || value.CouncilDiagnostic != nil && len(value.CouncilDiagnostic.Forward) != len(value.CouncilTraces) {
+		return nil, fmt.Errorf("unbounded or inconsistent decision council evidence")
+	}
 	if value.SchemaVersion != ComparisonSchemaVersion || value.Governance.SchemaVersion != GovernanceSchemaVersion || len(value.Rows) == 0 || len(value.Rows) > 16 {
 		return nil, fmt.Errorf("invalid or unbounded comparison artifact")
 	}
@@ -2478,6 +2547,9 @@ func UnmarshalComparisonArtifact(data []byte) (ComparisonArtifact, error) {
 	var value ComparisonArtifact
 	if err := json.Unmarshal(data, &value); err != nil {
 		return ComparisonArtifact{}, err
+	}
+	if len(value.CouncilTraces) > 4096 || value.CouncilDiagnostic != nil && len(value.CouncilDiagnostic.Forward) != len(value.CouncilTraces) {
+		return ComparisonArtifact{}, fmt.Errorf("unbounded or inconsistent decision council evidence")
 	}
 	if value.SchemaVersion != ComparisonSchemaVersion || value.Governance.SchemaVersion != GovernanceSchemaVersion || len(value.Rows) == 0 || len(value.Rows) > 16 {
 		return ComparisonArtifact{}, fmt.Errorf("unsupported or unbounded comparison artifact")
@@ -2545,4 +2617,291 @@ func containsString(values []string, wanted string) bool {
 		}
 	}
 	return false
+}
+
+// DecisionCouncilTrace records the as-of model decision; forward labels are
+// kept separately and are computed only after the economic replay finishes.
+type DecisionCouncilTrace struct {
+	DecisionAt         string             `json:"decision_at"`
+	Symbol             string             `json:"symbol"`
+	V4Action           string             `json:"v4_action"`
+	HasPosition        bool               `json:"has_position"`
+	Bull               float64            `json:"bull"`
+	Bear               float64            `json:"bear"`
+	Hodl               float64            `json:"hodl"`
+	FinalChoice        string             `json:"final_choice,omitempty"`
+	FinalProbabilities map[string]float64 `json:"final_probabilities,omitempty"`
+	Proposed           string             `json:"proposed"`
+	Applied            bool               `json:"applied"`
+	Reason             string             `json:"reason"`
+	StateDigest        string             `json:"state_digest,omitempty"`
+	ScoreRequestDigest string             `json:"score_request_digest,omitempty"`
+	FinalRequestDigest string             `json:"final_request_digest,omitempty"`
+	ResolvedModel      string             `json:"resolved_model,omitempty"`
+	Cached             bool               `json:"cached"`
+	Fallback           bool               `json:"fallback"`
+}
+
+type DecisionCouncilSummary struct {
+	Calls          int      `json:"calls"`
+	CacheHits      int      `json:"cache_hits"`
+	Failures       int      `json:"failures"`
+	Fallbacks      int      `json:"fallbacks"`
+	Vetoes         int      `json:"vetoes"`
+	EarlyExits     int      `json:"early_exits"`
+	Admits         int      `json:"admits"`
+	ResolvedModels []string `json:"resolved_models,omitempty"`
+}
+
+type CouncilForwardReturn struct {
+	TraceIndex int      `json:"trace_index"`
+	Return1    *float64 `json:"return_1_bar,omitempty"`
+	Return6    *float64 `json:"return_6_bars,omitempty"`
+	Return12   *float64 `json:"return_12_bars,omitempty"`
+}
+
+type DecisionCouncilDiagnostic struct {
+	Label               string                 `json:"label"`
+	Forward             []CouncilForwardReturn `json:"forward_returns"`
+	BullAUC6            *float64               `json:"bull_auc_6_bars,omitempty"`
+	BullBearAUC6        *float64               `json:"bull_minus_bear_auc_6_bars,omitempty"`
+	AdmittedMeanReturn6 *float64               `json:"admitted_mean_return_6_bars,omitempty"`
+	VetoedMeanReturn6   *float64               `json:"vetoed_mean_return_6_bars,omitempty"`
+}
+
+type councilRuntime struct {
+	core tradingcore.DecisionCouncil
+	ctx  context.Context
+}
+
+type countedCouncilModel struct {
+	inner   decisionmodel.Model
+	summary *DecisionCouncilSummary
+}
+
+func (m countedCouncilModel) Identity() string { return m.inner.Identity() }
+func (m countedCouncilModel) Decide(ctx context.Context, request decisionmodel.Request) (decisionmodel.Response, error) {
+	m.summary.Calls++
+	response, err := m.inner.Decide(ctx, request)
+	if response.Cached && err == nil {
+		m.summary.CacheHits++
+	}
+	if err == nil && response.ResolvedModel != "" {
+		index := sort.SearchStrings(m.summary.ResolvedModels, response.ResolvedModel)
+		if index == len(m.summary.ResolvedModels) || m.summary.ResolvedModels[index] != response.ResolvedModel {
+			m.summary.ResolvedModels = append(m.summary.ResolvedModels, "")
+			copy(m.summary.ResolvedModels[index+1:], m.summary.ResolvedModels[index:])
+			m.summary.ResolvedModels[index] = response.ResolvedModel
+		}
+	}
+	if errors.Is(err, decisionmodel.ErrUnavailable) || errors.Is(err, decisionmodel.ErrInvalidResponse) {
+		m.summary.Failures++
+	}
+	return response, err
+}
+
+func newCouncilRuntime(config BacktestConfig, selected SelectedStrategy) (*councilRuntime, error) {
+	if selected.Descriptor.ID != StrategyTrendMomentumCandidate || selected.Descriptor.Version != "1.3.0" {
+		return nil, nil
+	}
+	identity := selected.Parameters["decision_model"]
+	model := config.CouncilModel
+	if model == nil {
+		if database.DB == nil {
+			return nil, fmt.Errorf("decision council requires a PostgreSQL runtime pool")
+		}
+		var err error
+		model, err = decisionmodel.Resolve(identity, decisionmodel.NewPostgresStore(database.DB))
+		if err != nil {
+			return nil, err
+		}
+	}
+	if model.Identity() != identity {
+		return nil, fmt.Errorf("decision council model identity differs from strategy parameter")
+	}
+	ctx := config.CouncilContext
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return &councilRuntime{core: tradingcore.DecisionCouncil{Model: model, Policy: tradingcore.CouncilPolicy(selected.Parameters["decision_council_policy"])}, ctx: ctx}, nil
+}
+
+func councilBars(values []services.OHLCV) []tradingcore.CouncilBar {
+	result := make([]tradingcore.CouncilBar, 0, len(values))
+	for _, b := range values {
+		result = append(result, tradingcore.CouncilBar{OpenTime: time.UnixMilli(b.OpenTime).UTC(), CloseTime: time.UnixMilli(b.CloseTime).UTC(), Open: b.Open, High: b.High, Low: b.Low, Close: b.Close, Volume: b.Volume})
+	}
+	return result
+}
+
+func (r *councilRuntime) apply(ctx Stage05PlanningContext, plan Stage05Plan, summary *DecisionCouncilSummary) (Stage05Plan, []DecisionCouncilTrace, error) {
+	symbols := append([]string(nil), plan.Targets...)
+	sort.Strings(symbols)
+	factors := make(map[string]FactorTrace, len(plan.Factors))
+	for _, factor := range plan.Factors {
+		factors[factor.Symbol] = factor
+	}
+	market := tradingcore.AggregateCouncilBars4H(councilBars(ctx.Reference), ctx.At, 64)
+	removed := map[string]bool{}
+	traces := make([]DecisionCouncilTrace, 0, len(symbols))
+	for _, symbol := range symbols {
+		if err := r.ctx.Err(); err != nil {
+			return plan, nil, err
+		}
+		_, held := ctx.Positions[symbol]
+		action := "buy"
+		if held {
+			action = "hold"
+		}
+		factor := factors[symbol]
+		weight := plan.TargetWeights[symbol]
+		input := tradingcore.CouncilInput{
+			Asset: tradingcore.AggregateCouncilBars4H(councilBars(ctx.Series[symbol]), ctx.At, 64), Market: market,
+			Signal:   tradingcore.CouncilSignal{V4Action: action, Regime: plan.Regime, Rank: factor.RelativeRank, UniverseSize: len(plan.Factors), Momentum: factor.CompositeMomentum, Normalized: factor.NormalizedMomentum, Volatility: factor.RealizedVolatility, TargetWeight: weight, AbsoluteTrend: factor.AbsoluteTrend},
+			Position: tradingcore.CouncilPosition{HasPosition: held, EntryPrice: ctx.PositionEntries[symbol], MarkPrice: ctx.Marks[symbol]},
+		}
+		trace := DecisionCouncilTrace{DecisionAt: canonicalTime(ctx.At), Symbol: symbol, V4Action: action, HasPosition: held, Applied: r.core.Policy == tradingcore.CouncilVetoV1}
+		core := r.core
+		core.Model = countedCouncilModel{inner: r.core.Model, summary: summary}
+		out, err := core.Evaluate(r.ctx, input)
+		if err != nil {
+			switch {
+			case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded), errors.Is(err, decisionmodel.ErrCacheCorrupt):
+				return plan, nil, err
+			case errors.Is(err, tradingcore.ErrInsufficientCouncilData):
+				trace.Reason = "insufficient_council_data"
+				trace.Proposed = "hold"
+				if !held {
+					trace.Proposed = "veto"
+				}
+			case errors.Is(err, decisionmodel.ErrUnavailable), errors.Is(err, decisionmodel.ErrInvalidResponse):
+				if summary.Failures >= 10 {
+					return plan, nil, fmt.Errorf("decision council reached 10 failed requests: %w", err)
+				}
+				summary.Fallbacks++
+				trace.Fallback, trace.Reason = true, "model_unavailable_fallback_v4"
+				trace.Proposed = "admit"
+				if held {
+					trace.Proposed = "hold"
+				}
+			default:
+				return plan, nil, err
+			}
+		} else {
+			trace.Bull, trace.Bear, trace.Hodl = out.Bull, out.Bear, out.Hodl
+			trace.FinalChoice, trace.FinalProbabilities = out.FinalChoice, out.FinalProbabilities
+			trace.Proposed, trace.Applied, trace.Reason = out.Proposed, out.Applied, out.Reason
+			trace.StateDigest, trace.ScoreRequestDigest, trace.FinalRequestDigest = out.StateDigest, out.ScoreRequestDigest, out.FinalRequestDigest
+			trace.ResolvedModel, trace.Cached = out.ResolvedModel, out.Cached
+		}
+		if trace.Proposed == "admit" {
+			summary.Admits++
+		}
+		if trace.Applied && (trace.Proposed == "veto" || trace.Proposed == "early_exit") {
+			removed[symbol] = true
+			if trace.Proposed == "veto" {
+				summary.Vetoes++
+			} else {
+				summary.EarlyExits++
+				if plan.ExitReasons == nil {
+					plan.ExitReasons = map[string]ExitReasonTrace{}
+				}
+				plan.ExitReasons[symbol] = ExitReasonTrace{Primary: "decision_council_exit"}
+			}
+		}
+		traces = append(traces, trace)
+	}
+	if len(removed) > 0 {
+		kept := make([]string, 0, len(plan.Targets)-len(removed))
+		for _, symbol := range plan.Targets {
+			if !removed[symbol] {
+				kept = append(kept, symbol)
+			} else {
+				delete(plan.TargetWeights, symbol)
+			}
+		}
+		plan.Targets = kept
+	}
+	return plan, traces, nil
+}
+
+func diagnoseCouncilAfterReplay(traces []DecisionCouncilTrace, series map[string][]services.OHLCV, end time.Time) *DecisionCouncilDiagnostic {
+	d := &DecisionCouncilDiagnostic{Label: "post_hoc_only_not_used_by_decisions", Forward: make([]CouncilForwardReturn, len(traces))}
+	barsBySymbol := map[string][]tradingcore.CouncilBar{}
+	type observation struct {
+		bull, difference, label float64
+		proposed                string
+	}
+	observations := []observation{}
+	for i, trace := range traces {
+		bars, ok := barsBySymbol[trace.Symbol]
+		if !ok {
+			bars = tradingcore.AggregateCouncilBars4H(councilBars(series[trace.Symbol]), end, len(series[trace.Symbol])/16)
+			barsBySymbol[trace.Symbol] = bars
+		}
+		at, err := time.Parse(time.RFC3339Nano, trace.DecisionAt)
+		row := CouncilForwardReturn{TraceIndex: i}
+		if err == nil {
+			base := sort.Search(len(bars), func(j int) bool { return bars[j].CloseTime.After(at) }) - 1
+			if base >= 0 && bars[base].Close > 0 {
+				forward := func(h int) *float64 {
+					if base+h >= len(bars) {
+						return nil
+					}
+					v := bars[base+h].Close/bars[base].Close - 1
+					if math.IsNaN(v) || math.IsInf(v, 0) {
+						return nil
+					}
+					return &v
+				}
+				row.Return1, row.Return6, row.Return12 = forward(1), forward(6), forward(12)
+			}
+		}
+		d.Forward[i] = row
+		if trace.V4Action == "buy" && row.Return6 != nil && !trace.Fallback && trace.FinalChoice != "" {
+			label := 0.0
+			if *row.Return6 > 0 {
+				label = 1
+			}
+			observations = append(observations, observation{trace.Bull, trace.Bull - trace.Bear, label, trace.Proposed})
+		}
+	}
+	auc := func(score func(observation) float64) *float64 {
+		num, den := 0.0, 0.0
+		for _, a := range observations {
+			for _, b := range observations {
+				if a.label != 1 || b.label != 0 {
+					continue
+				}
+				den++
+				if score(a) > score(b) {
+					num++
+				} else if score(a) == score(b) {
+					num += 0.5
+				}
+			}
+		}
+		if den == 0 {
+			return nil
+		}
+		v := num / den
+		return &v
+	}
+	d.BullAUC6, d.BullBearAUC6 = auc(func(o observation) float64 { return o.bull }), auc(func(o observation) float64 { return o.difference })
+	mean := func(proposed string) *float64 {
+		sum, n := 0.0, 0
+		for i, trace := range traces {
+			if trace.V4Action == "buy" && trace.Proposed == proposed && d.Forward[i].Return6 != nil {
+				sum += *d.Forward[i].Return6
+				n++
+			}
+		}
+		if n == 0 {
+			return nil
+		}
+		v := sum / float64(n)
+		return &v
+	}
+	d.AdmittedMeanReturn6, d.VetoedMeanReturn6 = mean("admit"), mean("veto")
+	return d
 }

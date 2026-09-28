@@ -146,3 +146,46 @@ func TestValidateRequestRejectsParameterAndOverrideDrift(t *testing.T) {
 		t.Fatal("new request omitted its frozen entry rule")
 	}
 }
+
+func TestValidateRequestDecisionCouncilFrozenBoundary(t *testing.T) {
+	req := input{Stage05RunRequest: backtest.Stage05RunRequest{
+		StrategyID: "trend_momentum_candidate", StrategyVersion: "1.3.0", ExecutionPolicyVersion: "backtest-execution-v4", TargetGrossExposure: "0.75", MaxNetExposure: "0.75", FinalPolicy: "mark_to_market",
+		Parameters: map[string]string{"variant": "combined", "vol_normalization": "true", "lookback_bars": "20", "trend_bars": "20", "regime_bars": "30", "rebalance": "48h", "top_n": "3", "max_positions": "3", "risk_on_gross": "0.75", "neutral_gross": "0.25", "risk_off_gross": "0", "regime_band": "0.02", "position_cap": "0.25", "max_gross": "0.75", "max_net": "0.75", "cash_reserve": "0.25", "vol_floor": "0.02", "turnover_budget": "0.10", "skip_delta": "0.015", "execution_gap_reserve": "0.1", "allocation_tolerance": "0.02", "hard_stop": "0.08", "include_shortlist": "true", "execution_intent": "backtest", "model_observation": "0", "decision_model": "aihubmix/decision-model-preview", "decision_council_policy": "observe_v1"},
+	}, Overrides: map[string]string{"backtest_dataset_manifest_id": manifestID, "backtest_start": "2024-12-01T00:00:00Z", "backtest_end": "2026-09-01T00:00:00Z", "backtest_symbols": "ETHUSDT,SOLUSDT,BNBUSDT,XRPUSDT,ADAUSDT,DOGEUSDT,AVAXUSDT,LINKUSDT", "backtest_universe_mode": "static", "backtest_fee_bps": "10", "backtest_slippage_bps": "5", "backtest_execution_1m": "true", "backtest_require_point_in_time": "true"}}
+	t.Setenv("AIHUBMIX_API_TOKEN", "")
+	t.Setenv("AIHUBMIX_API_TOKEN_FILE", "")
+	if err := validateRequest(req); err == nil {
+		t.Fatal("missing provider token accepted")
+	}
+	t.Setenv("AIHUBMIX_API_TOKEN", "fixture-only")
+	if err := validateRequest(req); err != nil {
+		t.Fatalf("observe request rejected: %v", err)
+	}
+	req.Parameters["decision_council_policy"] = "veto_v1"
+	if err := validateRequest(req); err != nil {
+		t.Fatalf("veto request rejected: %v", err)
+	}
+	for name, change := range map[string]func(*input){
+		"policy":    func(r *input) { r.Parameters["decision_council_policy"] = "autonomous" },
+		"model":     func(r *input) { r.Parameters["decision_model"] = "unknown/model" },
+		"execution": func(r *input) { r.ExecutionPolicyVersion = "backtest-execution-v3" },
+		"final":     func(r *input) { r.FinalPolicy = "liquidate" },
+		"override":  func(r *input) { r.Overrides["backtest_end"] = "2026-10-01T00:00:00Z" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			copy := req
+			copy.Parameters = make(map[string]string, len(req.Parameters))
+			for k, v := range req.Parameters {
+				copy.Parameters[k] = v
+			}
+			copy.Overrides = make(map[string]string, len(req.Overrides))
+			for k, v := range req.Overrides {
+				copy.Overrides[k] = v
+			}
+			change(&copy)
+			if err := validateRequest(copy); err == nil {
+				t.Fatal("altered council request accepted")
+			}
+		})
+	}
+}

@@ -8,6 +8,7 @@ These runbooks describe the implemented Stage 08 controls. They do not authorize
 - [Stage 04 data coverage](dataset-coverage.md)
 - [Stage 05/06 backtest reproduction](backtest-reproduction.md)
 - [Next exploratory Stage 05/07 iteration](stage05-07-next-exploratory-iteration.md)
+- [Decision council v1 exploratory predeclaration](../research/decision-council-v1.md)
 - [V4 paper authority readiness](v4-paper-readiness.md)
 - [Stage 07 promotion and rollback](strategy-model-promotion.md)
 - [Model decision cohorts and fixed-horizon labels](model-decision-cohorts.md)

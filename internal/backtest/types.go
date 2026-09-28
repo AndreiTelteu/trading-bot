@@ -1,7 +1,9 @@
 package backtest
 
 import (
+	"context"
 	"time"
+	"trading-go/internal/decisionmodel"
 	"trading-go/internal/services"
 	"trading-go/internal/tradingcore"
 )
@@ -113,6 +115,10 @@ type BacktestConfig struct {
 	ValidationBootstrapIterations          int
 	precomputedContexts                    map[string]map[int64]barContext
 	trendMomentumHistory                   *tradingcore.TrendMomentumHistory
+	// CouncilModel is a test seam. Production resolves the configured provider
+	// with its immutable PostgreSQL store before replay starts.
+	CouncilModel   decisionmodel.Model `json:"-"`
+	CouncilContext context.Context     `json:"-"`
 	// Progress is optional operator telemetry. It must never affect decisions,
 	// fills, digests, or any deterministic backtest output.
 	Progress ProgressFunc `json:"-"`

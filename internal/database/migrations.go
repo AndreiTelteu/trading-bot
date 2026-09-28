@@ -1748,6 +1748,37 @@ func RunMigrations(db *gorm.DB) error {
 				return fmt.Errorf("immutable research evidence and its least-privilege runtime grants are intentionally retained")
 			},
 		},
+		{
+			ID: "202609280100_decision_model_responses",
+			Migrate: func(tx *gorm.DB) error {
+				return tx.Exec(`
+					CREATE TABLE decision_model_responses (
+						request_digest text PRIMARY KEY CHECK (request_digest ~ '^[a-f0-9]{64}$'),
+						model_identity text NOT NULL,
+						driver text NOT NULL,
+						resolved_model text NOT NULL,
+						request_json jsonb NOT NULL,
+						response_json jsonb NOT NULL,
+						input_tokens int CHECK (input_tokens >= 0),
+						output_tokens int CHECK (output_tokens >= 0),
+						created_at timestamptz NOT NULL DEFAULT now()
+					);
+					CREATE FUNCTION reject_decision_model_response_mutation() RETURNS trigger
+					LANGUAGE plpgsql SET search_path = pg_catalog AS $$
+					BEGIN RAISE EXCEPTION 'decision model responses are immutable'; END;
+					$$;
+					CREATE TRIGGER decision_model_responses_immutable
+						BEFORE UPDATE OR DELETE ON decision_model_responses
+						FOR EACH ROW EXECUTE FUNCTION reject_decision_model_response_mutation();
+					REVOKE ALL ON FUNCTION reject_decision_model_response_mutation() FROM PUBLIC, trading_bot_runtime, trading_bot_ledger_writer, trading_bot_parity_writer;
+					REVOKE ALL PRIVILEGES ON decision_model_responses FROM PUBLIC, trading_bot_runtime, trading_bot_ledger_writer, trading_bot_parity_writer;
+					GRANT SELECT, INSERT ON decision_model_responses TO trading_bot_runtime;
+				`).Error
+			},
+			Rollback: func(*gorm.DB) error {
+				return fmt.Errorf("immutable decision model responses are intentionally retained")
+			},
+		},
 	})
 
 	return m.Migrate()

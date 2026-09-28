@@ -1,0 +1,19 @@
+# Decision council v1: exploratory predeclaration
+
+## Hypothesis and fixed comparison
+
+The hypothesis is that a structured model can reduce weak long entries and identify deteriorating held targets after the shared trend/momentum v4 planner has made its decision. The candidate is `trend_momentum_candidate@1.3.0`, derived from 1.1.0. It does not inherit the 1.2.0 positive-entry-momentum rule. Its matched comparison is `matched_momentum_baseline@1.0.0`, with the same exposure, costs, universe, and final-position policy. Execution uses `backtest-execution-v4`. Council output alone grants no paper or live authority.
+
+## Input, questions, and rule
+
+At each actionable non-risk-stop plan, the council sees up to 64 completed UTC 4-hour asset and benchmark bars summarized into relative, rounded features. The state excludes ticker, dates, absolute prices, and absolute volumes. At least 51 completed bars of each series are required. Three five-level score questions ask about upside continuation (`decision_bull`), downside/reversal risk (`decision_bear`), and the merit of holding a position or remaining flat (`decision_hodl`). A fourth choice question selects `buy`, `sell`, or `hodl`. The prompt and rule constants are bound by `CouncilPromptDigest`.
+
+Each score is `Σ(level index × reported probability)/(levels−1)` in ascending level order. Reported probabilities are not renormalized within the accepted rounding tolerance; the scalar score is used only when probabilities are absent. For a new v4 target, admission requires final choice `buy`, Bull at least 0.50, and Bear below 0.50. Otherwise the council proposes a veto. For a held target still selected by v4, it proposes an early exit only when final choice is `sell`, Bear is at least 0.60, and Hodl is below 0.40. It never evaluates v4 deselections, v4 exits, or risk stops, and cannot block those exits. Vetoed target weight stays in cash; other weights do not increase.
+
+The first phase uses `decision_council_policy=observe_v1`: traces are recorded, while trades and equity must equal 1.1.0 on the same inputs. A separate frozen `veto_v1` run applies the rule. Insufficient data vetoes a new entry and preserves a hold. Provider unavailability or invalid response falls back to v4 admit/hold and records the failure. The tenth failed request aborts the entire candidate run. Cache corruption, cancellation, and other errors abort immediately.
+
+## Reproducibility and limits
+
+The model identity is `aihubmix/decision-model-preview`. Requests and validated responses use a digest-keyed immutable PostgreSQL cache; a cache hit reproduces the same model response. Resolution requires a configured provider token before replay. Traces carry request and state digests, resolved model, choice, scores, cache status, and fallback status. The summary records the sorted distinct resolved models from score and final responses. Cache-hit telemetry remains in the report but is excluded from its artifact digest, so cold and warm replays with the same decisions have the same identity. Forward +1/+6/+12 completed-bar returns anchor to the latest completed 4-hour bar at or before each decision and are computed only after replay. AUC and admitted/vetoed mean returns are also post hoc; none of these diagnostics enters a decision.
+
+The model was released on 2026-09-24, after the frozen 2024-12-01 through 2026-09-01 research dataset. Model judgments on that dataset therefore have a look-ahead limitation even when market features are point in time. These runs are exploratory. Only observations using data after 2026-09-24 can contribute clean prospective evidence, and they still require sufficient samples, elapsed shadow observation, comparable costs, validation gates, and operator approval before promotion.
