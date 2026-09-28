@@ -14,14 +14,24 @@ import (
 )
 
 const (
-	// DefaultIdentity is the first registered decision model identity.
-	DefaultIdentity = "aihubmix/decision-model-preview"
+	// DefaultIdentity is the default council decision model identity.
+	DefaultIdentity = ExperientialIdentity
+	// AIHubMixIdentity is the AIHubMix preview decision model identity.
+	AIHubMixIdentity = "aihubmix/decision-model-preview"
 
 	AIHubMixProvider       = "aihubmix"
 	AIHubMixDefaultBaseURL = "https://aihubmix.com"
 	AIHubMixBaseURLEnv     = "AIHUBMIX_BASE_URL"
 	AIHubMixTokenEnv       = "AIHUBMIX_API_TOKEN"
 	AIHubMixTokenFileEnv   = "AIHUBMIX_API_TOKEN_FILE"
+
+	// ExperientialIdentity is the Experiential Labs SystemOne decision model.
+	ExperientialIdentity       = "experiential/jev-latest"
+	ExperientialProvider       = "experiential"
+	ExperientialDefaultBaseURL = "https://api.experientiallabs.ai"
+	ExperientialBaseURLEnv     = "EXPERIENTIAL_BASE_URL"
+	ExperientialTokenEnv       = "EXPERIENTIAL_API_TOKEN"
+	ExperientialTokenFileEnv   = "EXPERIENTIAL_API_TOKEN_FILE"
 
 	// MaxAttempts bounds live calls per Decide for transient failures.
 	MaxAttempts = 3
@@ -70,8 +80,8 @@ func NewRegistry() *Registry {
 }
 
 // DefaultRegistry registers the systemone driver (with the given client, or a
-// 20s-timeout client when nil) and the aihubmix provider configured from the
-// process environment.
+// 20s-timeout client when nil) and the aihubmix and experiential providers
+// configured from the process environment.
 func DefaultRegistry(client *http.Client) *Registry {
 	registry := NewRegistry()
 	registry.RegisterDriver(NewSystemOneDriver(client))
@@ -83,7 +93,31 @@ func DefaultRegistry(client *http.Client) *Registry {
 	}); err != nil {
 		panic(err)
 	}
+	if err := registry.RegisterProvider(Provider{
+		Name:    ExperientialProvider,
+		Driver:  SystemOneDriverName,
+		BaseURL: EnvBaseURL(ExperientialBaseURLEnv, ExperientialDefaultBaseURL),
+		Token:   EnvToken(ExperientialTokenEnv, ExperientialTokenFileEnv),
+	}); err != nil {
+		panic(err)
+	}
 	return registry
+}
+
+// ProviderTokenEnv returns the token and token-file environment keys for a
+// built-in provider identity so callers can fail closed before replay.
+func ProviderTokenEnv(identity string) (tokenEnv, tokenFileEnv string, err error) {
+	provider, _, err := ParseIdentity(identity)
+	if err != nil {
+		return "", "", err
+	}
+	switch provider {
+	case AIHubMixProvider:
+		return AIHubMixTokenEnv, AIHubMixTokenFileEnv, nil
+	case ExperientialProvider:
+		return ExperientialTokenEnv, ExperientialTokenFileEnv, nil
+	}
+	return "", "", fmt.Errorf("%w: %q", ErrUnknownProvider, provider)
 }
 
 // Resolve resolves identity with DefaultRegistry(nil).

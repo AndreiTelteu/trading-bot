@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"trading-go/internal/decisionmodel"
 	"trading-go/internal/services"
 	"trading-go/internal/tradingcore"
 )
@@ -497,7 +498,7 @@ func newDefaultStrategyRegistry() *StrategyRegistry {
 		}
 	}
 	candidateV13.Parameters = append(candidateV13.Parameters,
-		StrategyParameterSpec{Name: "decision_model", Type: "enum", Description: "Resolved decision model identity.", Default: "aihubmix/decision-model-preview", Enum: []string{"aihubmix/decision-model-preview"}},
+		StrategyParameterSpec{Name: "decision_model", Type: "enum", Description: "Resolved decision model identity.", Default: decisionmodel.DefaultIdentity, Enum: []string{decisionmodel.ExperientialIdentity, decisionmodel.AIHubMixIdentity}},
 		StrategyParameterSpec{Name: "decision_council_policy", Type: "enum", Description: "Council observation or veto policy.", Default: "observe_v1", Enum: []string{"observe_v1", "veto_v1"}},
 	)
 	definitions = append(definitions, candidateV13)

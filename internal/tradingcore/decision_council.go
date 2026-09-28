@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"math"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -323,7 +322,18 @@ type DecisionCouncil struct {
 	Policy CouncilPolicy
 }
 
-var councilLevels = []string{"none", "weak", "moderate", "strong", "very strong"}
+// councilLevels are ordered (lowest first) choice keys for the three council
+// scores. Score questions are asked as five-option choice questions because
+// the providers answer typed choices reliably; the expected level index is
+// computed locally from the reported option probabilities.
+var councilLevels = []string{"none", "weak", "moderate", "strong", "very_strong"}
+var councilLevelMeanings = map[string]string{
+	"none":        "No support at all.",
+	"weak":        "Weak support.",
+	"moderate":    "Moderate support.",
+	"strong":      "Strong support.",
+	"very_strong": "Very strong support.",
+}
 
 const councilBullInstruction = "Score upside continuation merit over the next few 4h bars. Weigh volume confirmation, momentum persistence across horizons, trend alignment with market, and orderly structure above averages; penalize overextension."
 const councilBearInstruction = "Score downside or reversal risk over the next few 4h bars. Weigh exhaustion, overbought RSI, stretched distance above averages, fading volume on up moves, adverse market regime, high volatility, and breakdown from range."
@@ -331,13 +341,21 @@ const councilHodlInstruction = "If has_position=true, score merit of keeping the
 const councilFinalInstruction = "Choose the best action for the current long-only state using the asset, market, signal, position, and council scores."
 const councilEntryRule = "buy && !has_position: admit iff final=buy && bull>=0.50 && bear<0.50; else veto"
 const councilHoldRule = "hold && has_position: early_exit iff final=sell && bear>=0.60 && hodl<0.40; else hold"
-const councilScoreRule = "score=clamp(sum(index*probability)/(levels-1),0,1); when probabilities absent clamp(score/(levels-1),0,1)"
+const councilScoreRule = "score=clamp(sum(level_index*probability[level])/(levels-1),0,1) over ordered choice levels; when probabilities absent clamp(index(choice)/(levels-1),0,1)"
+
+func councilLevelCriteria() map[string]string {
+	criteria := make(map[string]string, len(councilLevelMeanings))
+	for key, meaning := range councilLevelMeanings {
+		criteria[key] = meaning
+	}
+	return criteria
+}
 
 func councilScoreQuestions() map[string]decisionmodel.Question {
 	return map[string]decisionmodel.Question{
-		"decision_bull": {Type: decisionmodel.QuestionScore, Instructions: councilBullInstruction, ScoreCriteria: append([]string(nil), councilLevels...)},
-		"decision_bear": {Type: decisionmodel.QuestionScore, Instructions: councilBearInstruction, ScoreCriteria: append([]string(nil), councilLevels...)},
-		"decision_hodl": {Type: decisionmodel.QuestionScore, Instructions: councilHodlInstruction, ScoreCriteria: append([]string(nil), councilLevels...)},
+		"decision_bull": {Type: decisionmodel.QuestionChoice, Instructions: councilBullInstruction, ChoiceCriteria: councilLevelCriteria()},
+		"decision_bear": {Type: decisionmodel.QuestionChoice, Instructions: councilBearInstruction, ChoiceCriteria: councilLevelCriteria()},
+		"decision_hodl": {Type: decisionmodel.QuestionChoice, Instructions: councilHodlInstruction, ChoiceCriteria: councilLevelCriteria()},
 	}
 }
 func councilFinalQuestions() map[string]decisionmodel.Question {
@@ -359,21 +377,28 @@ func CouncilPromptDigest() string {
 	return hex.EncodeToString(h[:])
 }
 func councilExpectedScore(answer decisionmodel.Answer) (float64, error) {
+	if answer.Type != decisionmodel.QuestionChoice {
+		return 0, fmt.Errorf("invalid council score answer type")
+	}
+	index := make(map[string]int, len(councilLevels))
+	for i, level := range councilLevels {
+		index[level] = i
+	}
 	if len(answer.Probabilities) == 0 {
-		if math.IsNaN(answer.Score) || math.IsInf(answer.Score, 0) {
-			return 0, fmt.Errorf("invalid council score")
+		i, ok := index[answer.Choice]
+		if !ok {
+			return 0, fmt.Errorf("invalid council score choice")
 		}
-		return clampCouncil(answer.Score / float64(len(councilLevels)-1)), nil
+		return clampCouncil(float64(i) / float64(len(councilLevels)-1)), nil
 	}
 	sum, weighted := 0.0, 0.0
 	for key, p := range answer.Probabilities {
-		i, err := strconv.Atoi(key)
-		if err != nil || i < 0 || i >= len(councilLevels) || math.IsNaN(p) || math.IsInf(p, 0) || p < 0 || p > 1 {
+		if _, ok := index[key]; !ok || math.IsNaN(p) || math.IsInf(p, 0) || p < 0 || p > 1 {
 			return 0, fmt.Errorf("invalid council score probability")
 		}
 	}
-	for i := range councilLevels {
-		p := answer.Probabilities[strconv.Itoa(i)]
+	for i, level := range councilLevels {
+		p := answer.Probabilities[level]
 		sum += p
 		weighted += float64(i) * p
 	}
@@ -414,7 +439,7 @@ func (c DecisionCouncil) Evaluate(ctx context.Context, input CouncilInput) (Coun
 		value, confidence *float64
 	}{{"decision_bull", &out.Bull, &out.BullConfidence}, {"decision_bear", &out.Bear, &out.BearConfidence}, {"decision_hodl", &out.Hodl, &out.HodlConfidence}} {
 		answer, ok := scores.Answers[item.name]
-		if !ok || answer.Type != decisionmodel.QuestionScore {
+		if !ok || answer.Type != decisionmodel.QuestionChoice {
 			return CouncilOutcome{}, fmt.Errorf("invalid council score answer %s", item.name)
 		}
 		*item.value, err = councilExpectedScore(answer)

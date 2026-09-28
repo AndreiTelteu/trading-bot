@@ -165,6 +165,16 @@ func TestValidateRequestDecisionCouncilFrozenBoundary(t *testing.T) {
 	if err := validateRequest(req); err != nil {
 		t.Fatalf("veto request rejected: %v", err)
 	}
+	req.Parameters["decision_model"] = "experiential/jev-latest"
+	t.Setenv("EXPERIENTIAL_API_TOKEN", "")
+	t.Setenv("EXPERIENTIAL_API_TOKEN_FILE", "")
+	if err := validateRequest(req); err == nil {
+		t.Fatal("missing experiential token accepted")
+	}
+	t.Setenv("EXPERIENTIAL_API_TOKEN", "fixture-only")
+	if err := validateRequest(req); err != nil {
+		t.Fatalf("experiential request rejected: %v", err)
+	}
 	for name, change := range map[string]func(*input){
 		"policy":    func(r *input) { r.Parameters["decision_council_policy"] = "autonomous" },
 		"model":     func(r *input) { r.Parameters["decision_model"] = "unknown/model" },

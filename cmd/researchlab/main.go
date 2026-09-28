@@ -252,7 +252,11 @@ func validateRequest(req input) error {
 	newParameters := maps.Clone(expectedParameters)
 	newParameters["entry_momentum_rule"] = "positive_new_targets_v1"
 	councilParameters := maps.Clone(expectedParameters)
-	councilParameters["decision_model"] = decisionmodel.DefaultIdentity
+	councilModel := req.Parameters["decision_model"]
+	if councilModel != decisionmodel.ExperientialIdentity && councilModel != decisionmodel.AIHubMixIdentity {
+		councilModel = decisionmodel.DefaultIdentity
+	}
+	councilParameters["decision_model"] = councilModel
 	policy := req.Parameters["decision_council_policy"]
 	councilParameters["decision_council_policy"] = policy
 	oldRequest := req.StrategyVersion == "1.1.0" && maps.Equal(req.Parameters, expectedParameters)
@@ -264,7 +268,11 @@ func validateRequest(req input) error {
 		return fmt.Errorf("request differs from frozen exploratory Stage 05 boundary")
 	}
 	if councilRequest {
-		if _, err := decisionmodel.EnvToken(decisionmodel.AIHubMixTokenEnv, decisionmodel.AIHubMixTokenFileEnv)(); err != nil {
+		tokenEnv, tokenFileEnv, err := decisionmodel.ProviderTokenEnv(councilModel)
+		if err != nil {
+			return err
+		}
+		if _, err := decisionmodel.EnvToken(tokenEnv, tokenFileEnv)(); err != nil {
 			return fmt.Errorf("decision council provider token is not configured: %w", err)
 		}
 	}

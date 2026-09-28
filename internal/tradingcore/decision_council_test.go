@@ -47,14 +47,24 @@ func councilTestInput() CouncilInput {
 func councilTestModel(bull, bear, hodl float64, choice string) *fakeCouncilModel {
 	return &fakeCouncilModel{responses: []decisionmodel.Response{
 		{RequestDigest: "score-digest", ResolvedModel: "test-build", Cached: true, Answers: map[string]decisionmodel.Answer{
-			"decision_bull": {Type: decisionmodel.QuestionScore, Score: bull * 4, Confidence: 0.8},
-			"decision_bear": {Type: decisionmodel.QuestionScore, Score: bear * 4, Confidence: 0.7},
-			"decision_hodl": {Type: decisionmodel.QuestionScore, Score: hodl * 4, Confidence: 0.6},
+			"decision_bull": councilLevelAnswer(bull, 0.8),
+			"decision_bear": councilLevelAnswer(bear, 0.7),
+			"decision_hodl": councilLevelAnswer(hodl, 0.6),
 		}},
 		{RequestDigest: "final-digest", ResolvedModel: "test-build", Cached: true, Answers: map[string]decisionmodel.Answer{
 			"decision_final": {Type: decisionmodel.QuestionChoice, Choice: choice, Probabilities: map[string]float64{"buy": 0.6, "sell": 0.2, "hodl": 0.2}, Confidence: 0.9},
 		}},
 	}}
+}
+
+// councilLevelAnswer places value mass on the top level and the rest on the
+// bottom level so that the expected normalized level equals value exactly.
+func councilLevelAnswer(value, confidence float64) decisionmodel.Answer {
+	choice := "none"
+	if value >= 0.5 {
+		choice = "very_strong"
+	}
+	return decisionmodel.Answer{Type: decisionmodel.QuestionChoice, Choice: choice, Probabilities: map[string]float64{"none": 1 - value, "very_strong": value}, Confidence: confidence}
 }
 func TestAggregateCouncilBars4H(t *testing.T) {
 	start := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -237,8 +247,8 @@ func TestCouncilRulesAndPolicies(t *testing.T) {
 }
 func TestCouncilNormalizedScore(t *testing.T) {
 	f := councilTestModel(0, 0, 0, "buy")
-	f.responses[0].Answers["decision_bull"] = decisionmodel.Answer{Type: decisionmodel.QuestionScore, Score: 4, Probabilities: map[string]float64{"0": 0.25, "4": 0.75}, Confidence: 0.8}
-	f.responses[0].Answers["decision_bear"] = decisionmodel.Answer{Type: decisionmodel.QuestionScore, Score: 0, Probabilities: map[string]float64{"0": 0.75, "4": 0.25}, Confidence: 0.7}
+	f.responses[0].Answers["decision_bull"] = decisionmodel.Answer{Type: decisionmodel.QuestionChoice, Choice: "very_strong", Probabilities: map[string]float64{"none": 0.25, "very_strong": 0.75}, Confidence: 0.8}
+	f.responses[0].Answers["decision_bear"] = decisionmodel.Answer{Type: decisionmodel.QuestionChoice, Choice: "none", Probabilities: map[string]float64{"none": 0.75, "very_strong": 0.25}, Confidence: 0.7}
 	out, err := (DecisionCouncil{Model: f, Policy: CouncilVetoV1}).Evaluate(context.Background(), councilTestInput())
 	if err != nil {
 		t.Fatal(err)
@@ -252,7 +262,7 @@ func TestCouncilNormalizedScore(t *testing.T) {
 }
 func TestCouncilRoundedProbabilitySumDoesNotRenormalize(t *testing.T) {
 	f := councilTestModel(0, 0, 0, "buy")
-	f.responses[0].Answers["decision_bull"] = decisionmodel.Answer{Type: decisionmodel.QuestionScore, Probabilities: map[string]float64{"0": 0.495, "4": 0.495}}
+	f.responses[0].Answers["decision_bull"] = decisionmodel.Answer{Type: decisionmodel.QuestionChoice, Choice: "none", Probabilities: map[string]float64{"none": 0.495, "very_strong": 0.495}}
 	out, err := (DecisionCouncil{Model: f, Policy: CouncilVetoV1}).Evaluate(context.Background(), councilTestInput())
 	if err != nil {
 		t.Fatal(err)
@@ -262,11 +272,38 @@ func TestCouncilRoundedProbabilitySumDoesNotRenormalize(t *testing.T) {
 	}
 }
 func TestCouncilSymmetricProbabilitiesHaveStableThreshold(t *testing.T) {
-	answer := decisionmodel.Answer{Type: decisionmodel.QuestionScore, Probabilities: map[string]float64{"0": 0.1, "1": 0.2, "2": 0.4, "3": 0.2, "4": 0.1}}
+	answer := decisionmodel.Answer{Type: decisionmodel.QuestionChoice, Choice: "moderate", Probabilities: map[string]float64{"none": 0.1, "weak": 0.2, "moderate": 0.4, "strong": 0.2, "very_strong": 0.1}}
 	for i := 0; i < 1000; i++ {
 		got, err := councilExpectedScore(answer)
 		if err != nil || got != 0.5 {
 			t.Fatalf("iteration %d: score=%v err=%v", i, got, err)
+		}
+	}
+}
+func TestCouncilScoreQuestionsAreOrderedChoices(t *testing.T) {
+	for name, question := range councilScoreQuestions() {
+		if question.Type != decisionmodel.QuestionChoice || len(question.ScoreCriteria) != 0 || len(question.ChoiceCriteria) != len(councilLevels) {
+			t.Fatalf("%s: %+v", name, question)
+		}
+		for _, level := range councilLevels {
+			if question.ChoiceCriteria[level] == "" {
+				t.Fatalf("%s missing level %s", name, level)
+			}
+		}
+	}
+	for choice, want := range map[string]float64{"none": 0, "weak": 0.25, "moderate": 0.5, "strong": 0.75, "very_strong": 1} {
+		got, err := councilExpectedScore(decisionmodel.Answer{Type: decisionmodel.QuestionChoice, Choice: choice})
+		if err != nil || got != want {
+			t.Fatalf("%s: score=%v err=%v", choice, got, err)
+		}
+	}
+	for _, answer := range []decisionmodel.Answer{
+		{Type: decisionmodel.QuestionChoice, Choice: "extreme"},
+		{Type: decisionmodel.QuestionScore, Score: 2},
+		{Type: decisionmodel.QuestionChoice, Choice: "weak", Probabilities: map[string]float64{"2": 1}},
+	} {
+		if _, err := councilExpectedScore(answer); err == nil {
+			t.Fatalf("accepted invalid score answer %+v", answer)
 		}
 	}
 }
@@ -296,7 +333,7 @@ func TestCouncilErrors(t *testing.T) {
 	}
 }
 func TestCouncilPromptDigestGolden(t *testing.T) {
-	const want = "72730555154109658ab3690185a20fa1464914349d423d6708f705224890b4ce"
+	const want = "66e5bb837a7a0a3e0f8dee09260b87f24b5a87fbc133389344a4fa537a845a9d"
 	if got := CouncilPromptDigest(); got != want {
 		t.Fatalf("digest=%s want=%s", got, want)
 	}

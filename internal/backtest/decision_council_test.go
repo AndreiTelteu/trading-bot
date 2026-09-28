@@ -42,11 +42,11 @@ func (m *fakeCouncilModel) Decide(_ context.Context, request decisionmodel.Reque
 		response.ResolvedModel = m.scoreResolved
 	}
 	for _, name := range []string{"decision_bull", "decision_bear", "decision_hodl"} {
-		level := "4"
+		level := "very_strong"
 		if name == "decision_hodl" {
-			level = "0"
+			level = "none"
 		}
-		response.Answers[name] = decisionmodel.Answer{Type: decisionmodel.QuestionScore, Score: 4, Probabilities: map[string]float64{level: 1}}
+		response.Answers[name] = decisionmodel.Answer{Type: decisionmodel.QuestionChoice, Choice: level, Probabilities: map[string]float64{level: 1}}
 	}
 	return response, nil
 }

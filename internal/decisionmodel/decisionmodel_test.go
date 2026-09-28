@@ -341,3 +341,48 @@ func TestResolveRejectsInvalidProviderConfiguration(t *testing.T) {
 		t.Fatalf("missing token: %v", err)
 	}
 }
+
+func TestDefaultRegistryExperientialProvider(t *testing.T) {
+	var gotModel string
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/systemone" || r.Header.Get("Authorization") != "Bearer "+testToken {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		var body struct {
+			Model string `json:"model"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		gotModel = body.Model
+		_, _ = w.Write([]byte(`{"id":"decision_1","model":"jev-latest","answers":{"direction":{"type":"choice","choice":"up","confidence":0.9,"probabilities":{"up":0.9,"down":0.1}}},"usage":{"input_tokens":10,"output_tokens":2,"cost":0.0,"is_byok":false},"provider":"typesafe"}`))
+	}))
+	defer server.Close()
+	t.Setenv(ExperientialBaseURLEnv, server.URL)
+	t.Setenv(ExperientialTokenEnv, testToken)
+	t.Setenv(ExperientialTokenFileEnv, "")
+	if DefaultIdentity != ExperientialIdentity {
+		t.Fatalf("default identity %q", DefaultIdentity)
+	}
+	tokenEnv, fileEnv, err := ProviderTokenEnv(ExperientialIdentity)
+	if err != nil || tokenEnv != ExperientialTokenEnv || fileEnv != ExperientialTokenFileEnv {
+		t.Fatalf("token env: %q %q %v", tokenEnv, fileEnv, err)
+	}
+	if _, _, err := ProviderTokenEnv("unknown/model"); !errors.Is(err, ErrUnknownProvider) {
+		t.Fatalf("unknown provider: %v", err)
+	}
+	model, err := DefaultRegistry(server.Client()).Resolve(ExperientialIdentity, NewMemoryStore())
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := Request{State: "anonymous state", Questions: map[string]Question{"direction": {Type: QuestionChoice, Instructions: "Pick one.", ChoiceCriteria: map[string]string{"up": "Up.", "down": "Down."}}}}
+	response, err := model.Decide(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotModel != "jev-latest" || response.ResolvedModel != "jev-latest" || response.Answers["direction"].Choice != "up" || response.Answers["direction"].Probabilities["up"] != 0.9 {
+		t.Fatalf("response: model=%q %+v", gotModel, response)
+	}
+}
