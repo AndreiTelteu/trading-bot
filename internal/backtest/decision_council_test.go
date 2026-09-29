@@ -22,6 +22,7 @@ type fakeCouncilModel struct {
 	err           error
 	calls         int
 	cache         bool
+	bearWeak      bool
 }
 
 func (m *fakeCouncilModel) Identity() string { return decisionmodel.DefaultIdentity }
@@ -43,7 +44,7 @@ func (m *fakeCouncilModel) Decide(_ context.Context, request decisionmodel.Reque
 	}
 	for _, name := range []string{"decision_bull", "decision_bear", "decision_hodl"} {
 		level := "very_strong"
-		if name == "decision_hodl" {
+		if name == "decision_hodl" || name == "decision_bear" && m.bearWeak {
 			level = "none"
 		}
 		response.Answers[name] = decisionmodel.Answer{Type: decisionmodel.QuestionChoice, Choice: level, Probabilities: map[string]float64{level: 1}}
@@ -206,6 +207,51 @@ func TestDecisionCouncilComparisonMatchesOldBaselineAndSkipsRiskOnlyPlans(t *tes
 	}
 	if model.calls != 0 {
 		t.Fatalf("risk-only plan made %d model calls", model.calls)
+	}
+}
+
+func TestDecisionCouncilV2ActiveEntrySelectsExecutionBarsForHeldTargets(t *testing.T) {
+	config, series := councilReplayFixture(t)
+	at := time.Date(2026, 2, 1, 3, 59, 59, int(time.Second-time.Millisecond), time.UTC)
+	config.End = at.Add(2 * time.Minute)
+	config.ExecutionSeriesRequired = true
+	config.ExecutionTimeframeMins = 1
+	config.ExecutionSeries = map[string][]services.OHLCV{}
+	config.Symbols = []string{"AAAUSDT", "BBBUSDT"}
+	config.EconomicAssetIdentities["BBBUSDT"] = "asset-b"
+	config.SymbolIdentities["BBBUSDT"] = "symbol-b"
+	config.ExecutionPolicy.Constraints["BBBUSDT"] = SymbolConstraints{QuantityStep: .00000001, PriceTick: .00000001, MinQuantity: .00000001}
+	for _, symbol := range config.Symbols {
+		config.ExecutionSeries[symbol] = []services.OHLCV{{OpenTime: at.Add(time.Millisecond).UnixMilli(), Open: 100, High: 101, Low: 99, Close: 100, Volume: 1000, CloseTime: at.Add(time.Minute).UnixMilli()}}
+	}
+	hourly := func(price float64) []services.OHLCV {
+		bars := make([]services.OHLCV, 0, 240)
+		start := at.Add(time.Millisecond).Add(-240 * time.Hour)
+		for i := 0; i < 240; i++ {
+			open := start.Add(time.Duration(i) * time.Hour)
+			bars = append(bars, services.OHLCV{OpenTime: open.UnixMilli(), Open: price, High: price + 1, Low: price - 1, Close: price + .5, Volume: 1000, CloseTime: open.Add(time.Hour - time.Millisecond).UnixMilli()})
+		}
+		return bars
+	}
+	config.councilSeries = map[string][]services.OHLCV{"AAAUSDT": hourly(100), "BBBUSDT": hourly(50), "BTCUSDT": hourly(200)}
+	config.councilDailySeries = map[string][]services.OHLCV{}
+	config.CouncilModel = &fakeCouncilModel{choice: "buy", bearWeak: true}
+	selected, strategy, _, err := DefaultStrategyRegistry.ResolveExecutable(StrategyTrendMomentumCandidate, "1.4.0", map[string]string{"decision_council_policy": "active_v2", "turnover_budget": "1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := newCouncilRuntime(config, selected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ledger := &backtestMemoryLedger{cash: 900, positions: map[string]*positionState{"BBBUSDT": {Symbol: "BBBUSDT", Size: 2, EntryPrice: 50, EntryTime: at.Add(-24 * time.Hour)}}}
+	ctx := Stage05PlanningContext{Selected: selected, At: at, Series: map[string][]services.OHLCV{"BBBUSDT": series["AAAUSDT"]}, Marks: map[string]float64{"AAAUSDT": 100, "BBBUSDT": 50}}
+	shadow := Stage05Plan{Regime: "risk_on", Factors: []FactorTrace{{Symbol: "AAAUSDT", RelativeRank: 2, CompositeMomentum: .1, NormalizedMomentum: 1, RealizedVolatility: .1, AbsoluteTrend: true}, {Symbol: "BBBUSDT", RelativeRank: 1, CompositeMomentum: .2, NormalizedMomentum: 2, RealizedVolatility: .1, AbsoluteTrend: true}}, TargetWeights: map[string]float64{}}
+	if _, _, err := runCouncilV2Boundary(runtime, ctx, Stage05Plan{}, shadow, ledger, config, strategy, &DecisionCouncilSummary{}, map[string][]tradingcore.CouncilFactorObservation{}); err != nil {
+		t.Fatal(err)
+	}
+	if ledger.positions["AAAUSDT"] == nil {
+		t.Fatal("active v2 admission did not create a position")
 	}
 }
 

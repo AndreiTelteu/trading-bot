@@ -2947,12 +2947,13 @@ func runCouncilV2Boundary(r *councilRuntime, ctx Stage05PlanningContext, v4, sha
 			if len(ledger.positions) >= config.MaxPositions {
 				continue
 			}
-			fillAt, fills, ok := nextFillPrices(config, map[string][]services.OHLCV{}, []string{symbol}, ctx.At)
+			executionSymbols := append([]string{symbol}, sortedPositionSymbolsByIdentity(ledger.positions, config)...)
+			fillAt, fills, ok := nextFillPrices(config, map[string][]services.OHLCV{}, executionSymbols, ctx.At)
 			if !ok {
 				return v4, nil, &StrategyDiagnosticError{Code: DiagnosticExecutionLiquidity, Strategy: config.StrategyID, Field: symbol, Details: "decision council entry has no selected execution bar"}
 			}
 			if config.ExecutionPolicy.Version == "backtest-execution-v4" {
-				fillAt, fills, err = stage05V4ClosePrices(config, []string{symbol}, fillAt)
+				fillAt, fills, err = stage05V4ClosePrices(config, executionSymbols, fillAt)
 				if err != nil {
 					return v4, nil, err
 				}
