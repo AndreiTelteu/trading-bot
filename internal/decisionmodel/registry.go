@@ -33,6 +33,15 @@ const (
 	ExperientialTokenEnv       = "EXPERIENTIAL_API_TOKEN"
 	ExperientialTokenFileEnv   = "EXPERIENTIAL_API_TOKEN_FILE"
 
+	// TokenRouterIdentity uses the TypeSafe JEV model through TokenRouter's
+	// typed decision endpoint.
+	TokenRouterIdentity       = "tokenrouter/typesafe/jev-1.13"
+	TokenRouterProvider       = "tokenrouter"
+	TokenRouterDefaultBaseURL = "https://api.tokenrouter.com"
+	TokenRouterBaseURLEnv     = "TOKENROUTER_BASE_URL"
+	TokenRouterTokenEnv       = "TOKENROUTER_API_TOKEN"
+	TokenRouterTokenFileEnv   = "TOKENROUTER_API_TOKEN_FILE"
+
 	// MaxAttempts bounds live calls per Decide for transient failures.
 	MaxAttempts = 3
 )
@@ -45,7 +54,7 @@ func retryDelay(attempt int) time.Duration {
 }
 
 var (
-	modelNamePattern    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
+	modelNamePattern    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$`)
 	providerNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
 )
 
@@ -85,6 +94,7 @@ func NewRegistry() *Registry {
 func DefaultRegistry(client *http.Client) *Registry {
 	registry := NewRegistry()
 	registry.RegisterDriver(NewSystemOneDriver(client))
+	registry.RegisterDriver(NewTokenRouterDriver(client))
 	if err := registry.RegisterProvider(Provider{
 		Name:    AIHubMixProvider,
 		Driver:  SystemOneDriverName,
@@ -98,6 +108,14 @@ func DefaultRegistry(client *http.Client) *Registry {
 		Driver:  SystemOneDriverName,
 		BaseURL: EnvBaseURL(ExperientialBaseURLEnv, ExperientialDefaultBaseURL),
 		Token:   EnvToken(ExperientialTokenEnv, ExperientialTokenFileEnv),
+	}); err != nil {
+		panic(err)
+	}
+	if err := registry.RegisterProvider(Provider{
+		Name:    TokenRouterProvider,
+		Driver:  TokenRouterDriverName,
+		BaseURL: EnvBaseURL(TokenRouterBaseURLEnv, TokenRouterDefaultBaseURL),
+		Token:   EnvToken(TokenRouterTokenEnv, TokenRouterTokenFileEnv),
 	}); err != nil {
 		panic(err)
 	}
@@ -116,6 +134,8 @@ func ProviderTokenEnv(identity string) (tokenEnv, tokenFileEnv string, err error
 		return AIHubMixTokenEnv, AIHubMixTokenFileEnv, nil
 	case ExperientialProvider:
 		return ExperientialTokenEnv, ExperientialTokenFileEnv, nil
+	case TokenRouterProvider:
+		return TokenRouterTokenEnv, TokenRouterTokenFileEnv, nil
 	}
 	return "", "", fmt.Errorf("%w: %q", ErrUnknownProvider, provider)
 }
@@ -150,7 +170,7 @@ func (r *Registry) Providers() []string {
 // ParseIdentity splits "<provider>/<model>".
 func ParseIdentity(identity string) (provider, model string, err error) {
 	provider, model, ok := strings.Cut(identity, "/")
-	if !ok || provider == "" || !modelNamePattern.MatchString(model) || strings.Contains(model, "/") {
+	if !ok || provider == "" || !modelNamePattern.MatchString(model) || strings.Contains(model, "//") || strings.HasSuffix(model, "/") {
 		return "", "", fmt.Errorf("%w: model identity must be <provider>/<model>", ErrInvalidRequest)
 	}
 	return provider, model, nil

@@ -253,7 +253,7 @@ func validateRequest(req input) error {
 	newParameters["entry_momentum_rule"] = "positive_new_targets_v1"
 	councilParameters := maps.Clone(expectedParameters)
 	councilModel := req.Parameters["decision_model"]
-	if councilModel != decisionmodel.ExperientialIdentity && councilModel != decisionmodel.AIHubMixIdentity {
+	if councilModel != decisionmodel.ExperientialIdentity && councilModel != decisionmodel.AIHubMixIdentity && councilModel != decisionmodel.TokenRouterIdentity {
 		councilModel = decisionmodel.DefaultIdentity
 	}
 	councilParameters["decision_model"] = councilModel

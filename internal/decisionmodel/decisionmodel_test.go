@@ -145,6 +145,10 @@ func TestRequestValidationAndDigest(t *testing.T) {
 	if RequestDigest("test/model", SystemOneDriverName, request) == RequestDigest("test/other", SystemOneDriverName, request) {
 		t.Fatal("model identity absent from digest")
 	}
+	provider, model, err := ParseIdentity("tokenrouter/typesafe/jev-1.13")
+	if err != nil || provider != "tokenrouter" || model != "typesafe/jev-1.13" {
+		t.Fatalf("nested provider model identity: %q %q %v", provider, model, err)
+	}
 	other.State = " "
 	if err := ValidateRequest(other); !errors.Is(err, ErrInvalidRequest) {
 		t.Fatalf("empty state: %v", err)
@@ -339,6 +343,51 @@ func TestResolveRejectsInvalidProviderConfiguration(t *testing.T) {
 	}
 	if _, err := registry.Resolve("test/model", NewMemoryStore()); !errors.Is(err, ErrMissingToken) {
 		t.Fatalf("missing token: %v", err)
+	}
+}
+
+func TestDefaultRegistryTokenRouterProvider(t *testing.T) {
+	var gotModel string
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/alpha/decisions" || r.Header.Get("Authorization") != "Bearer "+testToken || r.Header.Get("Content-Type") != "application/json" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		var body struct {
+			Model     string                     `json:"model"`
+			State     string                     `json:"state"`
+			Questions map[string]json.RawMessage `json:"questions"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		gotModel = body.Model
+		if body.State != "anonymous state" || len(body.Questions) != 1 {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		_, _ = w.Write([]byte(`{"model":"typesafe/jev-1.13-20260917","answers":{"direction":{"type":"choice","choice":"up","confidence":0.9,"probabilities":{"up":0.9,"down":0.1}}},"usage":{"input_tokens":10,"output_tokens":2,"cost":0.0},"provider":"TypeSafe"}`))
+	}))
+	defer server.Close()
+	t.Setenv(TokenRouterBaseURLEnv, server.URL)
+	t.Setenv(TokenRouterTokenEnv, testToken)
+	t.Setenv(TokenRouterTokenFileEnv, "")
+	tokenEnv, fileEnv, err := ProviderTokenEnv(TokenRouterIdentity)
+	if err != nil || tokenEnv != TokenRouterTokenEnv || fileEnv != TokenRouterTokenFileEnv {
+		t.Fatalf("token env: %q %q %v", tokenEnv, fileEnv, err)
+	}
+	model, err := DefaultRegistry(server.Client()).Resolve(TokenRouterIdentity, NewMemoryStore())
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := Request{State: "anonymous state", Questions: map[string]Question{"direction": {Type: QuestionChoice, Instructions: "Pick one.", ChoiceCriteria: map[string]string{"up": "Up.", "down": "Down."}}}}
+	response, err := model.Decide(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotModel != "typesafe/jev-1.13" || response.ResolvedModel != "typesafe/jev-1.13-20260917" || response.Answers["direction"].Choice != "up" {
+		t.Fatalf("model=%q response=%+v", gotModel, response)
 	}
 }
 

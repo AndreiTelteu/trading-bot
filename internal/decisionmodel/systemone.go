@@ -19,6 +19,11 @@ import (
 // SystemOneDriverName is the wire driver for POST {base}/v1/systemone.
 const SystemOneDriverName = "openai-compatible-systemone"
 
+// TokenRouterDriverName is the TokenRouter decision API wire driver for POST
+// {base}/api/alpha/decisions. Its request and response schemas intentionally
+// reuse the validated SystemOne typed-question contract.
+const TokenRouterDriverName = "tokenrouter-decisions-v1"
+
 const (
 	// SystemOneTimeout is the default per-attempt HTTP client timeout.
 	SystemOneTimeout = 20 * time.Second
@@ -26,6 +31,7 @@ const (
 	MaxResponseBytes  = 1 << 20
 	maxErrorBodyBytes = 64 << 10
 	systemOnePath     = "/v1/systemone"
+	tokenRouterPath   = "/api/alpha/decisions"
 )
 
 // ErrTransient marks a failure that may succeed when retried (timeouts,
@@ -39,11 +45,22 @@ var resolvedModelPattern = regexp.MustCompile(`^[A-Za-z0-9._:/-]{1,200}$`)
 
 type systemOneDriver struct {
 	client *http.Client
+	name   string
+	path   string
 }
 
 // NewSystemOneDriver returns the openai-compatible-systemone driver. A nil
 // client uses a dedicated client with SystemOneTimeout.
 func NewSystemOneDriver(client *http.Client) Driver {
+	return newSystemOneDriver(client, SystemOneDriverName, systemOnePath)
+}
+
+// NewTokenRouterDriver returns the TokenRouter decisions driver.
+func NewTokenRouterDriver(client *http.Client) Driver {
+	return newSystemOneDriver(client, TokenRouterDriverName, tokenRouterPath)
+}
+
+func newSystemOneDriver(client *http.Client, name, path string) Driver {
 	if client == nil {
 		client = &http.Client{}
 	}
@@ -52,10 +69,10 @@ func NewSystemOneDriver(client *http.Client) Driver {
 		clone.Timeout = SystemOneTimeout
 	}
 	clone.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	return &systemOneDriver{client: &clone}
+	return &systemOneDriver{client: &clone, name: name, path: path}
 }
 
-func (d *systemOneDriver) Name() string { return SystemOneDriverName }
+func (d *systemOneDriver) Name() string { return d.name }
 
 type systemOneRequest struct {
 	Model     string                       `json:"model"`
@@ -92,7 +109,7 @@ func (d *systemOneDriver) Decide(ctx context.Context, endpoint Endpoint, model s
 	if endpoint.Token == "" {
 		return Response{}, ErrMissingToken
 	}
-	target, err := systemOneURL(endpoint.BaseURL)
+	target, err := decisionURL(endpoint.BaseURL, d.path)
 	if err != nil {
 		return Response{}, err
 	}
@@ -136,12 +153,16 @@ func (d *systemOneDriver) Decide(ctx context.Context, endpoint Endpoint, model s
 }
 
 func systemOneURL(base string) (string, error) {
+	return decisionURL(base, systemOnePath)
+}
+
+func decisionURL(base, path string) (string, error) {
 	parsed, err := url.Parse(base)
 	if err != nil || parsed.Host == "" || parsed.Scheme != "https" ||
 		parsed.User != nil || parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" || parsed.Opaque != "" || (parsed.Path != "" && parsed.Path != "/") {
 		return "", fmt.Errorf("%w: endpoint base URL must be https://host without path, query, or credentials", ErrInvalidRequest)
 	}
-	return parsed.Scheme + "://" + parsed.Host + systemOnePath, nil
+	return parsed.Scheme + "://" + parsed.Host + path, nil
 }
 
 func transportError(ctx context.Context, err error, token string) error {
