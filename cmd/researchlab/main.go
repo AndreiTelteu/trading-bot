@@ -262,12 +262,13 @@ func validateRequest(req input) error {
 	oldRequest := req.StrategyVersion == "1.1.0" && maps.Equal(req.Parameters, expectedParameters)
 	newRequest := req.StrategyVersion == "1.2.0" && maps.Equal(req.Parameters, newParameters)
 	councilRequest := req.StrategyVersion == "1.3.0" && (policy == "observe_v1" || policy == "veto_v1") && maps.Equal(req.Parameters, councilParameters)
-	allowedVersion := req.ExecutionPolicyVersion == "backtest-execution-v3" && (oldRequest || newRequest) || req.ExecutionPolicyVersion == "backtest-execution-v4" && (oldRequest || councilRequest)
-	allowedFinalPolicy := req.FinalPolicy == "liquidate" && !councilRequest || (oldRequest || councilRequest) && req.FinalPolicy == "mark_to_market"
+	councilV2Request := req.StrategyVersion == "1.4.0" && (policy == "observe_v2" || policy == "active_v2") && maps.Equal(req.Parameters, councilParameters)
+	allowedVersion := req.ExecutionPolicyVersion == "backtest-execution-v3" && (oldRequest || newRequest) || req.ExecutionPolicyVersion == "backtest-execution-v4" && (oldRequest || councilRequest || councilV2Request)
+	allowedFinalPolicy := req.FinalPolicy == "liquidate" && !councilRequest && !councilV2Request || (oldRequest || councilRequest || councilV2Request) && req.FinalPolicy == "mark_to_market"
 	if req.StrategyID != "trend_momentum_candidate" || !allowedVersion || !allowedFinalPolicy || req.TargetGrossExposure != "0.75" || req.MaxNetExposure != "0.75" || !maps.Equal(req.Overrides, expectedOverrides) {
 		return fmt.Errorf("request differs from frozen exploratory Stage 05 boundary")
 	}
-	if councilRequest {
+	if councilRequest || councilV2Request {
 		tokenEnv, tokenFileEnv, err := decisionmodel.ProviderTokenEnv(councilModel)
 		if err != nil {
 			return err

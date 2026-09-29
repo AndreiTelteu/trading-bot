@@ -175,6 +175,15 @@ func TestValidateRequestDecisionCouncilFrozenBoundary(t *testing.T) {
 	if err := validateRequest(req); err != nil {
 		t.Fatalf("experiential request rejected: %v", err)
 	}
+	req.StrategyVersion = "1.4.0"
+	req.Parameters["decision_council_policy"] = "observe_v2"
+	if err := validateRequest(req); err != nil {
+		t.Fatalf("v2 observe request rejected: %v", err)
+	}
+	req.Parameters["decision_council_policy"] = "active_v2"
+	if err := validateRequest(req); err != nil {
+		t.Fatalf("v2 active request rejected: %v", err)
+	}
 	for name, change := range map[string]func(*input){
 		"policy":    func(r *input) { r.Parameters["decision_council_policy"] = "autonomous" },
 		"model":     func(r *input) { r.Parameters["decision_model"] = "unknown/model" },

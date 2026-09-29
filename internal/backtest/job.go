@@ -162,6 +162,9 @@ func runStage05ComparisonJob(jobID uint, request Stage05RunRequest, overrides ma
 	}
 	// Stage 05 never permits the legacy decision-bar execution fallback.
 	settings["backtest_execution_1m"] = "true"
+	if request.StrategyVersion == "1.4.0" {
+		settings["backtest_decision_council_v2"] = "true"
+	}
 	if request.ExecutionPolicyVersion != "" {
 		settings["backtest_execution_policy_version"] = request.ExecutionPolicyVersion
 	} else {
@@ -247,6 +250,9 @@ func RunStage05ComparisonSyncWithOverrides(request Stage05RunRequest, overrides 
 		}
 	}
 	settings["backtest_execution_1m"] = "true"
+	if request.StrategyVersion == "1.4.0" {
+		settings["backtest_decision_council_v2"] = "true"
+	}
 	if request.ExecutionPolicyVersion != "" {
 		settings["backtest_execution_policy_version"] = request.ExecutionPolicyVersion
 	} else {
@@ -1100,6 +1106,7 @@ func preparePointInTimeBacktestInputs(settings map[string]string) (BacktestConfi
 		return result
 	}
 	requiredSeries := []pointintime.SeriesKey{}
+	councilV2 := getSettingBool(settings, "backtest_decision_council_v2", false)
 	for _, symbol := range symbols {
 		decisionSeries := manifestSeries(symbol, pointintime.RoleDecision, "15m")
 		if len(decisionSeries) == 0 {
@@ -1108,6 +1115,18 @@ func preparePointInTimeBacktestInputs(settings map[string]string) (BacktestConfi
 		}
 		for _, covered := range decisionSeries {
 			requiredSeries = append(requiredSeries, covered.SeriesKey)
+		}
+		if councilV2 {
+			for _, frame := range []string{"1h", "1d"} {
+				values := manifestSeries(symbol, pointintime.RoleDecision, frame)
+				if len(values) == 0 {
+					report.Compatible = false
+					report.Failures = append(report.Failures, pointintime.CoverageFailure{Code: "symbol_role_timeframe_missing", Series: symbol + ":decision:" + frame, Details: "decision council history is absent or incomplete"})
+				}
+				for _, covered := range values {
+					requiredSeries = append(requiredSeries, covered.SeriesKey)
+				}
+			}
 		}
 		executionSeries := manifestSeries(symbol, pointintime.RoleExecution, "1m")
 		if fetchExecution && len(executionSeries) == 0 {
@@ -1127,6 +1146,18 @@ func preparePointInTimeBacktestInputs(settings map[string]string) (BacktestConfi
 	}
 	for _, covered := range benchmarkSeries {
 		requiredSeries = append(requiredSeries, covered.SeriesKey)
+	}
+	if councilV2 {
+		for _, frame := range []string{"1h", "1d"} {
+			values := manifestSeries(benchmark, pointintime.RoleBenchmark, frame)
+			if len(values) == 0 {
+				report.Compatible = false
+				report.Failures = append(report.Failures, pointintime.CoverageFailure{Code: "benchmark_role_timeframe_missing", Series: benchmark + ":benchmark:" + frame, Details: "decision council benchmark history is absent or incomplete"})
+			}
+			for _, covered := range values {
+				requiredSeries = append(requiredSeries, covered.SeriesKey)
+			}
+		}
 	}
 	benchmarkExecutionSeries := manifestSeries(benchmark, pointintime.RoleExecution, "1m")
 	if fetchExecution && len(benchmarkExecutionSeries) == 0 {
@@ -1175,6 +1206,9 @@ func preparePointInTimeBacktestInputs(settings map[string]string) (BacktestConfi
 	}
 	series := map[string][]services.OHLCV{}
 	execution := map[string][]services.OHLCV{}
+	councilSeries := map[string][]services.OHLCV{}
+	councilDailySeries := map[string][]services.OHLCV{}
+	var councilBenchmarkDaily []services.OHLCV
 	identities := map[string]string{}
 	economicIdentities := map[string]string{}
 	lifecycles := map[string]SymbolLifecycle{}
@@ -1211,12 +1245,39 @@ func preparePointInTimeBacktestInputs(settings map[string]string) (BacktestConfi
 		}
 		return combined, nil
 	}
+	councilStart := start.AddDate(0, 0, -180)
+	manifestStart, _ := time.Parse(time.RFC3339Nano, validated.RequestedStart)
+	if councilStart.Before(manifestStart) {
+		councilStart = manifestStart
+	}
+	loadCouncilTicker := func(ticker, role, frame string) ([]services.OHLCV, error) {
+		combined := []services.OHLCV{}
+		for _, covered := range manifestSeries(ticker, role, frame) {
+			bars, e := validatedRepo.Bars(covered.ExchangeSymbolID, role, frame, councilStart, end, end)
+			if e != nil {
+				return nil, e
+			}
+			combined = append(combined, bars...)
+		}
+		sort.Slice(combined, func(i, j int) bool { return combined[i].OpenTime < combined[j].OpenTime })
+		return combined, nil
+	}
 	for _, symbol := range symbols {
 		bars, e := loadTicker(symbol, pointintime.RoleDecision, "15m")
 		if e != nil {
 			return BacktestConfig{}, nil, e
 		}
 		series[symbol] = bars
+		if councilV2 {
+			councilSeries[symbol], e = loadCouncilTicker(symbol, pointintime.RoleDecision, "1h")
+			if e != nil {
+				return BacktestConfig{}, nil, e
+			}
+			councilDailySeries[symbol], e = loadCouncilTicker(symbol, pointintime.RoleDecision, "1d")
+			if e != nil {
+				return BacktestConfig{}, nil, e
+			}
+		}
 		if fetchExecution {
 			bars, e = loadTicker(symbol, pointintime.RoleExecution, "1m")
 			if e != nil {
@@ -1228,6 +1289,16 @@ func preparePointInTimeBacktestInputs(settings map[string]string) (BacktestConfi
 	benchmarkBars, err := loadTicker(benchmark, pointintime.RoleBenchmark, "15m")
 	if err != nil {
 		return BacktestConfig{}, nil, err
+	}
+	if councilV2 {
+		councilSeries[benchmark], err = loadCouncilTicker(benchmark, pointintime.RoleBenchmark, "1h")
+		if err != nil {
+			return BacktestConfig{}, nil, err
+		}
+		councilBenchmarkDaily, err = loadCouncilTicker(benchmark, pointintime.RoleBenchmark, "1d")
+		if err != nil {
+			return BacktestConfig{}, nil, err
+		}
 	}
 	if fetchExecution {
 		benchmarkExecution, executionErr := loadTicker(benchmark, pointintime.RoleExecution, "1m")
@@ -1317,6 +1388,7 @@ func preparePointInTimeBacktestInputs(settings map[string]string) (BacktestConfi
 		auditSeries = append(auditSeries, DatasetSeriesIdentity{ExchangeSymbolID: s.ExchangeSymbolID, SymbolVersion: s.SymbolVersion, AssetID: s.AssetID, Ticker: s.Ticker, Role: s.Role, Timeframe: s.Timeframe, ListedAt: s.ListedAt, DelistedAt: s.DelistedAt, SymbolAvailableAt: s.SymbolAvailableAt, AssetAvailableAt: s.AssetAvailableAt, Rows: s.Rows, SeriesHash: s.SeriesHash, TradabilityRows: s.TradabilityRows, TradabilityHash: s.TradabilityHash, ConstraintRows: s.ConstraintRows, ConstraintHash: s.ConstraintHash})
 	}
 	config := BacktestConfig{EngineMode: engineMode, CodeRevision: revision, ConfigVersion: getSettingString(settings, "backtest_config_version", "backtest-config-v1"), StrategyVersion: "legacy-rule-strategy-v1", Seed: int64(getSettingInt(settings, "backtest_seed", 0)), ValidationTrainMonths: getSettingInt(settings, "validation_train_months", 12), ValidationTestMonths: getSettingInt(settings, "validation_test_months", 3), ValidationBootstrapIterations: getSettingInt(settings, "validation_bootstrap_iterations", 500), AccountID: "backtest", SettlementCurrency: getSettingString(settings, "backtest_settlement_currency", "USDT"), VenueID: getSettingString(settings, "backtest_venue_id", "binance"), BacktestMode: resolveBacktestMode(UniverseDynamicReplay, modelArtifact != nil), ExecutionSeries: execution, ExecutionSeriesRequired: fetchExecution, ExecutionTimeframe: "1m", ExecutionTimeframeMins: 1, BenchmarkSymbol: benchmark, BenchmarkSeries: benchmarkBars, BenchmarkRequired: true, ConstraintsAvailable: constraintsAvailable, Symbols: symbols, UniverseMode: UniverseDynamicReplay, UniversePolicy: policy, Governance: governance, Start: start, End: end, IndicatorConfig: services.GetIndicatorSettings(), IndicatorWeights: services.GetIndicatorWeights(), Timeframe: "15m", TimeframeMinutes: 15, InitialBalance: 1000, FeeBps: getSettingFloat(settings, "backtest_fee_bps", 10), SlippageBps: getSettingFloat(settings, "backtest_slippage_bps", 5), ModelArtifact: modelArtifact, ModelPolicy: services.GetModelSelectionPolicy(settings), MaxPositions: getSettingInt(settings, "max_positions", 5), TimeStopBars: getSettingInt(settings, "time_stop_bars", 0), EntryPercent: getSettingFloat(settings, "entry_percent", 5), StopLossPercent: getSettingFloat(settings, "stop_loss_percent", 5), TakeProfitPercent: getSettingFloat(settings, "take_profit_percent", 30), RiskPerTrade: getSettingFloat(settings, "risk_per_trade", .5), StopMult: getSettingFloat(settings, "stop_mult", 1.5), TpMult: getSettingFloat(settings, "tp_mult", 3), MaxPositionValue: getSettingFloat(settings, "max_position_value", 0), AtrPeriod: getSettingInt(settings, "atr_trailing_period", 14), AtrTrailingEnabled: getSettingBool(settings, "atr_trailing_enabled", false), AtrTrailingMult: getSettingFloat(settings, "atr_trailing_mult", 1), AtrAnnualizationEnabled: getSettingBool(settings, "atr_annualization_enabled", false), AtrAnnualizationDays: getSettingInt(settings, "atr_annualization_days", 365), BuyOnlyStrong: getSettingBool(settings, "buy_only_strong", true), MinConfidenceToBuy: getSettingFloat(settings, "min_confidence_to_buy", 4), SellOnSignal: getSettingBool(settings, "sell_on_signal", true), MinConfidenceToSell: getSettingFloat(settings, "min_confidence_to_sell", 3.5), AllowSellAtLoss: getSettingBool(settings, "allow_sell_at_loss", false), TrailingStopEnabled: getSettingBool(settings, "trailing_stop_enabled", false), TrailingStopPercent: getSettingFloat(settings, "trailing_stop_percent", 10), ExecutionPolicy: configuredBacktestExecutionPolicy(settings, map[string]SymbolConstraints{}), DatasetManifestID: validated.ID, DatasetManifestValidated: true, DatasetManifestRequired: true, DatasetLimitations: validated.Limitations, SymbolIdentities: identities, EconomicAssetIdentities: economicIdentities, SymbolLifecycles: lifecycles, ConstraintResolver: resolver, DatasetKnowledgeCutoff: validated.KnowledgeCutoff, DatasetSeries: auditSeries}
+	config.councilSeries, config.councilDailySeries, config.councilBenchmarkDaily = councilSeries, councilDailySeries, councilBenchmarkDaily
 	config.precomputedContexts = precomputeBarContexts(config, series)
 	if modelArtifact != nil {
 		for _, feature := range modelArtifact.Features {

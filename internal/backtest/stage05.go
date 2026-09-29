@@ -197,7 +197,7 @@ func RunStage05Comparison(config BacktestConfig, series map[string][]services.OH
 	if err != nil {
 		return ComparisonArtifact{}, err
 	}
-	if candidate.Descriptor.ID == StrategyTrendMomentumCandidate && candidate.Descriptor.Version == "1.3.0" {
+	if candidate.Descriptor.ID == StrategyTrendMomentumCandidate && (candidate.Descriptor.Version == "1.3.0" || candidate.Descriptor.Version == "1.4.0") {
 		resolved, resolveErr := newCouncilRuntime(config, candidate)
 		if resolveErr != nil {
 			return ComparisonArtifact{}, resolveErr
@@ -247,7 +247,7 @@ func RunStage05Comparison(config BacktestConfig, series map[string][]services.OH
 		}
 		results[id] = result
 	}
-	if candidate.Descriptor.ID == StrategyTrendMomentumCandidate && candidate.Descriptor.Version != "1.2.0" && candidate.Descriptor.Version != "1.3.0" {
+	if candidate.Descriptor.ID == StrategyTrendMomentumCandidate && candidate.Descriptor.Version != "1.2.0" && candidate.Descriptor.Version != "1.3.0" && candidate.Descriptor.Version != "1.4.0" {
 		grid, gridErr := runStage06SensitivityGrid(config, series, candidateParameters, request.AllowInMemoryFixture)
 		if gridErr != nil {
 			return ComparisonArtifact{}, gridErr
@@ -285,7 +285,7 @@ func normalizeStage05RunRequest(request Stage05RunRequest) (Stage05RunRequest, m
 	}
 	candidateParameters := cloneStringMap(request.Parameters)
 	if request.StrategyID == StrategyTrendMomentumCandidate {
-		if request.StrategyVersion == "1.3.0" && request.ExecutionPolicyVersion != "backtest-execution-v4" {
+		if (request.StrategyVersion == "1.3.0" || request.StrategyVersion == "1.4.0") && request.ExecutionPolicyVersion != "backtest-execution-v4" {
 			return request, nil, invalidParameter(request.StrategyID, "execution_policy_version", "decision council requires backtest-execution-v4")
 		}
 		intent := candidateParameters["execution_intent"]
@@ -457,6 +457,7 @@ func runStage05StrategyWithPlanner(config BacktestConfig, series map[string][]se
 	diagnostics := []StrategyTraceDiagnostic{}
 	var councilTraces []DecisionCouncilTrace
 	var councilSummary *DecisionCouncilSummary
+	councilFactorHistory := map[string][]tradingcore.CouncilFactorObservation{}
 	if council != nil {
 		councilSummary = &DecisionCouncilSummary{}
 	}
@@ -510,11 +511,26 @@ func runStage05StrategyWithPlanner(config BacktestConfig, series map[string][]se
 		if decisionErr != nil {
 			return Stage05StrategyResult{}, decisionErr
 		}
-		if council != nil && plan.Decide && !plan.RiskStopOnly {
+		if council != nil && plan.Decide && !plan.RiskStopOnly && selected.Descriptor.Version == "1.3.0" {
 			var traces []DecisionCouncilTrace
 			plan, traces, err = council.apply(planning, plan, councilSummary)
 			if err != nil {
 				return Stage05StrategyResult{}, err
+			}
+			councilTraces = append(councilTraces, traces...)
+		}
+		if council != nil && selected.Descriptor.Version == "1.4.0" && isCompletedCouncil4HBar(bar) && !plan.RiskStopOnly {
+			shadowPlanning := planning
+			shadowPlanning.LastRebalance = time.Time{}
+			shadowPlan, shadowErr := planner.Plan(shadowPlanning)
+			if shadowErr != nil {
+				return Stage05StrategyResult{}, shadowErr
+			}
+			var traces []DecisionCouncilTrace
+			var activeErr error
+			plan, traces, activeErr = runCouncilV2Boundary(council, planning, plan, shadowPlan, ledger, runConfig, strategy, councilSummary, councilFactorHistory)
+			if activeErr != nil {
+				return Stage05StrategyResult{}, activeErr
 			}
 			councilTraces = append(councilTraces, traces...)
 		}
@@ -1195,7 +1211,7 @@ func reconcileMandatoryExitResidual(ledger *backtestMemoryLedger, config Backtes
 }
 
 func usesMandatoryExitResidualEvidence(id, version string) bool {
-	return (id == StrategyTrendMomentumCandidate && (version == "1.1.0" || version == "1.2.0" || version == "1.3.0")) ||
+	return (id == StrategyTrendMomentumCandidate && (version == "1.1.0" || version == "1.2.0" || version == "1.3.0" || version == "1.4.0")) ||
 		(id == StrategyMatchedMomentumID && (version == "1.0.0" || version == "1.1.0"))
 }
 
@@ -2442,7 +2458,7 @@ func buildStage05Comparison(config BacktestConfig, request Stage05RunRequest, ca
 	artifact := ComparisonArtifact{SchemaVersion: ComparisonSchemaVersion, ManifestID: config.DatasetManifestID, Candidate: candidate.Descriptor.ID + "@" + candidate.Descriptor.Version, Assumptions: assumptions, Rows: rows, Governance: GovernanceGate{SchemaVersion: GovernanceSchemaVersion, OptimizationAllowed: allowed, PromotionAllowed: false, Reasons: reasons}, Results: results, Limitations: limitations}
 	if candidate.Descriptor.ID == StrategyTrendMomentumCandidate {
 		result := results[candidate.Descriptor.ID]
-		if candidate.Descriptor.Version == "1.3.0" {
+		if candidate.Descriptor.Version == "1.3.0" || candidate.Descriptor.Version == "1.4.0" {
 			artifact.CouncilTraces = append([]DecisionCouncilTrace(nil), result.CouncilTraces...)
 			artifact.CouncilSummary = result.CouncilSummary
 			artifact.CouncilDiagnostic = result.CouncilDiagnostic
@@ -2458,6 +2474,11 @@ func buildStage05Comparison(config BacktestConfig, request Stage05RunRequest, ca
 }
 
 func strategyImplementationDigest(id, version string) string {
+	if id == StrategyTrendMomentumCandidate && version == "1.4.0" {
+		prior := strategyImplementationDigest(id, "1.1.0")
+		sum := sha256.Sum256([]byte(prior + "\x00decision-council-v2\x00" + tradingcore.CouncilPromptDigestV2()))
+		return fmt.Sprintf("%x", sum)
+	}
 	if id == StrategyTrendMomentumCandidate && version == "1.3.0" {
 		prior := strategyImplementationDigest(id, "1.1.0")
 		sum := sha256.Sum256([]byte(prior + "\x00decision-council-v1\x00" + tradingcore.CouncilPromptDigest()))
@@ -2514,7 +2535,7 @@ func comparisonDigest(value ComparisonArtifact) (string, error) {
 }
 
 func MarshalComparisonArtifact(value ComparisonArtifact) ([]byte, error) {
-	if len(value.CouncilTraces) > maxCouncilTraces || value.CouncilDiagnostic != nil && len(value.CouncilDiagnostic.Forward) != len(value.CouncilTraces) {
+	if len(value.CouncilTraces) > maxCouncilTracesForCandidate(value.Candidate) || value.CouncilDiagnostic != nil && len(value.CouncilDiagnostic.Forward) != len(value.CouncilTraces) {
 		return nil, fmt.Errorf("unbounded or inconsistent decision council evidence")
 	}
 	if value.SchemaVersion != ComparisonSchemaVersion || value.Governance.SchemaVersion != GovernanceSchemaVersion || len(value.Rows) == 0 || len(value.Rows) > 16 {
@@ -2546,22 +2567,30 @@ const (
 	// return diagnostic in the encoded artifact.
 	councilTraceArtifactBudget = 1536
 	maxCouncilTraces           = 4096
+	maxCouncilTracesV2         = 16384
 )
 
+func maxCouncilTracesForCandidate(candidate string) int {
+	if candidate == StrategyTrendMomentumCandidate+"@1.4.0" {
+		return maxCouncilTracesV2
+	}
+	return maxCouncilTraces
+}
+
 // comparisonArtifactLimit keeps the 2 MiB bound for ordinary comparisons and
-// adds a fixed budget per decision council trace (itself capped at 4096).
+// adds a fixed budget per decision council trace.
 func comparisonArtifactLimit(councilTraces int) int {
 	if councilTraces < 0 {
 		councilTraces = 0
 	}
-	if councilTraces > maxCouncilTraces {
-		councilTraces = maxCouncilTraces
+	if councilTraces > maxCouncilTracesV2 {
+		councilTraces = maxCouncilTracesV2
 	}
 	return comparisonArtifactBaseLimit + councilTraces*councilTraceArtifactBudget
 }
 
 func UnmarshalComparisonArtifact(data []byte) (ComparisonArtifact, error) {
-	if len(data) > comparisonArtifactLimit(maxCouncilTraces) {
+	if len(data) > comparisonArtifactLimit(maxCouncilTracesV2) {
 		return ComparisonArtifact{}, fmt.Errorf("comparison artifact exceeds inspection limit")
 	}
 	var value ComparisonArtifact
@@ -2571,7 +2600,7 @@ func UnmarshalComparisonArtifact(data []byte) (ComparisonArtifact, error) {
 	if len(data) > comparisonArtifactLimit(len(value.CouncilTraces)) {
 		return ComparisonArtifact{}, fmt.Errorf("comparison artifact exceeds inspection limit")
 	}
-	if len(value.CouncilTraces) > maxCouncilTraces || value.CouncilDiagnostic != nil && len(value.CouncilDiagnostic.Forward) != len(value.CouncilTraces) {
+	if len(value.CouncilTraces) > maxCouncilTracesForCandidate(value.Candidate) || value.CouncilDiagnostic != nil && len(value.CouncilDiagnostic.Forward) != len(value.CouncilTraces) {
 		return ComparisonArtifact{}, fmt.Errorf("unbounded or inconsistent decision council evidence")
 	}
 	if value.SchemaVersion != ComparisonSchemaVersion || value.Governance.SchemaVersion != GovernanceSchemaVersion || len(value.Rows) == 0 || len(value.Rows) > 16 {
@@ -2646,6 +2675,10 @@ func containsString(values []string, wanted string) bool {
 // kept separately and are computed only after the economic replay finishes.
 type DecisionCouncilTrace struct {
 	DecisionAt         string             `json:"decision_at"`
+	Trigger            string             `json:"trigger,omitempty"`
+	NearSignalRank     int                `json:"near_signal_rank,omitempty"`
+	PositionMFEPercent float64            `json:"position_mfe_pct,omitempty"`
+	PositionMAEPercent float64            `json:"position_mae_pct,omitempty"`
 	Symbol             string             `json:"symbol"`
 	V4Action           string             `json:"v4_action"`
 	HasPosition        bool               `json:"has_position"`
@@ -2724,7 +2757,7 @@ func (m countedCouncilModel) Decide(ctx context.Context, request decisionmodel.R
 }
 
 func newCouncilRuntime(config BacktestConfig, selected SelectedStrategy) (*councilRuntime, error) {
-	if selected.Descriptor.ID != StrategyTrendMomentumCandidate || selected.Descriptor.Version != "1.3.0" {
+	if selected.Descriptor.ID != StrategyTrendMomentumCandidate || (selected.Descriptor.Version != "1.3.0" && selected.Descriptor.Version != "1.4.0") {
 		return nil, nil
 	}
 	identity := selected.Parameters["decision_model"]
@@ -2757,6 +2790,240 @@ func councilBars(values []services.OHLCV) []tradingcore.CouncilBar {
 	return result
 }
 
+func isCompletedCouncil4HBar(bar services.OHLCV) bool {
+	open := time.UnixMilli(bar.OpenTime).UTC()
+	return open.Minute() == 45 && open.Hour()%4 == 3
+}
+
+func barsCompletedAsOf(values []services.OHLCV, at time.Time, limit int) []services.OHLCV {
+	end := sort.Search(len(values), func(i int) bool { return time.UnixMilli(values[i].CloseTime).After(at) })
+	start := 0
+	if limit > 0 && end > limit {
+		start = end - limit
+	}
+	return values[start:end]
+}
+
+func runCouncilV2Boundary(r *councilRuntime, ctx Stage05PlanningContext, v4, shadow Stage05Plan, ledger *backtestMemoryLedger, config BacktestConfig, strategy tradingcore.Strategy, summary *DecisionCouncilSummary, history map[string][]tradingcore.CouncilFactorObservation) (Stage05Plan, []DecisionCouncilTrace, error) {
+	factorBySymbol := map[string]FactorTrace{}
+	for _, factor := range shadow.Factors {
+		factorBySymbol[factor.Symbol] = factor
+	}
+	for _, factor := range v4.Factors {
+		factorBySymbol[factor.Symbol] = factor
+	}
+	cross := make([]tradingcore.CouncilCrossSection, 0, len(shadow.Factors))
+	for _, factor := range shadow.Factors {
+		_, held := ledger.positions[factor.Symbol]
+		cross = append(cross, tradingcore.CouncilCrossSection{Rank: factor.RelativeRank, Momentum: factor.CompositeMomentum, Normalized: factor.NormalizedMomentum, Volatility: factor.RealizedVolatility, AbsoluteTrend: factor.AbsoluteTrend, HasPosition: held})
+	}
+	sort.Slice(cross, func(i, j int) bool { return cross[i].Rank < cross[j].Rank })
+	topN, _ := strconv.Atoi(ctx.Selected.Parameters["top_n"])
+	eligible := map[string]string{}
+	for symbol := range ledger.positions {
+		eligible[symbol] = "held_4h"
+	}
+	for _, factor := range shadow.Factors {
+		if ledger.positions[factor.Symbol] == nil && factor.RelativeRank <= topN+2 && factor.AbsoluteTrend && shadow.Regime != "risk_off" {
+			eligible[factor.Symbol] = "near_signal_4h"
+		}
+	}
+	// A normal v4 exit is authoritative and cannot be undone by the council.
+	if v4.Decide {
+		for symbol := range v4.ExitReasons {
+			delete(eligible, symbol)
+		}
+	}
+	symbols := make([]string, 0, len(eligible))
+	for symbol := range eligible {
+		symbols = append(symbols, symbol)
+	}
+	sort.Slice(symbols, func(i, j int) bool { return economicSymbolLess(config, symbols[i], symbols[j]) })
+	market := tradingcore.AggregateCouncilBars4HFrom1H(councilBars(config.councilSeries[config.BenchmarkSymbol]), ctx.At, 360)
+	marketDaily := councilBars(barsCompletedAsOf(config.councilBenchmarkDaily, ctx.At, 180))
+	traces := make([]DecisionCouncilTrace, 0, len(symbols))
+	for _, symbol := range symbols {
+		position, held := ledger.positions[symbol]
+		factor := factorBySymbol[symbol]
+		action := "buy"
+		if held {
+			action = "hold"
+		}
+		positionInput := tradingcore.CouncilPosition{HasPosition: held, MarkPrice: ctx.Marks[symbol]}
+		mfe, mae := 0.0, 0.0
+		if held {
+			positionInput.EntryPrice = position.EntryPrice
+			bars := barsCompletedAsOf(ctx.Series[symbol], ctx.At, 0)
+			high, low := position.EntryPrice, position.EntryPrice
+			for _, b := range bars {
+				if time.UnixMilli(b.CloseTime).Before(position.EntryTime) {
+					continue
+				}
+				if b.High > high {
+					high = b.High
+				}
+				if b.Low < low {
+					low = b.Low
+				}
+			}
+			mfe, mae = (high/position.EntryPrice-1)*100, (low/position.EntryPrice-1)*100
+			positionInput.DurationBars, positionInput.MFEPercent, positionInput.MAEPercent = int(ctx.At.Sub(position.EntryTime)/(4*time.Hour)), mfe, mae
+		}
+		factorHistory := append([]tradingcore.CouncilFactorObservation(nil), history[symbol]...)
+		for i := range factorHistory {
+			factorHistory[i].BarsAgo = len(factorHistory) - i
+		}
+		input := tradingcore.CouncilInput{Asset: tradingcore.AggregateCouncilBars4HFrom1H(councilBars(config.councilSeries[symbol]), ctx.At, 360), Market: market, AssetDaily: councilBars(barsCompletedAsOf(config.councilDailySeries[symbol], ctx.At, 180)), MarketDaily: marketDaily, Signal: tradingcore.CouncilSignal{V4Action: action, Regime: shadow.Regime, Rank: factor.RelativeRank, UniverseSize: len(shadow.Factors), Momentum: factor.CompositeMomentum, Normalized: factor.NormalizedMomentum, Volatility: factor.RealizedVolatility, AbsoluteTrend: factor.AbsoluteTrend, TargetWeight: shadow.TargetWeights[symbol]}, Position: positionInput, FactorHistory: factorHistory, CrossSection: cross}
+		trace := DecisionCouncilTrace{DecisionAt: canonicalTime(ctx.At), Trigger: eligible[symbol], NearSignalRank: factor.RelativeRank, PositionMFEPercent: mfe, PositionMAEPercent: mae, Symbol: symbol, V4Action: action, HasPosition: held, Applied: r.core.Policy == tradingcore.CouncilActiveV2}
+		var err error
+		trace, err = r.evaluate(input, trace, held, summary)
+		if err != nil {
+			return v4, nil, err
+		}
+		traces = append(traces, trace)
+		if trace.Proposed == "admit" {
+			summary.Admits++
+		}
+		if !trace.Applied || trace.Fallback {
+			continue
+		}
+		// On a normal v4 decision the council edits that single target plan; it
+		// never submits a second order batch at the same signal timestamp.
+		if v4.Decide {
+			if held && trace.Proposed == "early_exit" {
+				kept := v4.Targets[:0]
+				for _, target := range v4.Targets {
+					if target != symbol {
+						kept = append(kept, target)
+					}
+				}
+				v4.Targets = kept
+				delete(v4.TargetWeights, symbol)
+				if v4.ExitReasons == nil {
+					v4.ExitReasons = map[string]ExitReasonTrace{}
+				}
+				v4.ExitReasons[symbol] = ExitReasonTrace{Primary: "decision_council_exit"}
+				summary.EarlyExits++
+			}
+			if !held && trace.Proposed == "admit" {
+				already := false
+				for _, target := range v4.Targets {
+					already = already || target == symbol
+				}
+				if !already && len(v4.Targets) < config.MaxPositions {
+					cap, _ := strconv.ParseFloat(ctx.Selected.Parameters["position_cap"], 64)
+					gross := 0.0
+					for _, weight := range v4.TargetWeights {
+						gross += weight
+					}
+					maxGross, _ := strconv.ParseFloat(ctx.Selected.Parameters["max_gross"], 64)
+					weight := math.Min(cap, math.Max(0, maxGross-gross))
+					if weight > 0 {
+						v4.Targets = append(v4.Targets, symbol)
+						sort.Slice(v4.Targets, func(i, j int) bool { return economicSymbolLess(config, v4.Targets[i], v4.Targets[j]) })
+						v4.TargetWeights[symbol] = weight
+					}
+				}
+			}
+			continue
+		}
+		if held && trace.Proposed == "early_exit" {
+			fillAt, fills, ok := nextFillPrices(config, map[string][]services.OHLCV{}, []string{symbol}, ctx.At)
+			if !ok {
+				return v4, nil, &StrategyDiagnosticError{Code: DiagnosticExecutionLiquidity, Strategy: config.StrategyID, Field: symbol, Details: "decision council exit has no selected execution bar"}
+			}
+			if config.ExecutionPolicy.Version == "backtest-execution-v4" {
+				fillAt, fills, err = stage05V4ClosePrices(config, []string{symbol}, fillAt)
+				if err != nil {
+					return v4, nil, err
+				}
+			}
+			if err = runStage05Target(ledger, config, strategy, symbol, tradingcore.Sell, position.Size, ctx.Marks[symbol], fills[symbol], ctx.At, fillAt, 0, 0, "decision_council_exit", "decision_council", fills, &factor, ExitReasonTrace{Primary: "decision_council_exit"}); err != nil {
+				return v4, nil, err
+			}
+			summary.EarlyExits++
+		}
+		if !held && trace.Proposed == "admit" {
+			if len(ledger.positions) >= config.MaxPositions {
+				continue
+			}
+			fillAt, fills, ok := nextFillPrices(config, map[string][]services.OHLCV{}, []string{symbol}, ctx.At)
+			if !ok {
+				return v4, nil, &StrategyDiagnosticError{Code: DiagnosticExecutionLiquidity, Strategy: config.StrategyID, Field: symbol, Details: "decision council entry has no selected execution bar"}
+			}
+			if config.ExecutionPolicy.Version == "backtest-execution-v4" {
+				fillAt, fills, err = stage05V4ClosePrices(config, []string{symbol}, fillAt)
+				if err != nil {
+					return v4, nil, err
+				}
+			}
+			weights := map[string]float64{}
+			targets := []string{}
+			equity := portfolioEquity(ledger, ctx.Marks)
+			gross := 0.0
+			for _, heldSymbol := range sortedPositionSymbolsByIdentity(ledger.positions, config) {
+				targets = append(targets, heldSymbol)
+				weights[heldSymbol] = ledger.positions[heldSymbol].Size * ctx.Marks[heldSymbol] / equity
+				gross += weights[heldSymbol]
+			}
+			cap, _ := strconv.ParseFloat(ctx.Selected.Parameters["position_cap"], 64)
+			maxGross, _ := strconv.ParseFloat(ctx.Selected.Parameters["max_gross"], 64)
+			weight := math.Min(cap, math.Max(0, maxGross-gross))
+			if weight <= 0 {
+				continue
+			}
+			targets = append(targets, symbol)
+			weights[symbol] = weight
+			if err = rebalanceStage05(ledger, config, strategy, targets, weights, []FactorTrace{factor}, nil, ctx.Marks, fills, ctx.At, fillAt, ctx.Selected.Parameters, shadow.Regime); err != nil {
+				return v4, nil, err
+			}
+		}
+	}
+	for _, factor := range shadow.Factors {
+		values := append(history[factor.Symbol], tradingcore.CouncilFactorObservation{Rank: factor.RelativeRank, Momentum: factor.CompositeMomentum, Normalized: factor.NormalizedMomentum, Volatility: factor.RealizedVolatility, AbsoluteTrend: factor.AbsoluteTrend})
+		if len(values) > 360 {
+			values = values[len(values)-360:]
+		}
+		history[factor.Symbol] = values
+	}
+	return v4, traces, nil
+}
+
+func (r *councilRuntime) evaluate(input tradingcore.CouncilInput, trace DecisionCouncilTrace, held bool, summary *DecisionCouncilSummary) (DecisionCouncilTrace, error) {
+	core := r.core
+	core.Model = countedCouncilModel{inner: r.core.Model, summary: summary}
+	out, err := core.Evaluate(r.ctx, input)
+	if err != nil {
+		switch {
+		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded), errors.Is(err, decisionmodel.ErrCacheCorrupt):
+			return trace, err
+		case errors.Is(err, tradingcore.ErrInsufficientCouncilData):
+			trace.Reason, trace.Proposed = "insufficient_council_data", "hold"
+			if !held {
+				trace.Proposed = "veto"
+			}
+		case errors.Is(err, decisionmodel.ErrUnavailable), errors.Is(err, decisionmodel.ErrInvalidResponse):
+			if summary.Failures >= 10 {
+				return trace, fmt.Errorf("decision council reached 10 failed requests: %w", err)
+			}
+			summary.Fallbacks++
+			trace.Fallback, trace.Reason, trace.Proposed = true, "model_unavailable_fallback_v4", "admit"
+			if held {
+				trace.Proposed = "hold"
+			}
+		default:
+			return trace, err
+		}
+		return trace, nil
+	}
+	trace.Bull, trace.Bear, trace.Hodl = out.Bull, out.Bear, out.Hodl
+	trace.FinalChoice, trace.FinalProbabilities = out.FinalChoice, out.FinalProbabilities
+	trace.Proposed, trace.Applied, trace.Reason = out.Proposed, out.Applied, out.Reason
+	trace.StateDigest, trace.ScoreRequestDigest, trace.FinalRequestDigest = out.StateDigest, out.ScoreRequestDigest, out.FinalRequestDigest
+	trace.ResolvedModel, trace.Cached = out.ResolvedModel, out.Cached
+	return trace, nil
+}
+
 func (r *councilRuntime) apply(ctx Stage05PlanningContext, plan Stage05Plan, summary *DecisionCouncilSummary) (Stage05Plan, []DecisionCouncilTrace, error) {
 	symbols := append([]string(nil), plan.Targets...)
 	sort.Strings(symbols)
@@ -2776,46 +3043,16 @@ func (r *councilRuntime) apply(ctx Stage05PlanningContext, plan Stage05Plan, sum
 		if held {
 			action = "hold"
 		}
-		factor := factors[symbol]
-		weight := plan.TargetWeights[symbol]
+		factor, weight := factors[symbol], plan.TargetWeights[symbol]
 		input := tradingcore.CouncilInput{
 			Asset: tradingcore.AggregateCouncilBars4H(councilBars(ctx.Series[symbol]), ctx.At, 64), Market: market,
 			Signal:   tradingcore.CouncilSignal{V4Action: action, Regime: plan.Regime, Rank: factor.RelativeRank, UniverseSize: len(plan.Factors), Momentum: factor.CompositeMomentum, Normalized: factor.NormalizedMomentum, Volatility: factor.RealizedVolatility, TargetWeight: weight, AbsoluteTrend: factor.AbsoluteTrend},
 			Position: tradingcore.CouncilPosition{HasPosition: held, EntryPrice: ctx.PositionEntries[symbol], MarkPrice: ctx.Marks[symbol]},
 		}
 		trace := DecisionCouncilTrace{DecisionAt: canonicalTime(ctx.At), Symbol: symbol, V4Action: action, HasPosition: held, Applied: r.core.Policy == tradingcore.CouncilVetoV1}
-		core := r.core
-		core.Model = countedCouncilModel{inner: r.core.Model, summary: summary}
-		out, err := core.Evaluate(r.ctx, input)
+		trace, err := r.evaluate(input, trace, held, summary)
 		if err != nil {
-			switch {
-			case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded), errors.Is(err, decisionmodel.ErrCacheCorrupt):
-				return plan, nil, err
-			case errors.Is(err, tradingcore.ErrInsufficientCouncilData):
-				trace.Reason = "insufficient_council_data"
-				trace.Proposed = "hold"
-				if !held {
-					trace.Proposed = "veto"
-				}
-			case errors.Is(err, decisionmodel.ErrUnavailable), errors.Is(err, decisionmodel.ErrInvalidResponse):
-				if summary.Failures >= 10 {
-					return plan, nil, fmt.Errorf("decision council reached 10 failed requests: %w", err)
-				}
-				summary.Fallbacks++
-				trace.Fallback, trace.Reason = true, "model_unavailable_fallback_v4"
-				trace.Proposed = "admit"
-				if held {
-					trace.Proposed = "hold"
-				}
-			default:
-				return plan, nil, err
-			}
-		} else {
-			trace.Bull, trace.Bear, trace.Hodl = out.Bull, out.Bear, out.Hodl
-			trace.FinalChoice, trace.FinalProbabilities = out.FinalChoice, out.FinalProbabilities
-			trace.Proposed, trace.Applied, trace.Reason = out.Proposed, out.Applied, out.Reason
-			trace.StateDigest, trace.ScoreRequestDigest, trace.FinalRequestDigest = out.StateDigest, out.ScoreRequestDigest, out.FinalRequestDigest
-			trace.ResolvedModel, trace.Cached = out.ResolvedModel, out.Cached
+			return plan, nil, err
 		}
 		if trace.Proposed == "admit" {
 			summary.Admits++

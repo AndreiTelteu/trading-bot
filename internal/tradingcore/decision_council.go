@@ -84,6 +84,56 @@ func AggregateCouncilBars4H(bars []CouncilBar, at time.Time, limit int) []Counci
 	return out
 }
 
+// AggregateCouncilBars4HFrom1H keeps complete four-slot UTC 4h buckets.
+func AggregateCouncilBars4HFrom1H(bars []CouncilBar, at time.Time, limit int) []CouncilBar {
+	if limit <= 0 {
+		return []CouncilBar{}
+	}
+	buckets := make(map[time.Time]map[int]CouncilBar)
+	for _, bar := range bars {
+		open := bar.OpenTime.UTC()
+		if open.Minute() != 0 || open.Second() != 0 || open.Nanosecond() != 0 || bar.CloseTime.Before(bar.OpenTime) || bar.CloseTime.After(bar.OpenTime.Add(time.Hour)) || !validCouncilBar(bar) {
+			continue
+		}
+		bucket := open.Truncate(4 * time.Hour)
+		if buckets[bucket] == nil {
+			buckets[bucket] = map[int]CouncilBar{}
+		}
+		index := int(open.Sub(bucket) / time.Hour)
+		if _, exists := buckets[bucket][index]; exists {
+			delete(buckets, bucket)
+			continue
+		}
+		buckets[bucket][index] = bar
+	}
+	keys := []time.Time{}
+	for key, slots := range buckets {
+		if len(slots) == 4 && !slots[3].CloseTime.After(at) {
+			keys = append(keys, key)
+		}
+	}
+	sort.Slice(keys, func(i, j int) bool { return keys[i].Before(keys[j]) })
+	if len(keys) > limit {
+		keys = keys[len(keys)-limit:]
+	}
+	out := make([]CouncilBar, 0, len(keys))
+	for _, key := range keys {
+		slots := buckets[key]
+		bar := CouncilBar{OpenTime: key, CloseTime: slots[3].CloseTime, Open: slots[0].Open, High: slots[0].High, Low: slots[0].Low, Close: slots[3].Close}
+		for i := 0; i < 4; i++ {
+			if slots[i].High > bar.High {
+				bar.High = slots[i].High
+			}
+			if slots[i].Low < bar.Low {
+				bar.Low = slots[i].Low
+			}
+			bar.Volume += slots[i].Volume
+		}
+		out = append(out, bar)
+	}
+	return out
+}
+
 func validCouncilBar(b CouncilBar) bool {
 	for _, v := range []float64{b.Open, b.High, b.Low, b.Close, b.Volume} {
 		if math.IsNaN(v) || math.IsInf(v, 0) {
@@ -101,17 +151,37 @@ type CouncilSignal struct {
 	AbsoluteTrend                                  bool
 }
 type CouncilPosition struct {
-	HasPosition           bool
-	EntryPrice, MarkPrice float64
+	HasPosition            bool
+	EntryPrice, MarkPrice  float64
+	DurationBars           int
+	MFEPercent, MAEPercent float64
 }
+
+type CouncilFactorObservation struct {
+	BarsAgo                          int
+	Rank                             int
+	Momentum, Normalized, Volatility float64
+	AbsoluteTrend                    bool
+}
+
+type CouncilCrossSection struct {
+	Rank                             int
+	Momentum, Normalized, Volatility float64
+	AbsoluteTrend, HasPosition       bool
+}
+
 type CouncilInput struct {
-	Asset, Market []CouncilBar
-	Signal        CouncilSignal
-	Position      CouncilPosition
+	Asset, Market           []CouncilBar
+	AssetDaily, MarketDaily []CouncilBar
+	Signal                  CouncilSignal
+	Position                CouncilPosition
+	FactorHistory           []CouncilFactorObservation
+	CrossSection            []CouncilCrossSection
 }
 
 const CouncilMinimumBars = 51
 const councilStateSchema = "decision-council-state-v1"
+const councilStateSchemaV2 = "decision-council-state-v2"
 
 var ErrInsufficientCouncilData = errors.New("insufficient council data")
 
@@ -169,6 +239,63 @@ func BuildCouncilState(input CouncilInput) (string, error) {
 	return b.String(), nil
 }
 
+// BuildCouncilStateV2 emits the larger, still anonymized point-in-time state.
+// Raw prices, symbols and timestamps are deliberately excluded.
+func BuildCouncilStateV2(input CouncilInput) (string, error) {
+	if len(input.Asset) < CouncilMinimumBars || len(input.Market) < CouncilMinimumBars {
+		return "", ErrInsufficientCouncilData
+	}
+	if len(input.Asset) > 360 || len(input.Market) > 360 || len(input.AssetDaily) > 180 || len(input.MarketDaily) > 180 || len(input.FactorHistory) > 360 || len(input.CrossSection) > 64 {
+		return "", fmt.Errorf("unbounded council v2 state")
+	}
+	for _, series := range [][]CouncilBar{input.Asset, input.Market, input.AssetDaily, input.MarketDaily} {
+		for i, bar := range series {
+			if !validCouncilBar(bar) || (i > 0 && !bar.CloseTime.After(series[i-1].CloseTime)) {
+				return "", fmt.Errorf("invalid council bars")
+			}
+		}
+	}
+	if !validSignal(input.Signal) || input.Position.DurationBars < 0 || (input.Position.HasPosition && (!finitePositive(input.Position.EntryPrice) || !finitePositive(input.Position.MarkPrice))) {
+		return "", fmt.Errorf("invalid council signal or position")
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "schema=%s\nbar=4h\nasset_4h_count=%d\nmarket_4h_count=%d", councilStateSchemaV2, len(input.Asset), len(input.Market))
+	writeRelativeBars := func(label string, bars []CouncilBar) {
+		fmt.Fprintf(&b, "\n%s=", label)
+		for i := 1; i < len(bars); i++ {
+			if i > 1 {
+				b.WriteByte(';')
+			}
+			previous, current := bars[i-1], bars[i]
+			fmt.Fprintf(&b, "%.2f/%.2f/%.2f/%.2f", cleanZero((current.Close/previous.Close-1)*100), cleanZero((current.High-current.Low)/current.Close*100), cleanZero((current.Close-current.Open)/current.Open*100), cleanZero(councilRatio(current.Volume, councilMeanVolumeAt(bars, i, minCouncilInt(20, i+1)))))
+		}
+	}
+	writeRelativeBars("asset_4h_ret_range_body_vol", input.Asset)
+	writeRelativeBars("market_4h_ret_range_body_vol", input.Market)
+	fmt.Fprintf(&b, "\nasset_daily_count=%d\nmarket_daily_count=%d", len(input.AssetDaily), len(input.MarketDaily))
+	writeRelativeBars("asset_daily_ret_range_body_vol", input.AssetDaily)
+	writeRelativeBars("market_daily_ret_range_body_vol", input.MarketDaily)
+	fmt.Fprintf(&b, "\nsignal=%s\nregime=%s\nrank=%d/%d\nmomentum=%.4f\nnormalized_momentum=%.4f\nvolatility=%.4f\nabsolute_trend=%t\ntarget_weight=%.4f\nhas_position=%t", input.Signal.V4Action, input.Signal.Regime, input.Signal.Rank, input.Signal.UniverseSize, cleanZero(input.Signal.Momentum), cleanZero(input.Signal.Normalized), cleanZero(input.Signal.Volatility), input.Signal.AbsoluteTrend, cleanZero(input.Signal.TargetWeight), input.Position.HasPosition)
+	if input.Position.HasPosition {
+		fmt.Fprintf(&b, "\nposition_duration_4h=%d\nunrealized_pnl_pct=%.2f\nposition_mfe_pct=%.2f\nposition_mae_pct=%.2f", input.Position.DurationBars, cleanZero((input.Position.MarkPrice/input.Position.EntryPrice-1)*100), cleanZero(input.Position.MFEPercent), cleanZero(input.Position.MAEPercent))
+	}
+	b.WriteString("\nfactor_history=bars_ago/rank/momentum/normalized/volatility/absolute")
+	for _, value := range input.FactorHistory {
+		fmt.Fprintf(&b, "\n%d/%d/%.4f/%.4f/%.4f/%t", value.BarsAgo, value.Rank, cleanZero(value.Momentum), cleanZero(value.Normalized), cleanZero(value.Volatility), value.AbsoluteTrend)
+	}
+	b.WriteString("\ncross_section=rank/momentum/normalized/volatility/absolute/held")
+	for _, value := range input.CrossSection {
+		fmt.Fprintf(&b, "\n%d/%.4f/%.4f/%.4f/%t/%t", value.Rank, cleanZero(value.Momentum), cleanZero(value.Normalized), cleanZero(value.Volatility), value.AbsoluteTrend, value.HasPosition)
+	}
+	return b.String(), nil
+}
+
+func minCouncilInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
 func finitePositive(v float64) bool { return v > 0 && !math.IsNaN(v) && !math.IsInf(v, 0) }
 func validSignal(s CouncilSignal) bool {
 	if s.V4Action != "buy" && s.V4Action != "hold" {
@@ -303,6 +430,8 @@ type CouncilPolicy string
 const (
 	CouncilObserveV1 CouncilPolicy = "observe_v1"
 	CouncilVetoV1    CouncilPolicy = "veto_v1"
+	CouncilObserveV2 CouncilPolicy = "observe_v2"
+	CouncilActiveV2  CouncilPolicy = "active_v2"
 )
 
 type CouncilOutcome struct {
@@ -376,6 +505,22 @@ func CouncilPromptDigest() string {
 	h := sha256.Sum256(payload)
 	return hex.EncodeToString(h[:])
 }
+
+// CouncilPromptDigestV2 binds the larger state schema and active-v2 authority
+// without changing the historical v1 digest.
+func CouncilPromptDigestV2() string {
+	definition := struct {
+		Schema    string                            `json:"schema"`
+		Score     map[string]decisionmodel.Question `json:"score_questions"`
+		Final     map[string]decisionmodel.Question `json:"final_questions"`
+		ScoreRule string                            `json:"score_rule"`
+		EntryRule string                            `json:"entry_rule"`
+		HoldRule  string                            `json:"hold_rule"`
+	}{councilStateSchemaV2, councilScoreQuestions(), councilFinalQuestions(), councilScoreRule, councilEntryRule, councilHoldRule}
+	payload, _ := json.Marshal(definition)
+	h := sha256.Sum256(payload)
+	return hex.EncodeToString(h[:])
+}
 func councilExpectedScore(answer decisionmodel.Answer) (float64, error) {
 	if answer.Type != decisionmodel.QuestionChoice {
 		return 0, fmt.Errorf("invalid council score answer type")
@@ -409,7 +554,7 @@ func councilExpectedScore(answer decisionmodel.Answer) (float64, error) {
 }
 
 func (c DecisionCouncil) Evaluate(ctx context.Context, input CouncilInput) (CouncilOutcome, error) {
-	if c.Policy != CouncilObserveV1 && c.Policy != CouncilVetoV1 {
+	if c.Policy != CouncilObserveV1 && c.Policy != CouncilVetoV1 && c.Policy != CouncilObserveV2 && c.Policy != CouncilActiveV2 {
 		return CouncilOutcome{}, fmt.Errorf("unknown council policy %q", c.Policy)
 	}
 	if c.Model == nil {
@@ -422,11 +567,14 @@ func (c DecisionCouncil) Evaluate(ctx context.Context, input CouncilInput) (Coun
 		return CouncilOutcome{}, err
 	}
 	state, err := BuildCouncilState(input)
+	if c.Policy == CouncilObserveV2 || c.Policy == CouncilActiveV2 {
+		state, err = BuildCouncilStateV2(input)
+	}
 	if err != nil {
 		return CouncilOutcome{}, err
 	}
 	h := sha256.Sum256([]byte(state))
-	out := CouncilOutcome{StateDigest: hex.EncodeToString(h[:]), Applied: c.Policy == CouncilVetoV1}
+	out := CouncilOutcome{StateDigest: hex.EncodeToString(h[:]), Applied: c.Policy == CouncilVetoV1 || c.Policy == CouncilActiveV2}
 	scores, err := c.Model.Decide(ctx, decisionmodel.Request{State: state, Questions: councilScoreQuestions()})
 	if err != nil {
 		return CouncilOutcome{}, fmt.Errorf("council scores: %w", err)

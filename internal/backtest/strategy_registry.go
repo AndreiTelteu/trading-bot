@@ -502,6 +502,23 @@ func newDefaultStrategyRegistry() *StrategyRegistry {
 		StrategyParameterSpec{Name: "decision_council_policy", Type: "enum", Description: "Council observation or veto policy.", Default: "observe_v1", Enum: []string{"observe_v1", "veto_v1"}},
 	)
 	definitions = append(definitions, candidateV13)
+	candidateV14 := cloneStrategyDescriptor(candidateV11)
+	candidateV14.Version = "1.4.0"
+	candidateV14.Description += " Decision council evaluates targeted near-signals and all held positions every completed 4h bar."
+	candidateV14.AblationVariants = nil
+	for i := range candidateV14.Parameters {
+		switch candidateV14.Parameters[i].Name {
+		case "variant":
+			candidateV14.Parameters[i].Default, candidateV14.Parameters[i].Enum = "combined", []string{"combined"}
+		case "vol_normalization":
+			candidateV14.Parameters[i].Default, candidateV14.Parameters[i].Enum = "true", []string{"true"}
+		}
+	}
+	candidateV14.Parameters = append(candidateV14.Parameters,
+		StrategyParameterSpec{Name: "decision_model", Type: "enum", Description: "Resolved decision model identity.", Default: decisionmodel.DefaultIdentity, Enum: []string{decisionmodel.ExperientialIdentity, decisionmodel.AIHubMixIdentity}},
+		StrategyParameterSpec{Name: "decision_council_policy", Type: "enum", Description: "Council v2 observation or active policy.", Default: "observe_v2", Enum: []string{"observe_v2", "active_v2"}},
+	)
+	definitions = append(definitions, candidateV14)
 	matched := cloneStrategyDescriptor(candidateV11)
 	matched.ID = StrategyMatchedMomentumID
 	matched.Version = "1.0.0"

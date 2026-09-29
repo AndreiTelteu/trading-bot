@@ -115,6 +115,9 @@ type BacktestConfig struct {
 	ValidationBootstrapIterations          int
 	precomputedContexts                    map[string]map[int64]barContext
 	trendMomentumHistory                   *tradingcore.TrendMomentumHistory
+	councilSeries                          map[string][]services.OHLCV
+	councilDailySeries                     map[string][]services.OHLCV
+	councilBenchmarkDaily                  []services.OHLCV
 	// CouncilModel is a test seam. Production resolves the configured provider
 	// with its immutable PostgreSQL store before replay starts.
 	CouncilModel   decisionmodel.Model `json:"-"`

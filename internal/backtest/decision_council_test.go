@@ -64,12 +64,19 @@ func TestDecisionCouncilRegistryAndHistoricalDigests(t *testing.T) {
 	if strategyImplementationDigest(StrategyTrendMomentumCandidate, "1.3.0") == strategyImplementationDigest(StrategyTrendMomentumCandidate, "1.1.0") {
 		t.Fatal("council implementation identity reused")
 	}
+	if strategyImplementationDigest(StrategyTrendMomentumCandidate, "1.4.0") == strategyImplementationDigest(StrategyTrendMomentumCandidate, "1.3.0") {
+		t.Fatal("council v2 implementation identity reused")
+	}
 	selected, _, _, err := DefaultStrategyRegistry.ResolveExecutable(StrategyTrendMomentumCandidate, "1.3.0", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if selected.Parameters["decision_model"] != decisionmodel.DefaultIdentity || selected.Parameters["decision_council_policy"] != "observe_v1" {
 		t.Fatalf("defaults=%v", selected.Parameters)
+	}
+	v2, _, _, err := DefaultStrategyRegistry.ResolveExecutable(StrategyTrendMomentumCandidate, "1.4.0", nil)
+	if err != nil || v2.Parameters["decision_council_policy"] != "observe_v2" {
+		t.Fatalf("v2 defaults=%v err=%v", v2.Parameters, err)
 	}
 	for key, value := range map[string]string{"decision_model": "unknown/model", "decision_council_policy": "unreviewed", "variant": "absolute_trend_only", "vol_normalization": "false"} {
 		if _, _, _, err := DefaultStrategyRegistry.ResolveExecutable(StrategyTrendMomentumCandidate, "1.3.0", map[string]string{key: value}); err == nil {
@@ -325,8 +332,11 @@ func TestComparisonArtifactLimitScalesWithCouncilTraces(t *testing.T) {
 	if comparisonArtifactLimit(600) != 2<<20+600*councilTraceArtifactBudget {
 		t.Fatal("council trace budget not applied")
 	}
-	if comparisonArtifactLimit(maxCouncilTraces+1) != comparisonArtifactLimit(maxCouncilTraces) {
+	if comparisonArtifactLimit(maxCouncilTracesV2+1) != comparisonArtifactLimit(maxCouncilTracesV2) {
 		t.Fatal("council trace budget unbounded")
+	}
+	if maxCouncilTracesForCandidate(StrategyTrendMomentumCandidate+"@1.3.0") != maxCouncilTraces || maxCouncilTracesForCandidate(StrategyTrendMomentumCandidate+"@1.4.0") != maxCouncilTracesV2 {
+		t.Fatal("candidate-specific trace bound changed")
 	}
 	oversized := []byte(`{"limitations":["` + strings.Repeat("a", 2<<20) + `"]}`)
 	if _, err := UnmarshalComparisonArtifact(oversized); err == nil || !strings.Contains(err.Error(), "inspection limit") {
