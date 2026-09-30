@@ -272,6 +272,21 @@ func BuildCouncilStateV2(input CouncilInput) (string, error) {
 		return "", err
 	}
 	base = strings.Replace(base, "schema="+councilStateSchema, "schema="+councilStateSchemaV2, 1)
+	// v3 spends the fixed state budget on explicit economics and exit-risk
+	// evidence. Keep only the latest six relative bars in the v2 request; the
+	// longer horizons and deterministic indicators above retain broader context.
+	if start := strings.Index(base, "asset_recent12="); start >= 0 {
+		valueStart := start + len("asset_recent12=")
+		end := strings.IndexByte(base[valueStart:], '\n')
+		if end >= 0 {
+			end += valueStart
+			values := strings.Split(base[valueStart:end], ",")
+			if len(values) > 6 {
+				values = values[len(values)-6:]
+			}
+			base = base[:start] + "asset_recent6=" + strings.Join(values, ",") + base[end:]
+		}
+	}
 	var b strings.Builder
 	b.WriteString(base)
 	fmt.Fprintf(&b, "\nasset_4h_count=%d\nmarket_4h_count=%d\nasset_daily_count=%d\nmarket_daily_count=%d", len(input.Asset), len(input.Market), len(input.AssetDaily), len(input.MarketDaily))
@@ -304,7 +319,7 @@ func BuildCouncilStateV2(input CouncilInput) (string, error) {
 	}
 	fmt.Fprintf(&b, "\nround_trip_cost_bps=%.1f\nrequired_edge_6_bars_bps=%.1f\ndistance_to_normal_entry_rank=%d\navailable_position_slots=%d\ncurrent_gross_exposure_pct=%.2f\nturnover_budget_remaining_pct=%.2f", cleanZero(input.Economics.RoundTripCostBPS), cleanZero(input.Economics.RequiredEdge6BarsBPS), input.Economics.DistanceToNormalEntryRank, input.Economics.AvailablePositionSlots, cleanZero(input.Economics.CurrentGrossExposurePercent), cleanZero(input.Economics.TurnoverBudgetRemainingPercent))
 	b.WriteString("\nfactors=ago/rank/mom/norm/vol/trend")
-	factorStart := len(input.FactorHistory) - 4
+	factorStart := len(input.FactorHistory) - 3
 	if factorStart < 0 {
 		factorStart = 0
 	}
@@ -312,7 +327,7 @@ func BuildCouncilStateV2(input CouncilInput) (string, error) {
 		fmt.Fprintf(&b, ";%d/%d/%.3f/%.3f/%.3f/%t", value.BarsAgo, value.Rank, cleanZero(value.Momentum), cleanZero(value.Normalized), cleanZero(value.Volatility), value.AbsoluteTrend)
 	}
 	b.WriteString("\ncross=rank/mom/norm/vol/trend/held")
-	crossLimit := minCouncilInt(len(input.CrossSection), 6)
+	crossLimit := minCouncilInt(len(input.CrossSection), 4)
 	for _, value := range input.CrossSection[:crossLimit] {
 		fmt.Fprintf(&b, ";%d/%.3f/%.3f/%.3f/%t/%t", value.Rank, cleanZero(value.Momentum), cleanZero(value.Normalized), cleanZero(value.Volatility), value.AbsoluteTrend, value.HasPosition)
 	}

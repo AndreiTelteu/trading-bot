@@ -31,11 +31,11 @@ Unavailable/invalid provider responses fall back to v4. The tenth failed request
 
 The anonymized, stable state contains no ticker, asset ID, exchange ID, wall-clock date, price level, or model secret. It contains:
 
-* compact multi-horizon 4h indicators over up to 360 completed bars for the asset and benchmark: returns, realized volatility, ATR, RSI, moving-average distance, drawdown, range position, volume ratios and the latest 12 relative bars;
+* compact multi-horizon 4h indicators over up to 360 completed bars for the asset and benchmark: returns, realized volatility, ATR, RSI, moving-average distance, drawdown, range position, volume ratios and the latest six relative bars;
 * compact 1/7/30/90-day return summaries plus 30-day volatility and moving-average distance over up to 180 completed daily bars for asset and benchmark (short history is explicit and allowed);
 * position duration, unrealized P&L, MFE and MAE when held;
-* the latest four per-symbol v4 factor observations accumulated only from completed 4h computations;
-* the top six rows of the current anonymized cross-sectional factor snapshot, sorted by rank;
+* the latest three per-symbol v4 factor observations accumulated only from completed 4h computations;
+* the top four rows of the current anonymized cross-sectional factor snapshot, sorted by rank;
 * current v4 regime, rank, factor values and proposed action;
 * round-trip fee/slippage estimate and required six-bar edge;
 * distance to the normal entry rank, available position slots, current gross exposure and per-decision turnover budget remaining before orders at that boundary;
