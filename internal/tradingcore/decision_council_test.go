@@ -337,7 +337,7 @@ func TestCouncilPromptDigestGolden(t *testing.T) {
 	if got := CouncilPromptDigest(); got != want {
 		t.Fatalf("digest=%s want=%s", got, want)
 	}
-	const wantV2 = "688afffdb2e359a10ee99254a03bd2ca776d5cb6b8781808938f18e40255ffba"
+	const wantV2 = "9820977f30f10a65f54492e82d016b921554c22568c6a4595c7723c0361611f1"
 	if got := CouncilPromptDigestV2(); got != wantV2 {
 		t.Fatalf("v2 digest=%s want=%s", got, wantV2)
 	}
@@ -354,15 +354,39 @@ func TestCouncilStateV2AnonymizedAndBounded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(state) > 64<<10 {
-		t.Fatalf("state bytes=%d", len(state))
+	if len(state) > 4<<10 {
+		t.Fatalf("compact state bytes=%d", len(state))
 	}
 	for _, forbidden := range []string{"BTCUSDT", "asset-", "2024-"} {
 		if strings.Contains(state, forbidden) {
 			t.Fatalf("state leaks %q", forbidden)
 		}
 	}
-	if !strings.Contains(state, "schema=decision-council-state-v2") || !strings.Contains(state, "position_mfe_pct=8.00") {
+	if !strings.Contains(state, "schema=decision-council-state-v2-compact-v1") || !strings.Contains(state, "position_mfe_pct=8.00") {
 		t.Fatalf("state=%s", state)
+	}
+}
+
+func TestCouncilStateV2MaximumInputRemainsCompact(t *testing.T) {
+	input := councilTestInput()
+	input.Asset = councilTestSeries(360)
+	input.Market = councilTestSeries(360)
+	input.AssetDaily = councilTestSeries(180)
+	input.MarketDaily = councilTestSeries(180)
+	for i := 0; i < 360; i++ {
+		input.FactorHistory = append(input.FactorHistory, CouncilFactorObservation{BarsAgo: 360 - i, Rank: i%20 + 1, Momentum: .04, Normalized: 1.2, Volatility: .03, AbsoluteTrend: true})
+	}
+	for i := 0; i < 64; i++ {
+		input.CrossSection = append(input.CrossSection, CouncilCrossSection{Rank: i + 1, Momentum: .05, Normalized: 1.1, Volatility: .02, AbsoluteTrend: true})
+	}
+	state, err := BuildCouncilStateV2(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state) > 4<<10 {
+		t.Fatalf("maximum compact state bytes=%d", len(state))
+	}
+	if strings.Count(state, ";") > 20 {
+		t.Fatalf("state retained too many raw observations: %s", state)
 	}
 }

@@ -28,17 +28,17 @@ Unavailable/invalid provider responses fall back to v4. The tenth failed request
 
 The anonymized, stable state contains no ticker, asset ID, exchange ID, wall-clock date, price level, or model secret. It contains:
 
-* up to 360 completed 4h OHLCV bars for the asset and benchmark, expressed as rounded returns/ranges/body/volume ratios;
-* up to 180 completed daily bars for asset and benchmark in the same relative representation (short history is explicit and allowed);
+* compact multi-horizon 4h indicators over up to 360 completed bars for the asset and benchmark: returns, realized volatility, ATR, RSI, moving-average distance, drawdown, range position, volume ratios and the latest 12 relative bars;
+* compact 1/7/30/90-day return summaries plus 30-day volatility and moving-average distance over up to 180 completed daily bars for asset and benchmark (short history is explicit and allowed);
 * position duration, unrealized P&L, MFE and MAE when held;
-* bounded per-symbol v4 factor history accumulated only from completed 4h computations;
-* the current anonymized cross-sectional factor snapshot, sorted by rank;
+* the latest eight per-symbol v4 factor observations accumulated only from completed 4h computations;
+* the top twelve rows of the current anonymized cross-sectional factor snapshot, sorted by rank;
 * current v4 regime, rank, factor values and proposed action.
 
-The state remains under the decision-model request bound and is hashed into replay evidence. History is loaded only from the validated immutable manifest, filtered by knowledge cutoff and `available_at <= replay end`; each decision still slices only bars completed by its decision time.
+The serialized state is hard-capped at 4 KiB to provide comfortable latency for the self-hosted model; the full bounded histories remain inputs to deterministic local feature computation rather than being copied verbatim into the model request. The state is hashed into replay evidence. History is loaded only from the validated immutable manifest, filtered by knowledge cutoff and `available_at <= replay end`; each decision still slices only bars completed by its decision time.
 
 ## Determinism and evidence
 
 Model responses are replay-authoritative through the PostgreSQL request cache. Evaluation output is reassembled in deterministic symbol order. Cache telemetry is excluded from the artifact digest. v2 has a separately bounded trace allowance sufficient for the expected 8–12k evaluations; Stage 07 source artifacts continue to exclude council traces.
 
-The 1.4.0 implementation digest chains the 1.1.0 digest with `decision-council-v2` and the complete v2 prompt/state contract digest. Historical 1.1.0–1.3.0 digests and v1 state bytes remain unchanged.
+The 1.4.0 implementation digest chains the 1.1.0 digest with `decision-council-v2` and the complete v2 prompt/state contract digest, including the compact state schema identity. Historical 1.1.0–1.3.0 digests and v1 state bytes remain unchanged.

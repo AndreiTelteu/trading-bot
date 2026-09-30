@@ -181,7 +181,7 @@ type CouncilInput struct {
 
 const CouncilMinimumBars = 51
 const councilStateSchema = "decision-council-state-v1"
-const councilStateSchemaV2 = "decision-council-state-v2"
+const councilStateSchemaV2 = "decision-council-state-v2-compact-v1"
 
 var ErrInsufficientCouncilData = errors.New("insufficient council data")
 
@@ -239,7 +239,9 @@ func BuildCouncilState(input CouncilInput) (string, error) {
 	return b.String(), nil
 }
 
-// BuildCouncilStateV2 emits the larger, still anonymized point-in-time state.
+// BuildCouncilStateV2 emits a compact, anonymized point-in-time state. It
+// summarizes long histories instead of serializing every bar, keeping local
+// decision-model latency bounded without discarding multi-horizon evidence.
 // Raw prices, symbols and timestamps are deliberately excluded.
 func BuildCouncilStateV2(input CouncilInput) (string, error) {
 	if len(input.Asset) < CouncilMinimumBars || len(input.Market) < CouncilMinimumBars {
@@ -258,34 +260,52 @@ func BuildCouncilStateV2(input CouncilInput) (string, error) {
 	if !validSignal(input.Signal) || input.Position.DurationBars < 0 || (input.Position.HasPosition && (!finitePositive(input.Position.EntryPrice) || !finitePositive(input.Position.MarkPrice))) {
 		return "", fmt.Errorf("invalid council signal or position")
 	}
+	base, err := BuildCouncilState(input)
+	if err != nil {
+		return "", err
+	}
+	base = strings.Replace(base, "schema="+councilStateSchema, "schema="+councilStateSchemaV2, 1)
 	var b strings.Builder
-	fmt.Fprintf(&b, "schema=%s\nbar=4h\nasset_4h_count=%d\nmarket_4h_count=%d", councilStateSchemaV2, len(input.Asset), len(input.Market))
-	writeRelativeBars := func(label string, bars []CouncilBar) {
+	b.WriteString(base)
+	fmt.Fprintf(&b, "\nasset_4h_count=%d\nmarket_4h_count=%d\nasset_daily_count=%d\nmarket_daily_count=%d", len(input.Asset), len(input.Market), len(input.AssetDaily), len(input.MarketDaily))
+	writeDailySummary := func(label string, bars []CouncilBar) {
 		fmt.Fprintf(&b, "\n%s=", label)
-		for i := 1; i < len(bars); i++ {
-			if i > 1 {
-				b.WriteByte(';')
+		wrote := false
+		for _, horizon := range []int{1, 7, 30, 90} {
+			if len(bars) <= horizon {
+				continue
 			}
-			previous, current := bars[i-1], bars[i]
-			fmt.Fprintf(&b, "%.2f/%.2f/%.2f/%.2f", cleanZero((current.Close/previous.Close-1)*100), cleanZero((current.High-current.Low)/current.Close*100), cleanZero((current.Close-current.Open)/current.Open*100), cleanZero(councilRatio(current.Volume, councilMeanVolumeAt(bars, i, minCouncilInt(20, i+1)))))
+			if wrote {
+				b.WriteByte(',')
+			}
+			fmt.Fprintf(&b, "r%d:%.2f", horizon, cleanZero(councilReturn(bars, horizon)))
+			wrote = true
+		}
+		if len(bars) >= 31 {
+			fmt.Fprintf(&b, ",vol30:%.2f,sma30:%.2f", cleanZero(councilVol(bars, 30)), cleanZero(councilSMADistance(bars, 30)))
+		}
+		if !wrote {
+			b.WriteString("short")
 		}
 	}
-	writeRelativeBars("asset_4h_ret_range_body_vol", input.Asset)
-	writeRelativeBars("market_4h_ret_range_body_vol", input.Market)
-	fmt.Fprintf(&b, "\nasset_daily_count=%d\nmarket_daily_count=%d", len(input.AssetDaily), len(input.MarketDaily))
-	writeRelativeBars("asset_daily_ret_range_body_vol", input.AssetDaily)
-	writeRelativeBars("market_daily_ret_range_body_vol", input.MarketDaily)
-	fmt.Fprintf(&b, "\nsignal=%s\nregime=%s\nrank=%d/%d\nmomentum=%.4f\nnormalized_momentum=%.4f\nvolatility=%.4f\nabsolute_trend=%t\ntarget_weight=%.4f\nhas_position=%t", input.Signal.V4Action, input.Signal.Regime, input.Signal.Rank, input.Signal.UniverseSize, cleanZero(input.Signal.Momentum), cleanZero(input.Signal.Normalized), cleanZero(input.Signal.Volatility), input.Signal.AbsoluteTrend, cleanZero(input.Signal.TargetWeight), input.Position.HasPosition)
-	if input.Position.HasPosition {
-		fmt.Fprintf(&b, "\nposition_duration_4h=%d\nunrealized_pnl_pct=%.2f\nposition_mfe_pct=%.2f\nposition_mae_pct=%.2f", input.Position.DurationBars, cleanZero((input.Position.MarkPrice/input.Position.EntryPrice-1)*100), cleanZero(input.Position.MFEPercent), cleanZero(input.Position.MAEPercent))
+	writeDailySummary("asset_daily_summary", input.AssetDaily)
+	writeDailySummary("market_daily_summary", input.MarketDaily)
+	fmt.Fprintf(&b, "\nposition_duration_4h=%d\nposition_mfe_pct=%.2f\nposition_mae_pct=%.2f", input.Position.DurationBars, cleanZero(input.Position.MFEPercent), cleanZero(input.Position.MAEPercent))
+	b.WriteString("\nfactor_recent=bars_ago/rank/momentum/normalized/volatility/absolute")
+	factorStart := len(input.FactorHistory) - 8
+	if factorStart < 0 {
+		factorStart = 0
 	}
-	b.WriteString("\nfactor_history=bars_ago/rank/momentum/normalized/volatility/absolute")
-	for _, value := range input.FactorHistory {
-		fmt.Fprintf(&b, "\n%d/%d/%.4f/%.4f/%.4f/%t", value.BarsAgo, value.Rank, cleanZero(value.Momentum), cleanZero(value.Normalized), cleanZero(value.Volatility), value.AbsoluteTrend)
+	for _, value := range input.FactorHistory[factorStart:] {
+		fmt.Fprintf(&b, ";%d/%d/%.3f/%.3f/%.3f/%t", value.BarsAgo, value.Rank, cleanZero(value.Momentum), cleanZero(value.Normalized), cleanZero(value.Volatility), value.AbsoluteTrend)
 	}
-	b.WriteString("\ncross_section=rank/momentum/normalized/volatility/absolute/held")
-	for _, value := range input.CrossSection {
-		fmt.Fprintf(&b, "\n%d/%.4f/%.4f/%.4f/%t/%t", value.Rank, cleanZero(value.Momentum), cleanZero(value.Normalized), cleanZero(value.Volatility), value.AbsoluteTrend, value.HasPosition)
+	b.WriteString("\ncross_top=rank/momentum/normalized/volatility/absolute/held")
+	crossLimit := minCouncilInt(len(input.CrossSection), 12)
+	for _, value := range input.CrossSection[:crossLimit] {
+		fmt.Fprintf(&b, ";%d/%.3f/%.3f/%.3f/%t/%t", value.Rank, cleanZero(value.Momentum), cleanZero(value.Normalized), cleanZero(value.Volatility), value.AbsoluteTrend, value.HasPosition)
+	}
+	if b.Len() > 4<<10 {
+		return "", fmt.Errorf("council v2 compact state exceeds 4 KiB")
 	}
 	return b.String(), nil
 }
