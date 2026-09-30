@@ -106,9 +106,6 @@ func (d *systemOneDriver) Decide(ctx context.Context, endpoint Endpoint, model s
 	if strings.TrimSpace(model) == "" {
 		return Response{}, fmt.Errorf("%w: provider model is empty", ErrInvalidRequest)
 	}
-	if endpoint.Token == "" {
-		return Response{}, ErrMissingToken
-	}
 	target, err := decisionURL(endpoint.BaseURL, d.path)
 	if err != nil {
 		return Response{}, err
@@ -121,7 +118,9 @@ func (d *systemOneDriver) Decide(ctx context.Context, endpoint Endpoint, model s
 	if err != nil {
 		return Response{}, fmt.Errorf("%w: build request: %s", ErrInvalidRequest, redact(err.Error(), endpoint.Token))
 	}
-	httpRequest.Header.Set("Authorization", "Bearer "+endpoint.Token)
+	if endpoint.Token != "" {
+		httpRequest.Header.Set("Authorization", "Bearer "+endpoint.Token)
+	}
 	httpRequest.Header.Set("Content-Type", "application/json")
 	httpRequest.Header.Set("Accept", "application/json")
 
@@ -146,7 +145,7 @@ func (d *systemOneDriver) Decide(ctx context.Context, endpoint Endpoint, model s
 	if err != nil {
 		return Response{}, err
 	}
-	if strings.Contains(parsed.ResolvedModel, endpoint.Token) {
+	if endpoint.Token != "" && strings.Contains(parsed.ResolvedModel, endpoint.Token) {
 		return Response{}, fmt.Errorf("%w: unsafe resolved model", ErrInvalidResponse)
 	}
 	return parsed, nil

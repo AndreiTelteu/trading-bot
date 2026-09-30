@@ -253,7 +253,7 @@ func validateRequest(req input) error {
 	newParameters["entry_momentum_rule"] = "positive_new_targets_v1"
 	councilParameters := maps.Clone(expectedParameters)
 	councilModel := req.Parameters["decision_model"]
-	if councilModel != decisionmodel.ExperientialIdentity && councilModel != decisionmodel.AIHubMixIdentity && councilModel != decisionmodel.TokenRouterIdentity {
+	if councilModel != decisionmodel.ExperientialIdentity && councilModel != decisionmodel.AIHubMixIdentity && councilModel != decisionmodel.TokenRouterIdentity && councilModel != decisionmodel.DeciderIdentity {
 		councilModel = decisionmodel.DefaultIdentity
 	}
 	councilParameters["decision_model"] = councilModel
@@ -268,7 +268,7 @@ func validateRequest(req input) error {
 	if req.StrategyID != "trend_momentum_candidate" || !allowedVersion || !allowedFinalPolicy || req.TargetGrossExposure != "0.75" || req.MaxNetExposure != "0.75" || !maps.Equal(req.Overrides, expectedOverrides) {
 		return fmt.Errorf("request differs from frozen exploratory Stage 05 boundary")
 	}
-	if councilRequest || councilV2Request {
+	if (councilRequest || councilV2Request) && councilModel != decisionmodel.DeciderIdentity {
 		tokenEnv, tokenFileEnv, err := decisionmodel.ProviderTokenEnv(councilModel)
 		if err != nil {
 			return err

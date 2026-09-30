@@ -346,6 +346,43 @@ func TestResolveRejectsInvalidProviderConfiguration(t *testing.T) {
 	}
 }
 
+func TestDefaultRegistryDeciderProvider(t *testing.T) {
+	var gotModel string
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/systemone" || r.Header.Get("Authorization") != "" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		var body struct {
+			Model string `json:"model"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		gotModel = body.Model
+		_, _ = w.Write([]byte(`{"model":"decider-4b","answers":{"direction":{"type":"choice","choice":"up","confidence":0.9,"probabilities":{"up":0.9,"down":0.1}}},"request":{},"usage":{"input_tokens":10,"output_tokens":0},"source":{"checkpoint":"fixture","revision":"fixture"},"runtime":{},"timing":{"load_ms":0,"inference_ms":1}}`))
+	}))
+	defer server.Close()
+	t.Setenv(DeciderBaseURLEnv, server.URL)
+	tokenEnv, fileEnv, err := ProviderTokenEnv(DeciderIdentity)
+	if err != nil || tokenEnv != DeciderTokenEnv || fileEnv != DeciderTokenFileEnv {
+		t.Fatalf("token env: %q %q %v", tokenEnv, fileEnv, err)
+	}
+	model, err := DefaultRegistry(server.Client()).Resolve(DeciderIdentity, NewMemoryStore())
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := Request{State: "anonymous state", Questions: map[string]Question{"direction": {Type: QuestionChoice, Instructions: "Pick one.", ChoiceCriteria: map[string]string{"up": "Up.", "down": "Down."}}}}
+	response, err := model.Decide(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotModel != "decider-4b" || response.ResolvedModel != "decider-4b" || response.Answers["direction"].Choice != "up" || response.Usage.OutputTokens == nil || *response.Usage.OutputTokens != 0 {
+		t.Fatalf("model=%q response=%+v", gotModel, response)
+	}
+}
+
 func TestDefaultRegistryTokenRouterProvider(t *testing.T) {
 	var gotModel string
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

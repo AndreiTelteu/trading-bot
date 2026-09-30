@@ -8,6 +8,7 @@ import (
 	"trading-go/internal/backtest"
 	"trading-go/internal/config"
 	"trading-go/internal/cutover"
+	"trading-go/internal/decisionmodel"
 )
 
 func TestValidateConfigRejectsNonCloneAndElevatedPools(t *testing.T) {
@@ -183,6 +184,10 @@ func TestValidateRequestDecisionCouncilFrozenBoundary(t *testing.T) {
 	req.Parameters["decision_council_policy"] = "active_v2"
 	if err := validateRequest(req); err != nil {
 		t.Fatalf("v2 active request rejected: %v", err)
+	}
+	req.Parameters["decision_model"] = decisionmodel.DeciderIdentity
+	if err := validateRequest(req); err != nil {
+		t.Fatalf("anonymous decider request rejected: %v", err)
 	}
 	for name, change := range map[string]func(*input){
 		"policy":    func(r *input) { r.Parameters["decision_council_policy"] = "autonomous" },

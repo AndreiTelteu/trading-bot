@@ -42,6 +42,14 @@ const (
 	TokenRouterTokenEnv       = "TOKENROUTER_API_TOKEN"
 	TokenRouterTokenFileEnv   = "TOKENROUTER_API_TOKEN_FILE"
 
+	// DeciderIdentity is the self-hosted Decider 4B SystemOne model.
+	DeciderIdentity       = "decider/decider-4b"
+	DeciderProvider       = "decider"
+	DeciderDefaultBaseURL = "https://wsl.p.ohost.cloud"
+	DeciderBaseURLEnv     = "DECIDER_BASE_URL"
+	DeciderTokenEnv       = "DECIDER_API_TOKEN"
+	DeciderTokenFileEnv   = "DECIDER_API_TOKEN_FILE"
+
 	// MaxAttempts bounds live calls per Decide for transient failures.
 	MaxAttempts = 3
 )
@@ -68,10 +76,11 @@ type BaseURLLoader func() (string, error)
 // Provider maps a provider name to a wire driver and endpoint configuration.
 // Future providers reuse existing drivers by name.
 type Provider struct {
-	Name    string
-	Driver  string
-	BaseURL BaseURLLoader
-	Token   TokenLoader
+	Name      string
+	Driver    string
+	BaseURL   BaseURLLoader
+	Token     TokenLoader
+	Anonymous bool
 }
 
 // Registry resolves "<provider>/<model>" identities.
@@ -119,6 +128,14 @@ func DefaultRegistry(client *http.Client) *Registry {
 	}); err != nil {
 		panic(err)
 	}
+	if err := registry.RegisterProvider(Provider{
+		Name:      DeciderProvider,
+		Driver:    SystemOneDriverName,
+		BaseURL:   EnvBaseURL(DeciderBaseURLEnv, DeciderDefaultBaseURL),
+		Anonymous: true,
+	}); err != nil {
+		panic(err)
+	}
 	return registry
 }
 
@@ -136,6 +153,8 @@ func ProviderTokenEnv(identity string) (tokenEnv, tokenFileEnv string, err error
 		return ExperientialTokenEnv, ExperientialTokenFileEnv, nil
 	case TokenRouterProvider:
 		return TokenRouterTokenEnv, TokenRouterTokenFileEnv, nil
+	case DeciderProvider:
+		return DeciderTokenEnv, DeciderTokenFileEnv, nil
 	}
 	return "", "", fmt.Errorf("%w: %q", ErrUnknownProvider, provider)
 }
@@ -150,7 +169,7 @@ func (r *Registry) RegisterDriver(driver Driver) {
 }
 
 func (r *Registry) RegisterProvider(provider Provider) error {
-	if !providerNamePattern.MatchString(provider.Name) || provider.Driver == "" || provider.BaseURL == nil || provider.Token == nil {
+	if !providerNamePattern.MatchString(provider.Name) || provider.Driver == "" || provider.BaseURL == nil || provider.Token == nil && !provider.Anonymous {
 		return fmt.Errorf("decisionmodel: invalid provider registration %q", provider.Name)
 	}
 	r.providers[provider.Name] = provider
@@ -202,12 +221,15 @@ func (r *Registry) Resolve(identity string, store Store) (Model, error) {
 	if err != nil {
 		return nil, err
 	}
-	token, err := provider.Token()
-	if err != nil {
-		return nil, err
-	}
-	if strings.TrimSpace(token) == "" {
-		return nil, ErrMissingToken
+	token := ""
+	if !provider.Anonymous {
+		token, err = provider.Token()
+		if err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(token) == "" {
+			return nil, ErrMissingToken
+		}
 	}
 	sleep := r.Sleep
 	if sleep == nil {

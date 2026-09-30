@@ -498,7 +498,7 @@ func newDefaultStrategyRegistry() *StrategyRegistry {
 		}
 	}
 	candidateV13.Parameters = append(candidateV13.Parameters,
-		StrategyParameterSpec{Name: "decision_model", Type: "enum", Description: "Resolved decision model identity.", Default: decisionmodel.DefaultIdentity, Enum: []string{decisionmodel.ExperientialIdentity, decisionmodel.AIHubMixIdentity, decisionmodel.TokenRouterIdentity}},
+		StrategyParameterSpec{Name: "decision_model", Type: "enum", Description: "Resolved decision model identity.", Default: decisionmodel.DefaultIdentity, Enum: []string{decisionmodel.ExperientialIdentity, decisionmodel.AIHubMixIdentity, decisionmodel.TokenRouterIdentity, decisionmodel.DeciderIdentity}},
 		StrategyParameterSpec{Name: "decision_council_policy", Type: "enum", Description: "Council observation or veto policy.", Default: "observe_v1", Enum: []string{"observe_v1", "veto_v1"}},
 	)
 	definitions = append(definitions, candidateV13)
@@ -515,7 +515,7 @@ func newDefaultStrategyRegistry() *StrategyRegistry {
 		}
 	}
 	candidateV14.Parameters = append(candidateV14.Parameters,
-		StrategyParameterSpec{Name: "decision_model", Type: "enum", Description: "Resolved decision model identity.", Default: decisionmodel.DefaultIdentity, Enum: []string{decisionmodel.ExperientialIdentity, decisionmodel.AIHubMixIdentity, decisionmodel.TokenRouterIdentity}},
+		StrategyParameterSpec{Name: "decision_model", Type: "enum", Description: "Resolved decision model identity.", Default: decisionmodel.DefaultIdentity, Enum: []string{decisionmodel.ExperientialIdentity, decisionmodel.AIHubMixIdentity, decisionmodel.TokenRouterIdentity, decisionmodel.DeciderIdentity}},
 		StrategyParameterSpec{Name: "decision_council_policy", Type: "enum", Description: "Council v2 observation or active policy.", Default: "observe_v2", Enum: []string{"observe_v2", "active_v2"}},
 	)
 	definitions = append(definitions, candidateV14)
