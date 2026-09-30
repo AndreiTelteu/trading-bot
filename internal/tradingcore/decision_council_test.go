@@ -337,7 +337,7 @@ func TestCouncilPromptDigestGolden(t *testing.T) {
 	if got := CouncilPromptDigest(); got != want {
 		t.Fatalf("digest=%s want=%s", got, want)
 	}
-	const wantV2 = "9820977f30f10a65f54492e82d016b921554c22568c6a4595c7723c0361611f1"
+	const wantV2 = "ac14a056c41061cc4d81ad4361e77570cf5d57de7951bcfeb9b1a7bd883eb02e"
 	if got := CouncilPromptDigestV2(); got != wantV2 {
 		t.Fatalf("v2 digest=%s want=%s", got, wantV2)
 	}
@@ -354,7 +354,7 @@ func TestCouncilStateV2AnonymizedAndBounded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(state) > 4<<10 {
+	if len(state) > 1800 {
 		t.Fatalf("compact state bytes=%d", len(state))
 	}
 	for _, forbidden := range []string{"BTCUSDT", "asset-", "2024-"} {
@@ -362,7 +362,7 @@ func TestCouncilStateV2AnonymizedAndBounded(t *testing.T) {
 			t.Fatalf("state leaks %q", forbidden)
 		}
 	}
-	if !strings.Contains(state, "schema=decision-council-state-v2-compact-v1") || !strings.Contains(state, "position_mfe_pct=8.00") {
+	if !strings.Contains(state, "schema=decision-council-state-v2-compact-v2") || !strings.Contains(state, "position_mfe_pct=8.00") {
 		t.Fatalf("state=%s", state)
 	}
 }
@@ -383,10 +383,10 @@ func TestCouncilStateV2MaximumInputRemainsCompact(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(state) > 4<<10 {
+	if len(state) > 1800 {
 		t.Fatalf("maximum compact state bytes=%d", len(state))
 	}
-	if strings.Count(state, ";") > 20 {
+	if strings.Count(state, ";") > 10 {
 		t.Fatalf("state retained too many raw observations: %s", state)
 	}
 }

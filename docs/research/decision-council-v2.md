@@ -31,11 +31,11 @@ The anonymized, stable state contains no ticker, asset ID, exchange ID, wall-clo
 * compact multi-horizon 4h indicators over up to 360 completed bars for the asset and benchmark: returns, realized volatility, ATR, RSI, moving-average distance, drawdown, range position, volume ratios and the latest 12 relative bars;
 * compact 1/7/30/90-day return summaries plus 30-day volatility and moving-average distance over up to 180 completed daily bars for asset and benchmark (short history is explicit and allowed);
 * position duration, unrealized P&L, MFE and MAE when held;
-* the latest eight per-symbol v4 factor observations accumulated only from completed 4h computations;
-* the top twelve rows of the current anonymized cross-sectional factor snapshot, sorted by rank;
+* the latest four per-symbol v4 factor observations accumulated only from completed 4h computations;
+* the top six rows of the current anonymized cross-sectional factor snapshot, sorted by rank;
 * current v4 regime, rank, factor values and proposed action.
 
-The serialized state is hard-capped at 4 KiB to provide comfortable latency for the self-hosted model; the full bounded histories remain inputs to deterministic local feature computation rather than being copied verbatim into the model request. The state is hashed into replay evidence. History is loaded only from the validated immutable manifest, filtered by knowledge cutoff and `available_at <= replay end`; each decision still slices only bars completed by its decision time.
+The serialized state is hard-capped at 1,800 bytes (approximately 3 KiB for the complete request including questions) to provide comfortable latency for the self-hosted model; the full bounded histories remain inputs to deterministic local feature computation rather than being copied verbatim into the model request. The state is hashed into replay evidence. History is loaded only from the validated immutable manifest, filtered by knowledge cutoff and `available_at <= replay end`; each decision still slices only bars completed by its decision time.
 
 ## Determinism and evidence
 

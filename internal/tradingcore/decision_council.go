@@ -181,7 +181,7 @@ type CouncilInput struct {
 
 const CouncilMinimumBars = 51
 const councilStateSchema = "decision-council-state-v1"
-const councilStateSchemaV2 = "decision-council-state-v2-compact-v1"
+const councilStateSchemaV2 = "decision-council-state-v2-compact-v2"
 
 var ErrInsufficientCouncilData = errors.New("insufficient council data")
 
@@ -292,7 +292,7 @@ func BuildCouncilStateV2(input CouncilInput) (string, error) {
 	writeDailySummary("market_daily_summary", input.MarketDaily)
 	fmt.Fprintf(&b, "\nposition_duration_4h=%d\nposition_mfe_pct=%.2f\nposition_mae_pct=%.2f", input.Position.DurationBars, cleanZero(input.Position.MFEPercent), cleanZero(input.Position.MAEPercent))
 	b.WriteString("\nfactor_recent=bars_ago/rank/momentum/normalized/volatility/absolute")
-	factorStart := len(input.FactorHistory) - 8
+	factorStart := len(input.FactorHistory) - 4
 	if factorStart < 0 {
 		factorStart = 0
 	}
@@ -300,12 +300,12 @@ func BuildCouncilStateV2(input CouncilInput) (string, error) {
 		fmt.Fprintf(&b, ";%d/%d/%.3f/%.3f/%.3f/%t", value.BarsAgo, value.Rank, cleanZero(value.Momentum), cleanZero(value.Normalized), cleanZero(value.Volatility), value.AbsoluteTrend)
 	}
 	b.WriteString("\ncross_top=rank/momentum/normalized/volatility/absolute/held")
-	crossLimit := minCouncilInt(len(input.CrossSection), 12)
+	crossLimit := minCouncilInt(len(input.CrossSection), 6)
 	for _, value := range input.CrossSection[:crossLimit] {
 		fmt.Fprintf(&b, ";%d/%.3f/%.3f/%.3f/%t/%t", value.Rank, cleanZero(value.Momentum), cleanZero(value.Normalized), cleanZero(value.Volatility), value.AbsoluteTrend, value.HasPosition)
 	}
-	if b.Len() > 4<<10 {
-		return "", fmt.Errorf("council v2 compact state exceeds 4 KiB")
+	if b.Len() > 1800 {
+		return "", fmt.Errorf("council v2 compact state exceeds 1800 bytes")
 	}
 	return b.String(), nil
 }
