@@ -170,18 +170,25 @@ type CouncilCrossSection struct {
 	AbsoluteTrend, HasPosition       bool
 }
 
+type CouncilEconomics struct {
+	RoundTripCostBPS, RequiredEdge6BarsBPS                      float64
+	DistanceToNormalEntryRank, AvailablePositionSlots           int
+	CurrentGrossExposurePercent, TurnoverBudgetRemainingPercent float64
+}
+
 type CouncilInput struct {
 	Asset, Market           []CouncilBar
 	AssetDaily, MarketDaily []CouncilBar
 	Signal                  CouncilSignal
 	Position                CouncilPosition
+	Economics               CouncilEconomics
 	FactorHistory           []CouncilFactorObservation
 	CrossSection            []CouncilCrossSection
 }
 
 const CouncilMinimumBars = 51
 const councilStateSchema = "decision-council-state-v1"
-const councilStateSchemaV2 = "decision-council-state-v2-compact-v2"
+const councilStateSchemaV2 = "decision-council-state-v2-compact-v3"
 
 var ErrInsufficientCouncilData = errors.New("insufficient council data")
 
@@ -257,8 +264,8 @@ func BuildCouncilStateV2(input CouncilInput) (string, error) {
 			}
 		}
 	}
-	if !validSignal(input.Signal) || input.Position.DurationBars < 0 || (input.Position.HasPosition && (!finitePositive(input.Position.EntryPrice) || !finitePositive(input.Position.MarkPrice))) {
-		return "", fmt.Errorf("invalid council signal or position")
+	if !validSignal(input.Signal) || input.Position.DurationBars < 0 || (input.Position.HasPosition && (!finitePositive(input.Position.EntryPrice) || !finitePositive(input.Position.MarkPrice))) || !validCouncilEconomics(input.Economics) {
+		return "", fmt.Errorf("invalid council signal, position, or economics")
 	}
 	base, err := BuildCouncilState(input)
 	if err != nil {
@@ -291,7 +298,12 @@ func BuildCouncilStateV2(input CouncilInput) (string, error) {
 	writeDailySummary("asset_daily_summary", input.AssetDaily)
 	writeDailySummary("market_daily_summary", input.MarketDaily)
 	fmt.Fprintf(&b, "\nposition_duration_4h=%d\nposition_mfe_pct=%.2f\nposition_mae_pct=%.2f", input.Position.DurationBars, cleanZero(input.Position.MFEPercent), cleanZero(input.Position.MAEPercent))
-	b.WriteString("\nfactor_recent=bars_ago/rank/momentum/normalized/volatility/absolute")
+	if input.Position.HasPosition {
+		unrealized := (input.Position.MarkPrice/input.Position.EntryPrice - 1) * 100
+		fmt.Fprintf(&b, "\nposition_giveback_from_mfe_pct=%.2f", cleanZero(math.Max(0, input.Position.MFEPercent-unrealized)))
+	}
+	fmt.Fprintf(&b, "\nround_trip_cost_bps=%.1f\nrequired_edge_6_bars_bps=%.1f\ndistance_to_normal_entry_rank=%d\navailable_position_slots=%d\ncurrent_gross_exposure_pct=%.2f\nturnover_budget_remaining_pct=%.2f", cleanZero(input.Economics.RoundTripCostBPS), cleanZero(input.Economics.RequiredEdge6BarsBPS), input.Economics.DistanceToNormalEntryRank, input.Economics.AvailablePositionSlots, cleanZero(input.Economics.CurrentGrossExposurePercent), cleanZero(input.Economics.TurnoverBudgetRemainingPercent))
+	b.WriteString("\nfactors=ago/rank/mom/norm/vol/trend")
 	factorStart := len(input.FactorHistory) - 4
 	if factorStart < 0 {
 		factorStart = 0
@@ -299,7 +311,7 @@ func BuildCouncilStateV2(input CouncilInput) (string, error) {
 	for _, value := range input.FactorHistory[factorStart:] {
 		fmt.Fprintf(&b, ";%d/%d/%.3f/%.3f/%.3f/%t", value.BarsAgo, value.Rank, cleanZero(value.Momentum), cleanZero(value.Normalized), cleanZero(value.Volatility), value.AbsoluteTrend)
 	}
-	b.WriteString("\ncross_top=rank/momentum/normalized/volatility/absolute/held")
+	b.WriteString("\ncross=rank/mom/norm/vol/trend/held")
 	crossLimit := minCouncilInt(len(input.CrossSection), 6)
 	for _, value := range input.CrossSection[:crossLimit] {
 		fmt.Fprintf(&b, ";%d/%.3f/%.3f/%.3f/%t/%t", value.Rank, cleanZero(value.Momentum), cleanZero(value.Normalized), cleanZero(value.Volatility), value.AbsoluteTrend, value.HasPosition)
@@ -317,6 +329,17 @@ func minCouncilInt(a, b int) int {
 	return b
 }
 func finitePositive(v float64) bool { return v > 0 && !math.IsNaN(v) && !math.IsInf(v, 0) }
+func validCouncilEconomics(e CouncilEconomics) bool {
+	if e.DistanceToNormalEntryRank < 0 || e.AvailablePositionSlots < 0 {
+		return false
+	}
+	for _, v := range []float64{e.RoundTripCostBPS, e.RequiredEdge6BarsBPS, e.CurrentGrossExposurePercent, e.TurnoverBudgetRemainingPercent} {
+		if math.IsNaN(v) || math.IsInf(v, 0) || v < 0 {
+			return false
+		}
+	}
+	return true
+}
 func validSignal(s CouncilSignal) bool {
 	if s.V4Action != "buy" && s.V4Action != "hold" {
 		return false
@@ -484,12 +507,19 @@ var councilLevelMeanings = map[string]string{
 	"very_strong": "Very strong support.",
 }
 
-const councilBullInstruction = "Score upside continuation merit over the next few 4h bars. Weigh volume confirmation, momentum persistence across horizons, trend alignment with market, and orderly structure above averages; penalize overextension."
-const councilBearInstruction = "Score downside or reversal risk over the next few 4h bars. Weigh exhaustion, overbought RSI, stretched distance above averages, fading volume on up moves, adverse market regime, high volatility, and breakdown from range."
-const councilHodlInstruction = "If has_position=true, score merit of keeping the position open using intact trend, absence of breakdown, and unrealized P&L context. If has_position=false, score merit of staying flat or not buying when evidence conflicts or is weak."
-const councilFinalInstruction = "Choose the best action for the current long-only state using the asset, market, signal, position, and council scores."
-const councilEntryRule = "buy && !has_position: admit iff final=buy && bull>=0.50 && bear<0.50; else veto"
-const councilHoldRule = "hold && has_position: early_exit iff final=sell && bear>=0.60 && hodl<0.40; else hold"
+const councilBullInstructionV1 = "Score upside continuation merit over the next few 4h bars. Weigh volume confirmation, momentum persistence across horizons, trend alignment with market, and orderly structure above averages; penalize overextension."
+const councilBearInstructionV1 = "Score downside or reversal risk over the next few 4h bars. Weigh exhaustion, overbought RSI, stretched distance above averages, fading volume on up moves, adverse market regime, high volatility, and breakdown from range."
+const councilHodlInstructionV1 = "If has_position=true, score merit of keeping the position open using intact trend, absence of breakdown, and unrealized P&L context. If has_position=false, score merit of staying flat or not buying when evidence conflicts or is weak."
+const councilFinalInstructionV1 = "Choose the best action for the current long-only state using the asset, market, signal, position, and council scores."
+const councilBullInstruction = "Score upside continuation merit over the next few 4h bars. Weigh volume confirmation, momentum persistence across horizons, trend alignment with market, orderly structure above averages, required edge after round-trip costs, portfolio capacity, and whether early admission improves on waiting for the normal rank; penalize overextension."
+const councilBearInstruction = "Score downside or reversal risk over the next few 4h bars. Weigh exhaustion, overbought RSI, stretched distance above averages, fading volume on up moves, adverse market regime, high volatility, breakdown from range, unrealized loss, giveback from MFE, adverse excursion, and weakening factor rank. For an open position, meaningful deterioration may justify an early exit before the normal v4 exit."
+const councilHodlInstruction = "If has_position=true, compare keeping the position with exiting early: reward intact multi-horizon trend and recovery potential, but penalize breakdown, worsening rank, large MFE giveback, adverse excursion, and downside risk. Do not default to keep merely because a position is open; account for whipsaw and foregone recovery risk when considering early exit. If has_position=false, score merit of waiting for the normal signal or rejecting entry when evidence is weak, costs consume the edge, or portfolio capacity is scarce."
+const councilEntryInstruction = "Decide whether this flat near-signal setup deserves early admission before the normal strategy selects it. Account for round-trip costs, required six-bar edge, distance from normal entry rank, available slots, gross exposure, turnover budget, and the risk of crowding out a stronger position."
+const councilExitInstruction = "Decide whether to keep the open long or exit early before the normal v4 exit. Exit early only when point-in-time evidence shows meaningful deterioration and downside/giveback risk outweighs recovery potential, transaction costs, and whipsaw risk."
+const councilEntryRuleV1 = "buy && !has_position: admit iff final=buy && bull>=0.50 && bear<0.50; else veto"
+const councilHoldRuleV1 = "hold && has_position: early_exit iff final=sell && bear>=0.60 && hodl<0.40; else hold"
+const councilEntryRule = "buy && !has_position: admit iff final=admit && bull>=0.70 && bear<0.50; else veto"
+const councilHoldRule = "hold && has_position: early_exit iff final=exit_early && bear>=0.60 && hodl<0.40; else hold"
 const councilScoreRule = "score=clamp(sum(level_index*probability[level])/(levels-1),0,1) over ordered choice levels; when probabilities absent clamp(index(choice)/(levels-1),0,1)"
 
 func councilLevelCriteria() map[string]string {
@@ -500,6 +530,13 @@ func councilLevelCriteria() map[string]string {
 	return criteria
 }
 
+func councilScoreQuestionsV1() map[string]decisionmodel.Question {
+	return map[string]decisionmodel.Question{
+		"decision_bull": {Type: decisionmodel.QuestionChoice, Instructions: councilBullInstructionV1, ChoiceCriteria: councilLevelCriteria()},
+		"decision_bear": {Type: decisionmodel.QuestionChoice, Instructions: councilBearInstructionV1, ChoiceCriteria: councilLevelCriteria()},
+		"decision_hodl": {Type: decisionmodel.QuestionChoice, Instructions: councilHodlInstructionV1, ChoiceCriteria: councilLevelCriteria()},
+	}
+}
 func councilScoreQuestions() map[string]decisionmodel.Question {
 	return map[string]decisionmodel.Question{
 		"decision_bull": {Type: decisionmodel.QuestionChoice, Instructions: councilBullInstruction, ChoiceCriteria: councilLevelCriteria()},
@@ -507,8 +544,20 @@ func councilScoreQuestions() map[string]decisionmodel.Question {
 		"decision_hodl": {Type: decisionmodel.QuestionChoice, Instructions: councilHodlInstruction, ChoiceCriteria: councilLevelCriteria()},
 	}
 }
-func councilFinalQuestions() map[string]decisionmodel.Question {
-	return map[string]decisionmodel.Question{"decision_final": {Type: decisionmodel.QuestionChoice, Instructions: councilFinalInstruction, ChoiceCriteria: map[string]string{"buy": "open or keep a long", "sell": "exit or avoid", "hodl": "keep current state: hold an open position or stay flat"}}}
+func councilFinalQuestionsV1() map[string]decisionmodel.Question {
+	return map[string]decisionmodel.Question{"decision_final": {Type: decisionmodel.QuestionChoice, Instructions: councilFinalInstructionV1, ChoiceCriteria: map[string]string{"buy": "open or keep a long", "sell": "exit or avoid", "hodl": "keep current state: hold an open position or stay flat"}}}
+}
+func councilEntryFinalQuestions() map[string]decisionmodel.Question {
+	return map[string]decisionmodel.Question{"decision_final": {Type: decisionmodel.QuestionChoice, Instructions: councilEntryInstruction, ChoiceCriteria: map[string]string{"admit": "Open the long early because expected edge clearly exceeds costs and opportunity cost.", "wait_for_normal_signal": "Stay flat now and let the normal strategy decide later.", "reject": "Avoid this setup because evidence, economics, or portfolio capacity is inadequate."}}}
+}
+func councilExitFinalQuestions() map[string]decisionmodel.Question {
+	return map[string]decisionmodel.Question{"decision_final": {Type: decisionmodel.QuestionChoice, Instructions: councilExitInstruction, ChoiceCriteria: map[string]string{"keep": "Keep the long because continuation or recovery merit outweighs deterioration risk.", "exit_early": "Close before the normal exit because deterioration and giveback risk outweigh recovery and whipsaw risk."}}}
+}
+func councilFinalQuestions(action string) map[string]decisionmodel.Question {
+	if action == "buy" {
+		return councilEntryFinalQuestions()
+	}
+	return councilExitFinalQuestions()
 }
 
 // CouncilPromptDigest identifies the complete prompt and combination contract.
@@ -520,7 +569,7 @@ func CouncilPromptDigest() string {
 		ScoreRule string                            `json:"score_rule"`
 		EntryRule string                            `json:"entry_rule"`
 		HoldRule  string                            `json:"hold_rule"`
-	}{councilStateSchema, councilScoreQuestions(), councilFinalQuestions(), councilScoreRule, councilEntryRule, councilHoldRule}
+	}{councilStateSchema, councilScoreQuestionsV1(), councilFinalQuestionsV1(), councilScoreRule, councilEntryRuleV1, councilHoldRuleV1}
 	payload, _ := json.Marshal(definition)
 	h := sha256.Sum256(payload)
 	return hex.EncodeToString(h[:])
@@ -530,13 +579,14 @@ func CouncilPromptDigest() string {
 // without changing the historical v1 digest.
 func CouncilPromptDigestV2() string {
 	definition := struct {
-		Schema    string                            `json:"schema"`
-		Score     map[string]decisionmodel.Question `json:"score_questions"`
-		Final     map[string]decisionmodel.Question `json:"final_questions"`
-		ScoreRule string                            `json:"score_rule"`
-		EntryRule string                            `json:"entry_rule"`
-		HoldRule  string                            `json:"hold_rule"`
-	}{councilStateSchemaV2, councilScoreQuestions(), councilFinalQuestions(), councilScoreRule, councilEntryRule, councilHoldRule}
+		Schema     string                            `json:"schema"`
+		Score      map[string]decisionmodel.Question `json:"score_questions"`
+		FinalEntry map[string]decisionmodel.Question `json:"final_entry_questions"`
+		FinalExit  map[string]decisionmodel.Question `json:"final_exit_questions"`
+		ScoreRule  string                            `json:"score_rule"`
+		EntryRule  string                            `json:"entry_rule"`
+		HoldRule   string                            `json:"hold_rule"`
+	}{councilStateSchemaV2, councilScoreQuestions(), councilEntryFinalQuestions(), councilExitFinalQuestions(), councilScoreRule, councilEntryRule, councilHoldRule}
 	payload, _ := json.Marshal(definition)
 	h := sha256.Sum256(payload)
 	return hex.EncodeToString(h[:])
@@ -595,7 +645,11 @@ func (c DecisionCouncil) Evaluate(ctx context.Context, input CouncilInput) (Coun
 	}
 	h := sha256.Sum256([]byte(state))
 	out := CouncilOutcome{StateDigest: hex.EncodeToString(h[:]), Applied: c.Policy == CouncilVetoV1 || c.Policy == CouncilActiveV2}
-	scores, err := c.Model.Decide(ctx, decisionmodel.Request{State: state, Questions: councilScoreQuestions()})
+	scoreQuestions := councilScoreQuestionsV1()
+	if c.Policy == CouncilObserveV2 || c.Policy == CouncilActiveV2 {
+		scoreQuestions = councilScoreQuestions()
+	}
+	scores, err := c.Model.Decide(ctx, decisionmodel.Request{State: state, Questions: scoreQuestions})
 	if err != nil {
 		return CouncilOutcome{}, fmt.Errorf("council scores: %w", err)
 	}
@@ -617,12 +671,18 @@ func (c DecisionCouncil) Evaluate(ctx context.Context, input CouncilInput) (Coun
 		*item.confidence = answer.Confidence
 	}
 	finalState := fmt.Sprintf("%s\ncouncil: bull=%.2f bear=%.2f hodl=%.2f", state, out.Bull, out.Bear, out.Hodl)
-	final, err := c.Model.Decide(ctx, decisionmodel.Request{State: finalState, Questions: councilFinalQuestions()})
+	finalQuestions := councilFinalQuestionsV1()
+	if c.Policy == CouncilObserveV2 || c.Policy == CouncilActiveV2 {
+		finalQuestions = councilFinalQuestions(input.Signal.V4Action)
+	}
+	final, err := c.Model.Decide(ctx, decisionmodel.Request{State: finalState, Questions: finalQuestions})
 	if err != nil {
 		return CouncilOutcome{}, fmt.Errorf("council final: %w", err)
 	}
 	answer, ok := final.Answers["decision_final"]
-	if !ok || answer.Type != decisionmodel.QuestionChoice || (answer.Choice != "buy" && answer.Choice != "sell" && answer.Choice != "hodl") {
+	v2 := c.Policy == CouncilObserveV2 || c.Policy == CouncilActiveV2
+	validFinal := !v2 && (answer.Choice == "buy" || answer.Choice == "sell" || answer.Choice == "hodl") || v2 && input.Signal.V4Action == "buy" && (answer.Choice == "admit" || answer.Choice == "wait_for_normal_signal" || answer.Choice == "reject") || v2 && input.Signal.V4Action == "hold" && (answer.Choice == "keep" || answer.Choice == "exit_early")
+	if !ok || answer.Type != decisionmodel.QuestionChoice || !validFinal {
 		return CouncilOutcome{}, fmt.Errorf("invalid council final answer")
 	}
 	out.FinalRequestDigest = final.RequestDigest
@@ -636,12 +696,12 @@ func (c DecisionCouncil) Evaluate(ctx context.Context, input CouncilInput) (Coun
 	out.Cached = out.Cached && final.Cached
 	if input.Signal.V4Action == "buy" {
 		out.Proposed = "veto"
-		if out.FinalChoice == "buy" && out.Bull >= 0.50 && out.Bear < 0.50 {
+		if !v2 && out.FinalChoice == "buy" && out.Bull >= 0.50 && out.Bear < 0.50 || v2 && out.FinalChoice == "admit" && out.Bull >= 0.70 && out.Bear < 0.50 {
 			out.Proposed = "admit"
 		}
 	} else {
 		out.Proposed = "hold"
-		if out.FinalChoice == "sell" && out.Bear >= 0.60 && out.Hodl < 0.40 {
+		if !v2 && out.FinalChoice == "sell" && out.Bear >= 0.60 && out.Hodl < 0.40 || v2 && out.FinalChoice == "exit_early" && out.Bear >= 0.60 && out.Hodl < 0.40 {
 			out.Proposed = "early_exit"
 		}
 	}

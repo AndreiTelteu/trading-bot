@@ -17,10 +17,13 @@ At each complete 4h boundary:
 * `active_v2` may sell a complete open position, or buy a flat near-signal symbol subject to v4 position sizing, position count, gross/net, cash, constraints, volume participation and execution costs;
 * execute normal v4 decisions first. A model action cannot cancel or reverse a mandatory v4 exit. A symbol already opened by the normal v4 decision is not bought twice.
 
-The v1 thresholds are frozen unchanged:
+The first full Decider replay established the v2 exploratory baseline. The next pre-registered iteration keeps the bear and exit score thresholds unchanged, raises entry selectivity, and uses action-specific final choices:
 
-* entry/admit iff final=`buy`, bull `>=0.50`, bear `<0.50`;
-* early exit iff final=`sell`, bear `>=0.60`, hodl `<0.40`.
+* entry/admit iff final=`admit`, bull `>=0.70`, bear `<0.50`;
+* otherwise an entry answer is `wait_for_normal_signal` or `reject` and no early position is opened;
+* early exit iff final=`exit_early`, bear `>=0.60`, hodl `<0.40`; otherwise final=`keep`.
+
+The entry threshold change was selected from post-hoc diagnostics of the prior run and therefore requires a new full replay; it is not validation evidence by itself. The bear threshold remains fixed for this experiment.
 
 Unavailable/invalid provider responses fall back to v4. The tenth failed request aborts. Cache corruption and cancellation abort immediately. Returned text is never executed; only typed `answers.<question_id>` is consumed.
 
@@ -33,7 +36,12 @@ The anonymized, stable state contains no ticker, asset ID, exchange ID, wall-clo
 * position duration, unrealized P&L, MFE and MAE when held;
 * the latest four per-symbol v4 factor observations accumulated only from completed 4h computations;
 * the top six rows of the current anonymized cross-sectional factor snapshot, sorted by rank;
-* current v4 regime, rank, factor values and proposed action.
+* current v4 regime, rank, factor values and proposed action;
+* round-trip fee/slippage estimate and required six-bar edge;
+* distance to the normal entry rank, available position slots, current gross exposure and per-decision turnover budget remaining before orders at that boundary;
+* for held positions, giveback from maximum favorable excursion in addition to unrealized P&L, MFE and MAE.
+
+The final entry question explicitly compares early admission with waiting for the normal signal or rejecting the setup, including transaction costs and the opportunity cost of crowding out a stronger position. The held-position prompt explicitly evaluates deterioration, MFE giveback, adverse excursion, weakening rank, recovery potential and whipsaw risk instead of defaulting to the status quo.
 
 The serialized state is hard-capped at 1,800 bytes (approximately 3 KiB for the complete request including questions) to provide comfortable latency for the self-hosted model; the full bounded histories remain inputs to deterministic local feature computation rather than being copied verbatim into the model request. The state is hashed into replay evidence. History is loaded only from the validated immutable manifest, filtered by knowledge cutoff and `available_at <= replay end`; each decision still slices only bars completed by its decision time.
 

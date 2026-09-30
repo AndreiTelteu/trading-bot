@@ -245,6 +245,32 @@ func TestCouncilRulesAndPolicies(t *testing.T) {
 		}
 	}
 }
+func TestCouncilV2RulesAndActionSpecificQuestions(t *testing.T) {
+	entry := councilTestInput()
+	entryModel := councilTestModel(.70, .49, .2, "admit")
+	out, err := (DecisionCouncil{Model: entryModel, Policy: CouncilActiveV2}).Evaluate(context.Background(), entry)
+	if err != nil || out.Proposed != "admit" || !out.Applied {
+		t.Fatalf("v2 entry: out=%+v err=%v", out, err)
+	}
+	if choices := entryModel.requests[1].Questions["decision_final"].ChoiceCriteria; choices["admit"] == "" || choices["wait_for_normal_signal"] == "" || choices["reject"] == "" {
+		t.Fatalf("entry choices=%v", choices)
+	}
+	below := councilTestModel(.699, .49, .2, "admit")
+	if out, err = (DecisionCouncil{Model: below, Policy: CouncilActiveV2}).Evaluate(context.Background(), entry); err != nil || out.Proposed != "veto" {
+		t.Fatalf("v2 threshold: out=%+v err=%v", out, err)
+	}
+	held := councilTestInput()
+	held.Signal.V4Action = "hold"
+	held.Position = CouncilPosition{HasPosition: true, EntryPrice: 100, MarkPrice: 95, DurationBars: 12, MFEPercent: 8, MAEPercent: -7}
+	exitModel := councilTestModel(.2, .6, .39, "exit_early")
+	if out, err = (DecisionCouncil{Model: exitModel, Policy: CouncilActiveV2}).Evaluate(context.Background(), held); err != nil || out.Proposed != "early_exit" {
+		t.Fatalf("v2 exit: out=%+v err=%v", out, err)
+	}
+	if choices := exitModel.requests[1].Questions["decision_final"].ChoiceCriteria; choices["keep"] == "" || choices["exit_early"] == "" || len(choices) != 2 {
+		t.Fatalf("exit choices=%v", choices)
+	}
+}
+
 func TestCouncilNormalizedScore(t *testing.T) {
 	f := councilTestModel(0, 0, 0, "buy")
 	f.responses[0].Answers["decision_bull"] = decisionmodel.Answer{Type: decisionmodel.QuestionChoice, Choice: "very_strong", Probabilities: map[string]float64{"none": 0.25, "very_strong": 0.75}, Confidence: 0.8}
@@ -337,7 +363,7 @@ func TestCouncilPromptDigestGolden(t *testing.T) {
 	if got := CouncilPromptDigest(); got != want {
 		t.Fatalf("digest=%s want=%s", got, want)
 	}
-	const wantV2 = "ac14a056c41061cc4d81ad4361e77570cf5d57de7951bcfeb9b1a7bd883eb02e"
+	const wantV2 = "3a767aa9d9e3000b9fa830989e632a6a4d78441d71f8172ef9ed92798cdb2c14"
 	if got := CouncilPromptDigestV2(); got != wantV2 {
 		t.Fatalf("v2 digest=%s want=%s", got, wantV2)
 	}
@@ -362,7 +388,7 @@ func TestCouncilStateV2AnonymizedAndBounded(t *testing.T) {
 			t.Fatalf("state leaks %q", forbidden)
 		}
 	}
-	if !strings.Contains(state, "schema=decision-council-state-v2-compact-v2") || !strings.Contains(state, "position_mfe_pct=8.00") {
+	if !strings.Contains(state, "schema=decision-council-state-v2-compact-v3") || !strings.Contains(state, "position_mfe_pct=8.00") || !strings.Contains(state, "position_giveback_from_mfe_pct=4.00") || !strings.Contains(state, "round_trip_cost_bps=0.0") {
 		t.Fatalf("state=%s", state)
 	}
 }

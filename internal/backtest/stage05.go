@@ -2873,7 +2873,25 @@ func runCouncilV2Boundary(r *councilRuntime, ctx Stage05PlanningContext, v4, sha
 		for i := range factorHistory {
 			factorHistory[i].BarsAgo = len(factorHistory) - i
 		}
-		input := tradingcore.CouncilInput{Asset: tradingcore.AggregateCouncilBars4HFrom1H(councilBars(config.councilSeries[symbol]), ctx.At, 360), Market: market, AssetDaily: councilBars(barsCompletedAsOf(config.councilDailySeries[symbol], ctx.At, 180)), MarketDaily: marketDaily, Signal: tradingcore.CouncilSignal{V4Action: action, Regime: shadow.Regime, Rank: factor.RelativeRank, UniverseSize: len(shadow.Factors), Momentum: factor.CompositeMomentum, Normalized: factor.NormalizedMomentum, Volatility: factor.RealizedVolatility, AbsoluteTrend: factor.AbsoluteTrend, TargetWeight: shadow.TargetWeights[symbol]}, Position: positionInput, FactorHistory: factorHistory, CrossSection: cross}
+		equity := portfolioEquity(ledger, ctx.Marks)
+		gross := 0.0
+		for heldSymbol, heldPosition := range ledger.positions {
+			gross += heldPosition.Size * ctx.Marks[heldSymbol]
+		}
+		turnoverBudget, _ := strconv.ParseFloat(ctx.Selected.Parameters["turnover_budget"], 64)
+		distanceToEntry := factor.RelativeRank - topN
+		if distanceToEntry < 0 {
+			distanceToEntry = 0
+		}
+		economics := tradingcore.CouncilEconomics{
+			RoundTripCostBPS:               2 * (config.FeeBps + config.SlippageBps),
+			RequiredEdge6BarsBPS:           2 * (config.FeeBps + config.SlippageBps),
+			DistanceToNormalEntryRank:      distanceToEntry,
+			AvailablePositionSlots:         max(0, config.MaxPositions-len(ledger.positions)),
+			CurrentGrossExposurePercent:    100 * gross / equity,
+			TurnoverBudgetRemainingPercent: 100 * turnoverBudget,
+		}
+		input := tradingcore.CouncilInput{Asset: tradingcore.AggregateCouncilBars4HFrom1H(councilBars(config.councilSeries[symbol]), ctx.At, 360), Market: market, AssetDaily: councilBars(barsCompletedAsOf(config.councilDailySeries[symbol], ctx.At, 180)), MarketDaily: marketDaily, Signal: tradingcore.CouncilSignal{V4Action: action, Regime: shadow.Regime, Rank: factor.RelativeRank, UniverseSize: len(shadow.Factors), Momentum: factor.CompositeMomentum, Normalized: factor.NormalizedMomentum, Volatility: factor.RealizedVolatility, AbsoluteTrend: factor.AbsoluteTrend, TargetWeight: shadow.TargetWeights[symbol]}, Position: positionInput, Economics: economics, FactorHistory: factorHistory, CrossSection: cross}
 		trace := DecisionCouncilTrace{DecisionAt: canonicalTime(ctx.At), Trigger: eligible[symbol], NearSignalRank: factor.RelativeRank, PositionMFEPercent: mfe, PositionMAEPercent: mae, Symbol: symbol, V4Action: action, HasPosition: held, Applied: r.core.Policy == tradingcore.CouncilActiveV2}
 		var err error
 		trace, err = r.evaluate(input, trace, held, summary)

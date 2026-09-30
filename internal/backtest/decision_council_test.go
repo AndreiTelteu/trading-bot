@@ -32,11 +32,22 @@ func (m *fakeCouncilModel) Decide(_ context.Context, request decisionmodel.Reque
 		return decisionmodel.Response{}, m.err
 	}
 	response := decisionmodel.Response{ResolvedModel: "fixture", RequestDigest: strings.Repeat("a", 64), Cached: m.cache, Answers: map[string]decisionmodel.Answer{}}
-	if _, ok := request.Questions["decision_final"]; ok {
+	if final, ok := request.Questions["decision_final"]; ok {
 		if m.finalResolved != "" {
 			response.ResolvedModel = m.finalResolved
 		}
-		response.Answers["decision_final"] = decisionmodel.Answer{Type: decisionmodel.QuestionChoice, Choice: m.choice, Probabilities: map[string]float64{m.choice: 1}}
+		choice := m.choice
+		if _, v2Entry := final.ChoiceCriteria["admit"]; v2Entry && choice == "buy" {
+			choice = "admit"
+		}
+		if _, v2Exit := final.ChoiceCriteria["exit_early"]; v2Exit {
+			if choice == "sell" {
+				choice = "exit_early"
+			} else if choice == "buy" || choice == "hodl" {
+				choice = "keep"
+			}
+		}
+		response.Answers["decision_final"] = decisionmodel.Answer{Type: decisionmodel.QuestionChoice, Choice: choice, Probabilities: map[string]float64{choice: 1}}
 		return response, nil
 	}
 	if m.scoreResolved != "" {
@@ -369,6 +380,10 @@ func TestDecisionCouncilVetoFallbackAndInsufficientData(t *testing.T) {
 
 func tradingCouncil(model decisionmodel.Model) tradingcore.DecisionCouncil {
 	return tradingcore.DecisionCouncil{Model: model, Policy: tradingcore.CouncilVetoV1}
+}
+
+func tradingCouncilV2(model decisionmodel.Model) tradingcore.DecisionCouncil {
+	return tradingcore.DecisionCouncil{Model: model, Policy: tradingcore.CouncilActiveV2}
 }
 
 func TestComparisonArtifactLimitScalesWithCouncilTraces(t *testing.T) {
