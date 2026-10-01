@@ -1175,14 +1175,16 @@ func rebalanceStage05(ledger *backtestMemoryLedger, config BacktestConfig, strat
 		if stage05RetainedResidualSlots(ledger) > 0 {
 			allowed = tolerance
 		}
-		for _, noFill := range ledger.noFills[:decisionNoFills] {
-			if noFill.Side != "sell" {
+		seenCapacityResidual := map[string]bool{}
+		for i := decisionNoFills - 1; i >= 0; i-- {
+			noFill := ledger.noFills[i]
+			if noFill.Side != "sell" || seenCapacityResidual[noFill.Symbol] {
 				continue
 			}
-			approved, _ := strconv.ParseFloat(noFill.ApprovedQuantity, 64)
+			seenCapacityResidual[noFill.Symbol] = true
 			price := fills[noFill.Symbol]
-			if position := ledger.positions[noFill.Symbol]; position != nil && approved > 0 && price > 0 {
-				allowed += math.Min(approved, position.Size) * price / achievedEquity
+			if position := ledger.positions[noFill.Symbol]; position != nil && price > 0 {
+				allowed += position.Size * price / achievedEquity
 			}
 		}
 	}
