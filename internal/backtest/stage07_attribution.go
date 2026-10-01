@@ -16,18 +16,6 @@ import (
 // stage07EconomicPrimitives replays the immutable Stage 05 fill sequence using
 // the same weighted-average entry and proportional entry-fee rules as the
 // shared memory ledger. A sell consumes exactly one closed-trade record.
-func stage07V4FillBindingError(fill FillArtifact, order OrderArtifact, duplicate bool, accepted int, approved string, selectedOpen, signal time.Time, signalErr error, orderAt time.Time, orderErr error, bar services.OHLCV) error {
-	return &validation.DiagnosticError{Code: validation.DiagnosticCapacity, Field: "fills", Details: fmt.Sprintf("v4 fill %s binding mismatch: order=%t duplicate=%t accepted=%d intent_match=%t instrument_match=%t side_match=%t signal_valid=%t signal_before_selected=%t order_at_valid=%t order_at_signal=%t quantity=%q requested=%q approved=%q execution_event_match=%t bar_close_match=%t reference_matches_close=%t cost_version=%q", fill.FillID, order.OrderID != "", duplicate, accepted, fill.IntentID == fill.OrderID, order.Symbol == fill.Symbol, order.Side == fill.Side, signalErr == nil, signalErr == nil && signal.Before(selectedOpen), orderErr == nil, orderErr == nil && orderAt.Equal(signal), fill.Quantity, order.Quantity, approved, order.Metadata["execution_event_at"] == fill.FillAt, bar.CloseTime == mustStage07TimeMillis(fill.FillAt), stage07DecimalMatchesFloat(fill.ExecutionReferencePrice, bar.Close), fill.CostVersion)}
-}
-
-func mustStage07TimeMillis(raw string) int64 {
-	value, err := time.Parse(time.RFC3339Nano, raw)
-	if err != nil {
-		return 0
-	}
-	return value.UnixMilli()
-}
-
 type stage07EndPosition struct {
 	Symbol        string
 	Quantity      float64
@@ -108,7 +96,7 @@ func stage07EconomicPrimitives(result Stage05StrategyResult, fold int, capital f
 			requested, reqOK := new(big.Rat).SetString(order.Quantity)
 			approvedQty, approvedOK := new(big.Rat).SetString(approved[fill.OrderID])
 			if !ok || filledOrders[fill.OrderID] || accepted[fill.OrderID] != 1 || fill.IntentID != fill.OrderID || order.Symbol != fill.Symbol || order.Side != fill.Side || signalErr != nil || orderErr != nil || !signal.Before(selectedOpen) || !orderAt.Equal(signal) || !qtyOK || !reqOK || !approvedOK || fillQty.Cmp(approvedQty) != 0 || approvedQty.Cmp(requested) > 0 || order.Metadata["execution_event_at"] != canonicalTime(at) || bar.CloseTime != at.UnixMilli() || bar.CloseTime != bar.OpenTime+int64(time.Minute/time.Millisecond)-1 || !stage07Positive(bar.Open) || !stage07Positive(bar.Close) || !stage07Positive(bar.High) || !stage07Positive(bar.Low) || bar.Low > bar.High || bar.Open < bar.Low || bar.Open > bar.High || bar.Close < bar.Low || bar.Close > bar.High || !stage07DecimalMatchesFloat(fill.ExecutionReferencePrice, bar.Close) || fill.CostVersion != result.Manifest.ExecutionPolicy.CostVersion {
-				return nil, nil, stage07EndInventory{}, stage07V4FillBindingError(fill, order, filledOrders[fill.OrderID], accepted[fill.OrderID], approved[fill.OrderID], selectedOpen, signal, signalErr, orderAt, orderErr, bar)
+				return nil, nil, stage07EndInventory{}, &validation.DiagnosticError{Code: validation.DiagnosticCapacity, Field: "fills", Details: "v4 fill is not bound to one approved selected-bar-close order"}
 			}
 			lot, tick, _, _, constraintErr := constraintValues(config, fill.Symbol, at)
 			cap, capErr := stage05VolumeCap(bar.Volume, lot)
