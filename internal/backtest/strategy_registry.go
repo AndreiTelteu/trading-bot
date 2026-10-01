@@ -517,6 +517,7 @@ func newDefaultStrategyRegistry() *StrategyRegistry {
 	candidateV14.Parameters = append(candidateV14.Parameters,
 		StrategyParameterSpec{Name: "decision_model", Type: "enum", Description: "Resolved decision model identity.", Default: decisionmodel.DefaultIdentity, Enum: []string{decisionmodel.ExperientialIdentity, decisionmodel.AIHubMixIdentity, decisionmodel.TokenRouterIdentity, decisionmodel.DeciderIdentity}},
 		StrategyParameterSpec{Name: "decision_council_policy", Type: "enum", Description: "Council v2 observation or active policy.", Default: "observe_v2", Enum: []string{"observe_v2", "active_v2"}},
+		StrategyParameterSpec{Name: "decision_council_early_exit", Type: "enum", Description: "Whether council v2 evaluates held positions for early exit.", Default: "true", Enum: []string{"true", "false"}},
 	)
 	definitions = append(definitions, candidateV14)
 	matched := cloneStrategyDescriptor(candidateV11)

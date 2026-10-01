@@ -17,6 +17,8 @@ At each complete 4h boundary:
 * `active_v2` may sell a complete open position, or buy a flat near-signal symbol subject to v4 position sizing, position count, gross/net, cash, constraints, volume participation and execution costs;
 * execute normal v4 decisions first. A model action cannot cancel or reverse a mandatory v4 exit. A symbol already opened by the normal v4 decision is not bought twice.
 
+The versioned parameter `decision_council_early_exit` controls the held-position branch. Its default `true` preserves the full v2 contract. Setting it to `false` excludes held positions from council eligibility entirely: no held-position model calls, traces, or council exits are produced, while normal v4 exits and hard stops remain authoritative. This supports a controlled entry-only ablation without changing the entry prompt or thresholds.
+
 The first full Decider replay established the v2 exploratory baseline. The next pre-registered iteration keeps the bear and exit score thresholds unchanged, raises entry selectivity, and uses action-specific final choices:
 
 * entry/admit iff final=`admit`, bull `>=0.70`, bear `<0.50`;

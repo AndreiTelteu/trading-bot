@@ -266,6 +266,31 @@ func TestDecisionCouncilV2ActiveEntrySelectsExecutionBarsForHeldTargets(t *testi
 	}
 }
 
+func TestDecisionCouncilV2EarlyExitParameterExcludesHeldEvaluations(t *testing.T) {
+	config, series := councilReplayFixture(t)
+	at := time.UnixMilli(config.BenchmarkSeries[len(config.BenchmarkSeries)-1].CloseTime).UTC()
+	config.CouncilModel = &fakeCouncilModel{choice: "exit_early"}
+	selected, strategy, _, err := DefaultStrategyRegistry.ResolveExecutable(StrategyTrendMomentumCandidate, "1.4.0", map[string]string{"decision_council_policy": "active_v2", "decision_council_early_exit": "false"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := newCouncilRuntime(config, selected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ledger := &backtestMemoryLedger{cash: 900, positions: map[string]*positionState{"AAAUSDT": {Symbol: "AAAUSDT", Size: 1, EntryPrice: 100, EntryTime: at.Add(-24 * time.Hour)}}}
+	ctx := Stage05PlanningContext{Selected: selected, At: at, Series: series, Marks: map[string]float64{"AAAUSDT": 100}}
+	shadow := Stage05Plan{Regime: "risk_on", Factors: []FactorTrace{{Symbol: "AAAUSDT", RelativeRank: 1, CompositeMomentum: .2, NormalizedMomentum: 2, RealizedVolatility: .1, AbsoluteTrend: true}}, TargetWeights: map[string]float64{"AAAUSDT": .25}}
+	summary := &DecisionCouncilSummary{}
+	_, traces, err := runCouncilV2Boundary(runtime, ctx, Stage05Plan{}, shadow, ledger, config, strategy, summary, map[string][]tradingcore.CouncilFactorObservation{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(traces) != 0 || summary.Calls != 0 || summary.EarlyExits != 0 || ledger.positions["AAAUSDT"] == nil {
+		t.Fatalf("held evaluations were not disabled: traces=%+v summary=%+v positions=%+v", traces, summary, ledger.positions)
+	}
+}
+
 func TestDecisionCouncilForwardReturnsAnchorToLatestCompletedBar(t *testing.T) {
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	prices := make([]float64, 16*14)

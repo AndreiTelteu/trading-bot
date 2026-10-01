@@ -229,6 +229,7 @@ func RunStage05Comparison(config BacktestConfig, series map[string][]services.OH
 			parameters["vol_normalization"] = "false"
 			delete(parameters, "decision_model")
 			delete(parameters, "decision_council_policy")
+			delete(parameters, "decision_council_early_exit")
 			version = "1.0.0"
 			if candidate.Descriptor.Version == "1.2.0" {
 				version = "1.1.0"
@@ -2820,8 +2821,10 @@ func runCouncilV2Boundary(r *councilRuntime, ctx Stage05PlanningContext, v4, sha
 	sort.Slice(cross, func(i, j int) bool { return cross[i].Rank < cross[j].Rank })
 	topN, _ := strconv.Atoi(ctx.Selected.Parameters["top_n"])
 	eligible := map[string]string{}
-	for symbol := range ledger.positions {
-		eligible[symbol] = "held_4h"
+	if ctx.Selected.Parameters["decision_council_early_exit"] == "true" {
+		for symbol := range ledger.positions {
+			eligible[symbol] = "held_4h"
+		}
 	}
 	for _, factor := range shadow.Factors {
 		if ledger.positions[factor.Symbol] == nil && factor.RelativeRank <= topN+2 && factor.AbsoluteTrend && shadow.Regime != "risk_off" {

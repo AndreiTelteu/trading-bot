@@ -178,6 +178,7 @@ func TestValidateRequestDecisionCouncilFrozenBoundary(t *testing.T) {
 	}
 	req.StrategyVersion = "1.4.0"
 	req.Parameters["decision_council_policy"] = "observe_v2"
+	req.Parameters["decision_council_early_exit"] = "true"
 	if err := validateRequest(req); err != nil {
 		t.Fatalf("v2 observe request rejected: %v", err)
 	}
@@ -185,6 +186,15 @@ func TestValidateRequestDecisionCouncilFrozenBoundary(t *testing.T) {
 	if err := validateRequest(req); err != nil {
 		t.Fatalf("v2 active request rejected: %v", err)
 	}
+	req.Parameters["decision_council_early_exit"] = "false"
+	if err := validateRequest(req); err != nil {
+		t.Fatalf("v2 early-exit-off request rejected: %v", err)
+	}
+	req.Parameters["decision_council_early_exit"] = "invalid"
+	if err := validateRequest(req); err == nil {
+		t.Fatal("invalid v2 early-exit parameter accepted")
+	}
+	req.Parameters["decision_council_early_exit"] = "false"
 	req.Parameters["decision_model"] = decisionmodel.DeciderIdentity
 	if err := validateRequest(req); err != nil {
 		t.Fatalf("anonymous decider request rejected: %v", err)
