@@ -1167,12 +1167,23 @@ func rebalanceStage05(ledger *backtestMemoryLedger, config BacktestConfig, strat
 	allowed := targetExposure + tolerance
 	if targetExposure == 0 {
 		allowed = 1e-10
-		// Risk-off remains strictly flat unless a sell was attempted and the
-		// exchange could not execute the remaining dust. In that evidenced case,
-		// the same pre-registered allocation tolerance bounds the unavoidable
-		// marked exposure; it does not authorize a new position.
+		// Risk-off remains strictly flat unless prior immutable no-fill evidence
+		// proves that an exit was capacity-cancelled or left exchange dust. The
+		// allocation check must carry that exposure forward across later decision
+		// cycles; examining only no-fills created by this cycle falsely treats the
+		// still-held residual as a fresh allocation.
 		if stage05RetainedResidualSlots(ledger) > 0 {
 			allowed = tolerance
+		}
+		for _, noFill := range ledger.noFills[:decisionNoFills] {
+			if noFill.Side != "sell" {
+				continue
+			}
+			approved, _ := strconv.ParseFloat(noFill.ApprovedQuantity, 64)
+			price := fills[noFill.Symbol]
+			if position := ledger.positions[noFill.Symbol]; position != nil && approved > 0 && price > 0 {
+				allowed += math.Min(approved, position.Size) * price / achievedEquity
+			}
 		}
 	}
 	if (config.ExecutionPolicy.Version == "backtest-execution-v3" || config.ExecutionPolicy.Version == "backtest-execution-v4") && achievedEquity > 0 {
