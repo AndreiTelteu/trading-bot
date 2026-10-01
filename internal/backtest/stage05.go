@@ -1189,14 +1189,17 @@ func rebalanceStage05(ledger *backtestMemoryLedger, config BacktestConfig, strat
 		}
 	}
 	if (config.ExecutionPolicy.Version == "backtest-execution-v3" || config.ExecutionPolicy.Version == "backtest-execution-v4") && achievedEquity > 0 {
+		seenCapacityResidual := map[string]bool{}
 		for _, noFill := range ledger.noFills[decisionNoFills:] {
-			if noFill.Side != "sell" {
+			if noFill.Side != "sell" || seenCapacityResidual[noFill.Symbol] {
 				continue
 			}
-			approved, _ := strconv.ParseFloat(noFill.ApprovedQuantity, 64)
+			seenCapacityResidual[noFill.Symbol] = true
 			price := fills[noFill.Symbol]
-			if position := ledger.positions[noFill.Symbol]; position != nil && approved > 0 && price > 0 {
-				allowed += math.Min(approved, position.Size) * price / achievedEquity
+			// The v3/v4 broker is all-or-none: a no-fill leaves the complete
+			// position in inventory, even when risk approved a smaller quantity.
+			if position := ledger.positions[noFill.Symbol]; position != nil && price > 0 {
+				allowed += position.Size * price / achievedEquity
 			}
 		}
 	}
