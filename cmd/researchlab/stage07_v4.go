@@ -64,7 +64,7 @@ func validateStage07V4CodeLineage(driverSHA string) error {
 
 func validateStage07V4DiffPaths(paths []string) error {
 	for _, path := range paths {
-		if path == "internal/backtest/stage07_attribution.go" || path == "internal/backtest/stage07_attribution_test.go" || path == "internal/backtest/stage07_v4_test.go" {
+		if path == "internal/backtest/stage05.go" || path == "internal/backtest/stage05_matched_residual_regression_test.go" || path == "internal/backtest/stage07_attribution.go" || path == "internal/backtest/stage07_attribution_test.go" || path == "internal/backtest/stage07_v4_test.go" {
 			continue
 		}
 		if !strings.HasPrefix(path, "cmd/researchlab/") && !strings.HasPrefix(path, "docs/") {
