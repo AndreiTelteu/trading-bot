@@ -59,7 +59,19 @@ func validateStage07V4CodeLineage(driverSHA string) error {
 			paths = append(paths, string(path))
 		}
 	}
-	return validateStage07DiffPaths(paths)
+	return validateStage07V4DiffPaths(paths)
+}
+
+func validateStage07V4DiffPaths(paths []string) error {
+	for _, path := range paths {
+		if path == "internal/backtest/stage07_attribution.go" || path == "internal/backtest/stage07_attribution_test.go" || path == "internal/backtest/stage07_v4_test.go" {
+			continue
+		}
+		if !strings.HasPrefix(path, "cmd/researchlab/") && !strings.HasPrefix(path, "docs/") {
+			return fmt.Errorf("v4 source-to-driver diff changes forbidden path %q", path)
+		}
+	}
+	return nil
 }
 
 func parseStage07V4SourceIDs(raw string) ([]uint, error) {
