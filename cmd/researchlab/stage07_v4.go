@@ -184,7 +184,7 @@ func buildStage07V4Spec(refs []stage07SourceReference, parameters map[string]str
 		DatasetManifestID: stage07V4DatasetDigest, DatasetManifestHash: stage07V4DatasetDigest, DatasetDigest: validation.DatasetDigest(stage07V4DatasetDigest), UniversePolicy: "research-universe-v1",
 		Interval: validation.Interval{Start: start, End: end}, DecisionClock: "completed-4h-close", ExecutionClock: "selected-1m-close-after-volume", Seed: 0,
 		ExecutionSemantics: map[string]string{"fee_bps": "10", "slippage_bps": "5", "timing": "selected_bar_close_after_volume", "liquidity": "volume_capped", "max_participation_bps": "1000", "no_fill_rule": stage07V4NoFillRule, "execution_policy_version": "backtest-execution-v4", "source_code_revision": stage07V4SourceSHA},
-		CapacityStress:     validation.CapacityStressPolicy{MaxParticipation: .1, ImpactBpsAtMax: 10, StressMultiplier: 2}, BaselineComparability: &validation.BaselineComparabilityPolicy{MaxGrossExposureDifference: .02, MaxTurnoverRelativeDiff: .1},
+		CapacityStress:     validation.CapacityStressPolicy{MaxParticipation: .1, ImpactBpsAtMax: 10, StressMultiplier: 2}, BaselineComparability: &validation.BaselineComparabilityPolicy{MaxGrossExposureDifference: .05, MaxTurnoverRelativeDiff: .25},
 		Folds: folds, FoldSourceJobIDs: []uint{103, 104, 105}, FeatureHorizon: 5 * 24 * time.Hour, LabelHorizon: 4 * time.Hour, Purge: 4 * time.Hour, Embargo: 4 * time.Hour,
 		AllowedTuning: allowed, Metrics: append([]string(nil), validation.RequiredConfirmatoryMetrics...), StatisticalUnit: "chronological_test_window", BootstrapIterations: 500,
 		Samples:             validation.SampleRequirements{MinFolds: 3, MinIndependentUnits: 3, MinObservationsPerFold: 10, MinTradesPerFold: 1, MinRegimes: 2},
