@@ -38,7 +38,8 @@ func main() {
 	ledgerFile := flag.String("ledger-file", "", "append-only local JSONL attempt ledger")
 	expectedSHA := flag.String("reviewed-code-sha", "", "committed reviewed v3 code identity")
 	stage07Mode := flag.String("stage07-mode", "", "Stage 07 prepare or run; requires an exact reviewed plan")
-	stage07OldManifest := flag.String("stage07-old-manifest-file", "", "private pinned prior exploratory manifest (prepare only)")
+	stage07Track := flag.String("stage07-track", "v3", "Stage 07 driver track: v3 or v4")
+	stage07OldManifest := flag.String("stage07-old-manifest-file", "", "private pinned prior exploratory manifest (v3 prepare only)")
 	stage07Plan := flag.String("stage07-plan-file", "", "private Stage 07 reviewed plan file")
 	stage07PlanSHA := flag.String("stage07-plan-sha256", "", "reviewed SHA-256 of the exact Stage 07 plan (run only)")
 	stage07SourceIDs := flag.String("stage07-source-job-ids", "", "three new completed source job IDs, comma-separated (prepare only)")
@@ -75,12 +76,24 @@ func main() {
 		if err := validateRevision(*expectedSHA); err != nil {
 			fatal(err)
 		}
-		if err := validateStage07CodeLineage(*expectedSHA); err != nil {
-			fatal(err)
-		}
 		options := stage07Options{Mode: *stage07Mode, OldManifestFile: *stage07OldManifest, PlanFile: *stage07Plan, PlanSHA256: *stage07PlanSHA, SourceJobIDs: *stage07SourceIDs, Creator: *stage07Creator, IdempotencyKey: *stage07Key, LedgerFile: *ledgerFile, MarkerFile: *markerFile, DriverSHA: *expectedSHA}
-		if err := runStage07Mode(options); err != nil {
-			fatal(err)
+		switch *stage07Track {
+		case "v3":
+			if err := validateStage07CodeLineage(*expectedSHA); err != nil {
+				fatal(err)
+			}
+			if err := runStage07Mode(options); err != nil {
+				fatal(err)
+			}
+		case "v4":
+			if err := validateStage07V4CodeLineage(*expectedSHA); err != nil {
+				fatal(err)
+			}
+			if err := runStage07V4Mode(options); err != nil {
+				fatal(err)
+			}
+		default:
+			fatal(fmt.Errorf("Stage 07 track must be v3 or v4"))
 		}
 		return
 	}

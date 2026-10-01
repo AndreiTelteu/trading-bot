@@ -1,6 +1,35 @@
 # Stage 05/07 next exploratory iteration (predeclared, 2026-09-26)
 
-## Current checkpoint: positive-entry hypothesis stopped after one source
+## Current checkpoint: Decision Council v2 Stage 07 v4 stability path
+
+Candidate `trend_momentum_candidate@1.4.0` with `active_v2`,
+`decider/decider-4b`, the selective entry rule, and
+`decision_council_early_exit=false` is frozen at source revision
+`cc39d9833aea1e1f33fa4afac437a69067bd387e`. Isolated clone jobs 103–105
+completed with exactly equal comparison digest
+`396b2aedd19f117ef5692d45c783294ca0111b72c68b1e416d6e9a616d8a88cd`
+and Stage 07 source digest
+`dce8690cadea93f4782acc189d9cb3aee7a70d0342a346110b21072092dd949d`.
+These repeats prove deterministic source reproduction; they are not three
+independent statistical observations.
+
+Use only the separate `cmd/researchlab -stage07-track v4` path for this
+candidate. Preparation accepts exactly jobs `103,104,105`, verifies their
+canonical artifacts and v4 execution/capacity semantics, and executes the
+complete manifest-backed PostgreSQL source preflight before writing a private
+0600 plan. The plan freezes all candidate parameters to one choice and uses
+three chronological train/validation/test windows with 4h purge and embargo,
+500 bootstrap iterations, matched-baseline comparability, capacity stress, and
+the predeclared cash/baseline/coverage/drawdown/stressed-return gates.
+
+This run is a retrospective exploratory stability measurement, not a
+confirmatory validation: the `bull >= 0.70` threshold was selected after
+inspecting the same 2024-12-01–2026-09-01 history. Do not tune from its folds,
+do not relabel it out-of-sample, and do not promote from it even if every gate
+passes. A later unseen point-in-time dataset and a separately locked,
+single-use confirmatory holdout remain mandatory.
+
+## Prior checkpoint: positive-entry hypothesis stopped after one source
 
 The matched final-marking capacity pair is now complete: v4 job 86 and v3 job
 87 share the non-execution assumptions and reconcile. Candidate return is
